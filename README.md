@@ -68,7 +68,8 @@ Linux needs the usual windowing libraries:
 
 **Verification**
 - DRC with a text rule deck (`width`, `space`, `separation`, `enclosure`, `extension`,
-  `area`) on the flattened hierarchy; results grouped by rule with zoom-to-marker
+  `area`) over technology layers and derived layers (`gate = poly and active`, `and` /
+  `or` / `not` / `xor` / `size`) on the flattened hierarchy; results grouped by rule with zoom-to-marker
 - Connectivity extraction with MOS recognition, top-level labels and net highlighting
 - LVS against the schematic by iterative partition refinement, with parallel-device
   merging and W / L checks

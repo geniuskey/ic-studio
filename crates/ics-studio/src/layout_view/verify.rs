@@ -274,7 +274,7 @@ impl LayoutEditor {
         egui::CollapsingHeader::new("Rule deck").id_salt("deck").show(ui, |ui| {
             let deck = self.verify.deck.get_or_insert_with(|| deck_source(cx));
             let lb =
-                ui.label(egui::RichText::new("width / space / separation / enclosure / extension / area · µm").small().weak());
+                ui.label(egui::RichText::new("width / space / separation / enclosure / extension / area · µm · derived: name = a and|or|not|xor b, name = a size d").small().weak());
             ui.add(egui::TextEdit::multiline(deck).code_editor().desired_rows(10).desired_width(f32::INFINITY))
                 .labelled_by(lb.id);
             ui.horizontal(|ui| {

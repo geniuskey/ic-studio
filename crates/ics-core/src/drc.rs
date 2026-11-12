@@ -8,8 +8,14 @@
 //! [NAME:] enclosure  INNER OUTER MIN
 //! [NAME:] extension  LAYER_A LAYER_B MIN
 //! [NAME:] area       LAYER MIN
+//! NAME = LAYER and|or|not|xor LAYER
+//! NAME = LAYER size DIST
 //! ```
-//! Rule kinds and layer names are case-insensitive. Unnamed rules are called
+//! A `NAME = ...` line defines a derived layer (e.g. `gate = poly and active`) from technology
+//! layers or earlier derived layers; later lines use it like any layer. `not` is `A` minus `B`,
+//! `size` grows (DIST > 0) or shrinks (DIST < 0) with square corners. Derived layers are only
+//! computed when a rule needs them; violations on them carry no technology layer.
+//! Rule kinds, operators and layer names are case-insensitive. Unnamed rules are called
 //! `<layer>.W`, `<layer>.S`, `<a>.SEP.<b>`, `<inner>.EN.<outer>`, `<a>.EX.<b>` and `<layer>.A`.
 //!
 //! Every check works on the merged geometry of each layer (all Manhattan shapes of the
@@ -60,7 +66,66 @@ pub const MAX_VIOLATIONS_PER_RULE: usize = 10_000;
 const MAX_DEPTH: u32 = 64;
 const POLY_ENDCAP_UM: &str = "0.22";
 
-/// A rule with lengths in dbu and areas in dbu². Layers are tech layer indices.
+/// A layer computed from earlier layers. Indices count the technology layers first, then the
+/// deck's derived layers in definition order (see [`Deck::layer_names`]).
+#[derive(Debug, Clone, PartialEq)]
+pub enum LayerExpr {
+    Bool {
+        a: usize,
+        op: BoolOp,
+        b: usize,
+    },
+    /// Grow (> 0) or shrink (< 0) by `by` dbu.
+    Size {
+        a: usize,
+        by: i64,
+    },
+}
+
+impl LayerExpr {
+    pub fn inputs(&self) -> Vec<usize> {
+        match *self {
+            LayerExpr::Bool { a, b, .. } => vec![a, b],
+            LayerExpr::Size { a, .. } => vec![a],
+        }
+    }
+
+    fn eval(&self, layers: &[Region]) -> Region {
+        let empty = Region::default();
+        let get = |l: usize| layers.get(l).unwrap_or(&empty);
+        match *self {
+            LayerExpr::Bool { a, op, b } => get(a).boolean(get(b), op),
+            LayerExpr::Size { a, by } => get(a).sized(by),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DerivedLayer {
+    pub name: String,
+    pub expr: LayerExpr,
+}
+
+impl DerivedLayer {
+    /// Deck line for this layer, e.g. `gate = poly and active`.
+    pub fn deck_line(&self, tech: &Tech, names: &[String]) -> String {
+        let n = |l: usize| layer_name(names, l);
+        match self.expr {
+            LayerExpr::Bool { a, op, b } => {
+                let op = match op {
+                    BoolOp::And => "and",
+                    BoolOp::Or => "or",
+                    BoolOp::Not => "not",
+                    BoolOp::Xor => "xor",
+                };
+                format!("{} = {} {op} {}", self.name, n(a), n(b))
+            }
+            LayerExpr::Size { a, by } => format!("{} = {} size {}", self.name, n(a), fmt_um(by, tech)),
+        }
+    }
+}
+
+/// A rule with lengths in dbu and areas in dbu². Layers index [`Deck::layer_names`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum Rule {
     Width { layer: usize, min: i64 },
@@ -92,8 +157,8 @@ impl Rule {
     }
 
     /// Name used when the deck gives none, e.g. `metal1.W` or `contact.EN.active`.
-    pub fn auto_name(&self, tech: &Tech) -> String {
-        let n = |l: usize| layer_name(tech, l);
+    pub fn auto_name(&self, names: &[String]) -> String {
+        let n = |l: usize| layer_name(names, l);
         match *self {
             Rule::Width { layer, .. } => format!("{}.W", n(layer)),
             Rule::Space { layer, .. } => format!("{}.S", n(layer)),
@@ -105,8 +170,8 @@ impl Rule {
     }
 
     /// Human readable, e.g. "metal1 width < 0.23 µm".
-    pub fn description(&self, tech: &Tech) -> String {
-        let n = |l: usize| layer_name(tech, l);
+    pub fn description(&self, tech: &Tech, names: &[String]) -> String {
+        let n = |l: usize| layer_name(names, l);
         let um = |v: i64| fmt_um(v, tech);
         match *self {
             Rule::Width { layer, min } => format!("{} width < {} µm", n(layer), um(min)),
@@ -122,8 +187,8 @@ impl Rule {
     }
 
     /// Deck line for this rule (without a name).
-    pub fn deck_line(&self, tech: &Tech) -> String {
-        let n = |l: usize| layer_name(tech, l);
+    pub fn deck_line(&self, tech: &Tech, names: &[String]) -> String {
+        let n = |l: usize| layer_name(names, l);
         let um = |v: i64| fmt_um(v, tech);
         match *self {
             Rule::Width { layer, min } => format!("width {} {}", n(layer), um(min)),
@@ -147,7 +212,15 @@ pub struct NamedRule {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Deck {
+    pub derived: Vec<DerivedLayer>,
     pub rules: Vec<NamedRule>,
+}
+
+impl Deck {
+    /// Every layer a rule can refer to: the technology layers, then the derived layers.
+    pub fn layer_names(&self, tech: &Tech) -> Vec<String> {
+        tech.layers.iter().map(|l| l.name.clone()).chain(self.derived.iter().map(|d| d.name.clone())).collect()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -186,8 +259,16 @@ pub struct DrcReport {
     pub capped: Vec<(String, usize)>,
 }
 
-fn layer_name(tech: &Tech, l: usize) -> String {
-    tech.layer(l).map_or_else(|| format!("#{l}"), |d| d.name.clone())
+fn layer_name(names: &[String], l: usize) -> String {
+    names.get(l).cloned().unwrap_or_else(|| format!("#{l}"))
+}
+
+fn lookup(names: &[String], name: &str, errs: &mut Vec<String>) -> Option<usize> {
+    let l = names.iter().position(|n| n.eq_ignore_ascii_case(name));
+    if l.is_none() {
+        errs.push(format!("unknown layer '{name}'"));
+    }
+    l
 }
 
 fn fmt_um(v: i64, tech: &Tech) -> String {
@@ -196,22 +277,71 @@ fn fmt_um(v: i64, tech: &Tech) -> String {
 
 /// Parse a deck. All errors are reported, not just the first.
 pub fn parse_deck(text: &str, tech: &Tech) -> Result<Deck, Vec<DeckError>> {
-    let mut rules = Vec::new();
+    let mut deck = Deck::default();
+    let mut names = deck.layer_names(tech);
     let mut errors = Vec::new();
     for (i, raw) in text.lines().enumerate() {
         let line = raw.split('#').next().unwrap_or_default().trim();
         if line.is_empty() {
             continue;
         }
-        match parse_line(line, tech) {
-            Ok(r) => rules.push(r),
-            Err(es) => errors.extend(es.into_iter().map(|message| DeckError { line: i + 1, message })),
+        let parsed = match line.split_once('=') {
+            Some((lhs, rhs)) => parse_derived(lhs, rhs, &names, tech).map(|d| {
+                names.push(d.name.clone());
+                deck.derived.push(d);
+            }),
+            None => parse_line(line, &names, tech).map(|r| deck.rules.push(r)),
+        };
+        if let Err(es) = parsed {
+            errors.extend(es.into_iter().map(|message| DeckError { line: i + 1, message }));
         }
     }
-    if errors.is_empty() { Ok(Deck { rules }) } else { Err(errors) }
+    if errors.is_empty() { Ok(deck) } else { Err(errors) }
 }
 
-fn parse_line(line: &str, tech: &Tech) -> Result<NamedRule, Vec<String>> {
+fn parse_derived(lhs: &str, rhs: &str, names: &[String], tech: &Tech) -> Result<DerivedLayer, Vec<String>> {
+    let name = lhs.trim();
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || "_.-".contains(c)) {
+        return Err(vec![format!("invalid layer name '{name}'")]);
+    }
+    let mut errs = Vec::new();
+    if names.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+        errs.push(format!("layer '{name}' is already defined"));
+    }
+    let toks: Vec<&str> = rhs.split_whitespace().collect();
+    if toks.len() != 3 {
+        errs.push(format!("expected '{name} = LAYER and|or|not|xor LAYER' or '{name} = LAYER size DIST'"));
+        return Err(errs);
+    }
+    let a = lookup(names, toks[0], &mut errs);
+    let kind = toks[1].to_ascii_lowercase();
+    let op = match kind.as_str() {
+        "and" => Some(BoolOp::And),
+        "or" => Some(BoolOp::Or),
+        "not" => Some(BoolOp::Not),
+        "xor" => Some(BoolOp::Xor),
+        _ => None,
+    };
+    let expr = if let Some(op) = op {
+        let b = lookup(names, toks[2], &mut errs);
+        a.zip(b).map(|(a, b)| LayerExpr::Bool { a, op, b })
+    } else if kind == "size" {
+        let by = toks[2].parse::<f64>().ok().filter(|v| v.is_finite()).map(|v| (v * tech.dbu_per_um as f64).round() as i64);
+        if by.is_none() {
+            errs.push(format!("bad distance '{}' (expected a value in µm)", toks[2]));
+        }
+        a.zip(by).map(|(a, by)| LayerExpr::Size { a, by })
+    } else {
+        errs.push(format!("unknown operator '{}' (expected and, or, not, xor or size)", toks[1]));
+        None
+    };
+    match expr {
+        Some(expr) if errs.is_empty() => Ok(DerivedLayer { name: name.to_string(), expr }),
+        _ => Err(errs),
+    }
+}
+
+fn parse_line(line: &str, names: &[String], tech: &Tech) -> Result<NamedRule, Vec<String>> {
     let (name, body) = match line.split_once(':') {
         Some((n, b)) => {
             let n = n.trim();
@@ -242,9 +372,8 @@ fn parse_line(line: &str, tech: &Tech) -> Result<NamedRule, Vec<String>> {
     let mut errs = Vec::new();
     let mut layers = Vec::new();
     for t in &toks[1..=n_layers] {
-        match tech.layer_index(t) {
-            Some(l) => layers.push(l),
-            None => errs.push(format!("unknown layer '{t}'")),
+        if let Some(l) = lookup(names, t, &mut errs) {
+            layers.push(l);
         }
     }
     let num = toks[n_layers + 1];
@@ -263,7 +392,7 @@ fn parse_line(line: &str, tech: &Tech) -> Result<NamedRule, Vec<String>> {
         "enclosure" => Rule::Enclosure { inner: layers[0], outer: layers[1], min },
         _ => Rule::Extension { a: layers[0], b: layers[1], min },
     };
-    let name = name.unwrap_or_else(|| rule.auto_name(tech));
+    let name = name.unwrap_or_else(|| rule.auto_name(names));
     Ok(NamedRule { name, rule })
 }
 
@@ -316,10 +445,18 @@ pub fn run_tech_deck(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Resul
 pub fn run(deck: &Deck, top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> DrcReport {
     let start = Instant::now();
     let n = tech.layers.len();
-    let mut used = vec![false; n];
+    let total = n + deck.derived.len();
+    let mut used = vec![false; total];
     for l in deck.rules.iter().flat_map(|r| r.rule.layers()) {
-        if l < n {
+        if l < total {
             used[l] = true;
+        }
+    }
+    for (k, d) in deck.derived.iter().enumerate().rev() {
+        if used[n + k] {
+            for l in d.expr.inputs().into_iter().filter(|&l| l < total) {
+                used[l] = true;
+            }
         }
     }
     let mut rects: Vec<Vec<IRect>> = vec![Vec::new(); n];
@@ -339,24 +476,29 @@ pub fn run(deck: &Deck, top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Dr
             },
         }
     }
-    let regions = par_map(&rects, |r| Region::from_rects(r.iter().copied()));
+    let mut regions = par_map(&rects, |r| Region::from_rects(r.iter().copied()));
+    for (k, d) in deck.derived.iter().enumerate() {
+        let r = if used[n + k] { d.expr.eval(&regions) } else { Region::default() };
+        regions.push(r);
+    }
     let empty = Region::default();
     let layer = |l: usize| regions.get(l).unwrap_or(&empty);
     let results = par_map(&deck.rules, |nr| check(&nr.rule, &layer).parts());
 
+    let names = deck.layer_names(tech);
     let mut report = DrcReport { rules_run: deck.rules.len(), shapes, skipped, ..Default::default() };
     for (nr, parts) in deck.rules.iter().zip(results) {
         if parts.len() > MAX_VIOLATIONS_PER_RULE {
             report.capped.push((nr.name.clone(), parts.len()));
         }
-        let description = nr.rule.description(tech);
+        let description = nr.rule.description(tech, &names);
         let checked = nr.rule.checked_layer();
         for p in parts.iter().take(MAX_VIOLATIONS_PER_RULE) {
             if let Some(marker) = p.bbox() {
                 report.violations.push(Violation {
                     rule: nr.name.clone(),
                     description: description.clone(),
-                    layer: Some(checked),
+                    layer: (checked < n).then_some(checked),
                     marker,
                 });
             }
@@ -658,6 +800,73 @@ mod tests {
     }
 
     #[test]
+    fn derived_layers() {
+        let t = tech();
+        let tee = layout(&[("active", (0, 0, 1500, 1000)), ("poly", (600, -220, 780, 1220))]);
+        let rep = run(&parse_deck("gate = poly and active\nwidth gate 0.3", &t).unwrap(), &tee, &NoCells, &t);
+        assert_eq!(rep.violations.len(), 1);
+        let v = &rep.violations[0];
+        assert_eq!((v.rule.as_str(), v.description.as_str()), ("gate.W", "gate width < 0.3 µm"));
+        assert_eq!((v.marker, v.layer), (r(600, 0, 780, 1000), None));
+
+        assert_eq!(markers("sd = ACTIVE NOT poly\narea sd 0.7", &tee), [r(0, 0, 600, 1000)]);
+        assert_eq!(markers("x = poly xor active\narea x 0.05", &tee), [r(600, -220, 780, 0), r(600, 1000, 780, 1220)]);
+
+        let pair = layout(&[("metal1", (0, 0, 500, 1000)), ("metal1", (900, 0, 1500, 1000))]);
+        assert!(markers("space metal1 0.3", &pair).is_empty());
+        assert_eq!(markers("big = metal1 size 0.1\nspace big 0.3", &pair), [r(600, -100, 800, 1100)]);
+        let shrunk = "core = metal1 size -0.2\narea core 0.1";
+        assert_eq!(markers(shrunk, &pair), [r(200, 200, 300, 800)]);
+        let chain = "g = poly and active\ngg = g or metal1\nwide = gg size 0.1\nwidth wide 0.35";
+        assert!(markers(chain, &tee).is_empty());
+        assert_eq!(markers(chain, &layout(&[("metal1", (0, 0, 100, 5000))])), [r(-100, -100, 200, 5100)]);
+
+        let deck = parse_deck("gate = poly and active\nwide = gate size -0.05\nwidth wide 1", &t).unwrap();
+        let names = deck.layer_names(&t);
+        let text: String = deck
+            .derived
+            .iter()
+            .map(|d| d.deck_line(&t, &names))
+            .chain(deck.rules.iter().map(|r| r.rule.deck_line(&t, &names)))
+            .map(|l| l + "\n")
+            .collect();
+        assert_eq!(text, "gate = poly and active\nwide = gate size -0.05\nwidth wide 1\n");
+        assert_eq!(parse_deck(&text, &t).unwrap(), deck);
+        assert_eq!(deck.rules[0].rule, Rule::Width { layer: t.layers.len() + 1, min: 1000 });
+
+        let bad = "width g 1\ng = poly and active\npoly = metal1 or metal2\nx = poly nand active\ny = poly size abc\nz = poly and\na b = poly and active\nw = nope or poly\nG = metal1 and metal2";
+        let errs = parse_deck(bad, &t).unwrap_err();
+        let got: Vec<(usize, &str)> = errs.iter().map(|e| (e.line, e.message.as_str())).collect();
+        assert_eq!(
+            got,
+            [
+                (1, "unknown layer 'g'"),
+                (3, "layer 'poly' is already defined"),
+                (4, "unknown operator 'nand' (expected and, or, not, xor or size)"),
+                (5, "bad distance 'abc' (expected a value in µm)"),
+                (6, "expected 'z = LAYER and|or|not|xor LAYER' or 'z = LAYER size DIST'"),
+                (7, "invalid layer name 'a b'"),
+                (8, "unknown layer 'nope'"),
+                (9, "layer 'G' is already defined"),
+            ]
+        );
+    }
+
+    #[test]
+    fn derived_rules_on_demo_cells() {
+        let p = crate::examples::demo_project();
+        let deck = "gate = poly and active\nwidth gate 0.18\npdiff = active and pplus\nenclosure pdiff nwell 0.43\n\
+                    ndiff = active and nplus\nseparation nwell ndiff 0.43\nsd = active not poly\narea sd 0.1";
+        let d = parse_deck(deck, &p.tech).unwrap();
+        for cell in ["cmos_inverter", "nand2", "nor2", "ring_osc5", "current_mirror", "ota5t"] {
+            let lay = p.layout(&CellRef::new("work", cell)).unwrap();
+            let rep = run(&d, lay, &p, &p.tech);
+            let found: Vec<String> = rep.violations.iter().map(|v| format!("{} {:?}", v.rule, v.marker)).collect();
+            assert!(found.is_empty(), "{cell}: {found:#?}");
+        }
+    }
+
+    #[test]
     fn deck_parsing() {
         let t = tech();
         let d =
@@ -693,7 +902,8 @@ mod tests {
             name: "poly.EX.active".into(),
             rule: Rule::Extension { a: li("poly"), b: li("active"), min: 220 }
         }));
-        let lines: String = deck.rules.iter().map(|r| r.rule.deck_line(&t) + "\n").collect();
+        let names = deck.layer_names(&t);
+        let lines: String = deck.rules.iter().map(|r| r.rule.deck_line(&t, &names) + "\n").collect();
         assert_eq!(parse_deck(&lines, &t).unwrap(), deck);
         assert_eq!(t.deck_text(), text);
         let custom = Tech { drc_deck: Some("width metal1 1".into()), ..t };
