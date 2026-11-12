@@ -1001,6 +1001,86 @@ pub fn pixel_array(tech: &Tech, lib: &str) -> Cell {
     layout_cell("pixel_array", "8 x 8 image sensor array of 3T pixels (AREF)", r.finish())
 }
 
+/// A cell whose layout is made by the automatic flow from a SPICE deck: the deck is imported as a
+/// schematic, the devices are placed from it (`sdl`) and every net is maze-routed (`route`).
+fn auto_pnr_cell(p: &mut Project, name: &str, description: &str, deck: &str) -> Cell {
+    let imported = crate::spice_import::import(deck, &p.tech).expect("demo deck");
+    let mut sim = SimSetup::default();
+    imported.apply_to(&mut sim);
+    let sch = imported.schematic;
+    let plan = crate::sdl::plan(&sch, &p.tech);
+    let mut lay = Layout::default();
+    crate::sdl::apply(p, &mut lay, &plan).expect("placement");
+    let rep = crate::route::route(&sch, &mut lay, p, &p.tech).expect("routing");
+    assert!(rep.failed.is_empty(), "{name}: {}", rep.summary());
+    full_flow_cell(name, description, sch, lay, sim)
+}
+
+/// 28-transistor mirror full adder with inverted outputs buffered, placed and routed
+/// automatically from its netlist.
+pub fn full_adder(p: &mut Project) -> Cell {
+    const DECK: &str = "\
+* carry: cob = !(a b + ci (a + b))
+MP1 n1 a vdd vdd pmos w=2u l=180n
+MP2 n1 b vdd vdd pmos w=2u l=180n
+MP3 cob ci n1 vdd pmos w=2u l=180n
+MP4 n2 a vdd vdd pmos w=2u l=180n
+MP5 cob b n2 vdd pmos w=2u l=180n
+MN1 n3 a 0 0 nmos w=1u l=180n
+MN2 n3 b 0 0 nmos w=1u l=180n
+MN3 cob ci n3 0 nmos w=1u l=180n
+MN4 n4 a 0 0 nmos w=1u l=180n
+MN5 cob b n4 0 nmos w=1u l=180n
+* sum: sb = !(a b ci + cob (a + b + ci))
+MP6 n5 a vdd vdd pmos w=2u l=180n
+MP7 n5 b vdd vdd pmos w=2u l=180n
+MP8 n5 ci vdd vdd pmos w=2u l=180n
+MP9 sb cob n5 vdd pmos w=2u l=180n
+MP10 n6 a vdd vdd pmos w=2u l=180n
+MP11 n7 b n6 vdd pmos w=2u l=180n
+MP12 sb ci n7 vdd pmos w=2u l=180n
+MN6 n8 a 0 0 nmos w=1u l=180n
+MN7 n8 b 0 0 nmos w=1u l=180n
+MN8 n8 ci 0 0 nmos w=1u l=180n
+MN9 sb cob n8 0 nmos w=1u l=180n
+MN10 n9 a 0 0 nmos w=1u l=180n
+MN11 n10 b n9 0 nmos w=1u l=180n
+MN12 sb ci n10 0 nmos w=1u l=180n
+* output inverters
+MP13 co cob vdd vdd pmos w=2u l=180n
+MN13 co cob 0 0 nmos w=1u l=180n
+MP14 s sb vdd vdd pmos w=2u l=180n
+MN14 s sb 0 0 nmos w=1u l=180n
+VDD vdd 0 dc 1.8
+VA a 0 pulse(0 1.8 0 50p 50p 0.95n 2n)
+VB b 0 pulse(0 1.8 0 50p 50p 1.95n 4n)
+VCI ci 0 pulse(0 1.8 0 50p 50p 3.95n 8n)
+.tran 10p 8n
+";
+    auto_pnr_cell(p, "full_adder", "28T mirror full adder, placed and routed automatically (DRC / LVS clean)", DECK)
+}
+
+/// Two-stage OTA: NMOS input pair with PMOS mirror load and a PMOS common-source second stage.
+/// Placement matches the pair and the mirror (common centroid); every net is routed automatically.
+pub fn ota2s(p: &mut Project) -> Cell {
+    const DECK: &str = "\
+M1 x inp tail 0 nmos w=4u l=500n
+M2 o1 inn tail 0 nmos w=4u l=500n
+M3 x x vdd vdd pmos w=8u l=500n
+M4 o1 x vdd vdd pmos w=8u l=500n
+M5 tail vb 0 0 nmos w=4u l=1u
+M6 out o1 vdd vdd pmos w=16u l=500n
+M7 out vb 0 0 nmos w=4u l=1u
+VDD vdd 0 dc 1.8
+VINP inp 0 dc 0.9 ac 1
+VINN inn 0 dc 0.9
+VB vb 0 dc 0.65
+.op
+.ac dec 20 1k 10g
+";
+    auto_pnr_cell(p, "ota2s", "Two-stage OTA, matched placement and automatic routing (DRC / LVS clean)", DECK)
+}
+
 pub fn demo_project() -> Project {
     let mut p = Project::new("demo");
     p.description = "Example designs shipped with IC Studio".into();
@@ -1008,7 +1088,7 @@ pub fn demo_project() -> Project {
     for c in [cmos_inverter(), rc_lowpass(), diode_clipper()].into_iter().chain(hier) {
         p.add_cell("work", c).expect("unique");
     }
-    for make in [nand2, nor2, ring_osc5, current_mirror, ota5t, sram6t, aps3t] {
+    for make in [nand2, nor2, ring_osc5, current_mirror, ota5t, sram6t, aps3t, full_adder, ota2s] {
         let c = make(&mut p);
         p.add_cell("work", c).expect("unique");
     }
@@ -1036,6 +1116,12 @@ mod tests {
     use crate::sdl::ratsnest;
 
     fn full_flow(name: &str) {
+        flow(name, true);
+    }
+
+    /// DRC, extraction, LVS, flylines and netlist checks; `whole` when every device is placed as
+    /// one layout device (no matched units or dummies).
+    fn flow(name: &str, whole: bool) {
         let p = demo_project();
         let cell = p.cell(&CellRef::new("work", name)).expect("demo cell");
         let (sch, lay) = (cell.schematic.as_ref().unwrap(), cell.layout.as_ref().unwrap());
@@ -1045,10 +1131,12 @@ mod tests {
         assert!(x.warnings.is_empty(), "{name}: {:?}", x.warnings);
         let r = compare(sch, &x, &LvsOptions::for_tech(&p.tech));
         assert!(r.matched, "{name}: {:#?}", r.errors);
-        assert_eq!(
-            r.layout_devices,
-            sch.instances.iter().filter(|i| matches!(i.kind, DeviceKind::Nmos | DeviceKind::Pmos)).count()
-        );
+        let mos = sch.instances.iter().filter(|i| matches!(i.kind, DeviceKind::Nmos | DeviceKind::Pmos)).count();
+        if whole {
+            assert_eq!(r.layout_devices, mos);
+        } else {
+            assert!(r.layout_devices > mos, "{name}: {} layout devices", r.layout_devices);
+        }
         let fl = ratsnest(sch, lay, &p, &p.tech);
         assert!(fl.is_empty(), "{name}: {fl:?}");
         let nl = crate::netlist::netlist_for(sch, &p.tech, "");
@@ -1078,6 +1166,16 @@ mod tests {
     #[test]
     fn ota5t_full_flow() {
         full_flow("ota5t");
+    }
+
+    #[test]
+    fn full_adder_full_flow() {
+        full_flow("full_adder");
+    }
+
+    #[test]
+    fn ota2s_full_flow() {
+        flow("ota2s", false);
     }
 
     #[test]

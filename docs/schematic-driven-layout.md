@@ -22,6 +22,20 @@ shows the connections still to be made as flylines, and routes them.
 Each step can be undone with `Ctrl+Z`. The console lists what was placed, skipped,
 matched and routed.
 
+## Demo: auto P&R
+
+The demo cells `full_adder` (28 transistors) and `ota2s` (two-stage OTA with a
+common-centroid input pair and mirror) have layouts made only by this flow, with no
+hand-drawn geometry. To watch it run:
+
+1. Open the demo project and click `full_adder` (or `ota2s`) in the Explorer.
+2. In the layout, select everything (`Ctrl+A`) and press `Delete`.
+3. Choose **Verify > Generate Layout from Schematic**, then **Verify > Route Flylines**.
+4. Run DRC and LVS: both are clean.
+
+From the command line, `ics route <project> full_adder --place` does step 3 on a cell
+whose layout has been cleared.
+
 ## Placement
 
 - Each NMOS and PMOS becomes a PCell instance named after the schematic device (`M1`).

@@ -146,6 +146,11 @@ fn layout_routed() {
 }
 
 #[test]
+fn layout_auto_pnr() {
+    scenario_then("16_layout_auto_pnr", true, Some("full_adder"), "layout", false, Some(Command::RunLvs));
+}
+
+#[test]
 fn layout_pcells() {
     scenario("10_layout_pcells", true, Some("devices"), "layout", false);
 }

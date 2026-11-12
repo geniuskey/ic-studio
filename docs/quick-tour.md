@@ -26,6 +26,8 @@ use the generic 180 nm technology.
 | `sram_array` | 8 x 8 array of `sram6t` |
 | `aps3t` | 3T image sensor pixel, DRC and LVS clean: transient reset and integration |
 | `pixel_array` | 8 x 8 array of `aps3t` |
+| `full_adder` | 28T mirror full adder, placed and routed automatically: transient over all input combinations |
+| `ota2s` | Two-stage OTA, auto P&R with matched placement: about 80 dB open-loop gain in AC |
 | `inv_chain` | Four placed `cmos_inverter` instances |
 | `inv_array` | 16 x 8 array of inverters |
 | `inv_tiles` | 8 x 8 array of `inv_array`: 8192 inverters, two levels of hierarchy |

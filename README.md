@@ -142,12 +142,14 @@ ics lvs myproj cmos_inverter                            # non-zero exit on diffe
 | `sram_array` | 8 × 8 array (AREF) of `sram6t` with labelled word lines, bit lines and supply straps |
 | `aps3t` | 3T image sensor pixel (reset, source follower, row select) over an n+ / p-sub photodiode, DRC and LVS clean; transient reset and integration |
 | `pixel_array` | 8 × 8 pixel array (AREF) of `aps3t` with labelled reset / select rows and column lines |
+| `full_adder` | 28T mirror full adder, placed and routed automatically from its netlist (no hand-drawn layout), DRC and LVS clean; transient over all eight input combinations |
+| `ota2s` | Two-stage OTA, auto P&R: common-centroid input pair and mirror with dummies, every net maze-routed, DRC and LVS clean; about 80 dB open-loop gain in AC |
 | `inv_chain` | Four placed `cmos_inverter` instances |
 | `inv_array` | 16 × 8 array (AREF) of inverters |
 | `inv_tiles` | 8 × 8 array of `inv_array`: 8192 inverters, two levels of hierarchy |
 | `devices` | One instance of every PCell (NMOS, PMOS, poly resistor, MOM capacitor) |
 
-The routed cells (`nand2`, `nor2`, `ring_osc5`, `current_mirror`, `ota5t`, `sram6t`, `aps3t`) run the whole
+The routed cells (`nand2`, `nor2`, `ring_osc5`, `current_mirror`, `ota5t`, `sram6t`, `aps3t`, `full_adder`, `ota2s`) run the whole
 flow: simulate the schematic, open the layout, run DRC and LVS, and simulate again with
 `--parasitics`.
 
