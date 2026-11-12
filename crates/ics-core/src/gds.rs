@@ -7,7 +7,7 @@ use crate::geom::IRect;
 use crate::hier::{LayoutSource, descendants};
 use crate::layout::{ArraySpec, Geometry, Layout, Trans};
 use crate::project::{CellRef, valid_name};
-use crate::tech::Tech;
+use crate::tech::{LayerDef, Tech};
 
 const HEADER: u16 = 0x0002;
 const BGNLIB: u16 = 0x0102;
@@ -255,6 +255,11 @@ pub fn write_gds_hier(lib_name: &str, src: &dyn LayoutSource, tops: &[CellRef], 
 pub struct GdsImport {
     pub cells: Vec<(String, Layout)>,
     pub skipped_unknown_layers: usize,
+    /// Layers created for unknown (layer, datatype) pairs (see [`ReadOptions`]); shapes refer
+    /// to the `k`-th as layer index `new_layer_base + k`.
+    pub new_layers: Vec<LayerDef>,
+    /// `tech.layers.len()` of the technology passed to the reader.
+    pub new_layer_base: usize,
     pub dbu_meters: f64,
     pub warnings: Vec<String>,
 }
@@ -336,10 +341,24 @@ struct El {
     colrow: (u16, u16),
 }
 
-/// Parse a GDSII stream. Shapes on layers unknown to `tech` are skipped; instances refer to
-/// cells of library `lib` by their structure name as found in the file.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ReadOptions {
+    /// Turn every (layer, datatype) pair `tech` does not define into a new layer instead of
+    /// skipping its shapes. Datatypes are then matched exactly (no fallback to datatype 0).
+    pub add_unknown_layers: bool,
+}
+
+/// [`read_gds_with`] with default options: shapes on unknown layers are skipped.
 pub fn read_gds(data: &[u8], tech: &Tech, lib: &str) -> Result<GdsImport, String> {
-    let mut out = GdsImport::default();
+    read_gds_with(data, tech, lib, ReadOptions::default())
+}
+
+/// Parse a GDSII stream. Shapes are mapped to `tech` layers by (layer, datatype), falling back
+/// to datatype 0; unmatched ones are skipped or, with [`ReadOptions::add_unknown_layers`], put
+/// on new layers. Instances refer to cells of library `lib` by their structure name.
+pub fn read_gds_with(data: &[u8], tech: &Tech, lib: &str, opts: ReadOptions) -> Result<GdsImport, String> {
+    let mut out = GdsImport { new_layer_base: tech.layers.len(), ..GdsImport::default() };
+    let mut new_index: HashMap<(u16, u16), usize> = HashMap::new();
     let mut i = 0usize;
     let mut cur: Option<(String, Layout)> = None;
     let mut el = El::default();
@@ -440,9 +459,20 @@ pub fn read_gds(data: &[u8], tech: &Tech, lib: &str) -> Result<GdsImport, String
                 if el.kind == NODE {
                     continue;
                 }
-                let Some(layer) = tech.layer_by_gds(el.layer, el.dt).or_else(|| tech.layer_by_gds(el.layer, 0)) else {
-                    out.skipped_unknown_layers += 1;
-                    continue;
+                let layer = if opts.add_unknown_layers {
+                    tech.layer_by_gds(el.layer, el.dt).unwrap_or_else(|| {
+                        *new_index.entry((el.layer, el.dt)).or_insert_with(|| {
+                            let k = out.new_layers.len();
+                            out.new_layers.push(LayerDef::generated(el.layer, el.dt, tech.layers.len() + k));
+                            tech.layers.len() + k
+                        })
+                    })
+                } else {
+                    let Some(l) = tech.layer_by_gds(el.layer, el.dt).or_else(|| tech.layer_by_gds(el.layer, 0)) else {
+                        out.skipped_unknown_layers += 1;
+                        continue;
+                    };
+                    l
                 };
                 let geom = match el.kind {
                     BOUNDARY | BOX => {
@@ -498,6 +528,7 @@ fn as_rect(pts: &[(i64, i64)]) -> Option<IRect> {
 mod tests {
     use super::*;
     use crate::hier::flatten;
+    use crate::tech::FillStyle;
 
     #[test]
     fn real8_roundtrip() {
@@ -527,6 +558,44 @@ mod tests {
         assert!(matches!(&shapes[2].geom, Geometry::Label { text, .. } if text == "out"));
         assert!(matches!(&shapes[3].geom, Geometry::Polygon { points } if points.len() == 5));
         assert!(imp.warnings.is_empty());
+    }
+
+    #[test]
+    fn unknown_layers_become_new_layers() {
+        let generic = Tech::generic();
+        let mut tech = generic.clone();
+        tech.layers.push(LayerDef { name: "pad".into(), gds_layer: 99, ..tech.layers[0].clone() });
+        tech.layers.push(LayerDef { name: "m1pin".into(), gds_layer: 7, gds_datatype: 16, ..tech.layers[0].clone() });
+        let (pad, pin) = (generic.layers.len(), generic.layers.len() + 1);
+        let mut l = Layout::default();
+        l.add_rect(6, 0, 0, 100, 100);
+        l.add_rect(pad, 0, 0, 5000, 5000);
+        l.add_rect(pin, 10, 10, 20, 20);
+        l.add(pad, Geometry::Label { text: "PAD".into(), at: (0, 0), size: 200 });
+        let top = CellRef::new("lib", "top");
+        let bytes = write_gds("lib", &[(&top, &l)], &tech);
+
+        let skip = read_gds(&bytes, &generic, "lib").unwrap();
+        assert_eq!(skip.skipped_unknown_layers, 2);
+        assert!(skip.new_layers.is_empty());
+        let layers: Vec<usize> = skip.cells[0].1.shapes.iter().map(|s| s.layer).collect();
+        assert_eq!(layers, [6, 6], "without the option 7/16 falls back to 7/0");
+
+        let imp = read_gds_with(&bytes, &generic, "lib", ReadOptions { add_unknown_layers: true }).unwrap();
+        assert_eq!(imp.skipped_unknown_layers, 0);
+        let new: Vec<(&str, u16, u16)> = imp.new_layers.iter().map(|d| (d.name.as_str(), d.gds_layer, d.gds_datatype)).collect();
+        assert_eq!(new, [("L99D0", 99, 0), ("L7D16", 7, 16)]);
+        assert_ne!(imp.new_layers[0].color, imp.new_layers[1].color);
+        assert!(imp.new_layers.iter().all(|d| d.fill == FillStyle::Hatch));
+        let shapes = &imp.cells[0].1.shapes;
+        let layers: Vec<usize> = shapes.iter().map(|s| s.layer).collect();
+        assert_eq!(layers, [6, pad, pin, pad]);
+        assert_eq!(shapes[1].geom, Geometry::Rect(IRect::new(0, 0, 5000, 5000)));
+
+        let mut merged = generic.clone();
+        merged.layers.extend(imp.new_layers.iter().cloned());
+        let again = write_gds("lib", &[(&top, &imp.cells[0].1)], &merged);
+        assert_eq!(again, bytes, "round trip through the new layers is lossless");
     }
 
     fn hier_lib() -> (HashMap<CellRef, Layout>, CellRef) {

@@ -80,13 +80,25 @@ enum Cmd {
     Extract { project: PathBuf, cell: String },
     /// Compare a cell's layout with its schematic (non-zero exit on differences).
     Lvs { project: PathBuf, cell: String },
-    /// Import a GDSII file as a new library.
+    /// Import a GDSII file as a new library. Layers the technology lacks are added to it.
     ImportGds {
         project: PathBuf,
         file: PathBuf,
         /// Library name (defaults to the file name; made unique).
         #[arg(long)]
         lib: Option<String>,
+        /// Skip shapes on layers the technology does not define instead of adding the layers.
+        #[arg(long)]
+        skip_unknown_layers: bool,
+    },
+    /// Replace the technology with the layers of a KLayout layer properties file (.lyp).
+    /// Layout shapes keep their GDS layer/datatype; layers missing from the file are kept.
+    ImportTech {
+        project: PathBuf,
+        lyp: PathBuf,
+        /// KLayout technology file (.lyt) supplying the name and database unit.
+        #[arg(long)]
+        lyt: Option<PathBuf>,
     },
 }
 
@@ -322,11 +334,13 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             println!("LVS: layout matches schematic");
         }
-        Cmd::ImportGds { project, file, lib } => {
+        Cmd::ImportGds { project, file, lib, skip_unknown_layers } => {
             let mut p = Project::open(&project).map_err(|e| e.to_string())?;
             let data = std::fs::read(&file).map_err(|e| format!("{}: {e}", file.display()))?;
-            let imp = ics_core::gds::read_gds(&data, &p.tech, "gds")?;
+            let opts = ics_core::gds::ReadOptions { add_unknown_layers: !skip_unknown_layers };
+            let imp = ics_core::gds::read_gds_with(&data, &p.tech, "gds", opts)?;
             let (skipped, warnings) = (imp.skipped_unknown_layers, imp.warnings.clone());
+            let layers_before = p.tech.layers.len();
             let hint = lib.unwrap_or_else(|| file.file_stem().map_or("gds".into(), |s| s.to_string_lossy().to_string()));
             let (name, tops) = p.add_gds_library(&hint, imp)?;
             p.save().map_err(|e| e.to_string())?;
@@ -334,9 +348,28 @@ fn run(cli: Cli) -> Result<(), String> {
             println!("library {name}: {n} cells");
             let tops: Vec<&str> = tops.iter().map(|t| t.cell.as_str()).collect();
             println!("top cells: {}", tops.join(", "));
+            let added: Vec<&str> = p.tech.layers[layers_before..].iter().map(|l| l.name.as_str()).collect();
+            if !added.is_empty() {
+                println!("added {} layer(s) to the technology: {}", added.len(), added.join(", "));
+            }
             if skipped > 0 {
                 eprintln!("warning: {skipped} shape(s) on layers unknown to the technology were skipped");
             }
+            for w in &warnings {
+                eprintln!("warning: {w}");
+            }
+        }
+        Cmd::ImportTech { project, lyp, lyt } => {
+            let mut p = Project::open(&project).map_err(|e| e.to_string())?;
+            let read = |f: &PathBuf| std::fs::read_to_string(f).map_err(|e| format!("{}: {e}", f.display()));
+            let name = lyp.file_stem().map_or("tech".into(), |s| s.to_string_lossy().to_string());
+            let mut tech = ics_core::tech_import::from_lyp(&read(&lyp)?, &name).map_err(|e| format!("{}: {e}", lyp.display()))?;
+            if let Some(f) = &lyt {
+                ics_core::tech_import::apply_lyt(&mut tech, &read(f)?).map_err(|e| format!("{}: {e}", f.display()))?;
+            }
+            let warnings = p.set_tech(tech)?;
+            p.save().map_err(|e| e.to_string())?;
+            println!("technology {}: {} layers, {} dbu per µm", p.tech.name, p.tech.layers.len(), p.tech.dbu_per_um);
             for w in &warnings {
                 eprintln!("warning: {w}");
             }

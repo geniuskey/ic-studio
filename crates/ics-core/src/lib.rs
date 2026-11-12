@@ -21,6 +21,7 @@ pub mod schematic;
 pub mod sdl;
 pub mod sim_setup;
 pub mod tech;
+pub mod tech_import;
 pub mod units;
 
 pub use geom::{IRect, Orient, Pt};

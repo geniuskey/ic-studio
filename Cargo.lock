@@ -1707,6 +1707,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ics-mcp"
+version = "0.1.0"
+dependencies = [
+ "ics-core",
+ "ics-sim",
+ "serde_json",
+]
+
+[[package]]
 name = "ics-sim"
 version = "0.1.0"
 dependencies = [

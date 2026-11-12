@@ -83,6 +83,7 @@ pub enum Command {
     RunLvs,
     GenerateLayout,
     ImportGds,
+    ImportTech,
     ExportNetlist,
     ToggleTheme,
     ToggleConsole,
@@ -471,6 +472,7 @@ impl IcStudio {
             Command::ExportGds => self.export_gds(false),
             Command::ExportLibraryGds => self.export_gds(true),
             Command::ImportGds => self.import_gds(),
+            Command::ImportTech => self.import_tech(),
             Command::ExportNetlist => match self.netlist_active() {
                 Some((deck, _)) => {
                     let name = self.active.as_ref().map(|r| r.cell.clone()).unwrap_or_default();
@@ -719,7 +721,8 @@ impl IcStudio {
             }
         };
         let t0 = Instant::now();
-        let imp = match ics_core::gds::read_gds(&data, &p.tech, "gds") {
+        let opts = ics_core::gds::ReadOptions { add_unknown_layers: true };
+        let imp = match ics_core::gds::read_gds_with(&data, &p.tech, "gds", opts) {
             Ok(imp) => imp,
             Err(e) => {
                 self.error(format!("GDS import failed: {e}"));
@@ -727,6 +730,7 @@ impl IcStudio {
             }
         };
         let skipped = imp.skipped_unknown_layers;
+        let added = imp.new_layers.len();
         let warnings = imp.warnings.clone();
         let n = imp.cells.len();
         let stem = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
@@ -745,11 +749,35 @@ impl IcStudio {
                 if skipped > 0 {
                     self.warn(format!("{skipped} shape(s) on layers not in the technology were skipped"));
                 }
+                if added > 0 {
+                    self.warn(format!("{added} layer(s) not in the technology were added to it"));
+                }
                 if let Some(r) = tops.into_iter().next() {
                     self.queue.push(Command::OpenCell(r, Some(Workspace::Layout)));
                 }
             }
             Err(e) => self.error(format!("GDS import failed: {e}")),
+        }
+    }
+
+    fn import_tech(&mut self) {
+        let Some(p) = self.project.as_mut() else { return };
+        let Some(path) = rfd::FileDialog::new().add_filter("KLayout layer properties", &["lyp"]).pick_file() else { return };
+        let name = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+        let tech = std::fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|xml| ics_core::tech_import::from_lyp(&xml, &name))
+            .and_then(|t| p.set_tech(t).map(|w| (w, p.tech.layers.len())));
+        match tech {
+            Ok((warnings, layers)) => {
+                self.hier.clear();
+                self.mark_dirty();
+                self.ok(format!("Technology '{name}' imported from {} ({layers} layers)", path.display()));
+                for w in warnings {
+                    self.warn(format!("Technology: {w}"));
+                }
+            }
+            Err(e) => self.error(format!("Cannot import {}: {e}", path.display())),
         }
     }
 
@@ -832,6 +860,9 @@ impl IcStudio {
                 ui.menu_button("Import", |ui| {
                     if ui.add_enabled(has_project, egui::Button::new("GDSII…")).clicked() {
                         q.push(Command::ImportGds);
+                    }
+                    if ui.add_enabled(has_project, egui::Button::new("KLayout layer properties…")).clicked() {
+                        q.push(Command::ImportTech);
                     }
                 });
                 ui.menu_button("Export", |ui| {
@@ -1554,6 +1585,7 @@ impl IcStudio {
             ("Export cell GDSII…".into(), "", Command::ExportGds),
             ("Export library GDSII…".into(), "", Command::ExportLibraryGds),
             ("Import GDSII…".into(), "", Command::ImportGds),
+            ("Import technology (KLayout .lyp)…".into(), "", Command::ImportTech),
             ("Export SPICE netlist…".into(), "", Command::ExportNetlist),
             ("Toggle light / dark theme".into(), "", Command::ToggleTheme),
             ("Toggle console".into(), "⌘J", Command::ToggleConsole),

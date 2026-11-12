@@ -17,11 +17,11 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::gds::{GdsImport, sanitize_name, unique_name};
-use crate::layout::Layout;
+use crate::layout::{Geometry, Layout};
 use crate::pcell::{PCELL_LIB, PCell};
 use crate::schematic::Schematic;
 use crate::sim_setup::SimSetup;
-use crate::tech::Tech;
+use crate::tech::{LayerDef, Tech};
 
 pub const MANIFEST: &str = "ic-studio.json";
 pub const FORMAT_VERSION: u32 = 1;
@@ -242,7 +242,8 @@ impl Project {
     }
 
     /// Add the cells of a GDS import as a new library named after `name_hint` (made valid and
-    /// unique). Returns the library name and the top cells of the import.
+    /// unique). The import's `new_layers` are appended to the technology unless a layer with
+    /// the same GDS numbers exists. Returns the library name and the top cells of the import.
     pub fn add_gds_library(
         &mut self,
         name_hint: &str,
@@ -250,6 +251,18 @@ impl Project {
     ) -> std::result::Result<(String, Vec<CellRef>), String> {
         if imp.cells.is_empty() {
             return Err("the GDS file contains no cells".into());
+        }
+        let base = imp.new_layer_base;
+        let new_layers: Vec<usize> = std::mem::take(&mut imp.new_layers)
+            .into_iter()
+            .map(|d| self.tech.layer_by_gds(d.gds_layer, d.gds_datatype).unwrap_or_else(|| push_layer(&mut self.tech, d)))
+            .collect();
+        for (_, l) in &mut imp.cells {
+            for s in &mut l.shapes {
+                if let Some(&to) = s.layer.checked_sub(base).and_then(|k| new_layers.get(k)) {
+                    s.layer = to;
+                }
+            }
         }
         let mut used: HashSet<String> = self.libraries.iter().map(|l| l.name.to_ascii_lowercase()).collect();
         let lib = unique_name(&sanitize_name(name_hint), &mut used);
@@ -263,6 +276,75 @@ impl Project {
         cells.sort_by(|a, b| a.name.cmp(&b.name));
         self.libraries.push(Library { name: lib.clone(), cells });
         Ok((lib, tops))
+    }
+
+    /// Replace the technology, moving every layout shape to the new layer with the same
+    /// (GDS layer, datatype), else the same name. Layers in use without a match are appended
+    /// to the new technology so no shape is lost. When the database unit changes, all layout
+    /// coordinates are rescaled to keep their physical size. Returns warnings.
+    pub fn set_tech(&mut self, mut tech: Tech) -> std::result::Result<Vec<String>, String> {
+        if tech.dbu_per_um <= 0 {
+            return Err(format!("invalid database unit: {} dbu per µm", tech.dbu_per_um));
+        }
+        let mut used: Vec<bool> = vec![false; self.tech.layers.len()];
+        let mut undefined = 0usize;
+        for l in self.libraries.iter().flat_map(|l| &l.cells).filter_map(|c| c.layout.as_ref()) {
+            for s in &l.shapes {
+                match used.get_mut(s.layer) {
+                    Some(u) => *u = true,
+                    None => undefined += 1,
+                }
+            }
+        }
+        let mut warnings = vec![];
+        let mut map: Vec<Option<usize>> = vec![None; used.len()];
+        for (i, old) in self.tech.layers.iter().enumerate().filter(|&(i, _)| used[i]) {
+            let to = match tech.layer_by_gds(old.gds_layer, old.gds_datatype) {
+                Some(to) => to,
+                None => match tech.layer_index(&old.name) {
+                    Some(to) => {
+                        let n = &tech.layers[to];
+                        warnings.push(format!(
+                            "layer {} matched by name: GDS {}/{} becomes {}/{}",
+                            old.name, old.gds_layer, old.gds_datatype, n.gds_layer, n.gds_datatype
+                        ));
+                        to
+                    }
+                    None => {
+                        warnings.push(format!(
+                            "layer {} ({}/{}) is not in the new technology and was added to it",
+                            old.name, old.gds_layer, old.gds_datatype
+                        ));
+                        push_layer(&mut tech, old.clone())
+                    }
+                },
+            };
+            map[i] = Some(to);
+        }
+        if tech.layers.is_empty() {
+            return Err("the technology has no layers".into());
+        }
+        if undefined > 0 {
+            warnings.push(format!("{undefined} shape(s) on undefined layers were removed"));
+        }
+        let scale = (tech.dbu_per_um != self.tech.dbu_per_um).then(|| tech.dbu_per_um as f64 / self.tech.dbu_per_um as f64);
+        if let Some(f) = scale {
+            warnings.push(format!(
+                "database unit changed from {} to {} per µm: layout coordinates were scaled by {f}",
+                self.tech.dbu_per_um, tech.dbu_per_um
+            ));
+        }
+        for l in self.libraries.iter_mut().flat_map(|l| &mut l.cells).filter_map(|c| c.layout.as_mut()) {
+            l.shapes.retain(|s| s.layer < map.len());
+            for s in &mut l.shapes {
+                s.layer = map[s.layer].expect("used layers are mapped");
+            }
+            if let Some(f) = scale {
+                scale_layout(l, f);
+            }
+        }
+        self.tech = tech;
+        Ok(warnings)
     }
 
     /// Delete a cell from memory and (if saved) from disk.
@@ -385,6 +467,52 @@ impl Project {
     }
 }
 
+/// Append `layer` to `tech` (renamed `name_2`, `name_3`, ... if the name is taken); its index.
+fn push_layer(tech: &mut Tech, mut layer: LayerDef) -> usize {
+    let base = layer.name.clone();
+    let mut k = 1;
+    while tech.layer_index(&layer.name).is_some() {
+        k += 1;
+        layer.name = format!("{base}_{k}");
+    }
+    tech.layers.push(layer);
+    tech.layers.len() - 1
+}
+
+fn scale_layout(l: &mut Layout, f: f64) {
+    let s = |v: &mut i64| *v = (*v as f64 * f).round() as i64;
+    let p = |q: &mut (i64, i64)| {
+        s(&mut q.0);
+        s(&mut q.1);
+    };
+    for sh in &mut l.shapes {
+        match &mut sh.geom {
+            Geometry::Rect(r) => {
+                for v in [&mut r.x0, &mut r.y0, &mut r.x1, &mut r.y1] {
+                    s(v);
+                }
+            }
+            Geometry::Polygon { points } => points.iter_mut().for_each(p),
+            Geometry::Path { points, width } => {
+                points.iter_mut().for_each(p);
+                s(width);
+            }
+            Geometry::Label { at, size, .. } => {
+                p(at);
+                s(size);
+            }
+        }
+    }
+    for i in &mut l.instances {
+        s(&mut i.trans.x);
+        s(&mut i.trans.y);
+        if let Some(a) = i.array.as_mut() {
+            p(&mut a.col);
+            p(&mut a.row);
+        }
+    }
+}
+
 fn sync_view<T: Serialize>(path: &Path, view: Option<&T>) -> Result<()> {
     match view {
         Some(v) => write_json(path, v),
@@ -400,6 +528,7 @@ fn sync_view<T: Serialize>(path: &Path, view: Option<&T>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geom::IRect;
 
     #[test]
     fn save_and_reopen() {
@@ -443,6 +572,88 @@ mod tests {
         assert_eq!(q.tech, p.tech);
         assert_eq!(q.cell(&a).unwrap().pcell.as_ref(), Some(&nmos));
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn layer_gds(p: &Project, r: &CellRef) -> Vec<(u16, u16)> {
+        let l = p.cell(r).unwrap().layout.as_ref().unwrap();
+        l.shapes.iter().map(|s| &p.tech.layers[s.layer]).map(|d| (d.gds_layer, d.gds_datatype)).collect()
+    }
+
+    #[test]
+    fn set_tech_remaps_layers_by_gds_numbers() {
+        let mut p = crate::examples::demo_project();
+        let cells: Vec<CellRef> = p.all_cells().filter(|(_, c)| c.layout.is_some()).map(|(r, _)| r).collect();
+        assert!(!cells.is_empty());
+        let before: Vec<_> = cells.iter().map(|r| layer_gds(&p, r)).collect();
+        let shape_count =
+            |p: &Project| cells.iter().map(|r| p.cell(r).unwrap().layout.as_ref().unwrap().shapes.len()).sum::<usize>();
+        let n_before = shape_count(&p);
+
+        let mut t = Tech::generic();
+        t.name = "reordered".into();
+        t.layers.reverse();
+        let metal1 = t.layer_index("metal1").unwrap();
+        t.layers[metal1].name = "met1".into();
+        t.layers.retain(|l| l.name != "poly");
+        let contact = t.layer_index("contact").unwrap();
+        t.layers[contact].gds_layer = 66;
+        let warnings = p.set_tech(t).unwrap();
+        assert_eq!(p.tech.name, "reordered");
+        assert_eq!(shape_count(&p), n_before);
+        let poly = p.tech.layer_index("poly").expect("missing used layer is appended");
+        assert_eq!(poly, p.tech.layers.len() - 1);
+        assert!(warnings.iter().any(|w| w.starts_with("layer poly (5/0) is not in the new technology")), "{warnings:?}");
+        assert!(warnings.iter().any(|w| w.contains("contact matched by name: GDS 6/0 becomes 66/0")), "{warnings:?}");
+        for (r, b) in cells.iter().zip(&before) {
+            let after: Vec<(u16, u16)> = b.iter().map(|&(l, d)| if l == 6 { (66, d) } else { (l, d) }).collect();
+            assert_eq!(layer_gds(&p, r), after, "{r}");
+        }
+
+        let mut fine = p.tech.clone();
+        fine.dbu_per_um = 2000;
+        let r = &cells[0];
+        let rect = |p: &Project| {
+            let l = p.cell(r).unwrap().layout.as_ref().unwrap();
+            l.shapes.iter().find_map(|s| if let Geometry::Rect(r) = s.geom { Some(r) } else { None }).unwrap()
+        };
+        let b0 = rect(&p);
+        let warnings = p.set_tech(fine).unwrap();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(rect(&p), IRect::new(b0.x0 * 2, b0.y0 * 2, b0.x1 * 2, b0.y1 * 2));
+        assert!(p.set_tech(Tech { dbu_per_um: 0, ..Tech::generic() }).is_err());
+    }
+
+    #[test]
+    fn add_gds_library_appends_new_layers() {
+        use crate::gds::{ReadOptions, read_gds_with, write_gds};
+        let mut p = Project::new("g");
+        let n = p.tech.layers.len();
+        let mut src_tech = p.tech.clone();
+        src_tech.layers.push(LayerDef::generated(99, 0, 0));
+        src_tech.layers.push(LayerDef::generated(98, 3, 1));
+        let mut l = Layout::default();
+        l.add_rect(n, 0, 0, 10, 10);
+        l.add_rect(n + 1, 0, 0, 20, 20);
+        l.add_rect(0, 0, 0, 30, 30);
+        let top = CellRef::new("x", "top");
+        let bytes = write_gds("x", &[(&top, &l)], &src_tech);
+        let opts = ReadOptions { add_unknown_layers: true };
+
+        p.tech.layers.push(LayerDef { name: "L98D3".into(), ..LayerDef::generated(97, 0, 5) });
+        let imp = read_gds_with(&bytes, &Tech::generic(), "gds", opts).unwrap();
+        assert_eq!(imp.new_layers.len(), 2);
+        let (lib, _) = p.add_gds_library("chip", imp).unwrap();
+        let names: Vec<&str> = p.tech.layers[n..].iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, ["L98D3", "L99D0", "L98D3_2"]);
+        let r = CellRef::new(&lib, "top");
+        assert_eq!(layer_gds(&p, &r), [(99, 0), (98, 3), (1, 0)]);
+
+        let layers = p.tech.layers.len();
+        let imp = read_gds_with(&bytes, &p.tech, "gds", opts).unwrap();
+        assert!(imp.new_layers.is_empty());
+        let (lib2, _) = p.add_gds_library("chip", imp).unwrap();
+        assert_eq!(p.tech.layers.len(), layers, "known layers are not added again");
+        assert_eq!(layer_gds(&p, &CellRef::new(&lib2, "top")), [(99, 0), (98, 3), (1, 0)]);
     }
 
     #[test]

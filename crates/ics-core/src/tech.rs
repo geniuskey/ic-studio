@@ -35,6 +35,42 @@ pub struct LayerDef {
     pub routing: bool,
 }
 
+impl LayerDef {
+    /// Placeholder for a GDS layer without a definition: named `L{layer}D{datatype}`,
+    /// hatched, with the `k`-th colour of [`auto_color`].
+    pub fn generated(gds_layer: u16, gds_datatype: u16, k: usize) -> LayerDef {
+        LayerDef {
+            name: format!("L{gds_layer}D{gds_datatype}"),
+            gds_layer,
+            gds_datatype,
+            color: auto_color(k),
+            fill: FillStyle::Hatch,
+            min_width: 0,
+            min_spacing: 0,
+            routing: false,
+        }
+    }
+}
+
+/// The `k`-th of a sequence of well separated colours (golden-angle hue steps).
+pub fn auto_color(k: usize) -> [u8; 4] {
+    let h = (k as f64 * 137.508 + 20.0) % 360.0 / 60.0;
+    let (s, v) = (0.65, 0.95);
+    let c = v * s;
+    let x = c * (1.0 - (h % 2.0 - 1.0).abs());
+    let (r, g, b) = match h as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = v - c;
+    let u = |f: f64| ((f + m) * 255.0).round() as u8;
+    [u(r), u(g), u(b), 160]
+}
+
 /// A via / contact between two conducting layers, with its cut rules (dbu).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ViaDef {
