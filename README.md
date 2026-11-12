@@ -228,3 +228,11 @@ mouse input, and check accessibility labels and glyph coverage.
 - Resistor / capacitor recognition in LVS; incremental and hierarchical DRC
 - Non-Manhattan Boolean operations; guard rings around matched groups
 - Parametric sweeps, corners and optimisation loops
+
+## License
+
+Copyright (C) 2026 geniuskey
+
+IC Studio is free software: you can redistribute it and/or modify it under the terms of the
+GNU General Public License as published by the Free Software Foundation, either version 3 of
+the License, or (at your option) any later version. See [LICENSE](LICENSE).

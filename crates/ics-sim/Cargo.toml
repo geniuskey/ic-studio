@@ -2,6 +2,7 @@
 name = "ics-sim"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 
 [dependencies]
 ics-core = { version = "0.1.0", path = "../ics-core" }

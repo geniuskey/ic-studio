@@ -2,6 +2,7 @@
 name = "ics-mcp"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 description = "Model Context Protocol server for IC Studio projects"
 
 [dependencies]
