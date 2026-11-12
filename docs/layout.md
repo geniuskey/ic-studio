@@ -129,10 +129,14 @@ Parametric cells are generated from the technology and stored as ordinary cells 
 
 | PCell | Parameters | Defaults |
 |---|---|---|
-| `nmos` | W, L, fingers | W 1 µm, L 0.18 µm, 1 finger |
-| `pmos` | W, L, fingers | W 2 µm, L 0.18 µm, 1 finger |
+| `nmos` | W, L, fingers, device | W 1 µm, L 0.18 µm, 1 finger |
+| `pmos` | W, L, fingers, device | W 2 µm, L 0.18 µm, 1 finger |
 | `poly_res` | W, L | W 0.4 µm, L 5 µm |
 | `mom_cap` | W, H | 5 µm x 5 µm |
+
+**Device** appears when the technology is a PDK with several MOS devices of that polarity
+(for example low- and high-Vt variants): the PCell then draws that device's marker layers,
+and the variant name ends with the device name. The default is the PDK's first device.
 
 To place one, press `I`, choose the PCell in the left panel, set its parameters and click.
 To change a placed PCell, select it, edit the parameters in the **PCell** section of the

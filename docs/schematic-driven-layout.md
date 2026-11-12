@@ -26,7 +26,8 @@ matched and routed.
 
 - Each NMOS and PMOS becomes a PCell instance named after the schematic device (`M1`).
   W and L come from the device's `w` and `l` parameters; `m` multiplies the device.
-  Devices wider than 5 µm are split into fingers.
+  Devices wider than 5 µm are split into fingers. With a PDK, the schematic model selects
+  the PCell's device (and its marker layers, such as `lvtn` for a low-Vt model).
 - PMOS devices form a row above the NMOS row, gates facing the channel between the rows.
 - Neighbouring devices of the same type and width that share a source / drain net are
   abutted with shared diffusion.

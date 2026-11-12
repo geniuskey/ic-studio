@@ -727,7 +727,7 @@ M1 b in a sub nmos w=1u l=0.18u
     #[test]
     fn pcell_fingers() {
         let tech = Tech::generic();
-        let lay = PCell::Mos { pmos: false, w: 1000, l: 180, fingers: 2 }.generate(&tech).unwrap();
+        let lay = PCell::mos(false, 1000, 180, 2).generate(&tech).unwrap();
         let x = extract(&lay, &NoCells, &tech);
         assert_eq!(x.devices.len(), 2);
         assert!(x.devices.iter().all(|d| d.kind == DevKind::Nmos && d.w == 1000 && d.l == 180));

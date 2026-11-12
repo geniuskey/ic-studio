@@ -299,7 +299,13 @@ fn pcell_from(kind: &str, params: &Args, tech: &Tech) -> Result<PCell, String> {
             if fingers < 1.0 || fingers.fract() != 0.0 || fingers > 1000.0 {
                 return Err("parameter 'fingers' must be an integer from 1 to 1000".into());
             }
-            PCell::Mos { pmos, w: len("w", if pmos { 2.0 } else { 1.0 })?, l: len("l", 0.18)?, fingers: fingers as u32 }
+            PCell::Mos {
+                pmos,
+                w: len("w", if pmos { 2.0 } else { 1.0 })?,
+                l: len("l", 0.18)?,
+                fingers: fingers as u32,
+                device: params.opt_str("device")?.unwrap_or_default().to_string(),
+            }
         }
         "poly_res" => PCell::PolyRes { w: len("w", 0.4)?, l: len("l", 5.0)? },
         "mom_cap" => PCell::MomCap { w: len("w", 5.0)?, h: len("h", 5.0)? },
@@ -452,8 +458,8 @@ pub fn definitions() -> Vec<Value> {
                 "kind": {"type": "string", "enum": ["nmos", "pmos", "poly_res", "mom_cap"]},
                 "params": {
                     "type": "object",
-                    "description": "Sizes in µm. nmos/pmos: w (per finger, default 1 / 2), l (default 0.18), fingers (default 1). poly_res: w (0.4), l (5). mom_cap: w (5), h (5).",
-                    "properties": {"w": {"type": "number"}, "l": {"type": "number"}, "h": {"type": "number"}, "fingers": {"type": "integer", "minimum": 1}},
+                    "description": "Sizes in µm. nmos/pmos: w (per finger, default 1 / 2), l (default 0.18), fingers (default 1), device (PDK device name, e.g. a low-Vt model; default: the technology's default device). poly_res: w (0.4), l (5). mom_cap: w (5), h (5).",
+                    "properties": {"w": {"type": "number"}, "l": {"type": "number"}, "h": {"type": "number"}, "fingers": {"type": "integer", "minimum": 1}, "device": {"type": "string"}},
                     "additionalProperties": false,
                 },
                 "x": num_prop("Origin x (µm)."), "y": num_prop("Origin y (µm)."),

@@ -668,8 +668,8 @@ mod tests {
 
     /// Inverter from MOS PCells, wired in metal1 and labelled in / out / VDD / gnd.
     fn pcell_inverter(tech: &Tech, pw: i64) -> Layout {
-        let n = PCell::Mos { pmos: false, w: 1000, l: 180, fingers: 1 }.generate(tech).unwrap();
-        let p = PCell::Mos { pmos: true, w: pw, l: 180, fingers: 1 }.generate(tech).unwrap();
+        let n = PCell::mos(false, 1000, 180, 1).generate(tech).unwrap();
+        let p = PCell::mos(true, pw, 180, 1).generate(tech).unwrap();
         let dy = 4000;
         let (pn, pp) = (plates(&n, tech), plates(&p, tech));
         let up = |r: IRect| r.translate(0, dy);
@@ -794,7 +794,7 @@ mod tests {
     #[test]
     fn fingers_merge_as_parallel_devices() {
         let tech = Tech::generic();
-        let mut lay = PCell::Mos { pmos: false, w: 1000, l: 180, fingers: 2 }.generate(&tech).unwrap();
+        let mut lay = PCell::mos(false, 1000, 180, 2).generate(&tech).unwrap();
         let s = plates(&lay, &tech)["S"].clone();
         let (a, b) = (s[0], s[1]);
         let m1 = tech.layer_index("metal1").unwrap();

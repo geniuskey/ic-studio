@@ -634,10 +634,27 @@ pub(super) fn pcell_params(ui: &mut egui::Ui, p: &mut PCell, tech: &Tech, salt: 
         ui.end_row();
     };
     egui::Grid::new(("pcell_params", salt)).num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| match p {
-        PCell::Mos { pmos, w, l, fingers } => {
+        PCell::Mos { pmos, w, l, fingers, device } => {
             ui.label("Type");
             ui.label(if *pmos { "PMOS" } else { "NMOS" });
             ui.end_row();
+            let kind = if *pmos { ics_core::tech::MosType::Pmos } else { ics_core::tech::MosType::Nmos };
+            let options: Vec<&str> = tech.devices.iter().filter(|d| d.kind == kind).map(|d| d.name.as_str()).collect();
+            if !options.is_empty() {
+                let lb = ui.label("Device");
+                let shown = if device.is_empty() { format!("default ({})", options[0]) } else { device.clone() };
+                egui::ComboBox::from_id_salt(("pcell_device", salt))
+                    .selected_text(shown)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(device, String::new(), format!("default ({})", options[0]));
+                        for o in options.iter().skip(1) {
+                            ui.selectable_value(device, o.to_string(), *o);
+                        }
+                    })
+                    .response
+                    .labelled_by(lb.id);
+                ui.end_row();
+            }
             len(ui, "W", w);
             len(ui, "L", l);
             let lb = ui.label("Fingers");

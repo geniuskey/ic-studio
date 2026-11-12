@@ -137,7 +137,13 @@ pub fn mos_pcell(inst: &Instance, tech: &Tech) -> Result<PCell, String> {
     let max_w = (MAX_FINGER_W_UM * tech.dbu_per_um as f64) as i64;
     let split = if max_w > 0 { ((w + max_w - 1) / max_w).max(1) } else { 1 };
     let fingers = u32::try_from(split).ok().and_then(|s| s.checked_mul(m)).ok_or("too many fingers")?;
-    Ok(PCell::Mos { pmos: inst.kind == DeviceKind::Pmos, w: snap(w / split, tech.grid), l, fingers })
+    let pmos = inst.kind == DeviceKind::Pmos;
+    // Name the PDK device only when it is not the polarity's default.
+    let device = match (tech.mos_device(pmos, inst.param("model")), tech.mos_device(pmos, "")) {
+        (Some(d), Some(default)) if d.name != default.name => d.name.clone(),
+        _ => String::new(),
+    };
+    Ok(PCell::Mos { pmos, w: snap(w / split, tech.grid), l, fingers, device })
 }
 
 /// The schematic device a layout instance belongs to: units of matched devices are named
@@ -234,12 +240,14 @@ fn gcd(a: i64, b: i64) -> i64 {
 fn matched_units(group: &[&Instance], conn: &Connectivity, tech: &Tech) -> Result<(Vec<Vec<Candidate>>, String), String> {
     let mut cells = Vec::new();
     for inst in group {
-        let PCell::Mos { pmos, w, l, fingers } = mos_pcell(inst, tech)? else { unreachable!("MOS cell") };
-        cells.push((inst, pmos, w * fingers as i64, l));
+        let PCell::Mos { pmos, w, l, fingers, device } = mos_pcell(inst, tech)? else { unreachable!("MOS cell") };
+        cells.push((inst, pmos, w * fingers as i64, l, device));
     }
     let g = tech.grid.max(1);
-    let fits =
-        |w: i64| w % g == 0 && cells.iter().all(|c| PCell::Mos { pmos: c.1, w, l: c.3, fingers: 1 }.generate(tech).is_ok());
+    let fits = |w: i64| {
+        w % g == 0
+            && cells.iter().all(|c| PCell::Mos { pmos: c.1, w, l: c.3, fingers: 1, device: c.4.clone() }.generate(tech).is_ok())
+    };
     let mut unit = cells.iter().map(|c| c.2).fold(0, gcd);
     let max_w = (MAX_FINGER_W_UM * tech.dbu_per_um as f64) as i64;
     while unit > max_w && unit % 2 == 0 && fits(unit / 2) {
@@ -270,10 +278,10 @@ fn matched_units(group: &[&Instance], conn: &Connectivity, tech: &Tech) -> Resul
     }
     let counts: Vec<usize> = cells.iter().map(|c| (c.2 / unit) as usize).collect();
     let mut units: Vec<Vec<Candidate>> = Vec::new();
-    for (inst, pmos, w_total, l) in &cells {
+    for (inst, pmos, w_total, l, device) in &cells {
         let mut list = Vec::new();
         for k in (1..=(w_total / unit) as usize).rev() {
-            let pcell = PCell::Mos { pmos: *pmos, w: unit, l: *l, fingers: 1 };
+            let pcell = PCell::Mos { pmos: *pmos, w: unit, l: *l, fingers: 1, device: device.clone() };
             list.push(candidate_with(inst, conn, tech, pcell, format!("{}.{k}", inst.name))?);
         }
         units.push(list);
@@ -821,9 +829,9 @@ mod tests {
         let mn = sch.instances.iter().find(|i| i.kind == DeviceKind::Nmos).unwrap().name.clone();
         let names: Vec<&str> = p.devices.iter().map(|d| d.name.as_str()).collect();
         assert_eq!(names, [mp.as_str(), "ntap:vdd", mn.as_str(), "ptap:0"]);
-        assert_eq!(p.devices[0].pcell, PCell::Mos { pmos: true, w: 2000, l: 180, fingers: 1 });
+        assert_eq!(p.devices[0].pcell, PCell::mos(true, 2000, 180, 1));
         assert_eq!(p.devices[1].pcell, PCell::Tap { well: true, w: 2000 });
-        assert_eq!(p.devices[2].pcell, PCell::Mos { pmos: false, w: 1000, l: 180, fingers: 1 });
+        assert_eq!(p.devices[2].pcell, PCell::mos(false, 1000, 180, 1));
         assert_eq!(p.devices[3].pcell, PCell::Tap { well: false, w: 1000 });
 
         let boxes: Vec<IRect> =
@@ -858,8 +866,8 @@ mod tests {
         let e = mos(&mut s, DeviceKind::Nmos, (40, 0), &[("w", "1u"), ("l", "180n"), ("m", "1.5")]);
         let p = plan(&s, &tech);
         let get = |n: &str| p.devices.iter().find(|d| d.name == n).map(|d| d.pcell.clone());
-        assert_eq!(get(&a), Some(PCell::Mos { pmos: false, w: 1000, l: 180, fingers: 2 }));
-        assert_eq!(get(&b), Some(PCell::Mos { pmos: false, w: 4000, l: 180, fingers: 3 }));
+        assert_eq!(get(&a), Some(PCell::mos(false, 1000, 180, 2)));
+        assert_eq!(get(&b), Some(PCell::mos(false, 4000, 180, 3)));
         assert_eq!(p.devices.len(), 2);
         assert_eq!(p.skipped.len(), 3);
         assert!(p.skipped.iter().any(|m| m.starts_with(&format!("{c}: invalid w"))), "{:?}", p.skipped);

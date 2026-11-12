@@ -368,7 +368,7 @@ impl Router {
 
     /// Place a single-finger MOS PCell named `name`; PMOS is mirrored so its gate faces down.
     fn mos(&mut self, p: &mut Project, name: &str, pmos: bool, (w, l): (i64, i64), (x, y): (i64, i64)) {
-        let cell = p.ensure_pcell(&PCell::Mos { pmos, w, l, fingers: 1 }).expect("MOS pcell");
+        let cell = p.ensure_pcell(&PCell::mos(pmos, w, l, 1)).expect("MOS pcell");
         let trans = Trans::with(x, y, 0, pmos);
         let (m1, nwell) = (self.layer("metal1"), self.layer("nwell"));
         let child = p.cell(&cell).and_then(|c| c.layout.as_ref()).expect("pcell layout");

@@ -204,7 +204,9 @@ The main sections:
 | `lyp`, `lyt` | Optional KLayout files supplying layers and colours |
 | `[[layer]]` | `name`, `gds`, `datatype`, `width`, `space`, `routing`, `color` (`#rrggbb`), `fill`. Adds a layer, or sets rules on a layer from the `.lyp` |
 | `[roles]` | `diffusion` (list), `tap`, `poly`, `nwell`, `nimplant`, `pimplant`, `diff_contact`, `poly_contact` (via names), `label` |
-| `[rules]` | `gate_contact_space`, `poly_endcap`, `implant_enc`, `nwell_enc` |
+| `[rules]` | `gate_contact_space`, `poly_endcap`, `implant_enc`, `nwell_enc`, `marker_enc` (device marker layers around the diffusion) |
+| `[[pcell_layer]]` | Extra layer the PCells draw: `layer`, `around` (`poly_contact`, `diff_contact`, `gate`, `diffusion`, `poly` or a layer name), `enc`, optional `kinds` (`nmos`, `pmos`, `poly_res`, `mom_cap`, `ntap`, `ptap`) |
+| `drc_extra` | Deck lines appended to the deck derived from the layer rules (top-level key, before the tables) |
 | `[[via]]` | `name`, `bottom`, `cut`, `top`, `size`, `space`, `enc_bottom`, `enc_top`, `resistance` |
 | `[[device]]` | `name`, `type` (`nmos` / `pmos`), `layers`, `exclude`, `subckt` |
 | `[models]` | `path`, `corners`, `default`, `length_unit` (`m` or `um`) |
@@ -223,6 +225,28 @@ What changes with a PDK:
 - **LVS** also compares device models.
 - **PCells, schematic-driven layout and routing** use the role layers, vias and rules. PCell
   variants already in the project are regenerated.
+- **MOS PCells** can be any `[[device]]` of the PDK and then draw its marker `layers` (e.g.
+  `lvtn` around a low-Vt device, `marker_enc` beyond the diffusion). Schematic-driven layout
+  picks the device from the schematic model, so a low-Vt transistor in the schematic is
+  placed, extracted and compared as that device. `[[pcell_layer]]` adds layers such as
+  SKY130's `npc` over poly contacts:
+
+```toml
+drc_extra = [
+  "pcon = licon1 and poly",
+  "pcon_npc = npc size -0.1",
+  "pcon_bad = pcon not inside pcon_npc",
+  "NPC.EN: flag pcon_bad",
+]
+
+[[pcell_layer]]
+layer = "npc"
+around = "poly_contact"
+enc = 0.1
+```
+
+The contact to gate spacing grows when needed so that neighbouring source / drain contacts
+keep the first metal's spacing at short gate lengths.
 
 ## Importing a real PDK layer set
 

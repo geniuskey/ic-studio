@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::geom::IRect;
 use crate::layout::{Geometry, Layout};
-use crate::tech::{Tech, ViaDef};
+use crate::region::{BoolOp, Region};
+use crate::tech::{MosDef, MosType, Tech, ViaDef};
 
 pub const PCELL_LIB: &str = "pcells";
 
@@ -23,6 +24,10 @@ pub enum PCell {
         w: i64,
         l: i64,
         fingers: u32,
+        /// PDK device ([`Tech::devices`]) whose marker layers are drawn; empty for the default
+        /// device of the polarity.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        device: String,
     },
     PolyRes {
         w: i64,
@@ -44,11 +49,16 @@ impl PCell {
     /// One default instance of every kind, for the placement palette.
     pub fn defaults() -> Vec<PCell> {
         vec![
-            PCell::Mos { pmos: false, w: 1000, l: 180, fingers: 1 },
-            PCell::Mos { pmos: true, w: 2000, l: 180, fingers: 1 },
+            PCell::mos(false, 1000, 180, 1),
+            PCell::mos(true, 2000, 180, 1),
             PCell::PolyRes { w: 400, l: 5000 },
             PCell::MomCap { w: 5000, h: 5000 },
         ]
+    }
+
+    /// A MOS PCell of the default device.
+    pub fn mos(pmos: bool, w: i64, l: i64, fingers: u32) -> PCell {
+        PCell::Mos { pmos, w, l, fingers, device: String::new() }
     }
 
     /// Short kind name, e.g. "nmos", "pmos", "poly_res", "mom_cap".
@@ -67,6 +77,7 @@ impl PCell {
     pub fn variant_name(&self) -> String {
         let k = self.kind_name();
         match self {
+            PCell::Mos { w, l, fingers, device, .. } if !device.is_empty() => format!("{k}_w{w}_l{l}_nf{fingers}_{device}"),
             PCell::Mos { w, l, fingers, .. } => format!("{k}_w{w}_l{l}_nf{fingers}"),
             PCell::PolyRes { w, l } => format!("{k}_w{w}_l{l}"),
             PCell::MomCap { w, h } => format!("{k}_w{w}_h{h}"),
@@ -80,6 +91,9 @@ impl PCell {
         let um = |v: i64| format!("{}um", v as f64 / dbu_per_um.max(1) as f64);
         let k = self.kind_name();
         match self {
+            PCell::Mos { w, l, fingers, device, .. } if !device.is_empty() => {
+                format!("{device} W={} L={} nf={fingers}", um(*w), um(*l))
+            }
             PCell::Mos { w, l, fingers, .. } => format!("{k} W={} L={} nf={fingers}", um(*w), um(*l)),
             PCell::PolyRes { w, l } => format!("{k} W={} L={}", um(*w), um(*l)),
             PCell::MomCap { w, h } => format!("{k} W={} H={}", um(*w), um(*h)),
@@ -89,12 +103,14 @@ impl PCell {
 
     /// Generate the layout (origin-relative), checking parameters against the technology.
     pub fn generate(&self, tech: &Tech) -> Result<Layout, String> {
-        match *self {
-            PCell::Mos { pmos, w, l, fingers } => gen_mos(tech, pmos, w, l, fingers),
+        let mut lay = match *self {
+            PCell::Mos { pmos, w, l, fingers, ref device } => gen_mos(tech, pmos, w, l, fingers, mos_def(tech, pmos, device)?),
             PCell::PolyRes { w, l } => gen_poly_res(tech, w, l),
             PCell::MomCap { w, h } => gen_mom_cap(tech, w, h),
             PCell::Tap { well, w } => gen_tap(tech, well, w),
-        }
+        }?;
+        add_pcell_layers(&mut lay, tech, self.kind_name())?;
+        Ok(lay)
     }
 }
 
@@ -235,10 +251,20 @@ fn centre(r: IRect) -> (i64, i64) {
 pub fn mos_columns(tech: &Tech, l: i64, fingers: u32) -> Result<Vec<i64>, String> {
     let con = diff_contact(tech)?;
     let g = tech.grid;
-    let (c, gcs) = (con.cut_size, snap_up(tech.rules.gate_contact_space, g));
+    let (c, gcs) = (con.cut_size, gate_contact_space(tech, con, snap(l, g)));
     let sd_end = con.enc_bottom + c + gcs;
     let pitch = snap(l, g) + c + 2 * gcs;
     Ok((0..=fingers as i64).map(|k| sd_end - gcs - c / 2 + k * pitch).collect())
+}
+
+/// Contact to gate spacing for gate length `l`: the rule, or more so that neighbouring source /
+/// drain contact plates keep the first metal's spacing.
+fn gate_contact_space(tech: &Tech, con: &ViaDef, l: i64) -> i64 {
+    let g = tech.grid;
+    let m1 = tech.metal1();
+    let plate = (con.cut_size + 2 * con.enc_bottom.max(con.enc_top)).max(m1.map_or(0, |m| min_width(tech, m)));
+    let need = m1.map_or(0, |m| min_spacing(tech, m)) + plate - l - con.cut_size;
+    snap_up(tech.rules.gate_contact_space.max((need + 1) / 2), g)
 }
 
 fn gen_tap(tech: &Tech, well: bool, w: i64) -> Result<Layout, String> {
@@ -267,7 +293,66 @@ fn gen_tap(tech: &Tech, well: bool, w: i64) -> Result<Layout, String> {
     Ok(lay)
 }
 
-fn gen_mos(tech: &Tech, pmos: bool, w: i64, l: i64, fingers: u32) -> Result<Layout, String> {
+/// The PDK device a MOS PCell draws: `device`, or the default of the polarity (`None` without
+/// PDK devices).
+fn mos_def<'a>(tech: &'a Tech, pmos: bool, device: &str) -> Result<Option<&'a MosDef>, String> {
+    if device.is_empty() {
+        return Ok(tech.mos_device(pmos, ""));
+    }
+    let d = tech
+        .devices
+        .iter()
+        .find(|d| d.name.eq_ignore_ascii_case(device))
+        .ok_or_else(|| format!("technology '{}' has no device '{device}'", tech.name))?;
+    if (d.kind == MosType::Pmos) != pmos {
+        return Err(format!("device '{device}' is not a{}", if pmos { " PMOS" } else { "n NMOS" }));
+    }
+    Ok(Some(d))
+}
+
+/// Layout pieces of `around` (see [`crate::tech::PcellLayer::around`]) in a PCell layout.
+fn around_region(lay: &Layout, tech: &Tech, around: &str) -> Result<Region, String> {
+    let on = |l: Option<usize>| -> Region {
+        Region::from_rects(lay.shapes.iter().filter(|s| Some(s.layer) == l).map(|s| s.geom.bbox()))
+    };
+    let diffusion = Region::from_rects(
+        lay.shapes
+            .iter()
+            .filter(|s| tech.diffusion_layers().contains(&s.layer) || Some(s.layer) == tech.tap_layer())
+            .map(|s| s.geom.bbox()),
+    );
+    let poly = on(tech.poly());
+    let cut = |v: Option<&ViaDef>| v.and_then(|v| tech.layer_index(&v.cut));
+    Ok(match around {
+        "poly_contact" => on(cut(tech.poly_contact())).boolean(&poly, BoolOp::And).boolean(&diffusion, BoolOp::Not),
+        "diff_contact" => on(cut(tech.diff_contact())).boolean(&diffusion, BoolOp::And),
+        "gate" => poly.boolean(&diffusion, BoolOp::And),
+        "diffusion" => diffusion,
+        "poly" => poly,
+        name => on(Some(tech.layer_index(name).ok_or_else(|| format!("pcell layer: unknown layer '{name}'"))?)),
+    })
+}
+
+/// Draw the technology's extra PCell layers ([`Tech::pcell_layers`]) for a PCell of `kind`.
+fn add_pcell_layers(lay: &mut Layout, tech: &Tech, kind: &str) -> Result<(), String> {
+    for pl in tech.pcell_layers.iter().filter(|p| p.kinds.is_empty() || p.kinds.iter().any(|k| k == kind)) {
+        let target = layer(tech, &pl.layer)?;
+        let mw = min_width(tech, target);
+        let grown = Region::from_rects(
+            around_region(lay, tech, &pl.around)?
+                .parts()
+                .iter()
+                .filter_map(Region::bbox)
+                .map(|b| grow_to(grow(b, pl.enc), mw, mw, tech.grid)),
+        );
+        for g in grown.to_geometry() {
+            lay.add(target, g);
+        }
+    }
+    Ok(())
+}
+
+fn gen_mos(tech: &Tech, pmos: bool, w: i64, l: i64, fingers: u32, device: Option<&MosDef>) -> Result<Layout, String> {
     let g = tech.grid;
     let (w, l) = (snap(w, g), snap(l, g));
     let active = role(tech, tech.diffusion(), "diffusion")?;
@@ -290,7 +375,7 @@ fn gen_mos(tech: &Tech, pmos: bool, w: i64, l: i64, fingers: u32) -> Result<Layo
     }
 
     let c = con.cut_size;
-    let gcs = snap_up(tech.rules.gate_contact_space, g);
+    let gcs = gate_contact_space(tech, con, l);
     let sd_in = c + 2 * gcs;
     let sd_end = con.enc_bottom + c + gcs;
     let pitch = l + sd_in;
@@ -321,6 +406,11 @@ fn gen_mos(tech: &Tech, pmos: bool, w: i64, l: i64, fingers: u32) -> Result<Layo
     add_all(&mut lay, items, None);
     label(&mut lay, tech, "G", centre(pad));
 
+    for m in device.map(|d| d.layers.as_slice()).unwrap_or_default() {
+        let ml = layer(tech, m)?;
+        let mw = min_width(tech, ml);
+        lay.add(ml, Geometry::Rect(grow_to(grow(act, snap_up(tech.rules.marker_enc, g)), mw, mw, g)));
+    }
     let imp_r = grow(act, snap_up(tech.rules.implant_enc, g));
     let imp_min = min_width(tech, imp);
     lay.add(imp, Geometry::Rect(grow_to(imp_r, imp_min, imp_min, g)));
@@ -447,7 +537,7 @@ mod tests {
             for w in [420, 500, 1000, 5000] {
                 for l in [180, 500] {
                     for fingers in [1, 2, 5] {
-                        all.push(PCell::Mos { pmos, w, l, fingers });
+                        all.push(PCell::mos(pmos, w, l, fingers));
                     }
                 }
             }
@@ -481,7 +571,7 @@ mod tests {
     #[test]
     fn mos_structure() {
         let tech = Tech::generic();
-        let lay = PCell::Mos { pmos: true, w: 2000, l: 180, fingers: 3 }.generate(&tech).unwrap();
+        let lay = PCell::mos(true, 2000, 180, 3).generate(&tech).unwrap();
         let on = |n: &str| lay.shapes.iter().filter(|s| s.layer == tech.layer_index(n).unwrap()).count();
         assert_eq!(on("poly"), 4);
         assert_eq!(on("metal1"), 5);
@@ -495,9 +585,9 @@ mod tests {
     fn invalid_parameters() {
         let tech = Tech::generic();
         for p in [
-            PCell::Mos { pmos: false, w: 1000, l: 100, fingers: 1 },
-            PCell::Mos { pmos: false, w: 300, l: 180, fingers: 1 },
-            PCell::Mos { pmos: false, w: 1000, l: 180, fingers: 0 },
+            PCell::mos(false, 1000, 100, 1),
+            PCell::mos(false, 300, 180, 1),
+            PCell::mos(false, 1000, 180, 0),
             PCell::PolyRes { w: 100, l: 1000 },
             PCell::PolyRes { w: 400, l: 100 },
             PCell::MomCap { w: 300, h: 5000 },
@@ -512,10 +602,10 @@ mod tests {
 
     #[test]
     fn names() {
-        assert_eq!(PCell::Mos { pmos: false, w: 1000, l: 180, fingers: 2 }.variant_name(), "nmos_w1000_l180_nf2");
+        assert_eq!(PCell::mos(false, 1000, 180, 2).variant_name(), "nmos_w1000_l180_nf2");
         assert_eq!(PCell::PolyRes { w: 400, l: 5000 }.variant_name(), "poly_res_w400_l5000");
         assert_eq!(PCell::MomCap { w: 5000, h: 5000 }.variant_name(), "mom_cap_w5000_h5000");
-        assert_eq!(PCell::Mos { pmos: false, w: 1000, l: 180, fingers: 2 }.summary(1000), "nmos W=1um L=0.18um nf=2");
+        assert_eq!(PCell::mos(false, 1000, 180, 2).summary(1000), "nmos W=1um L=0.18um nf=2");
         let kinds: Vec<_> = PCell::defaults().iter().map(|p| p.kind_name()).collect();
         assert_eq!(kinds, ["nmos", "pmos", "poly_res", "mom_cap"]);
     }

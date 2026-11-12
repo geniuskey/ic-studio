@@ -809,7 +809,7 @@ mod tests {
     #[test]
     fn ensure_pcell_is_idempotent_and_persists() {
         let mut p = Project::new("pc");
-        let nmos = PCell::Mos { pmos: false, w: 1000, l: 180, fingers: 2 };
+        let nmos = PCell::mos(false, 1000, 180, 2);
         let a = p.ensure_pcell(&nmos).unwrap();
         assert_eq!(a, CellRef::new(PCELL_LIB, "nmos_w1000_l180_nf2"));
         assert_eq!(p.ensure_pcell(&nmos).unwrap(), a);
@@ -821,7 +821,7 @@ mod tests {
         assert_eq!(c.pcell.as_ref(), Some(&nmos));
         assert_eq!(c.description, "nmos W=1um L=0.18um nf=2");
         assert!(c.layout.as_ref().is_some_and(|l| !l.is_empty()));
-        assert!(p.ensure_pcell(&PCell::Mos { pmos: false, w: 1000, l: 180, fingers: 0 }).is_err());
+        assert!(p.ensure_pcell(&PCell::mos(false, 1000, 180, 0)).is_err());
         assert_eq!(p.libraries.iter().find(|l| l.name == PCELL_LIB).unwrap().cells.len(), 2);
 
         let dir = std::env::temp_dir().join(format!("ics-pcell-test-{}", std::process::id()));
@@ -958,7 +958,7 @@ mod tests {
         leaf.add(7, Geometry::Path { points: vec![(0, 0), (2000, 0), (2000, 3000)], width: 280 });
         leaf.add(7, Geometry::Label { text: "out".into(), at: (100, 100), size: 200 });
         p.add_cell("chip", Cell { description: "leaf cell".into(), layout: Some(leaf), ..Cell::new("leaf") }).unwrap();
-        let nmos = PCell::Mos { pmos: false, w: 1000, l: 180, fingers: 2 };
+        let nmos = PCell::mos(false, 1000, 180, 2);
         let dev = p.ensure_pcell(&nmos).unwrap();
         let mut top = Layout::default();
         top.add_rect(1, -100, -100, 5000, 5000);

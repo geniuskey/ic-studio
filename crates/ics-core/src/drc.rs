@@ -781,6 +781,13 @@ pub fn default_deck_text(tech: &Tech) -> String {
         out.push_str(&l);
         out.push('\n');
     }
+    if !tech.drc_extra.is_empty() {
+        out.push_str("# technology extras\n");
+        for l in &tech.drc_extra {
+            out.push_str(l.trim());
+            out.push('\n');
+        }
+    }
     out
 }
 

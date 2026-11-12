@@ -237,12 +237,29 @@ pub struct DeviceRules {
     pub implant_enc: i64,
     /// Nwell enclosure of p diffusion.
     pub nwell_enc: i64,
+    /// Enclosure of the diffusion by a device's marker layers ([`MosDef::layers`]).
+    pub marker_enc: i64,
 }
 
 impl Default for DeviceRules {
     fn default() -> Self {
-        DeviceRules { gate_contact_space: 160, poly_endcap: 220, implant_enc: 180, nwell_enc: 430 }
+        DeviceRules { gate_contact_space: 160, poly_endcap: 220, implant_enc: 180, nwell_enc: 430, marker_enc: 180 }
     }
+}
+
+/// An extra layer the PCells draw: `layer` covering every piece of `around` grown by `enc` (dbu),
+/// for the PCell kinds in `kinds` (all when empty).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PcellLayer {
+    pub layer: String,
+    /// `poly_contact` (poly contact cuts on poly outside diffusion), `diff_contact` (diffusion
+    /// contact cuts on diffusion), `gate` (poly over diffusion), `diffusion`, `poly`, or a layer
+    /// name.
+    pub around: String,
+    pub enc: i64,
+    /// PCell kind names ([`crate::pcell::PCell::kind_name`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kinds: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -274,6 +291,12 @@ pub struct Tech {
     /// External sign-off DRC / LVS runsets.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub signoff: Vec<crate::signoff::Runset>,
+    /// Extra layers drawn by the PCells.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pcell_layers: Vec<PcellLayer>,
+    /// Deck lines appended to the deck derived from the layer rules (when `drc_deck` is unset).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drc_extra: Vec<String>,
 }
 
 impl Tech {
@@ -431,6 +454,8 @@ impl Tech {
             devices: vec![],
             models: None,
             signoff: vec![],
+            pcell_layers: vec![],
+            drc_extra: vec![],
         }
     }
 }

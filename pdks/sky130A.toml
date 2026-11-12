@@ -9,6 +9,15 @@ name = "sky130A"
 dbu_per_um = 1000
 grid = 0.005
 
+# Checks added to the deck derived from the layer rules: every poly contact needs npc around
+# it (licon.8 / npc.5: 0.1 um enclosure).
+drc_extra = [
+  "pcon = licon1 and poly",
+  "pcon_npc = npc size -0.1",
+  "pcon_bad = pcon not inside pcon_npc",
+  "NPC.EN: flag pcon_bad",
+]
+
 [[layer]]
 name = "nwell"
 gds = 64
@@ -52,6 +61,15 @@ datatype = 20
 width = 0.38
 space = 0.38
 color = "#c8a03c"
+fill = "outline"
+
+[[layer]]
+name = "npc"
+gds = 95
+datatype = 20
+width = 0.27
+space = 0.27
+color = "#b4783c"
 fill = "outline"
 
 [[layer]]
@@ -206,6 +224,13 @@ gate_contact_space = 0.08
 poly_endcap = 0.13
 implant_enc = 0.125
 nwell_enc = 0.18
+marker_enc = 0.18
+
+# Nitride poly cut over every poly contact.
+[[pcell_layer]]
+layer = "npc"
+around = "poly_contact"
+enc = 0.1
 
 [[via]]
 name = "licon"

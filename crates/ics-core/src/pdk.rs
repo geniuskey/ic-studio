@@ -4,6 +4,7 @@
 //! name = "sky130A"
 //! dbu_per_um = 1000            # optional, default 1000
 //! grid = 0.005                 # µm
+//! drc_extra = ["pcon = licon1 and poly"]   # lines appended to the derived DRC deck
 //! lyp = "${PDK_ROOT}/.../sky130A.lyp"   # optional KLayout layer properties (layers, colours)
 //! lyt = "..."                  # optional KLayout technology (dbu, grid)
 //!
@@ -33,6 +34,13 @@
 //! poly_endcap = 0.13
 //! implant_enc = 0.125
 //! nwell_enc = 0.18
+//! marker_enc = 0.18            # device marker layers (MosDef::layers) around the diffusion
+//!
+//! [[pcell_layer]]              # extra layer drawn by the PCells (see PcellLayer)
+//! layer = "npc"
+//! around = "poly_contact"      # poly_contact, diff_contact, gate, diffusion, poly or a layer
+//! enc = 0.1
+//! kinds = []                   # PCell kinds (nmos, pmos, poly_res, ...); all when empty
 //!
 //! [[via]]                      # µm; resistance in Ω per cut
 //! name = "licon"
@@ -82,7 +90,9 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::signoff::Runset;
-use crate::tech::{DeviceRules, FillStyle, LayerCap, LayerDef, LayerRoles, LengthUnit, ModelLib, MosDef, Tech, ViaDef};
+use crate::tech::{
+    DeviceRules, FillStyle, LayerCap, LayerDef, LayerRoles, LengthUnit, ModelLib, MosDef, PcellLayer, Tech, ViaDef,
+};
 use crate::tech_import::{apply_lyt, from_lyp};
 
 #[derive(Deserialize)]
@@ -109,6 +119,10 @@ struct PdkFile {
     cap: Vec<LayerCap>,
     #[serde(default)]
     signoff: Vec<Runset>,
+    #[serde(default)]
+    pcell_layer: Vec<PcellLayerEntry>,
+    #[serde(default)]
+    drc_extra: Vec<String>,
 }
 
 fn default_dbu() -> i64 {
@@ -135,6 +149,17 @@ struct RulesEntry {
     poly_endcap: Option<f64>,
     implant_enc: Option<f64>,
     nwell_enc: Option<f64>,
+    marker_enc: Option<f64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PcellLayerEntry {
+    layer: String,
+    around: String,
+    enc: f64,
+    #[serde(default)]
+    kinds: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -277,11 +302,18 @@ pub fn parse(text: &str, base: &Path, env: &dyn Fn(&str) -> Option<String>) -> R
                 poly_endcap: or(r.poly_endcap, d.poly_endcap),
                 implant_enc: or(r.implant_enc, d.implant_enc),
                 nwell_enc: or(r.nwell_enc, d.nwell_enc),
+                marker_enc: or(r.marker_enc, d.marker_enc),
             }
         }
         None => d,
     };
     tech.devices = f.device;
+    tech.pcell_layers = f
+        .pcell_layer
+        .into_iter()
+        .map(|p| PcellLayer { layer: p.layer, around: p.around, enc: to_dbu(p.enc), kinds: p.kinds })
+        .collect();
+    tech.drc_extra = f.drc_extra;
     tech.caps = f.cap;
     tech.drc_deck = match f.drc_deck.as_deref() {
         Some(p) => {
@@ -370,6 +402,15 @@ pub fn check(tech: &Tech) -> Vec<String> {
             if !has(n) {
                 w.push(format!("device '{}' uses unknown layer '{n}'", d.name));
             }
+        }
+    }
+    const AROUND: [&str; 5] = ["poly_contact", "diff_contact", "gate", "diffusion", "poly"];
+    for p in &tech.pcell_layers {
+        if !has(&p.layer) {
+            w.push(format!("pcell layer uses unknown layer '{}'", p.layer));
+        }
+        if !AROUND.contains(&p.around.as_str()) && !has(&p.around) {
+            w.push(format!("pcell layer '{}': unknown 'around' '{}'", p.layer, p.around));
         }
     }
     for c in &tech.caps {
@@ -477,9 +518,18 @@ mod tests {
 
     /// The demo inverter in SKY130, placed and routed from its schematic.
     fn sky130_inverter() -> (Project, crate::Schematic, crate::Layout) {
+        sky130_inverter_with(None)
+    }
+
+    /// The demo inverter in SKY130 with the NMOS model set to `nmos_model`.
+    fn sky130_inverter_with(nmos_model: Option<&str>) -> (Project, crate::Schematic, crate::Layout) {
         let mut p = crate::examples::demo_project();
         p.set_tech(sky130(Some("/pdk")).tech).unwrap();
-        let sch = p.cell(&CellRef::new("work", "cmos_inverter")).and_then(|c| c.schematic.clone()).unwrap();
+        let mut sch = p.cell(&CellRef::new("work", "cmos_inverter")).and_then(|c| c.schematic.clone()).unwrap();
+        if let Some(m) = nmos_model {
+            let n = sch.instances.iter_mut().find(|i| i.kind == crate::DeviceKind::Nmos).unwrap();
+            n.params.insert("model".into(), m.into());
+        }
         let plan = crate::sdl::plan(&sch, &p.tech);
         let mut lay = crate::Layout::default();
         crate::sdl::apply(&mut p, &mut lay, &plan).unwrap();
@@ -530,5 +580,77 @@ mod tests {
         let mut o = LvsOptions::for_tech(tech);
         o.ignore_kinds.push(crate::DeviceKind::Capacitor);
         o
+    }
+
+    /// A low-Vt NMOS in the schematic becomes a PCell with the lvtn marker, which extraction
+    /// and LVS recognise as that device.
+    #[test]
+    fn sky130_low_vt_device_end_to_end() {
+        let (p, sch, lay) = sky130_inverter_with(Some("sky130_fd_pr__nfet_01v8_lvt"));
+        let drc = run_tech_deck(&lay, &p, &p.tech).unwrap();
+        assert!(drc.violations.is_empty(), "{:?}", drc.violations.iter().map(|v| &v.rule).collect::<Vec<_>>());
+        let x = extract(&lay, &p, &p.tech);
+        let models: Vec<&str> = x.devices.iter().map(|d| d.model.as_str()).collect();
+        assert_eq!(models, ["sky130_fd_pr__nfet_01v8_lvt", "sky130_fd_pr__pfet_01v8"], "{:?}", x.warnings);
+        assert!(compare(&sch, &x, &lvs_opts(&p.tech)).matched);
+        let pcells: Vec<&str> = p.libraries.iter().flat_map(|l| &l.cells).map(|c| c.name.as_str()).collect();
+        assert!(pcells.iter().any(|n| n.ends_with("_sky130_fd_pr__nfet_01v8_lvt")), "{pcells:?}");
+    }
+
+    /// PCells draw npc over poly contacts; without it the technology's NPC check fires.
+    #[test]
+    fn sky130_npc_layer_and_check() {
+        let mut tech = sky130(Some("/pdk")).tech;
+        let npc = tech.layer_index("npc").unwrap();
+        let nmos = crate::pcell::PCell::mos(false, 1000, 150, 2);
+        let lay = nmos.generate(&tech).unwrap();
+        let npcs: Vec<_> = lay.shapes.iter().filter(|s| s.layer == npc).collect();
+        assert_eq!(npcs.len(), 1, "one merged npc over the gate contact head");
+        let v0 = run_tech_deck(&lay, &crate::hier::NoCells, &tech).unwrap().violations;
+        assert!(v0.is_empty(), "{:?}", v0.iter().map(|v| (&v.rule, v.marker)).collect::<Vec<_>>());
+        tech.pcell_layers.clear();
+        let bare = nmos.generate(&tech).unwrap();
+        let v = run_tech_deck(&bare, &crate::hier::NoCells, &tech).unwrap().violations;
+        assert!(!v.is_empty() && v.iter().all(|v| v.rule == "NPC.EN"), "{:?}", v.iter().map(|v| &v.rule).collect::<Vec<_>>());
+        let lvt =
+            crate::pcell::PCell::Mos { pmos: false, w: 1000, l: 150, fingers: 1, device: "sky130_fd_pr__nfet_01v8_lvt".into() };
+        let lvtn = tech.layer_index("lvtn").unwrap();
+        assert_eq!(lvt.generate(&tech).unwrap().shapes.iter().filter(|s| s.layer == lvtn).count(), 1);
+        let wrong =
+            crate::pcell::PCell::Mos { pmos: true, w: 1000, l: 150, fingers: 1, device: "sky130_fd_pr__nfet_01v8_lvt".into() };
+        assert!(wrong.generate(&tech).unwrap_err().contains("not a PMOS"));
+        let unknown = crate::pcell::PCell::Mos { pmos: false, w: 1000, l: 150, fingers: 1, device: "x".into() };
+        assert!(unknown.generate(&tech).unwrap_err().contains("no device 'x'"));
+    }
+
+    /// Every SKY130 MOS PCell variant (sizes, fingers, devices) and the other PCells are DRC
+    /// clean with the PDK's derived deck.
+    #[test]
+    fn sky130_pcells_drc_clean() {
+        let tech = sky130(Some("/pdk")).tech;
+        let mut cells = vec![
+            crate::pcell::PCell::PolyRes { w: 400, l: 5000 },
+            crate::pcell::PCell::MomCap { w: 5000, h: 5000 },
+            crate::pcell::PCell::Tap { well: true, w: 1000 },
+            crate::pcell::PCell::Tap { well: false, w: 1000 },
+        ];
+        for d in &tech.devices {
+            let pmos = d.kind == crate::tech::MosType::Pmos;
+            for (w, l) in [(420, 150), (1000, 150), (2000, 180), (1000, 500)] {
+                for fingers in 1..=3 {
+                    cells.push(crate::pcell::PCell::Mos { pmos, w, l, fingers, device: d.name.clone() });
+                }
+            }
+        }
+        for c in cells {
+            let lay = c.generate(&tech).unwrap_or_else(|e| panic!("{}: {e}", c.variant_name()));
+            let v = run_tech_deck(&lay, &crate::hier::NoCells, &tech).unwrap().violations;
+            assert!(v.is_empty(), "{}: {:?}", c.variant_name(), v.iter().map(|v| (&v.rule, v.marker)).collect::<Vec<_>>());
+            let x = extract(&lay, &crate::hier::NoCells, &tech);
+            if let crate::pcell::PCell::Mos { device, fingers, .. } = &c {
+                assert_eq!(x.devices.len(), *fingers as usize, "{}", c.variant_name());
+                assert!(x.devices.iter().all(|d| &d.model == device), "{}: {:?}", c.variant_name(), x.warnings);
+            }
+        }
     }
 }
