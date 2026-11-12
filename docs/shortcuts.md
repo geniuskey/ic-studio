@@ -52,16 +52,26 @@ Canvas keys work while the mouse is over the canvas and no text field has focus.
 
 | Keys | Action |
 |---|---|
-| `S` | Select |
-| `R` `G` `P` | Rectangle, polygon, path |
+| `S` | Select (click the same spot again to cycle through overlapping items) |
+| `M` / `C` | Move / copy: click the reference point, then the destination (copy repeats) |
+| `R` `G` `P` | Rectangle (drag or two clicks), polygon, path |
 | `L` `V` `I` `K` | Label, via, instance, ruler |
+| `Shift+C` | Chop a box out of the selected shapes (or any shape under it) |
+| `+` / `-` while drawing a path | Drop a via and continue on the metal above / below |
+| `Mod+C` / `Mod+X` / `Mod+V` | Yank, cut, paste (the paste follows the cursor until you click) |
 | `Enter` | Finish a path or polygon |
 | `Backspace` | Remove the last point while drawing |
 | `Shift`+click | Any-angle polygon point |
-| Arrow keys | Nudge the selection 10 grid steps (`Shift`: 100) |
+| Arrow keys | Nudge the selection 10 grid steps (`Shift`: 100); pan when nothing is selected |
 | `Shift+R` | Rotate the selection 90° |
 | `Shift+X` / `Shift+Y` | Flip horizontally / vertically |
+| `Z` / `Shift+Z` | Zoom box / zoom out |
+| `[` / `]` | Zoom out / in at the cursor |
+| `W` / `Shift+W` | Previous / next view |
+| `Shift+K` | Clear all rulers |
 | `0` ... `8`, `9` | Hierarchy levels drawn (`9` = all) |
+| `Shift+F` / `Mod+F` | All levels / top level only |
+| Right-to-left box | Select everything the box touches (left-to-right: only what it encloses) |
 | Double-click instance | Open its cell |
 
 ## Simulation plots

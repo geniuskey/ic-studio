@@ -271,14 +271,24 @@ const SHORTCUTS: &[ShortcutGroup] = &[
     (
         "Layout",
         &[
-            ("S", "Select"),
+            ("S", "Select (click again to cycle overlapping items)"),
+            ("M / C", "Move, copy: reference point, then destination"),
             ("R G P", "Rectangle, polygon, path"),
             ("L V I K", "Label, via, instance, ruler"),
+            ("Shift+C", "Chop a box out of shapes"),
+            ("+ / - (in path)", "Change metal and drop a via"),
+            ("Mod+C / Mod+X / Mod+V", "Yank, cut, paste"),
             ("Enter", "Finish path or polygon"),
             ("Backspace", "Remove last point while drawing"),
-            ("Arrows (+Shift)", "Nudge 10 (100) grid steps"),
+            ("Arrows (+Shift)", "Nudge 10 (100) grid steps, pan if nothing selected"),
             ("Shift+R / X / Y", "Rotate, flip X, flip Y"),
+            ("Z / Shift+Z", "Zoom box, zoom out"),
+            ("[ / ]", "Zoom out, in at the cursor"),
+            ("W / Shift+W", "Previous, next view"),
+            ("Shift+K", "Clear rulers"),
             ("0 … 8, 9", "Drawn hierarchy depth, 9 = all"),
+            ("Shift+F / Mod+F", "All levels, top level only"),
+            ("Right-to-left box", "Select everything the box touches"),
         ],
     ),
 ];
@@ -1569,7 +1579,7 @@ impl IcStudio {
                         });
                     });
                     egui::Panel::top("lay_toolbar").show(ui, |ui| {
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             ui.label(RichText::new(ed.tool.name()).strong().color(pal.layout));
                             ui.label(RichText::new(format!("on {}", tech.layers[ed.active_layer].name)).color(pal.text_weak));
                             ui.separator();
@@ -1581,7 +1591,11 @@ impl IcStudio {
                             }
                             ui.separator();
                             for t in LayTool::ALL {
-                                if ui.selectable_label(ed.tool == t, t.name()).clicked() {
+                                if ui
+                                    .selectable_label(ed.tool == t, t.name())
+                                    .on_hover_text(format!("{} ({})", t.name(), t.key()))
+                                    .clicked()
+                                {
                                     ed.set_tool(t);
                                 }
                             }
@@ -1589,15 +1603,46 @@ impl IcStudio {
                             if ui.button("⛶").on_hover_text("Fit to window (F)").clicked() {
                                 ed.request_fit();
                             }
+                            if ui.button("Zoom box").on_hover_text("Drag or click a box to zoom into (Z)").clicked() {
+                                ed.arm_zoom_box();
+                            }
+                            if ui
+                                .add_enabled(ed.can_step_view(true), egui::Button::new("Prev view"))
+                                .on_hover_text("Previous view (W)")
+                                .clicked()
+                            {
+                                ed.step_view(true);
+                            }
+                            ui.separator();
                             ui.checkbox(&mut ed.show_grid, "Grid");
-                            ui.checkbox(&mut ed.show_flylines, "Flylines")
-                                .on_hover_text("Unrouted connections from the schematic");
-
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.button("⬇ GDS").on_hover_text("Export this cell as GDSII").clicked() {
-                                    self.queue.push(Command::ExportGds);
+                            ui.horizontal(|ui| {
+                                let sl = ui.label("Snap");
+                                let mut snap_um = ed.snap_step(&tech) as f64 / tech.dbu_per_um as f64;
+                                if ui
+                                    .add(
+                                        egui::DragValue::new(&mut snap_um)
+                                            .speed(0.005)
+                                            .range(0.0..=100.0)
+                                            .max_decimals(3)
+                                            .suffix(" µm"),
+                                    )
+                                    .labelled_by(sl.id)
+                                    .on_hover_text("Snap spacing, rounded to the technology grid")
+                                    .changed()
+                                {
+                                    ed.snap = (snap_um * tech.dbu_per_um as f64).round() as i64;
                                 }
                             });
+                            ui.checkbox(&mut ed.gravity, "Gravity").on_hover_text("Snap the cursor to nearby vertices and edges");
+                            ui.checkbox(&mut ed.drd, "DRD").on_hover_text(
+                                "Design-rule-driven editing: show spacing and width violations while drawing and moving",
+                            );
+                            ui.checkbox(&mut ed.show_flylines, "Flylines")
+                                .on_hover_text("Unrouted connections from the schematic");
+                            ui.separator();
+                            if ui.button("⬇ GDS").on_hover_text("Export this cell as GDSII").clicked() {
+                                self.queue.push(Command::ExportGds);
+                            }
                         });
                     });
                     egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| {
@@ -1758,6 +1803,14 @@ impl IcStudio {
                                         .small()
                                         .monospace(),
                                 );
+                                if let Some(a) = ed.anchor() {
+                                    ui.label(
+                                        RichText::new(format!("dx {}  dy {}", um(c.0 - a.0, &p.tech), um(c.1 - a.1, &p.tech)))
+                                            .small()
+                                            .monospace()
+                                            .color(pal.text_weak),
+                                    );
+                                }
                             }
                             ui.label(RichText::new(format!("{} selected", ed.selection.len())).small().color(pal.text_weak));
                             let s = ed.stats;

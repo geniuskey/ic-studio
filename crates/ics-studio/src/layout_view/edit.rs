@@ -298,7 +298,7 @@ impl Default for EditState {
 }
 
 impl LayoutEditor {
-    fn note(&mut self, ok: bool, m: impl Into<String>) {
+    pub(super) fn note(&mut self, ok: bool, m: impl Into<String>) {
         self.ed.msg = Some((ok, m.into()));
     }
 
@@ -512,6 +512,7 @@ impl LayoutEditor {
                 }
             });
         }
+        changed |= self.align_panel(ui, l, cx);
         self.message(ui);
         changed
     }

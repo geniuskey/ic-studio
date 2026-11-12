@@ -13,8 +13,10 @@ use crate::canvas::{View2D, nice_step};
 use crate::history::History;
 use crate::theme::{self, Palette};
 
+mod assist;
 mod edit;
 mod verify;
+pub use assist::Clip;
 pub use edit::LayRequest;
 use edit::{EditState, Handle};
 pub use verify::Verify;
@@ -22,36 +24,45 @@ pub use verify::Verify;
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum LayTool {
     Select,
+    Move,
+    Copy,
     Rect,
     Polygon,
     Path,
     Label,
     Via,
     Instance,
+    Chop,
     Ruler,
 }
 
 impl LayTool {
-    pub const ALL: [LayTool; 8] = [
+    pub const ALL: [LayTool; 11] = [
         LayTool::Select,
+        LayTool::Move,
+        LayTool::Copy,
         LayTool::Rect,
         LayTool::Polygon,
         LayTool::Path,
         LayTool::Label,
         LayTool::Via,
         LayTool::Instance,
+        LayTool::Chop,
         LayTool::Ruler,
     ];
 
     pub fn name(self) -> &'static str {
         match self {
             LayTool::Select => "Select",
+            LayTool::Move => "Move",
+            LayTool::Copy => "Copy",
             LayTool::Rect => "Rectangle",
             LayTool::Polygon => "Polygon",
             LayTool::Path => "Path",
             LayTool::Label => "Label",
             LayTool::Via => "Via",
             LayTool::Instance => "Instance",
+            LayTool::Chop => "Chop",
             LayTool::Ruler => "Ruler",
         }
     }
@@ -59,23 +70,45 @@ impl LayTool {
     pub fn key(self) -> &'static str {
         match self {
             LayTool::Select => "S",
+            LayTool::Move => "M",
+            LayTool::Copy => "C",
             LayTool::Rect => "R",
             LayTool::Polygon => "G",
             LayTool::Path => "P",
             LayTool::Label => "L",
             LayTool::Via => "V",
             LayTool::Instance => "I",
+            LayTool::Chop => "Shift+C",
             LayTool::Ruler => "K",
         }
+    }
+
+    /// Tools that take a box: drag it, or click two corners.
+    fn takes_box(self) -> bool {
+        matches!(self, LayTool::Rect | LayTool::Via | LayTool::Chop | LayTool::Ruler)
     }
 }
 
 enum LDrag {
-    Move { start: (i64, i64), offset: (i64, i64) },
-    Rubber { start: Pos2 },
-    Create { start: (i64, i64) },
-    Ruler { start: (i64, i64) },
-    Handle { id: u64, handle: Handle, start: (i64, i64), orig: Geometry, cur: Geometry },
+    Move {
+        start: (i64, i64),
+        offset: (i64, i64),
+    },
+    Rubber {
+        start: Pos2,
+    },
+    Create {
+        start: (i64, i64),
+    },
+    /// Move / copy tool: press at the reference point, release at the destination.
+    Xfer,
+    Handle {
+        id: u64,
+        handle: Handle,
+        start: (i64, i64),
+        orig: Geometry,
+        cur: Geometry,
+    },
 }
 
 /// Everything the layout editor needs besides the layout being edited.
@@ -117,7 +150,6 @@ pub struct LayoutEditor {
     path_pts: Vec<(i64, i64)>,
     pub path_width: i64,
     pub label_text: String,
-    ruler: Option<((i64, i64), (i64, i64))>,
     pub verify: verify::VerifyState,
     pub cursor: Option<(i64, i64)>,
     pub show_grid: bool,
@@ -138,6 +170,32 @@ pub struct LayoutEditor {
     flylines: Option<Vec<ics_core::sdl::Flyline>>,
     /// Edits for the application to carry out (they touch other cells).
     pub requests: Vec<LayRequest>,
+    /// Per layer: shapes can be picked (Virtuoso LSW "selectable").
+    pub selectable: Vec<bool>,
+    pub inst_selectable: bool,
+    layer_filter: String,
+    /// Measurements kept on screen until Shift+K.
+    pub rulers: Vec<((i64, i64), (i64, i64))>,
+    /// Snap spacing in dbu (0 = technology grid).
+    pub snap: i64,
+    /// Snap the cursor to nearby vertices and edges.
+    pub gravity: bool,
+    snapped: Option<bool>,
+    /// Show spacing / width violations while drawing and moving.
+    pub drd: bool,
+    /// First corner of a box entered with two clicks.
+    box_start: Option<(i64, i64)>,
+    /// Next box zooms the view (Z).
+    zoom_box: bool,
+    /// Reference point of the move / copy tool.
+    xfer: Option<(i64, i64)>,
+    clip: Option<Clip>,
+    /// Clipboard following the cursor until a click drops it.
+    pub paste: Option<Clip>,
+    view_back: Vec<(f64, f64, f64)>,
+    view_fwd: Vec<(f64, f64, f64)>,
+    /// Last plain click and the index picked among the items under it (repeat clicks cycle).
+    cycle: Option<((i64, i64), usize)>,
 }
 
 impl Default for LayoutEditor {
@@ -154,7 +212,6 @@ impl Default for LayoutEditor {
             path_pts: vec![],
             path_width: 0,
             label_text: "net".into(),
-            ruler: None,
             verify: verify::VerifyState::default(),
             cursor: None,
             show_grid: true,
@@ -172,6 +229,22 @@ impl Default for LayoutEditor {
             show_flylines: false,
             flylines: None,
             requests: vec![],
+            selectable: vec![],
+            inst_selectable: true,
+            layer_filter: String::new(),
+            rulers: vec![],
+            snap: 0,
+            gravity: true,
+            snapped: None,
+            drd: true,
+            box_start: None,
+            zoom_box: false,
+            xfer: None,
+            clip: None,
+            paste: None,
+            view_back: vec![],
+            view_fwd: vec![],
+            cycle: None,
         }
     }
 }
@@ -807,37 +880,36 @@ pub fn draw_layout(
     DrawStats { drawn: drawn as usize, truncated: vis.truncated }
 }
 
-/// Topmost item (shape or instance) of the top cell under the cursor.
-fn hit(layout: &Layout, idx: &CellIndex, visible: &[bool], x: i64, y: i64, tol: i64) -> Option<u64> {
+/// Items (shapes or instances) of the top cell under the cursor, most specific first: smaller
+/// items, then higher layers. `pick` gives the pickable layers.
+fn hits(layout: &Layout, idx: &CellIndex, pick: &[bool], insts: bool, x: i64, y: i64, tol: i64) -> Vec<u64> {
     let area = IRect::new(x - tol, y - tol, x + tol, y + tol);
-    let mut best: Option<(i128, usize, u64)> = None;
-    let mut consider = |b: IRect, layer: usize, id: u64| {
-        let a = b.width().max(1) as i128 * b.height().max(1) as i128;
-        // Prefer smaller items (more specific), then higher layers.
-        if best.is_none_or(|(ba, bl, _)| a < ba || (a == ba && layer > bl)) {
-            best = Some((a, layer, id));
-        }
-    };
-    for (li, vis) in visible.iter().enumerate() {
-        if !vis {
+    let mut found: Vec<(i128, usize, u64)> = vec![];
+    let area_of = |b: IRect| b.width().max(1) as i128 * b.height().max(1) as i128;
+    for (li, ok) in pick.iter().enumerate() {
+        if !ok {
             continue;
         }
         for i in idx.shapes_in(li, area) {
             if let Some(s) = layout.shapes.get(i)
                 && s.hit(x, y, tol)
             {
-                consider(s.bbox(), s.layer, s.id);
+                found.push((area_of(s.bbox()), s.layer, s.id));
             }
         }
     }
-    for i in idx.instances_in(area) {
-        if let (Some(b), Some(inst)) = (idx.instance_bbox(layout, i), layout.instances.get(i))
-            && b.contains(x, y)
-        {
-            consider(b, 0, inst.id);
+    if insts {
+        for i in idx.instances_in(area) {
+            if let (Some(b), Some(inst)) = (idx.instance_bbox(layout, i), layout.instances.get(i))
+                && b.contains(x, y)
+            {
+                found.push((area_of(b), 0, inst.id));
+            }
         }
     }
-    best.map(|b| b.2)
+    found.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
+    found.dedup_by_key(|f| f.2);
+    found.into_iter().map(|f| f.2).collect()
 }
 
 #[derive(Default)]
@@ -850,9 +922,23 @@ impl LayoutEditor {
         if self.visible.len() != tech.layers.len() {
             self.visible = vec![true; tech.layers.len()];
         }
+        if self.selectable.len() != tech.layers.len() {
+            self.selectable = vec![true; tech.layers.len()];
+        }
         if self.active_layer >= tech.layers.len() {
             self.active_layer = 0;
         }
+    }
+
+    /// Layers whose shapes can be picked: visible and selectable.
+    fn pickable(&self) -> Vec<bool> {
+        self.visible.iter().zip(&self.selectable).map(|(v, s)| *v && *s).collect()
+    }
+
+    /// Effective snap spacing: the snap setting rounded to the technology grid.
+    pub fn snap_step(&self, tech: &Tech) -> i64 {
+        let g = tech.grid.max(1);
+        if self.snap <= g { g } else { self.snap / g * g }
     }
 
     /// Drop results derived from the layout (verification, flylines).
@@ -869,9 +955,93 @@ impl LayoutEditor {
         self.tool = t;
         self.path_pts.clear();
         self.poly_pts.clear();
-        if t != LayTool::Ruler {
-            self.ruler = None;
+        self.box_start = None;
+        self.xfer = None;
+        self.zoom_box = false;
+        self.paste = None;
+    }
+
+    /// Arm zoom box: the next box (drag or two clicks) becomes the view.
+    pub fn arm_zoom_box(&mut self) {
+        self.zoom_box = true;
+        self.box_start = None;
+    }
+
+    fn push_view(&mut self) {
+        self.view_back.push((self.view.center.0, self.view.center.1, self.view.scale));
+        if self.view_back.len() > 64 {
+            self.view_back.remove(0);
         }
+        self.view_fwd.clear();
+    }
+
+    pub fn can_step_view(&self, back: bool) -> bool {
+        !if back { &self.view_back } else { &self.view_fwd }.is_empty()
+    }
+
+    /// Previous (W) or next (Shift+W) view.
+    pub fn step_view(&mut self, back: bool) -> bool {
+        let cur = (self.view.center.0, self.view.center.1, self.view.scale);
+        let (from, to) = if back { (&mut self.view_back, &mut self.view_fwd) } else { (&mut self.view_fwd, &mut self.view_back) };
+        let Some(v) = from.pop() else { return false };
+        to.push(cur);
+        self.view.center = (v.0, v.1);
+        self.view.scale = v.2;
+        true
+    }
+
+    fn zoom_box_to(&mut self, rect: Rect, b: IRect) {
+        if b.width() <= 0 || b.height() <= 0 {
+            return;
+        }
+        self.push_view();
+        self.view.fit(rect, (b.x0 as f64, b.y0 as f64), (b.x1 as f64, b.y1 as f64), 10.0);
+    }
+
+    /// The command prompt shown on the canvas (what the next click does).
+    pub fn prompt(&self) -> Option<String> {
+        if self.paste.is_some() {
+            return Some("Paste: click to place · Esc cancels".into());
+        }
+        let second = self.box_start.is_some() || matches!(self.drag, Some(LDrag::Create { .. }));
+        if self.zoom_box {
+            return Some(
+                if second { "Zoom: click the opposite corner" } else { "Zoom: drag a box or click its first corner" }.into(),
+            );
+        }
+        let s = match self.tool {
+            LayTool::Select => return None,
+            LayTool::Move | LayTool::Copy => {
+                let n = self.tool.name();
+                match self.xfer {
+                    None if self.selection.is_empty() => format!("{n}: click an object at its reference point"),
+                    None => format!("{n}: click the reference point"),
+                    Some(_) if self.tool == LayTool::Copy => "Copy: click the destination (repeats) · Esc ends".into(),
+                    Some(_) => "Move: click the destination · Esc cancels".into(),
+                }
+            }
+            LayTool::Rect if second => "Rectangle: click the opposite corner".into(),
+            LayTool::Rect => "Rectangle: drag, or click the first corner".into(),
+            LayTool::Via => "Via: click for one cut, drag to fill an area".into(),
+            LayTool::Chop if second => "Chop: click the opposite corner".into(),
+            LayTool::Chop => "Chop: box to cut out of the selected shapes (or any shape under it)".into(),
+            LayTool::Ruler if second => "Ruler: click the end point".into(),
+            LayTool::Ruler => "Ruler: click two points · Shift+K clears rulers".into(),
+            LayTool::Path if self.path_pts.is_empty() => "Path: click the start point · +/- change metal".into(),
+            LayTool::Path => "Path: click points · +/- change metal with a via · Enter finishes".into(),
+            LayTool::Polygon => "Polygon: click vertices (Shift: any angle) · Enter closes".into(),
+            LayTool::Label => format!("Label '{}': click to place", self.label_text.trim()),
+            LayTool::Instance => "Instance: click to place".into(),
+        };
+        Some(s)
+    }
+
+    /// Reference point of the command in progress, for dX / dY readouts.
+    pub fn anchor(&self) -> Option<(i64, i64)> {
+        if let Some(LDrag::Create { start } | LDrag::Move { start, .. } | LDrag::Handle { start, .. }) = &self.drag {
+            return Some(*start);
+        }
+        self.xfer.or(self.box_start).or(self.path_pts.last().copied()).or(self.poly_pts.last().copied())
     }
 
     pub fn undo(&mut self, l: &mut Layout) -> bool {
@@ -903,18 +1073,7 @@ impl LayoutEditor {
         }
         self.history.push(l);
         let off = grid * 50;
-        let mut sel = BTreeSet::new();
-        for id in self.selection.clone() {
-            if let Some(s) = l.shape(id).cloned() {
-                let mut g = Shape { id: 0, ..s };
-                g.translate(off, -off);
-                sel.insert(l.add(g.layer, g.geom));
-            } else if let Some(i) = l.instance(id).cloned() {
-                let t = Trans { x: i.trans.x + off, y: i.trans.y - off, ..i.trans };
-                sel.insert(l.add_instance(i.cell, t, i.array));
-            }
-        }
-        self.selection = sel;
+        self.selection = self.copy_by(l, (off, -off));
         true
     }
 
@@ -934,16 +1093,35 @@ impl LayoutEditor {
         (((w.0 / g).round() * g) as i64, ((w.1 / g).round() * g) as i64)
     }
 
+    /// A world point entered with the mouse: gravity-snapped to nearby geometry when enabled,
+    /// else snapped to the snap grid.
+    fn pick_point(&mut self, l: &Layout, cx: &mut LayCtx, w: (f64, f64)) -> (i64, i64) {
+        let step = self.snap_step(cx.tech);
+        self.snapped = None;
+        if self.gravity && self.tool != LayTool::Select && !self.zoom_box {
+            let idx = cx.index(l);
+            if let Some((p, vertex)) = assist::gravity(l, &idx, &self.visible, w, 8.0 / self.view.scale, step) {
+                self.snapped = Some(vertex);
+                return p;
+            }
+        }
+        self.snap(w, step)
+    }
+
     fn finish_path(&mut self, l: &mut Layout, tech: &Tech) -> bool {
         let pts = std::mem::take(&mut self.path_pts);
         if pts.len() < 2 {
             return false;
         }
         self.history.push(l);
-        let w = if self.path_width > 0 { self.path_width } else { tech.layers[self.active_layer].min_width.max(tech.grid * 10) };
+        let w = self.wire_width(tech);
         let id = l.add(self.active_layer, Geometry::Path { points: pts, width: w });
         self.selection = [id].into();
         true
+    }
+
+    fn wire_width(&self, tech: &Tech) -> i64 {
+        if self.path_width > 0 { self.path_width } else { tech.layers[self.active_layer].min_width.max(tech.grid * 10) }
     }
 
     /// Transform and array used when placing the chosen cell at `at`.
@@ -975,45 +1153,100 @@ impl LayoutEditor {
         true
     }
 
-    fn handle_keys(&mut self, ui: &egui::Ui, l: &mut Layout, cx: &mut LayCtx) -> bool {
+    fn select_all(&mut self, l: &Layout) {
+        let pick = self.pickable();
+        self.selection = l.shapes.iter().filter(|s| pick.get(s.layer).copied().unwrap_or(false)).map(|s| s.id).collect();
+        if self.inst_selectable {
+            self.selection.extend(l.instances.iter().map(|i| i.id));
+        }
+    }
+
+    fn handle_keys(&mut self, ui: &egui::Ui, l: &mut Layout, cx: &mut LayCtx, rect: Rect) -> bool {
         let tech = cx.tech;
         if ui.ctx().egui_wants_keyboard_input() {
             return false;
         }
         let mut changed = false;
-        let (keys, cmd, shift) = ui.input(|i| {
-            let k: Vec<Key> = i
-                .events
-                .iter()
-                .filter_map(|e| match e {
-                    egui::Event::Key { key, pressed: true, .. } => Some(*key),
-                    _ => None,
-                })
-                .collect();
-            (k, i.modifiers.command, i.modifiers.shift)
+        let (keys, clip_events, cmd, shift, hover) = ui.input(|i| {
+            let mut keys = vec![];
+            let mut clip = vec![];
+            for e in &i.events {
+                match e {
+                    egui::Event::Key { key, pressed: true, .. } => keys.push(*key),
+                    egui::Event::Copy | egui::Event::Cut | egui::Event::Paste(_) => clip.push(e.clone()),
+                    _ => {}
+                }
+            }
+            (keys, clip, i.modifiers.command, i.modifiers.shift, i.pointer.hover_pos())
         });
+        let did_clip = !clip_events.is_empty();
+        for e in clip_events {
+            match e {
+                egui::Event::Copy | egui::Event::Cut => {
+                    if let Some(text) = self.yank(l, cx) {
+                        ui.ctx().copy_text(text);
+                        if matches!(e, egui::Event::Cut) {
+                            changed |= self.delete_selection(l);
+                        }
+                    }
+                }
+                egui::Event::Paste(text) => {
+                    self.begin_paste(Some(&text));
+                }
+                _ => {}
+            }
+        }
         let g = tech.grid * if shift { 100 } else { 10 };
+        let anchor = hover.filter(|p| rect.contains(*p)).unwrap_or(rect.center());
         for k in keys {
             if cmd {
                 match k {
-                    Key::A => self.selection = l.ids().collect(),
+                    Key::A => self.select_all(l),
                     Key::D => changed |= self.duplicate(l, tech.grid),
+                    Key::F => self.max_depth = 0,
+                    Key::C | Key::X if !did_clip => {
+                        if let Some(text) = self.yank(l, cx) {
+                            ui.ctx().copy_text(text);
+                            if k == Key::X {
+                                changed |= self.delete_selection(l);
+                            }
+                        }
+                    }
+                    Key::V if !did_clip => {
+                        self.begin_paste(None);
+                    }
                     _ => {}
                 }
                 continue;
             }
-            if shift && matches!(k, Key::R | Key::X | Key::Y) {
-                let kind = match k {
-                    Key::R => 0,
-                    Key::X => 1,
-                    _ => 2,
-                };
-                changed |= self.transform_selection(l, cx, kind);
+            if shift && matches!(k, Key::R | Key::X | Key::Y | Key::K | Key::Z | Key::W | Key::F | Key::C) {
+                match k {
+                    Key::R => changed |= self.transform_selection(l, cx, 0),
+                    Key::X => changed |= self.transform_selection(l, cx, 1),
+                    Key::Y => changed |= self.transform_selection(l, cx, 2),
+                    Key::K => self.rulers.clear(),
+                    Key::Z => {
+                        self.push_view();
+                        self.view.zoom_at(rect, rect.center(), 0.5);
+                    }
+                    Key::W => {
+                        self.step_view(false);
+                    }
+                    Key::F => self.max_depth = 32,
+                    _ => self.set_tool(LayTool::Chop),
+                }
                 continue;
             }
             match k {
                 Key::Escape => {
-                    if !self.path_pts.is_empty() || !self.poly_pts.is_empty() {
+                    if self.paste.is_some() || self.zoom_box {
+                        self.paste = None;
+                        self.zoom_box = false;
+                        self.box_start = None;
+                    } else if self.box_start.is_some() || self.xfer.is_some() {
+                        self.box_start = None;
+                        self.xfer = None;
+                    } else if !self.path_pts.is_empty() || !self.poly_pts.is_empty() {
                         self.path_pts.clear();
                         self.poly_pts.clear();
                     } else if self.tool != LayTool::Select {
@@ -1032,6 +1265,8 @@ impl LayoutEditor {
                         changed |= self.delete_selection(l);
                     }
                 }
+                Key::M => self.set_tool(LayTool::Move),
+                Key::C => self.set_tool(LayTool::Copy),
                 Key::R => self.set_tool(LayTool::Rect),
                 Key::G => self.set_tool(LayTool::Polygon),
                 Key::P => self.set_tool(LayTool::Path),
@@ -1040,7 +1275,37 @@ impl LayoutEditor {
                 Key::I => self.set_tool(LayTool::Instance),
                 Key::K => self.set_tool(LayTool::Ruler),
                 Key::S => self.set_tool(LayTool::Select),
-                Key::F => self.needs_fit = true,
+                Key::Z => self.arm_zoom_box(),
+                Key::W => {
+                    self.step_view(true);
+                }
+                Key::F => {
+                    self.push_view();
+                    self.needs_fit = true;
+                }
+                Key::CloseBracket => {
+                    self.push_view();
+                    self.view.zoom_at(rect, anchor, 2.0);
+                }
+                Key::OpenBracket => {
+                    self.push_view();
+                    self.view.zoom_at(rect, anchor, 0.5);
+                }
+                Key::Plus | Key::Equals | Key::PageUp if self.tool == LayTool::Path => {
+                    changed |= self.switch_wire_layer(l, tech, true);
+                }
+                Key::Minus | Key::PageDown if self.tool == LayTool::Path => {
+                    changed |= self.switch_wire_layer(l, tech, false);
+                }
+                Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp | Key::ArrowDown if self.selection.is_empty() => {
+                    let (w, h) = (rect.width() / 4.0, rect.height() / 4.0);
+                    self.view.pan_pixels(match k {
+                        Key::ArrowLeft => Vec2::new(w, 0.0),
+                        Key::ArrowRight => Vec2::new(-w, 0.0),
+                        Key::ArrowUp => Vec2::new(0.0, h),
+                        _ => Vec2::new(0.0, -h),
+                    });
+                }
                 Key::ArrowLeft => changed |= self.nudge(l, -g, 0),
                 Key::ArrowRight => changed |= self.nudge(l, g, 0),
                 Key::ArrowUp => changed |= self.nudge(l, 0, g),
@@ -1053,6 +1318,123 @@ impl LayoutEditor {
             }
         }
         changed
+    }
+
+    /// Box entry for box tools and zoom: drag it, or click two corners.
+    fn box_input(&mut self, ui: &egui::Ui, resp: &egui::Response, rect: Rect, l: &mut Layout, cx: &mut LayCtx) -> bool {
+        let mut changed = false;
+        if resp.drag_started_by(egui::PointerButton::Primary) {
+            let press = ui.input(|i| i.pointer.press_origin()).unwrap_or(rect.center());
+            let snapped = self.snapped;
+            let s = self.pick_point(l, cx, self.view.to_world(rect, press));
+            self.snapped = snapped;
+            self.drag = Some(LDrag::Create { start: s });
+            self.box_start = None;
+        }
+        if resp.clicked()
+            && let Some(c) = self.cursor
+        {
+            if self.tool == LayTool::Via && !self.zoom_box {
+                changed |= self.place_via(l, cx.tech, c, None);
+            } else {
+                match self.box_start.take() {
+                    Some(a) => changed |= self.finish_box(l, cx, rect, a, c),
+                    None => self.box_start = Some(c),
+                }
+            }
+        }
+        changed
+    }
+
+    fn finish_box(&mut self, l: &mut Layout, cx: &mut LayCtx, rect: Rect, a: (i64, i64), b: (i64, i64)) -> bool {
+        let r = IRect::new(a.0, a.1, b.0, b.1);
+        if self.zoom_box {
+            self.zoom_box = false;
+            self.zoom_box_to(rect, r);
+            return false;
+        }
+        let flat = r.width() == 0 || r.height() == 0;
+        match self.tool {
+            LayTool::Ruler => {
+                if a != b {
+                    self.rulers.push((a, b));
+                }
+                false
+            }
+            _ if flat => false,
+            LayTool::Rect => {
+                self.history.push(l);
+                let id = l.add_rect(self.active_layer, r.x0, r.y0, r.x1, r.y1);
+                self.selection = [id].into();
+                true
+            }
+            LayTool::Via => self.place_via(l, cx.tech, b, Some(r)),
+            LayTool::Chop => self.chop(l, cx, r),
+            _ => false,
+        }
+    }
+
+    /// First click of move / copy: pick the object under the point if nothing is selected.
+    fn begin_xfer(&mut self, l: &Layout, cx: &mut LayCtx, p: (i64, i64), tol: i64) {
+        if self.selection.is_empty() {
+            let idx = cx.index(l);
+            if let Some(id) = hits(l, &idx, &self.pickable(), self.inst_selectable, p.0, p.1, tol).first() {
+                self.selection = [*id].into();
+            }
+        }
+        if self.selection.is_empty() {
+            self.note(false, format!("{}: nothing selected under the cursor", self.tool.name()));
+            return;
+        }
+        self.xfer = Some(p);
+    }
+
+    fn finish_xfer(&mut self, l: &mut Layout, to: (i64, i64)) -> bool {
+        let Some(from) = self.xfer else { return false };
+        let d = (to.0 - from.0, to.1 - from.1);
+        if d == (0, 0) {
+            return false;
+        }
+        self.history.push(l);
+        if self.tool == LayTool::Copy {
+            let n = self.copy_by(l, d).len();
+            self.note(true, format!("Copied {n} item(s)"));
+        } else {
+            for id in &self.selection {
+                l.translate_item(*id, d.0, d.1);
+            }
+            self.xfer = None;
+        }
+        true
+    }
+
+    /// Outlines of the selection displaced by `d` (move / copy preview), with spacing feedback.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_ghosts(
+        &self,
+        painter: &egui::Painter,
+        rect: Rect,
+        l: &Layout,
+        cx: &mut LayCtx,
+        pal: &Palette,
+        d: (i64, i64),
+        moving: bool,
+    ) {
+        let ghost = Stroke::new(1.5, pal.selection.gamma_multiply(0.9));
+        for (_, b) in self.item_boxes(l, cx) {
+            painter.rect_stroke(screen_rect(&self.view, rect, b.translate(d.0, d.1)), 0.0, ghost, StrokeKind::Middle);
+        }
+        if self.drd {
+            let cands: Vec<(usize, IRect)> = l
+                .shapes
+                .iter()
+                .filter(|s| self.selection.contains(&s.id))
+                .flat_map(|s| assist::shape_rects(&s.geom).into_iter().map(move |r| (s.layer, r.translate(d.0, d.1))))
+                .collect();
+            let skip = if moving { self.selection.clone() } else { BTreeSet::new() };
+            let idx = cx.index(l);
+            assist::draw_drd(painter, &self.view, rect, pal, &assist::drd_marks(l, &idx, cx.tech, &cands, &skip, false));
+        }
     }
 
     pub fn canvas(&mut self, ui: &mut egui::Ui, l: &mut Layout, cx: &mut LayCtx) -> LayOutput {
@@ -1075,15 +1457,17 @@ impl LayoutEditor {
             self.needs_fit = false;
         }
         self.view.handle_navigation(ui, &resp, rect);
-        if resp.hovered() && self.handle_keys(ui, l, cx) {
+        if resp.hovered() && self.handle_keys(ui, l, cx, rect) {
             out.changed = true;
             cx.touched();
         }
         let hover = resp.hover_pos();
         let world = hover.map(|p| self.view.to_world(rect, p));
-        self.cursor = world.map(|w| self.snap(w, tech.grid));
+        self.snapped = None;
+        self.cursor = world.map(|w| self.pick_point(l, cx, w));
         let tol = (5.0 / self.view.scale) as i64;
         let shift = ui.input(|i| i.modifiers.shift || i.modifiers.command);
+        let pick = self.pickable();
         // The single selected shape exposes vertex / edge handles.
         let handle_shape: Option<Shape> = match (self.tool, self.selection.len()) {
             (LayTool::Select, 1) => l.shape(*self.selection.first().unwrap()).cloned(),
@@ -1095,155 +1479,183 @@ impl LayoutEditor {
             _ => None,
         };
 
-        match self.tool {
-            LayTool::Select => {
-                if resp.drag_started_by(egui::PointerButton::Primary) {
-                    let press = ui.input(|i| i.pointer.press_origin()).unwrap_or(rect.center());
-                    let pw = self.view.to_world(rect, press);
-                    let idx = cx.index(l);
-                    let on_handle =
-                        handle_shape.as_ref().and_then(|s| edit::hit_handle(&s.geom, &self.view, rect, press).map(|h| (s, h)));
-                    if let Some((s, h)) = on_handle {
-                        self.drag = Some(LDrag::Handle {
-                            id: s.id,
-                            handle: h,
-                            start: self.snap(pw, tech.grid),
-                            orig: s.geom.clone(),
-                            cur: s.geom.clone(),
-                        });
-                    } else {
-                        match hit(l, &idx, &self.visible, pw.0 as i64, pw.1 as i64, tol) {
-                            Some(id) => {
-                                if !self.selection.contains(&id) {
-                                    if !shift {
-                                        self.selection.clear();
-                                    }
-                                    self.selection.insert(id);
-                                }
-                                self.drag = Some(LDrag::Move { start: self.snap(pw, tech.grid), offset: (0, 0) });
-                            }
-                            None => self.drag = Some(LDrag::Rubber { start: press }),
-                        }
-                    }
-                }
-                if let Some(w) = world
-                    && (resp.clicked() || resp.double_clicked())
-                    && !self.pick_net((w.0 as i64, w.1 as i64))
-                {
-                    let idx = cx.index(l);
-                    let h = hit(l, &idx, &self.visible, w.0 as i64, w.1 as i64, tol);
-                    if resp.double_clicked() {
-                        if let Some(i) = h.and_then(|id| l.instance(id)) {
-                            self.requests.push(LayRequest::Open(i.cell.clone()));
-                        }
-                    } else {
-                        match h {
-                            Some(id) => {
-                                if shift {
-                                    if !self.selection.remove(&id) {
+        let press = || ui.input(|i| i.pointer.press_origin()).unwrap_or(rect.center());
+        if self.paste.is_some() {
+            if resp.clicked()
+                && let Some(c) = self.cursor
+                && self.drop_paste(l, c, cx.src)
+            {
+                out.changed = true;
+                cx.touched();
+            }
+        } else if self.zoom_box || self.tool.takes_box() {
+            if self.box_input(ui, &resp, rect, l, cx) {
+                out.changed = true;
+                cx.touched();
+            }
+        } else {
+            match self.tool {
+                LayTool::Select => {
+                    if resp.drag_started_by(egui::PointerButton::Primary) {
+                        let press = press();
+                        let pw = self.view.to_world(rect, press);
+                        let idx = cx.index(l);
+                        let on_handle = handle_shape
+                            .as_ref()
+                            .and_then(|s| edit::hit_handle(&s.geom, &self.view, rect, press).map(|h| (s, h)));
+                        if let Some((s, h)) = on_handle {
+                            self.drag = Some(LDrag::Handle {
+                                id: s.id,
+                                handle: h,
+                                start: self.snap(pw, self.snap_step(tech)),
+                                orig: s.geom.clone(),
+                                cur: s.geom.clone(),
+                            });
+                        } else {
+                            match hits(l, &idx, &pick, self.inst_selectable, pw.0 as i64, pw.1 as i64, tol).first() {
+                                Some(&id) => {
+                                    if !self.selection.contains(&id) {
+                                        if !shift {
+                                            self.selection.clear();
+                                        }
                                         self.selection.insert(id);
                                     }
-                                } else {
-                                    self.selection = [id].into();
+                                    self.drag = Some(LDrag::Move { start: self.snap(pw, self.snap_step(tech)), offset: (0, 0) });
                                 }
+                                None => self.drag = Some(LDrag::Rubber { start: press }),
                             }
-                            None if !shift => self.selection.clear(),
-                            None => {}
+                        }
+                    }
+                    if let Some(w) = world
+                        && (resp.clicked() || resp.double_clicked())
+                        && !self.pick_net((w.0 as i64, w.1 as i64))
+                    {
+                        let idx = cx.index(l);
+                        let p = (w.0 as i64, w.1 as i64);
+                        let list = hits(l, &idx, &pick, self.inst_selectable, p.0, p.1, tol);
+                        if resp.double_clicked() {
+                            if let Some(i) = list.iter().find_map(|id| l.instance(*id)) {
+                                self.requests.push(LayRequest::Open(i.cell.clone()));
+                            }
+                        } else {
+                            // Clicking the same spot again cycles through the overlapping items.
+                            let near = |q: (i64, i64)| (q.0 - p.0).abs() <= tol && (q.1 - p.1).abs() <= tol;
+                            let n = match self.cycle {
+                                Some((q, k)) if !shift && near(q) && list.len() > 1 => (k + 1) % list.len(),
+                                _ => 0,
+                            };
+                            let h = list.get(n).copied();
+                            self.cycle = h.map(|_| (p, n));
+                            match h {
+                                Some(id) => {
+                                    if shift {
+                                        if !self.selection.remove(&id) {
+                                            self.selection.insert(id);
+                                        }
+                                    } else {
+                                        self.selection = [id].into();
+                                    }
+                                }
+                                None if !shift => self.selection.clear(),
+                                None => {}
+                            }
                         }
                     }
                 }
-            }
-            LayTool::Rect | LayTool::Via => {
-                if resp.drag_started_by(egui::PointerButton::Primary) {
-                    let press = ui.input(|i| i.pointer.press_origin()).unwrap_or(rect.center());
-                    self.drag = Some(LDrag::Create { start: self.snap(self.view.to_world(rect, press), tech.grid) });
-                }
-                if self.tool == LayTool::Via
-                    && resp.clicked()
-                    && let Some(c) = self.cursor
-                    && self.place_via(l, tech, c, None)
-                {
-                    out.changed = true;
-                    cx.touched();
-                }
-            }
-            LayTool::Polygon => {
-                if let Some(c) = self.cursor {
-                    if resp.clicked() {
-                        let p = edit::constrain(self.poly_pts.last().copied(), c, shift);
-                        if self.poly_pts.last() != Some(&p) {
-                            self.poly_pts.push(p);
+                LayTool::Move | LayTool::Copy => {
+                    if resp.drag_started_by(egui::PointerButton::Primary) && self.xfer.is_none() {
+                        let snapped = self.snapped;
+                        let p = self.pick_point(l, cx, self.view.to_world(rect, press()));
+                        self.snapped = snapped;
+                        self.begin_xfer(l, cx, p, tol);
+                        if self.xfer.is_some() {
+                            self.drag = Some(LDrag::Xfer);
                         }
                     }
-                    if (resp.double_clicked() || resp.secondary_clicked()) && self.finish_polygon(l) {
+                    if resp.clicked()
+                        && let Some(c) = self.cursor
+                    {
+                        if self.xfer.is_some() {
+                            if self.finish_xfer(l, c) {
+                                out.changed = true;
+                                cx.touched();
+                            }
+                        } else {
+                            self.begin_xfer(l, cx, c, tol);
+                        }
+                    }
+                }
+                LayTool::Polygon => {
+                    if let Some(c) = self.cursor {
+                        if resp.clicked() {
+                            let p = edit::constrain(self.poly_pts.last().copied(), c, shift);
+                            if self.poly_pts.last() != Some(&p) {
+                                self.poly_pts.push(p);
+                            }
+                        }
+                        if (resp.double_clicked() || resp.secondary_clicked()) && self.finish_polygon(l) {
+                            out.changed = true;
+                            cx.touched();
+                        }
+                    }
+                }
+                LayTool::Path => {
+                    if let Some(c) = self.cursor {
+                        if resp.clicked() {
+                            let p = match self.path_pts.last() {
+                                Some(&last) => manhattan(last, c),
+                                None => c,
+                            };
+                            if self.path_pts.last() != Some(&p) {
+                                self.path_pts.push(p);
+                            }
+                        }
+                        if resp.double_clicked() && self.finish_path(l, tech) {
+                            out.changed = true;
+                            cx.touched();
+                        }
+                    }
+                    if resp.secondary_clicked() && self.finish_path(l, tech) {
                         out.changed = true;
                         cx.touched();
                     }
                 }
-            }
-            LayTool::Ruler => {
-                if resp.drag_started_by(egui::PointerButton::Primary) {
-                    let press = ui.input(|i| i.pointer.press_origin()).unwrap_or(rect.center());
-                    let s = self.snap(self.view.to_world(rect, press), tech.grid);
-                    self.drag = Some(LDrag::Ruler { start: s });
-                    self.ruler = Some((s, s));
-                }
-            }
-            LayTool::Path => {
-                if let Some(c) = self.cursor {
-                    if resp.clicked() {
-                        let p = match self.path_pts.last() {
-                            Some(&last) => manhattan(last, c),
-                            None => c,
-                        };
-                        if self.path_pts.last() != Some(&p) {
-                            self.path_pts.push(p);
+                LayTool::Label => {
+                    if resp.clicked()
+                        && let Some(c) = self.cursor
+                    {
+                        let t = self.label_text.trim().to_string();
+                        if !t.is_empty() {
+                            self.history.push(l);
+                            let id = l.add(self.active_layer, Geometry::Label { text: t, at: c, size: 250 });
+                            self.selection = [id].into();
+                            out.changed = true;
+                            cx.touched();
                         }
                     }
-                    if resp.double_clicked() && self.finish_path(l, tech) {
-                        out.changed = true;
-                        cx.touched();
-                    }
                 }
-                if resp.secondary_clicked() && self.finish_path(l, tech) {
-                    out.changed = true;
-                    cx.touched();
-                }
-            }
-            LayTool::Label => {
-                if resp.clicked()
-                    && let Some(c) = self.cursor
-                {
-                    let t = self.label_text.trim().to_string();
-                    if !t.is_empty() {
+                LayTool::Instance => {
+                    if resp.clicked()
+                        && let Some(c) = self.cursor
+                        && self.ed.pcell.is_some()
+                    {
+                        if let Some(cb) = self.pcell_bbox(tech) {
+                            let (trans, array) = self.place_trans(c, cb);
+                            let pcell = self.ed.pcell.clone().unwrap();
+                            self.requests.push(LayRequest::PlacePCell { pcell, trans, array });
+                        }
+                    } else if resp.clicked()
+                        && let Some(c) = self.cursor
+                        && let Some((cell, t, array, _)) = self.placement(cx, c)
+                    {
                         self.history.push(l);
-                        let id = l.add(self.active_layer, Geometry::Label { text: t, at: c, size: 250 });
+                        let id = l.add_instance(cell, t, array);
                         self.selection = [id].into();
                         out.changed = true;
                         cx.touched();
                     }
                 }
-            }
-            LayTool::Instance => {
-                if resp.clicked()
-                    && let Some(c) = self.cursor
-                    && self.ed.pcell.is_some()
-                {
-                    if let Some(cb) = self.pcell_bbox(tech) {
-                        let (trans, array) = self.place_trans(c, cb);
-                        let pcell = self.ed.pcell.clone().unwrap();
-                        self.requests.push(LayRequest::PlacePCell { pcell, trans, array });
-                    }
-                } else if resp.clicked()
-                    && let Some(c) = self.cursor
-                    && let Some((cell, t, array, _)) = self.placement(cx, c)
-                {
-                    self.history.push(l);
-                    let id = l.add_instance(cell, t, array);
-                    self.selection = [id].into();
-                    out.changed = true;
-                    cx.touched();
-                }
+                LayTool::Rect | LayTool::Via | LayTool::Chop | LayTool::Ruler => {}
             }
         }
 
@@ -1251,7 +1663,6 @@ impl LayoutEditor {
         if let Some(c) = self.cursor {
             match &mut self.drag {
                 Some(LDrag::Move { start, offset }) => *offset = (c.0 - start.0, c.1 - start.1),
-                Some(LDrag::Ruler { start }) => self.ruler = Some((*start, c)),
                 Some(LDrag::Handle { handle, start, orig, cur, .. }) => {
                     *cur = edit::drag_handle(orig, *handle, (c.0 - start.0, c.1 - start.1));
                 }
@@ -1272,16 +1683,6 @@ impl LayoutEditor {
                         cx.touched();
                     }
                 }
-                Some(LDrag::Create { start }) if self.tool == LayTool::Via => {
-                    if let Some(c) = self.cursor
-                        && c.0 != start.0
-                        && c.1 != start.1
-                        && self.place_via(l, tech, c, Some(IRect::new(start.0, start.1, c.0, c.1)))
-                    {
-                        out.changed = true;
-                        cx.touched();
-                    }
-                }
                 Some(LDrag::Move { offset, .. }) => {
                     if offset != (0, 0) {
                         self.history.push(l);
@@ -1294,15 +1695,20 @@ impl LayoutEditor {
                 }
                 Some(LDrag::Create { start }) => {
                     if let Some(c) = self.cursor
-                        && c.0 != start.0
-                        && c.1 != start.1
+                        && self.finish_box(l, cx, rect, start, c)
                     {
-                        self.history.push(l);
-                        let id = l.add_rect(self.active_layer, start.0, start.1, c.0, c.1);
-                        self.selection = [id].into();
                         out.changed = true;
                         cx.touched();
                     }
+                }
+                Some(LDrag::Xfer) => {
+                    if let Some(c) = self.cursor
+                        && self.finish_xfer(l, c)
+                    {
+                        out.changed = true;
+                        cx.touched();
+                    }
+                    self.xfer = None;
                 }
                 Some(LDrag::Rubber { start }) => {
                     if let Some(end) = hover {
@@ -1312,29 +1718,34 @@ impl LayoutEditor {
                         if !shift {
                             self.selection.clear();
                         }
+                        // Right-to-left boxes select everything they touch, left-to-right only what they enclose.
+                        let crossing = end.x < start.x;
                         let inside = |bb: IRect| bb.x0 >= r.x0 && bb.x1 <= r.x1 && bb.y0 >= r.y0 && bb.y1 <= r.y1;
+                        let take = |bb: IRect| inside(bb) || (crossing && bb.intersects(&r));
                         let idx = cx.index(l);
-                        for (li, vis) in self.visible.iter().enumerate() {
-                            if *vis {
+                        for (li, ok) in pick.iter().enumerate() {
+                            if *ok {
                                 for i in idx.shapes_in(li, r) {
                                     if let Some(s) = l.shapes.get(i)
-                                        && inside(s.bbox())
+                                        && take(s.bbox())
                                     {
                                         self.selection.insert(s.id);
                                     }
                                 }
                             }
                         }
-                        for i in idx.instances_in(r) {
-                            if let (Some(b), Some(inst)) = (idx.instance_bbox(l, i), l.instances.get(i))
-                                && inside(b)
-                            {
-                                self.selection.insert(inst.id);
+                        if self.inst_selectable {
+                            for i in idx.instances_in(r) {
+                                if let (Some(b), Some(inst)) = (idx.instance_bbox(l, i), l.instances.get(i))
+                                    && take(b)
+                                {
+                                    self.selection.insert(inst.id);
+                                }
                             }
                         }
                     }
                 }
-                Some(LDrag::Ruler { .. }) | None => {}
+                None => {}
             }
         }
 
@@ -1353,7 +1764,7 @@ impl LayoutEditor {
                 selection: Some(&self.selection),
                 thumbnail: false,
                 show_grid: self.show_grid,
-                grid: tech.grid,
+                grid: self.snap_step(tech),
                 max_depth: self.max_depth,
             },
         );
@@ -1384,27 +1795,38 @@ impl LayoutEditor {
         if let Some(LDrag::Move { offset, .. }) = &self.drag
             && *offset != (0, 0)
         {
-            let idx = cx.index(l);
+            self.draw_ghosts(&painter, rect, l, cx, &pal, *offset, true);
+        }
+        // Move / copy tool: rubber line from the reference point and the displaced selection.
+        if let (Some(from), Some(c)) = (self.xfer, self.cursor)
+            && hover.is_some()
+        {
+            let d = (c.0 - from.0, c.1 - from.1);
+            let a = self.view.to_screen(rect, from.0 as f64, from.1 as f64);
+            let b = self.view.to_screen(rect, c.0 as f64, c.1 as f64);
+            painter.add(egui::Shape::dashed_line(&[a, b], Stroke::new(1.0, pal.selection), 4.0, 3.0));
+            painter.circle_stroke(a, 3.5, Stroke::new(1.5, pal.selection));
+            self.draw_ghosts(&painter, rect, l, cx, &pal, d, self.tool == LayTool::Move);
+            let txt = format!("dx {}  dy {} µm", um(d.0, tech), um(d.1, tech));
+            painter.text(b + Vec2::new(10.0, 10.0), Align2::LEFT_TOP, txt, FontId::monospace(11.0), pal.text);
+        }
+        // Paste preview.
+        if let (Some(clip), Some(c)) = (&self.paste, self.cursor)
+            && hover.is_some()
+        {
             let ghost = Stroke::new(1.5, pal.selection.gamma_multiply(0.9));
-            for (i, inst) in l.instances.iter().enumerate() {
-                if self.selection.contains(&inst.id)
-                    && let Some(b) = idx.instance_bbox(l, i)
-                {
-                    painter.rect_stroke(
-                        screen_rect(&self.view, rect, b.translate(offset.0, offset.1)),
-                        0.0,
-                        ghost,
-                        StrokeKind::Middle,
-                    );
-                }
+            for b in clip.shapes.iter().map(|s| s.bbox()).chain(clip.inst_boxes.iter().copied()) {
+                painter.rect_stroke(screen_rect(&self.view, rect, b.translate(c.0, c.1)), 0.0, ghost, StrokeKind::Middle);
             }
-            for s in l.shapes.iter().filter(|s| self.selection.contains(&s.id)) {
-                painter.rect_stroke(
-                    screen_rect(&self.view, rect, s.bbox().translate(offset.0, offset.1)),
-                    0.0,
-                    ghost,
-                    StrokeKind::Middle,
-                );
+            if self.drd {
+                let cands: Vec<(usize, IRect)> = clip
+                    .shapes
+                    .iter()
+                    .flat_map(|s| assist::shape_rects(&s.geom).into_iter().map(move |r| (s.layer, r.translate(c.0, c.1))))
+                    .collect();
+                let idx = cx.index(l);
+                let marks = assist::drd_marks(l, &idx, tech, &cands, &BTreeSet::new(), false);
+                assist::draw_drd(&painter, &self.view, rect, &pal, &marks);
             }
         }
         // Vertex / edge handles and the shape being reshaped.
@@ -1438,16 +1860,58 @@ impl LayoutEditor {
             }
             edit::draw_polygon_preview(&painter, &pts, layer_color(&tech.layers[self.active_layer], pal.dark));
         }
-        // Tool previews
+        // Box previews (rectangle, via area, chop, zoom, ruler).
         let def = &tech.layers[self.active_layer];
-        if let (Some(LDrag::Create { start }), Some(c)) = (&self.drag, self.cursor) {
+        let box_from = match &self.drag {
+            Some(LDrag::Create { start }) => Some(*start),
+            _ => self.box_start,
+        };
+        if let (Some(start), Some(c)) = (box_from, self.cursor) {
             let r = Rect::from_two_pos(
                 self.view.to_screen(rect, start.0 as f64, start.1 as f64),
                 self.view.to_screen(rect, c.0 as f64, c.1 as f64),
             );
-            pattern_rect(&painter, r, def, 1.0);
-            let txt = format!("{} × {} µm", um((c.0 - start.0).abs(), tech), um((c.1 - start.1).abs(), tech));
-            painter.text(r.right_bottom() + Vec2::new(6.0, 6.0), Align2::LEFT_TOP, txt, FontId::monospace(11.0), pal.text);
+            let dims = format!("{} × {} µm", um((c.0 - start.0).abs(), tech), um((c.1 - start.1).abs(), tech));
+            let dims_at = r.right_bottom() + Vec2::new(6.0, 6.0);
+            if self.zoom_box {
+                assist::dashed_rect(&painter, r, Stroke::new(1.5, pal.accent));
+            } else {
+                match self.tool {
+                    LayTool::Rect => {
+                        pattern_rect(&painter, r, def, 1.0);
+                        if self.drd {
+                            let w = IRect::new(start.0, start.1, c.0, c.1);
+                            let idx = cx.index(l);
+                            let marks = assist::drd_marks(l, &idx, tech, &[(self.active_layer, w)], &BTreeSet::new(), true);
+                            let sp = def.min_spacing;
+                            if sp > 0 && w.width() > 0 && w.height() > 0 {
+                                let halo = IRect::new(w.x0 - sp, w.y0 - sp, w.x1 + sp, w.y1 + sp);
+                                assist::dashed_rect(
+                                    &painter,
+                                    screen_rect(&self.view, rect, halo),
+                                    Stroke::new(1.0, layer_color(def, pal.dark).gamma_multiply(0.6)),
+                                );
+                            }
+                            assist::draw_drd(&painter, &self.view, rect, &pal, &marks);
+                        }
+                        painter.text(dims_at, Align2::LEFT_TOP, dims, FontId::monospace(11.0), pal.text);
+                    }
+                    LayTool::Via => {
+                        assist::dashed_rect(&painter, r, Stroke::new(1.5, layer_color(def, pal.dark)));
+                        painter.text(dims_at, Align2::LEFT_TOP, dims, FontId::monospace(11.0), pal.text);
+                    }
+                    LayTool::Chop => {
+                        painter.rect_filled(r, 0.0, pal.danger.gamma_multiply(0.12));
+                        assist::dashed_rect(&painter, r, Stroke::new(1.5, pal.danger));
+                        painter.text(dims_at, Align2::LEFT_TOP, dims, FontId::monospace(11.0), pal.text);
+                    }
+                    LayTool::Ruler => draw_ruler(&painter, &self.view, rect, &pal, tech, start, c),
+                    _ => {}
+                }
+            }
+        }
+        for (a, b) in &self.rulers {
+            draw_ruler(&painter, &self.view, rect, &pal, tech, *a, *b);
         }
         if self.tool == LayTool::Instance
             && let Some(c) = self.cursor
@@ -1494,14 +1958,18 @@ impl LayoutEditor {
         {
             let r = Rect::from_two_pos(start, h);
             painter.rect_filled(r, 0.0, pal.selection.gamma_multiply(0.08));
-            painter.rect_stroke(r, 0.0, Stroke::new(1.0, pal.selection), StrokeKind::Inside);
+            if h.x < start.x {
+                assist::dashed_rect(&painter, r, Stroke::new(1.0, pal.selection));
+            } else {
+                painter.rect_stroke(r, 0.0, Stroke::new(1.0, pal.selection), StrokeKind::Inside);
+            }
         }
         if !self.path_pts.is_empty() {
             let mut pts = self.path_pts.clone();
             if let Some(c) = self.cursor {
                 pts.push(manhattan(*pts.last().unwrap(), c));
             }
-            let w = if self.path_width > 0 { self.path_width } else { def.min_width.max(tech.grid * 10) };
+            let w = self.wire_width(tech);
             for q in path_quads(&pts, w) {
                 let sp: Vec<Pos2> = q.iter().map(|p| self.view.to_screen(rect, p.0, p.1)).collect();
                 painter.add(egui::Shape::convex_polygon(
@@ -1510,23 +1978,32 @@ impl LayoutEditor {
                     Stroke::new(1.0, layer_color(def, pal.dark)),
                 ));
             }
-        }
-        if let Some((a, b)) = self.ruler {
-            let pa = self.view.to_screen(rect, a.0 as f64, a.1 as f64);
-            let pb = self.view.to_screen(rect, b.0 as f64, b.1 as f64);
-            let st = Stroke::new(1.5, pal.warning);
-            painter.line_segment([pa, pb], st);
-            for p in [pa, pb] {
-                painter.circle_stroke(p, 3.0, st);
+            if self.drd {
+                let cands: Vec<(usize, IRect)> =
+                    Geometry::Path { points: pts, width: w }.rects().into_iter().map(|r| (self.active_layer, r)).collect();
+                let idx = cx.index(l);
+                let marks = assist::drd_marks(l, &idx, tech, &cands, &BTreeSet::new(), false);
+                assist::draw_drd(&painter, &self.view, rect, &pal, &marks);
             }
-            let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-            let d = ((dx * dx + dy * dy) as f64).sqrt() as i64;
-            let txt = format!("{} µm  (dx {} , dy {})", um(d, tech), um(dx, tech), um(dy, tech));
-            let mid = pa + (pb - pa) * 0.5;
-            let g = painter.layout_no_wrap(txt, FontId::monospace(12.0), pal.warning);
-            let r = Rect::from_min_size(mid + Vec2::new(8.0, -24.0), g.size() + Vec2::new(10.0, 4.0));
+        }
+        // Gravity marker: a diamond on a vertex, a circle on an edge.
+        if let (Some(vertex), Some(c), Some(_)) = (self.snapped, self.cursor, hover) {
+            let p = self.view.to_screen(rect, c.0 as f64, c.1 as f64);
+            let st = Stroke::new(1.5, pal.accent);
+            if vertex {
+                let d = 6.0;
+                let pts = vec![p + Vec2::new(0.0, -d), p + Vec2::new(d, 0.0), p + Vec2::new(0.0, d), p + Vec2::new(-d, 0.0)];
+                painter.add(egui::Shape::closed_line(pts, st));
+            } else {
+                painter.circle_stroke(p, 4.5, st);
+            }
+        }
+        if let Some(text) = self.prompt() {
+            let g = painter.layout_no_wrap(text, FontId::proportional(12.0), pal.text);
+            let r = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), g.size() + Vec2::new(14.0, 8.0));
             painter.rect_filled(r, 4.0, pal.bg_panel.gamma_multiply(0.92));
-            painter.galley(r.min + Vec2::new(5.0, 2.0), g, pal.warning);
+            painter.rect_stroke(r, 4.0, Stroke::new(1.0, pal.layout.gamma_multiply(0.6)), StrokeKind::Inside);
+            painter.galley(r.min + Vec2::new(7.0, 4.0), g, pal.text);
         }
         if l.is_empty() {
             painter.text(
@@ -1551,7 +2028,7 @@ impl LayoutEditor {
         );
 
         if resp.hovered() {
-            ui.ctx().set_cursor_icon(if self.tool == LayTool::Select {
+            ui.ctx().set_cursor_icon(if self.tool == LayTool::Select && self.paste.is_none() && !self.zoom_box {
                 egui::CursorIcon::Default
             } else {
                 egui::CursorIcon::Crosshair
@@ -1613,19 +2090,30 @@ impl LayoutEditor {
             hier_node(ui, cx.src, cx.cell, Some(l), None, 0, &mut open);
         });
         ui.add_space(6.0);
+        theme::section(ui, &format!("Layers · {}", tech.name));
         ui.horizontal(|ui| {
-            theme::section(ui, &format!("Layers · {}", tech.name));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button("none").clicked() {
-                    self.visible.iter_mut().for_each(|v| *v = false);
+            let all = |ui: &mut egui::Ui, text: &str, tip: &str, v: &mut [bool], on: bool| {
+                if ui.small_button(text).on_hover_text(tip).clicked() {
+                    v.iter_mut().for_each(|x| *x = on);
                 }
-                if ui.small_button("all").clicked() {
-                    self.visible.iter_mut().for_each(|v| *v = true);
-                }
-            });
+            };
+            all(ui, "AV", "All layers visible", &mut self.visible, true);
+            all(ui, "NV", "No layer visible", &mut self.visible, false);
+            all(ui, "AS", "All layers selectable", &mut self.selectable, true);
+            all(ui, "NS", "No layer selectable", &mut self.selectable, false);
         });
+        ui.horizontal(|ui| {
+            let fl = ui.label("Filter");
+            ui.add(egui::TextEdit::singleline(&mut self.layer_filter).hint_text("layer name").desired_width(f32::INFINITY))
+                .labelled_by(fl.id);
+        });
+        ui.checkbox(&mut self.inst_selectable, "Instances selectable");
+        let filter = self.layer_filter.trim().to_lowercase();
         egui::ScrollArea::vertical().id_salt("layers").show(ui, |ui| {
             for (i, def) in tech.layers.iter().enumerate() {
+                if !filter.is_empty() && !def.name.to_lowercase().contains(&filter) {
+                    continue;
+                }
                 let active = i == self.active_layer;
                 let row_h = 24.0;
                 let (r, painter) = ui.allocate_painter(Vec2::new(ui.available_width(), row_h), Sense::click());
@@ -1645,12 +2133,27 @@ impl LayoutEditor {
                     tc,
                 );
                 painter.text(
-                    r.rect.right_center() - Vec2::new(30.0, 0.0),
+                    r.rect.right_center() - Vec2::new(52.0, 0.0),
                     Align2::RIGHT_CENTER,
                     format!("{}/{}", def.gds_layer, def.gds_datatype),
                     FontId::monospace(10.5),
                     pal.text_weak,
                 );
+                // Selectable toggle: a filled box when shapes on the layer can be picked.
+                let sel = Rect::from_center_size(r.rect.right_center() - Vec2::new(36.0, 0.0), Vec2::splat(18.0));
+                let sel_resp = ui
+                    .interact(sel, ui.scope_id().with(("selectable", i)), Sense::click())
+                    .on_hover_text("Selectable: shapes on this layer can be picked");
+                let b = Rect::from_center_size(sel.center(), Vec2::splat(9.0));
+                let col = if sel_resp.hovered() { pal.text } else { pal.text_weak };
+                if self.selectable[i] {
+                    painter.rect_filled(b, 2.0, col);
+                } else {
+                    painter.rect_stroke(b, 2.0, Stroke::new(1.2, col), StrokeKind::Inside);
+                }
+                if sel_resp.clicked() {
+                    self.selectable[i] = !self.selectable[i];
+                }
                 let eye = Rect::from_center_size(r.rect.right_center() - Vec2::new(14.0, 0.0), Vec2::splat(18.0));
                 let eye_resp = ui.interact(eye, ui.scope_id().with(("eye", i)), Sense::click());
                 painter.text(
@@ -1662,7 +2165,7 @@ impl LayoutEditor {
                 );
                 if eye_resp.clicked() {
                     self.visible[i] = !self.visible[i];
-                } else if r.clicked() {
+                } else if r.clicked() && !sel_resp.clicked() {
                     self.active_layer = i;
                     self.visible[i] = true;
                 }
@@ -2018,7 +2521,31 @@ fn hier_node(
         });
 }
 
-fn manhattan(from: (i64, i64), to: (i64, i64)) -> (i64, i64) {
+/// A measurement line with its length and dx / dy.
+fn draw_ruler(painter: &egui::Painter, view: &View2D, rect: Rect, pal: &Palette, tech: &Tech, a: (i64, i64), b: (i64, i64)) {
+    let pa = view.to_screen(rect, a.0 as f64, a.1 as f64);
+    let pb = view.to_screen(rect, b.0 as f64, b.1 as f64);
+    let st = Stroke::new(1.5, pal.warning);
+    painter.line_segment([pa, pb], st);
+    let n = (pb - pa).normalized().rot90() * 5.0;
+    for p in [pa, pb] {
+        painter.line_segment([p - n, p + n], st);
+    }
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let d = ((dx as f64).powi(2) + (dy as f64).powi(2)).sqrt().round() as i64;
+    let txt = if dx == 0 || dy == 0 {
+        format!("{} µm", um(d, tech))
+    } else {
+        format!("{} µm  (dx {}, dy {})", um(d, tech), um(dx, tech), um(dy, tech))
+    };
+    let mid = pa + (pb - pa) * 0.5;
+    let g = painter.layout_no_wrap(txt, FontId::monospace(12.0), pal.warning);
+    let r = Rect::from_min_size(mid + Vec2::new(8.0, -24.0), g.size() + Vec2::new(10.0, 4.0));
+    painter.rect_filled(r, 4.0, pal.bg_panel.gamma_multiply(0.92));
+    painter.galley(r.min + Vec2::new(5.0, 2.0), g, pal.warning);
+}
+
+pub(super) fn manhattan(from: (i64, i64), to: (i64, i64)) -> (i64, i64) {
     if (to.0 - from.0).abs() >= (to.1 - from.1).abs() { (to.0, from.1) } else { (from.0, to.1) }
 }
 

@@ -767,3 +767,89 @@ fn import_oasis() {
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+fn shapes_of(h: &Harness<'_, IcStudio>, cell: &str) -> Vec<ics_core::Shape> {
+    let p = h.state().project().unwrap();
+    p.cell(&ics_core::CellRef::new("work", cell)).unwrap().layout.as_ref().unwrap().shapes.clone()
+}
+
+/// Virtuoso-style commands on an empty cell: two-click rectangle, move by reference point,
+/// yank / paste, chop, wire with a layer change, persistent ruler, zoom box and previous view.
+#[test]
+fn layout_virtuoso_commands() {
+    let dir = std::env::temp_dir().join(format!("ics-ui-virtuoso-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut p = ics_core::examples::demo_project();
+    let mut cell = ics_core::Cell::new("scratch");
+    cell.layout = Some(ics_core::Layout::default());
+    let r = p.add_cell("work", cell).unwrap();
+    p.save_as(&dir).unwrap();
+    let mut h = open_layout(&dir, "scratch");
+    let key = |h: &mut Harness<'_, IcStudio>, m: egui::Modifiers, k: egui::Key| {
+        h.key_press_modifiers(m, k);
+        h.run_steps(2);
+    };
+    let none = egui::Modifiers::NONE;
+    h.hover_at(egui::pos2(700.0, 450.0));
+    h.run_steps(2);
+
+    key(&mut h, none, egui::Key::R);
+    click(&mut h, egui::pos2(600.0, 400.0));
+    click(&mut h, egui::pos2(700.0, 480.0));
+    let s = shapes_of(&h, "scratch");
+    assert_eq!(s.len(), 1, "two clicks draw a rectangle");
+    let b0 = s[0].bbox();
+
+    key(&mut h, none, egui::Key::M);
+    click(&mut h, egui::pos2(650.0, 440.0));
+    click(&mut h, egui::pos2(750.0, 440.0));
+    let b1 = shapes_of(&h, "scratch")[0].bbox();
+    assert_eq!((b1.width(), b1.height()), (b0.width(), b0.height()));
+    assert!((b1.x0 - b0.x0 - 1250).abs() <= 10 && b1.y0 == b0.y0, "moved by the reference vector: {b0:?} -> {b1:?}");
+
+    key(&mut h, egui::Modifiers::COMMAND, egui::Key::C);
+    key(&mut h, egui::Modifiers::COMMAND, egui::Key::V);
+    assert!(h.state().layout_editor(&r).unwrap().paste.is_some(), "paste follows the cursor");
+    click(&mut h, egui::pos2(600.0, 600.0));
+    assert_eq!(shapes_of(&h, "scratch").len(), 2, "paste drops a copy");
+
+    // Chop a vertical stripe out of the pasted (selected) rectangle: it splits in two.
+    key(&mut h, egui::Modifiers::SHIFT, egui::Key::C);
+    click(&mut h, egui::pos2(640.0, 500.0));
+    click(&mut h, egui::pos2(660.0, 620.0));
+    assert_eq!(shapes_of(&h, "scratch").len(), 3, "chop splits the shape");
+
+    // Path on metal1, '=' drops a via1 and continues on metal2.
+    key(&mut h, none, egui::Key::Escape);
+    key(&mut h, none, egui::Key::P);
+    click(&mut h, egui::pos2(600.0, 300.0));
+    key(&mut h, none, egui::Key::Equals);
+    click(&mut h, egui::pos2(760.0, 300.0));
+    key(&mut h, none, egui::Key::Enter);
+    let tech = &h.state().project().unwrap().tech;
+    let (m2, v1) = (tech.layer_index("metal2").unwrap(), tech.layer_index("via1").unwrap());
+    let s = shapes_of(&h, "scratch");
+    assert!(s.iter().any(|s| s.layer == v1), "via1 cut placed");
+    assert!(matches!(s.last().map(|s| (&s.geom, s.layer)), Some((ics_core::Geometry::Path { .. }, l)) if l == m2));
+
+    key(&mut h, none, egui::Key::K);
+    click(&mut h, egui::pos2(560.0, 220.0));
+    click(&mut h, egui::pos2(1000.0, 220.0));
+    assert_eq!(h.state().layout_editor(&r).unwrap().rulers.len(), 1, "ruler stays on screen");
+
+    let before = h.state().layout_editor(&r).unwrap().view.scale;
+    key(&mut h, none, egui::Key::Z);
+    click(&mut h, egui::pos2(580.0, 380.0));
+    click(&mut h, egui::pos2(780.0, 500.0));
+    let zoomed = h.state().layout_editor(&r).unwrap().view.scale;
+    assert!(zoomed > before * 2.0, "zoom box zooms in: {before} -> {zoomed}");
+    key(&mut h, none, egui::Key::W);
+    assert_eq!(h.state().layout_editor(&r).unwrap().view.scale, before, "W returns to the previous view");
+
+    key(&mut h, none, egui::Key::R);
+    // Closer than the metal2 spacing to the routed path: DRD marks the gap.
+    click(&mut h, egui::pos2(620.0, 330.0));
+    h.hover_at(egui::pos2(720.0, 370.0));
+    h.run_steps(3);
+    shot(&mut h, "15_layout_virtuoso");
+}
