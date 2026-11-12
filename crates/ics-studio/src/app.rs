@@ -16,6 +16,7 @@ use crate::canvas::View2D;
 use crate::home_view;
 use crate::icons::{self, Icon};
 use crate::layout_view::{EipContext, LayCtx, LayRequest, LayTool, LayoutEditor, Verify, fmt_count, um};
+use crate::rule_designer::{DesignerAction, RuleDesigner};
 use crate::schematic_view::{SchTool, SchematicEditor, device_palette};
 use crate::sim_view::{self, SimEvent, SimState};
 use crate::theme::{self, Palette};
@@ -88,6 +89,8 @@ pub enum Command {
     RunDrc,
     ExtractNets,
     RunLvs,
+    /// Open the DRC Rule Designer window on the technology's deck.
+    RuleDesigner,
     /// Run an external sign-off runset of the technology on the active cell: the one named
     /// (or uniquely matched), else the one selected in the Sign-off section.
     RunSignoff(Option<String>),
@@ -352,6 +355,7 @@ pub struct IcStudio {
     allow_close: bool,
     last_title: String,
     bridge: Option<Bridge>,
+    rule_designer: RuleDesigner,
 }
 
 const SETTINGS_KEY: &str = "ic-studio-settings";
@@ -388,6 +392,7 @@ impl IcStudio {
             allow_close: false,
             last_title: String::new(),
             bridge: None,
+            rule_designer: RuleDesigner::default(),
         };
         app.info(format!("IC Studio {} ready — renderer: wgpu", env!("CARGO_PKG_VERSION")));
         match &app.ngspice {
@@ -657,6 +662,10 @@ impl IcStudio {
             Command::RunDrc => self.verify(ctx, Verify::Drc),
             Command::ExtractNets => self.verify(ctx, Verify::Extract),
             Command::RunLvs => self.verify(ctx, Verify::Lvs),
+            Command::RuleDesigner => match &self.project {
+                Some(p) => self.rule_designer.show(&p.tech),
+                None => self.warn("Open a project to design DRC rules".into()),
+            },
             Command::RunSignoff(name) => self.run_signoff(ctx, name.as_deref()),
             Command::GenerateLayout => self.generate_layout(),
             Command::RouteFlylines => self.route_flylines(),
@@ -1253,6 +1262,9 @@ impl IcStudio {
                 if ui.button("Run Sign-off Runset").clicked() {
                     q.push(Command::RunSignoff(None));
                 }
+                if ui.add_enabled(has_project, egui::Button::new("DRC Rule Designer…")).clicked() {
+                    q.push(Command::RuleDesigner);
+                }
                 ui.separator();
                 if ui.button("Generate Layout from Schematic").clicked() {
                     q.push(Command::GenerateLayout);
@@ -1721,6 +1733,7 @@ impl IcStudio {
                             }
                             None => log.push((false, "Return: already at the top cell".into())),
                         },
+                        LayRequest::OpenRuleDesigner => self.queue.push(Command::RuleDesigner),
                         LayRequest::SetDeck(text) => {
                             project.tech.drc_deck = Some(text);
                             changed = true;
@@ -2015,6 +2028,7 @@ impl IcStudio {
             ("Run DRC".into(), "", Command::RunDrc),
             ("Extract nets".into(), "", Command::ExtractNets),
             ("Run LVS".into(), "", Command::RunLvs),
+            ("DRC rule designer".into(), "", Command::RuleDesigner),
             ("Run sign-off runset (KLayout / Calibre / netgen)".into(), "", Command::RunSignoff(None)),
             ("Generate layout from schematic".into(), "", Command::GenerateLayout),
             ("Route flylines".into(), "", Command::RouteFlylines),
@@ -2672,6 +2686,29 @@ impl IcStudio {
         self.is_simulating()
             || self.lay_eds.values().any(LayoutEditor::is_verifying)
             || self.bridge.as_ref().is_some_and(|b| b.job.is_some() || !b.waiting.is_empty())
+            || self.rule_designer.is_checking()
+    }
+
+    fn rule_designer_window(&mut self, ctx: &egui::Context) {
+        let active =
+            self.active.clone().filter(|r| self.project.as_ref().and_then(|p| p.cell(r)).is_some_and(|c| c.layout.is_some()));
+        let Some(action) = self.rule_designer.window(ctx, self.project.as_ref(), active.as_ref()) else { return };
+        let (DesignerAction::Apply(text) | DesignerAction::ApplyAndRun(text)) = &action;
+        if let Some(p) = self.project.as_mut() {
+            p.tech.drc_deck = Some(text.clone());
+        }
+        for ed in self.lay_eds.values_mut() {
+            ed.verify.deck = None;
+        }
+        self.mark_dirty();
+        self.ok("Rule Designer: applied the DRC deck to the technology".into());
+        if matches!(action, DesignerAction::ApplyAndRun(_)) {
+            self.queue.push(Command::RunDrc);
+        }
+    }
+
+    pub fn rule_designer(&self) -> &RuleDesigner {
+        &self.rule_designer
     }
 
     fn update_title(&mut self, ctx: &egui::Context) {
@@ -2777,6 +2814,7 @@ impl eframe::App for IcStudio {
 
         self.command_palette(&ctx);
         self.dialogs(&ctx);
+        self.rule_designer_window(&ctx);
 
         let cmds = std::mem::take(&mut self.queue);
         for c in cmds {

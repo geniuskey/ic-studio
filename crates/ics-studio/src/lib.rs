@@ -6,6 +6,7 @@ pub mod history;
 pub mod home_view;
 pub mod icons;
 pub mod layout_view;
+pub mod rule_designer;
 pub mod schematic_view;
 pub mod sim_view;
 pub mod theme;

@@ -330,6 +330,9 @@ impl LayoutEditor {
                 if ui.button("Reset").on_hover_text("Rules derived from the technology layers and vias").clicked() {
                     *deck = drc::default_deck_text(tech);
                 }
+                if ui.button("Rule Designer…").on_hover_text("Design the rules visually in a separate window").clicked() {
+                    self.requests.push(LayRequest::OpenRuleDesigner);
+                }
             });
         });
         self.job_row(ui, Verify::Drc);

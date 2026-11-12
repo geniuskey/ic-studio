@@ -339,6 +339,26 @@ fn schematic_annotated() {
 /// Every non-ASCII character used in UI source must be drawable by the bundled fonts,
 /// otherwise users would see "tofu" boxes.
 #[test]
+fn rule_designer() {
+    let args = LaunchArgs {
+        project: None,
+        demo: true,
+        workspace: Some("layout".into()),
+        cell: Some("cmos_inverter".into()),
+        run: false,
+    };
+    let mut h = app(args);
+    h.state_mut().command(Command::RuleDesigner);
+    h.run_steps(6);
+    let tech = h.state().project().unwrap().tech.clone();
+    assert!(h.state().rule_designer().open);
+    let text = h.state().rule_designer().deck_text(&tech);
+    let deck = ics_core::drc::parse_deck(&text, &tech).expect("designer deck parses");
+    assert!(!deck.rules.is_empty());
+    shot(&mut h, "30_rule_designer");
+}
+
+#[test]
 fn glyph_coverage() {
     let sources = [
         include_str!("../src/app.rs"),
@@ -348,6 +368,7 @@ fn glyph_coverage() {
         include_str!("../src/layout_view/verify.rs"),
         include_str!("../src/schematic_view.rs"),
         include_str!("../src/sim_view.rs"),
+        include_str!("../src/rule_designer.rs"),
         include_str!("../src/theme.rs"),
         include_str!("../../ics-core/src/units.rs"),
         include_str!("../../ics-core/src/schematic.rs"),

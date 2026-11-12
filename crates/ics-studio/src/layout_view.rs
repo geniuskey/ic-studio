@@ -286,7 +286,7 @@ impl Default for LayoutEditor {
 
 /// Tech layer colors are tuned for a dark canvas; on a light one, pale colors (white
 /// contact / text, light gray boundary, yellows) are darkened to keep contrast.
-fn layer_color(def: &LayerDef, dark: bool) -> Color32 {
+pub(crate) fn layer_color(def: &LayerDef, dark: bool) -> Color32 {
     let [r, g, b, _] = def.color;
     if dark {
         return Color32::from_rgb(r, g, b);

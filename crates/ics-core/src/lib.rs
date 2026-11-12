@@ -20,6 +20,7 @@ pub mod pex;
 pub mod project;
 pub mod region;
 pub mod route;
+pub mod rule_design;
 pub mod schematic;
 pub mod sdl;
 pub mod signoff;

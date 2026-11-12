@@ -45,6 +45,8 @@ pub enum LayRequest {
     },
     /// Store a DRC rule deck in the project's technology.
     SetDeck(String),
+    /// Open the DRC Rule Designer window.
+    OpenRuleDesigner,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]

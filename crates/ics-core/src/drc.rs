@@ -17,6 +17,7 @@
 //! NAME = LAYER wide MIN
 //! NAME = LAYER area MIN MAX      (µm², MAX may be inf)
 //! NAME = holes|extents LAYER
+//! #@ TEXT                        (description of the next rule)
 //! ```
 //! A `NAME = ...` line defines a derived layer (e.g. `gate = poly and active`) from technology
 //! layers or earlier derived layers; later lines use it like any layer. `not` is `A` minus `B`,
@@ -27,6 +28,8 @@
 //! whole edge-connected pieces of the first layer (see [`Select`]); `area` keeps the pieces with
 //! MIN <= area < MAX; `holes` gives the enclosed empty areas of each piece and `extents` its
 //! bounding box. `flag` reports every piece of a layer, so any derived layer is a check.
+//! A line starting with `#@` gives the next rule its description ([`NamedRule::comment`]),
+//! reported instead of the generated one.
 //! Decks written in SVRF are translated by [`crate::svrf`] (see [`parse_any`]).
 //! Rule kinds, operators and layer names are case-insensitive. Unnamed rules are called
 //! `<layer>.W`, `<layer>.S`, `<a>.SEP.<b>`, `<inner>.EN.<outer>`, `<a>.EX.<b>`, `<layer>.A`,
@@ -184,6 +187,12 @@ impl LayerExpr {
             LayerExpr::Union(v) => v.clone(),
             LayerExpr::Check(r) => r.layers(),
         }
+    }
+
+    /// The layer computed from `layers` (indexed like [`Deck::layer_names`]; missing ones are
+    /// empty). `Check` expressions on density rules see no layout extent.
+    pub fn evaluate(&self, layers: &[Region]) -> Region {
+        self.eval(layers, None)
     }
 
     fn eval(&self, layers: &[Region], extent: Option<IRect>) -> Region {
@@ -521,7 +530,12 @@ pub fn parse_deck(text: &str, tech: &Tech) -> Result<Deck, Vec<DeckError>> {
     let mut deck = Deck::default();
     let mut names = deck.layer_names(tech);
     let mut errors = Vec::new();
+    let mut comment: Option<String> = None;
     for (i, raw) in text.lines().enumerate() {
+        if let Some(c) = raw.trim().strip_prefix("#@") {
+            comment = Some(c.trim().to_string());
+            continue;
+        }
         let line = raw.split('#').next().unwrap_or_default().trim();
         if line.is_empty() {
             continue;
@@ -531,7 +545,10 @@ pub fn parse_deck(text: &str, tech: &Tech) -> Result<Deck, Vec<DeckError>> {
                 names.push(d.name.clone());
                 deck.derived.push(d);
             }),
-            None => parse_line(line, &names, tech).map(|r| deck.rules.push(r)),
+            None => {
+                let c = comment.take();
+                parse_line(line, &names, tech).map(|r| deck.rules.push(NamedRule { comment: c, ..r }))
+            }
         };
         if let Err(es) = parsed {
             errors.extend(es.into_iter().map(|message| DeckError { line: i + 1, message }));
