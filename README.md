@@ -52,8 +52,9 @@ Linux needs the usual windowing libraries:
 - Operating point, DC sweep, AC and transient analyses on the built-in Rust MNA engine or
   ngspice; waveform viewer with Bode plots and automatic measurements
 - Optional post-layout simulation: wire capacitance to substrate, lateral and overlap
-  coupling between nets, and MOS drain / source junctions (`ad as pd ps`) extracted from the
-  layout are added to the matching schematic nets and devices
+  coupling between nets, MOS drain / source junctions (`ad as pd ps`) and an RC network of
+  wire, via and gate resistance extracted from the layout are added to the matching
+  schematic nets and devices
 
 **Layout**
 - Hierarchy: cell instances and arrays (GDS SREF / AREF) with 90° rotations and mirroring,
@@ -88,7 +89,7 @@ Linux needs the usual windowing libraries:
 
 **Technology**
 - `tech.json` with layers, GDS numbers, colours, fill patterns, width / spacing, vias,
-  capacitance coefficients and the DRC deck. A generic 180 nm-class demo technology is
+  capacitance coefficients, sheet / via resistance and the DRC deck. A generic 180 nm-class demo technology is
   included.
 - Import KLayout layer properties (`.lyp`, plus `.lyt` for the database unit) to use a
   real PDK's layer set, such as SKY130 or GF180
@@ -221,5 +222,5 @@ mouse input, and check accessibility labels and glyph coverage.
 - OASIS and LEF / DEF
 - Python API (PyO3)
 - Resistor / capacitor recognition in LVS; incremental and hierarchical DRC
-- Rip-up and reroute, wire resistance; non-Manhattan Boolean operations
+- Rip-up and reroute; non-Manhattan Boolean operations
 - Parametric sweeps, corners and optimisation loops

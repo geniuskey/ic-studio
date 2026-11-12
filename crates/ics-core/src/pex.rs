@@ -9,6 +9,11 @@
 //!   Substrate capacitance is not reduced where a wire is shielded, so totals are conservative.
 //! - MOS drain / source junctions from the extracted diffusion (`ad as pd ps` on the schematic
 //!   device lines, so the device models compute the junction capacitance).
+//! - Wire resistance ([`rc_networks`]): the wires of a net on layers with a sheet resistance
+//!   become segments joined by resistors, vias by their cut resistance. A schematic net with a
+//!   network keeps its name on its largest node; each MOS terminal on it moves to the node nearest
+//!   to the device's gate (so poly gate resistance is included), and the net's capacitance to
+//!   ground is spread over the nodes by wire area. Coupling stays on the named node.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -17,6 +22,8 @@ use rstar::{AABB, RTree, RTreeObject};
 use crate::connectivity;
 use crate::extract::{Extraction, Junction, extract};
 use crate::geom::IRect;
+use crate::hier::{LayoutSource, flatten};
+use crate::layout::Layout;
 use crate::lvs::{LvsOptions, LvsReport, compare};
 use crate::netlist::spice_name;
 use crate::project::{CellRef, Project};
@@ -235,6 +242,180 @@ pub fn junction_params(sch: &Schematic, x: &Extraction, rep: &LvsReport) -> BTre
     out
 }
 
+/// Wire segments are at most this many squares long, so taps along a wire see the resistance
+/// between them.
+pub const SEGMENT_SQUARES: i64 = 10;
+/// Resistances below this (Ω) are treated as shorts.
+pub const MIN_OHMS: f64 = 1e-3;
+
+/// Resistor network of one net over its layers with a sheet resistance.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RcNet {
+    /// Wire segments (layer, rect).
+    pub segments: Vec<(usize, IRect)>,
+    /// Node of each segment; segments joined by a negligible resistance share a node.
+    pub node: Vec<usize>,
+    pub nodes: usize,
+    /// Resistors (node, node, Ω).
+    pub resistors: Vec<(usize, usize, f64)>,
+}
+
+impl RcNet {
+    /// Node of the segment nearest to `p`.
+    pub fn node_at(&self, p: (i64, i64)) -> Option<usize> {
+        let d = |r: &IRect| {
+            let dx = (r.x0 - p.0).max(p.0 - r.x1).max(0) as i128;
+            let dy = (r.y0 - p.1).max(p.1 - r.y1).max(0) as i128;
+            dx * dx + dy * dy
+        };
+        self.segments.iter().enumerate().min_by_key(|(_, (_, r))| d(r)).map(|(i, _)| self.node[i])
+    }
+
+    /// Wire area per node (dbu²).
+    pub fn node_areas(&self) -> Vec<f64> {
+        let mut a = vec![0.0; self.nodes];
+        for (i, (_, r)) in self.segments.iter().enumerate() {
+            a[self.node[i]] += r.width() as f64 * r.height() as f64;
+        }
+        a
+    }
+}
+
+/// Split `r` along its long side into pieces at most [`SEGMENT_SQUARES`] squares long.
+fn segments(r: IRect) -> Vec<IRect> {
+    let (long, short) = (r.width().max(r.height()), r.width().min(r.height()).max(1));
+    let n = ((long + SEGMENT_SQUARES * short - 1) / (SEGMENT_SQUARES * short)).max(1);
+    (0..n)
+        .map(|i| {
+            let (a, b) = (long * i / n, long * (i + 1) / n);
+            if r.width() >= r.height() {
+                IRect::new(r.x0 + a, r.y0, r.x0 + b, r.y1)
+            } else {
+                IRect::new(r.x0, r.y0 + a, r.x1, r.y0 + b)
+            }
+        })
+        .collect()
+}
+
+fn root(uf: &mut [usize], mut i: usize) -> usize {
+    while uf[i] != i {
+        uf[i] = uf[uf[i]];
+        i = uf[i];
+    }
+    i
+}
+
+/// Resistor networks of the extracted nets (`None` for nets without resistive wires), from the
+/// sheet resistances of the technology layers and the via cuts of `top`. Pieces of a net joined
+/// only through layers without resistance (e.g. diffusion) are tied together.
+pub fn rc_networks(top: &Layout, src: &dyn LayoutSource, x: &Extraction, tech: &Tech) -> Vec<Option<RcNet>> {
+    let sheet: HashMap<usize, f64> = tech
+        .caps
+        .iter()
+        .filter(|c| c.resistance > 0.0)
+        .filter_map(|c| tech.layer_index(&c.layer).map(|l| (l, c.resistance)))
+        .collect();
+    if sheet.is_empty() {
+        return vec![None; x.nets.len()];
+    }
+    let vias: Vec<(usize, usize, usize, f64)> = tech
+        .vias
+        .iter()
+        .filter_map(|v| Some((tech.layer_index(&v.bottom)?, tech.layer_index(&v.cut)?, tech.layer_index(&v.top)?, v.resistance)))
+        .filter(|(b, _, t, _)| sheet.contains_key(b) && sheet.contains_key(t))
+        .collect();
+    let cut_layers: BTreeSet<usize> = vias.iter().map(|v| v.1).collect();
+    let mut cut_rects: HashMap<usize, Vec<Piece>> = HashMap::new();
+    for f in flatten(top, src, 64).into_iter().filter(|f| cut_layers.contains(&f.layer)) {
+        if let Ok(r) = Region::from_geometry(&f.geom) {
+            cut_rects.entry(f.layer).or_default().extend(r.rects().iter().map(|&rect| Piece { rect, net: 0 }));
+        }
+    }
+    let cuts: HashMap<usize, RTree<Piece>> = cut_rects.into_iter().map(|(l, v)| (l, RTree::bulk_load(v))).collect();
+
+    x.nets
+        .iter()
+        .map(|net| {
+            let mut segs: Vec<(usize, IRect)> = Vec::new();
+            for (l, r) in net.shapes.iter().filter(|(l, _)| sheet.contains_key(l)) {
+                segs.extend(r.rects().iter().flat_map(|&q| segments(q)).map(|q| (*l, q)));
+            }
+            if segs.is_empty() {
+                return None;
+            }
+            let mut by_layer: HashMap<usize, Vec<Piece>> = HashMap::new();
+            for (i, &(l, rect)) in segs.iter().enumerate() {
+                by_layer.entry(l).or_default().push(Piece { rect, net: i });
+            }
+            let trees: HashMap<usize, RTree<Piece>> = by_layer.into_iter().map(|(l, v)| (l, RTree::bulk_load(v))).collect();
+            let mut edges: Vec<(usize, usize, f64)> = Vec::new();
+            for (i, &(l, a)) in segs.iter().enumerate() {
+                let rs = sheet[&l];
+                for q in within(&trees[&l], a).filter(|q| q.net > i) {
+                    let b = q.rect;
+                    let (wa, ha, wb, hb) = (a.width() as f64, a.height() as f64, b.width() as f64, b.height() as f64);
+                    let across_x = (a.x1 == b.x0 || b.x1 == a.x0) && a.y0.max(b.y0) < a.y1.min(b.y1);
+                    let across_y = (a.y1 == b.y0 || b.y1 == a.y0) && a.x0.max(b.x0) < a.x1.min(b.x1);
+                    if across_x {
+                        edges.push((i, q.net, rs * (wa / 2.0 / ha + wb / 2.0 / hb)));
+                    } else if across_y {
+                        edges.push((i, q.net, rs * (ha / 2.0 / wa + hb / 2.0 / wb)));
+                    }
+                }
+            }
+            let bb = net.bbox?;
+            for &(b, c, t, ohms) in &vias {
+                let (Some(cut_tree), Some(tb), Some(tt)) = (cuts.get(&c), trees.get(&b), trees.get(&t)) else { continue };
+                for cut in within(cut_tree, bb) {
+                    let p = ((cut.rect.x0 + cut.rect.x1) / 2, (cut.rect.y0 + cut.rect.y1) / 2);
+                    let at = |tree: &RTree<Piece>| {
+                        tree.locate_in_envelope_intersecting(AABB::from_point([p.0, p.1]))
+                            .find(|s| s.rect.contains(p.0, p.1))
+                            .map(|s| s.net)
+                    };
+                    if let (Some(sb), Some(st)) = (at(tb), at(tt)) {
+                        edges.push((sb, st, ohms));
+                    }
+                }
+            }
+            let n = segs.len();
+            let mut uf: Vec<usize> = (0..n).collect();
+            let mut conn: Vec<usize> = (0..n).collect();
+            for &(a, b, ohms) in &edges {
+                let (x, y) = (root(&mut conn, a), root(&mut conn, b));
+                conn[x.max(y)] = x.min(y);
+                if ohms < MIN_OHMS {
+                    let (x, y) = (root(&mut uf, a), root(&mut uf, b));
+                    uf[x.max(y)] = x.min(y);
+                }
+            }
+            for i in 0..n {
+                if root(&mut conn, i) != root(&mut conn, 0) {
+                    let c = root(&mut conn, i);
+                    conn[c] = root(&mut conn, 0);
+                    let (x, y) = (root(&mut uf, i), root(&mut uf, 0));
+                    uf[x.max(y)] = x.min(y);
+                }
+            }
+            let mut ids: HashMap<usize, usize> = HashMap::new();
+            let node: Vec<usize> = (0..n)
+                .map(|i| {
+                    let r = root(&mut uf, i);
+                    let k = ids.len();
+                    *ids.entry(r).or_insert(k)
+                })
+                .collect();
+            let resistors = edges
+                .into_iter()
+                .filter(|&(_, _, ohms)| ohms >= MIN_OHMS)
+                .map(|(a, b, ohms)| (node[a], node[b], ohms))
+                .filter(|(a, b, _)| a != b)
+                .collect();
+            Some(RcNet { segments: segs, node, nodes: ids.len(), resistors })
+        })
+        .collect()
+}
+
 /// Parasitics of a cell's layout, ready to add to its schematic deck.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PostLayout {
@@ -242,34 +423,54 @@ pub struct PostLayout {
     pub caps: String,
     /// Junction parameters per MOS SPICE name (upper case), e.g. `ad=1e-12 as=... pd=... ps=...`.
     pub junctions: BTreeMap<String, String>,
+    /// Wire resistor lines (`Rpar_*`).
+    pub resistors: String,
+    /// Drain, gate and source nodes per MOS SPICE name (upper case) moved onto a resistor network.
+    pub terminals: BTreeMap<String, [Option<String>; 3]>,
     /// One-line summary.
     pub summary: String,
 }
 
 impl PostLayout {
-    /// The deck with the junction parameters appended to its MOS lines and the capacitors
-    /// inserted before `.temp` / `.end` (or at the end).
+    /// The deck with the MOS lines moved onto their resistor network nodes and given their
+    /// junction parameters, and the resistors and capacitors inserted before `.temp` / `.end`
+    /// (or at the end).
     pub fn apply(&self, deck: &str) -> String {
-        let mut out = String::with_capacity(deck.len() + self.caps.len() + 64 * self.junctions.len());
+        let mut out = String::with_capacity(deck.len() + self.caps.len() + self.resistors.len() + 64 * self.junctions.len());
         let mut inserted = false;
+        let block = |out: &mut String| {
+            *out += "* --- layout parasitics ---\n";
+            *out += &self.resistors;
+            *out += &self.caps;
+        };
         for line in deck.lines() {
             let t = line.trim().to_ascii_lowercase();
             if !inserted && (t.starts_with(".temp") || t == ".end") {
-                out += "* --- layout parasitics ---\n";
-                out += &self.caps;
+                block(&mut out);
                 inserted = true;
             }
-            out += line;
             let first = line.split_whitespace().next().unwrap_or_default().to_ascii_uppercase();
-            if let Some(j) = self.junctions.get(&first).filter(|_| first.starts_with('M')) {
+            let mos = first.starts_with('M');
+            match self.terminals.get(&first).filter(|_| mos) {
+                Some(nodes) => {
+                    let mut toks: Vec<&str> = line.split_whitespace().collect();
+                    for (k, n) in nodes.iter().enumerate() {
+                        if let (Some(n), Some(t)) = (n, toks.get_mut(k + 1)) {
+                            *t = n;
+                        }
+                    }
+                    out += &toks.join(" ");
+                }
+                None => out += line,
+            }
+            if let Some(j) = self.junctions.get(&first).filter(|_| mos) {
                 out.push(' ');
                 out += j;
             }
             out.push('\n');
         }
         if !inserted {
-            out += "* --- layout parasitics ---\n";
-            out += &self.caps;
+            block(&mut out);
         }
         out
     }
@@ -300,9 +501,65 @@ pub fn post_layout(project: &Project, cell: &CellRef) -> Result<PostLayout, Stri
         }
     }
     let caps: Vec<NetCap> = ground.into_iter().map(|(net, farads)| NetCap { net, farads }).collect();
-    let mut text = annotate(&caps, &rep.nets, MIN_FARADS);
-    let grounded: f64 = text.lines().filter_map(|l| l.split_whitespace().nth(3).and_then(crate::units::parse_spice)).sum();
-    let n_ground = text.lines().count();
+
+    // Resistor networks of the matched nets.
+    let rc = rc_networks(lay, project, &x, &project.tech);
+    let index: HashMap<&str, usize> = x.nets.iter().enumerate().rev().map(|(i, n)| (n.name.as_str(), i)).collect();
+    let mut networks: HashMap<&str, (&RcNet, usize)> = HashMap::new();
+    let mut resistors = String::new();
+    let mut n_res = 0;
+    let node_name = |sch: &str, node: usize, port: usize| {
+        if node == port { sch.to_string() } else { format!("{}_n{node}", spice_ident(sch)) }
+    };
+    for (sch, lay_net) in &rep.nets {
+        let Some(net) = index.get(lay_net.as_str()).and_then(|&i| rc[i].as_ref()).filter(|n| n.nodes > 1) else { continue };
+        let areas = net.node_areas();
+        let port = (0..net.nodes).max_by(|&a, &b| areas[a].total_cmp(&areas[b]).then(b.cmp(&a))).unwrap_or(0);
+        for (k, &(a, b, ohms)) in net.resistors.iter().enumerate() {
+            let (na, nb) = (node_name(sch, a, port), node_name(sch, b, port));
+            resistors += &format!("Rpar_{}_{k} {na} {nb} {ohms:.4e}\n", spice_ident(sch));
+            n_res += 1;
+        }
+        networks.insert(sch.as_str(), (net, port));
+    }
+    let lumped: Vec<NetCap> =
+        caps.iter().filter(|c| !networks.contains_key(to_sch.get(c.net.as_str()).copied().unwrap_or(""))).cloned().collect();
+    let mut text = annotate(&lumped, &rep.nets, MIN_FARADS);
+    let mut grounded: f64 = text.lines().filter_map(|l| l.split_whitespace().nth(3).and_then(crate::units::parse_spice)).sum();
+    let mut n_ground = text.lines().count();
+    for c in &caps {
+        let Some(sch) = to_sch.get(c.net.as_str()).copied().filter(|s| *s != "0") else { continue };
+        let Some(&(net, port)) = networks.get(sch).filter(|_| c.farads >= MIN_FARADS) else { continue };
+        let areas = net.node_areas();
+        let total: f64 = areas.iter().sum();
+        for (node, a) in areas.iter().enumerate().filter(|(_, a)| **a > 0.0) {
+            let f = c.farads * a / total;
+            text += &format!("Cpar_{}_{node} {} 0 {f:.3e}\n", spice_ident(sch), node_name(sch, node, port));
+        }
+        grounded += c.farads;
+        n_ground += 1;
+    }
+
+    // MOS terminals onto the network node nearest to their gates.
+    let conn = connectivity::extract(sch);
+    let gates: HashMap<&str, IRect> = x.devices.iter().map(|d| (d.name.as_str(), d.gate)).collect();
+    let mut terminals: BTreeMap<String, [Option<String>; 3]> = BTreeMap::new();
+    for (sname, lname) in &rep.devices {
+        let centres: Vec<(i64, i64)> =
+            lname.split('+').filter_map(|n| gates.get(n)).map(|g| ((g.x0 + g.x1) / 2, (g.y0 + g.y1) / 2)).collect();
+        let Some(k) = i64::try_from(centres.len()).ok().filter(|k| *k > 0) else { continue };
+        let at = (centres.iter().map(|c| c.0).sum::<i64>() / k, centres.iter().map(|c| c.1).sum::<i64>() / k);
+        for inst in sch.instances.iter().filter(|i| sname.split('+').any(|n| n == i.name)) {
+            let nodes = ["d", "g", "s"].map(|pin| {
+                let net = conn.net_of(inst.id, pin)?;
+                let &(rc, port) = networks.get(net)?;
+                Some(node_name(net, rc.node_at(at)?, port))
+            });
+            if nodes.iter().any(Option::is_some) {
+                terminals.insert(spice_name(inst).to_ascii_uppercase(), nodes);
+            }
+        }
+    }
     let (mut n_cc, mut cc_total) = (0, 0.0);
     for ((a, b), f) in coupled.into_iter().filter(|(_, f)| *f >= MIN_FARADS) {
         text += &format!("Cc_{}_{} {a} {b} {f:.3e}\n", spice_ident(&a), spice_ident(&b));
@@ -312,10 +569,11 @@ pub fn post_layout(project: &Project, cell: &CellRef) -> Result<PostLayout, Stri
     let junctions = junction_params(sch, &x, &rep);
 
     let mut summary = format!(
-        "post-layout: {n_ground} nets annotated, {:.3} fF to ground, {n_cc} coupling caps ({:.3} fF), junctions on {} devices",
+        "post-layout: {n_ground} nets annotated, {:.3} fF to ground, {n_cc} coupling caps ({:.3} fF), junctions on {} devices, {n_res} resistors on {} nets",
         grounded * 1e15,
         cc_total * 1e15,
-        junctions.len()
+        junctions.len(),
+        networks.len()
     );
     let paired: BTreeSet<&str> = rep.nets.iter().map(|(_, l)| l.as_str()).collect();
     let unmatched: Vec<&str> = caps.iter().map(|c| c.net.as_str()).filter(|n| !paired.contains(n)).collect();
@@ -327,7 +585,7 @@ pub fn post_layout(project: &Project, cell: &CellRef) -> Result<PostLayout, Stri
     } else {
         summary += &format!("; LVS: {} difference(s)", rep.errors.len());
     }
-    Ok(PostLayout { caps: text, junctions, summary })
+    Ok(PostLayout { caps: text, junctions, resistors, terminals, summary })
 }
 
 #[cfg(test)]
@@ -484,24 +742,67 @@ mod tests {
         let pl = PostLayout {
             caps: "Cpar_out out 0 1e-15\n".into(),
             junctions: [("M1".to_string(), "ad=1e-12 as=2e-12 pd=4e-6 ps=6e-6".to_string())].into(),
+            resistors: "Rpar_out_0 out out_n1 2\n".into(),
+            terminals: [("M1".to_string(), [Some("out_n1".to_string()), None, None])].into(),
             summary: String::new(),
         };
         let deck =
             "* t\nM1 out in 0 0 nmos w=1u l=1u\nm2 a b c d pmos w=1u l=1u\n.model nmos nmos (level=1)\n.temp 27\n.op\n.end\n";
         assert_eq!(
             pl.apply(deck),
-            "* t\nM1 out in 0 0 nmos w=1u l=1u ad=1e-12 as=2e-12 pd=4e-6 ps=6e-6\nm2 a b c d pmos w=1u l=1u\n\
-             .model nmos nmos (level=1)\n* --- layout parasitics ---\nCpar_out out 0 1e-15\n.temp 27\n.op\n.end\n"
+            "* t\nM1 out_n1 in 0 0 nmos w=1u l=1u ad=1e-12 as=2e-12 pd=4e-6 ps=6e-6\nm2 a b c d pmos w=1u l=1u\n\
+             .model nmos nmos (level=1)\n* --- layout parasitics ---\nRpar_out_0 out out_n1 2\nCpar_out out 0 1e-15\n\
+             .temp 27\n.op\n.end\n"
         );
-        assert!(pl.apply("* t\nR1 a 0 1\n").ends_with("* --- layout parasitics ---\nCpar_out out 0 1e-15\n"));
+        assert!(
+            pl.apply("* t\nR1 a 0 1\n").ends_with("* --- layout parasitics ---\nRpar_out_0 out out_n1 2\nCpar_out out 0 1e-15\n")
+        );
+    }
+
+    #[test]
+    fn wire_resistance() {
+        let tech = Tech::generic();
+        let (m1, m2, via1) =
+            (tech.layer_index("metal1").unwrap(), tech.layer_index("metal2").unwrap(), tech.layer_index("via1").unwrap());
+        let rs = tech.layer_cap("metal1").unwrap().resistance;
+        // A 10 x 0.3 µm wire: four 2.5 µm segments in series.
+        let x = nets(vec![net("a", m1, &[IRect::new(0, 0, 10_000, 300)])]);
+        let rc = rc_networks(&Layout::default(), &crate::hier::NoCells, &x, &tech).remove(0).unwrap();
+        assert_eq!((rc.segments.len(), rc.nodes, rc.resistors.len()), (4, 4, 3));
+        let total: f64 = rc.resistors.iter().map(|r| r.2).sum();
+        assert!(approx(total, rs * 7.5 / 0.3), "{total}");
+        assert_ne!(rc.node_at((0, 150)), rc.node_at((10_000, 150)));
+
+        // metal1 and metal2 joined by one via1 cut.
+        let mut x = nets(vec![net("a", m1, &[IRect::new(0, 0, 1000, 300)])]);
+        x.nets[0].shapes.push((m2, Region::from_rects([IRect::new(700, 0, 3000, 300)])));
+        x.nets[0].bbox = Some(IRect::new(0, 0, 3000, 300));
+        let mut lay = Layout::default();
+        lay.add_rect(via1, 720, 20, 980, 280);
+        let rc = rc_networks(&lay, &crate::hier::NoCells, &x, &tech).remove(0).unwrap();
+        assert!(rc.resistors.iter().any(|r| r.2 == tech.via("via1").unwrap().resistance), "{rc:?}");
+        assert_ne!(rc.node_at((100, 150)), rc.node_at((2900, 150)));
+
+        // Pieces joined only off the network collapse onto one node; no sheet resistance, no network.
+        let x = nets(vec![net("a", m1, &[IRect::new(0, 0, 300, 300), IRect::new(1000, 0, 1300, 300)])]);
+        assert_eq!(rc_networks(&Layout::default(), &crate::hier::NoCells, &x, &tech)[0].as_ref().unwrap().nodes, 1);
+        let mut plain = tech.clone();
+        plain.caps.iter_mut().for_each(|c| c.resistance = 0.0);
+        assert!(rc_networks(&Layout::default(), &crate::hier::NoCells, &x, &plain)[0].is_none());
     }
 
     #[test]
     fn demo_post_layout() {
         let p = crate::examples::demo_project();
         let pl = post_layout(&p, &CellRef::new("work", "cmos_inverter")).unwrap();
-        let nets: Vec<&str> =
-            pl.caps.lines().filter(|l| l.starts_with("Cpar")).map(|l| l.split_whitespace().nth(1).unwrap()).collect();
+        let mut nets: Vec<&str> = pl
+            .caps
+            .lines()
+            .filter(|l| l.starts_with("Cpar"))
+            .map(|l| l.split_whitespace().nth(1).unwrap())
+            .map(|n| n.rsplit_once("_n").map_or(n, |(a, _)| a))
+            .collect();
+        nets.dedup();
         assert_eq!(nets, ["in", "out", "vdd"], "{}", pl.caps);
         assert!(pl.summary.starts_with("post-layout: 3 nets annotated"), "{}", pl.summary);
         assert!(pl.summary.contains("junctions on 2 devices"), "{}", pl.summary);
@@ -523,5 +824,26 @@ mod tests {
         let deck = crate::netlist::netlist(c.schematic.as_ref().unwrap()).deck("ring", &c.sim);
         let post = pl.apply(&deck);
         assert_eq!(post.lines().filter(|l| l.contains(" ad=")).count(), 10, "{post}");
+        assert!(pl.summary.contains(" resistors on "), "{}", pl.summary);
+        assert!(!pl.resistors.is_empty() && !pl.terminals.is_empty(), "{pl:?}");
+        let moved = post.lines().filter(|l| l.starts_with('M') && l.split_whitespace().take(4).any(|t| t.contains("_n"))).count();
+        assert!(moved > 0, "{post}");
+        // Every network node reaches its net's named node through resistors.
+        let mut adj: HashMap<String, Vec<String>> = HashMap::new();
+        for l in pl.resistors.lines() {
+            let t: Vec<&str> = l.split_whitespace().collect();
+            adj.entry(t[1].into()).or_default().push(t[2].into());
+            adj.entry(t[2].into()).or_default().push(t[1].into());
+        }
+        for node in adj.keys().filter(|n| n.contains("_n")) {
+            let named = node.rsplit_once("_n").unwrap().0;
+            let (mut seen, mut stack) = (BTreeSet::new(), vec![node.clone()]);
+            while let Some(n) = stack.pop() {
+                if seen.insert(n.clone()) {
+                    stack.extend(adj[&n].iter().cloned());
+                }
+            }
+            assert!(seen.contains(named), "{node} is not connected to {named}");
+        }
     }
 }

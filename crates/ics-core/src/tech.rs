@@ -82,6 +82,9 @@ pub struct ViaDef {
     pub cut_spacing: i64,
     pub enc_bottom: i64,
     pub enc_top: i64,
+    /// Resistance of one cut in Ω (0 = none).
+    #[serde(default)]
+    pub resistance: f64,
 }
 
 /// Wire capacitance to substrate of a conducting layer, used by parasitic extraction (`pex`).
@@ -96,6 +99,9 @@ pub struct LayerCap {
     /// length L adds `coupling · L / s` (0 = none).
     #[serde(default)]
     pub coupling: f64,
+    /// Sheet resistance in Ω per square (0 = no wire resistance).
+    #[serde(default)]
+    pub resistance: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -154,7 +160,7 @@ impl Tech {
             min_spacing: s,
             routing,
         };
-        let v = |name: &str, bottom: &str, cut: &str, top: &str, size: i64, space: i64, eb: i64, et: i64| ViaDef {
+        let v = |name: &str, bottom: &str, cut: &str, top: &str, size: i64, space: i64, eb: i64, et: i64, ohms: f64| ViaDef {
             name: name.into(),
             bottom: bottom.into(),
             cut: cut.into(),
@@ -163,6 +169,7 @@ impl Tech {
             cut_spacing: space,
             enc_bottom: eb,
             enc_top: et,
+            resistance: ohms,
         };
         Tech {
             name: "generic180".into(),
@@ -184,20 +191,26 @@ impl Tech {
                 l("boundary", 62, [160, 160, 170, 255], FillStyle::Outline, 0, 0, false),
             ],
             vias: vec![
-                v("contact", "active", "contact", "metal1", 220, 250, 100, 60),
-                v("polycon", "poly", "contact", "metal1", 220, 250, 100, 60),
-                v("via1", "metal1", "via1", "metal2", 260, 260, 60, 60),
-                v("via2", "metal2", "via2", "metal3", 260, 260, 60, 60),
+                v("contact", "active", "contact", "metal1", 220, 250, 100, 60, 10.0),
+                v("polycon", "poly", "contact", "metal1", 220, 250, 100, 60, 10.0),
+                v("via1", "metal1", "via1", "metal2", 260, 260, 60, 60, 5.0),
+                v("via2", "metal2", "via2", "metal3", 260, 260, 60, 60, 5.0),
             ],
             drc_deck: None,
             // Illustrative 180nm-class values (field oxide to substrate), not foundry data.
             caps: [
-                ("poly", 100.0, 45.0, 7.0),
-                ("metal1", 38.0, 40.0, 17.0),
-                ("metal2", 16.0, 32.0, 20.0),
-                ("metal3", 10.0, 28.0, 20.0),
+                ("poly", 100.0, 45.0, 7.0, 7.5),
+                ("metal1", 38.0, 40.0, 17.0, 0.08),
+                ("metal2", 16.0, 32.0, 20.0, 0.08),
+                ("metal3", 10.0, 28.0, 20.0, 0.06),
             ]
-            .map(|(layer, area, fringe, coupling)| LayerCap { layer: layer.into(), area, fringe, coupling })
+            .map(|(layer, area, fringe, coupling, resistance)| LayerCap {
+                layer: layer.into(),
+                area,
+                fringe,
+                coupling,
+                resistance,
+            })
             .into(),
         }
     }
