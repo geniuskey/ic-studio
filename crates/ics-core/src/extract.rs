@@ -10,6 +10,9 @@
 //!   global substrate net "sub".
 //! - Gates are the pieces of `active AND poly`. PMOS when inside pplus (or, without an implant,
 //!   inside nwell). L is measured across the two diffusion pieces, W = area / L.
+//! - Junctions: each source / drain diffusion piece contributes its area and its perimeter
+//!   without the edges against the device gates; a piece shared by several terminals (fingers,
+//!   abutted devices) is split equally between them.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -58,6 +61,14 @@ impl Net {
     }
 }
 
+/// Source or drain junction of a device, in dbu² and dbu.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Junction {
+    pub area: f64,
+    /// Perimeter excluding the gate edges.
+    pub perimeter: f64,
+}
+
 #[derive(Debug, Clone)]
 pub struct Device {
     pub kind: DevKind,
@@ -72,6 +83,8 @@ pub struct Device {
     pub s: usize,
     pub b: usize,
     pub gate: IRect,
+    pub jd: Junction,
+    pub js: Junction,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -232,6 +245,9 @@ fn component_anchors(r: Region) -> Vec<(i64, i64)> {
 struct Gate {
     kind: DevKind,
     rect: IRect,
+    rects: Vec<IRect>,
+    /// Diffusion components (plane-local) of the source and drain.
+    sd: (usize, usize),
     w: i64,
     l: i64,
     s: usize,
@@ -405,6 +421,8 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
             gates.push(Gate {
                 kind,
                 rect: bb,
+                rects: rs,
+                sd: (s, d),
                 w: area / l.max(1),
                 l,
                 s: offset[dp] + s,
@@ -412,6 +430,26 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
                 g: offset[pp] + g,
                 b,
             });
+        }
+    }
+
+    let mut junctions: HashMap<usize, Junction> = HashMap::new();
+    if let Some(dp) = diff_pi {
+        let mut users: BTreeMap<usize, (usize, Vec<IRect>)> = BTreeMap::new();
+        for g in &gates {
+            for c in [g.sd.0, g.sd.1] {
+                let u = users.entry(c).or_default();
+                u.0 += 1;
+                u.1.extend_from_slice(&g.rects);
+            }
+        }
+        for (c, (refs, gate_rects)) in users {
+            let piece = Region::from_rects(planes[dp].comp_rects(c));
+            let gates = Region::from_rects(gate_rects);
+            let p = piece.perimeter();
+            let gate_edge = (p + gates.perimeter() - piece.boolean(&gates, BoolOp::Or).perimeter()) / 2;
+            let k = refs as f64;
+            junctions.insert(c, Junction { area: piece.area() as f64 / k, perimeter: (p - gate_edge) as f64 / k });
         }
     }
 
@@ -526,6 +564,8 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
             s: net(g.s),
             b: net(g.b),
             gate: g.rect,
+            js: junctions.get(&g.sd.0).copied().unwrap_or_default(),
+            jd: junctions.get(&g.sd.1).copied().unwrap_or_default(),
         })
         .collect();
 

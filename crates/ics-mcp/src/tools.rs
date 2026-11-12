@@ -496,7 +496,7 @@ pub fn definitions() -> Vec<Value> {
         ),
         tool(
             "post_layout_parasitics",
-            "Wire capacitance per net extracted from the layout and mapped to schematic nets via LVS: the SPICE capacitor lines that simulate adds with parasitics=true, a summary, and the largest net capacitances.",
+            "Layout parasitics mapped to schematic nets and devices via LVS: capacitor lines (wire capacitance to ground, coupling between nets) and MOS junction parameters (ad/as/pd/ps) that simulate adds with parasitics=true, a summary, and the largest net and coupling capacitances.",
             json!({"cell": cell()}),
             &["cell"],
         ),
@@ -736,14 +736,13 @@ impl State {
         let c = p.cell(&r).expect("resolved");
         let sch = c.schematic.as_ref().ok_or("cell has no schematic view")?;
         let nl = ics_core::netlist::netlist(sch);
-        let mut setup = c.sim.clone();
+        let mut deck = nl.deck(&r.to_string(), &c.sim);
         let mut parasitics = None;
-        if a.opt_bool("parasitics")?.unwrap_or(false) || setup.parasitics {
-            let (lines, summary) = ics_core::pex::post_layout_lines(p, &r)?;
-            setup.extra = format!("{}\n* --- layout parasitics ---\n{lines}", setup.extra.trim_end());
-            parasitics = Some(summary);
+        if a.opt_bool("parasitics")?.unwrap_or(false) || c.sim.parasitics {
+            let pl = ics_core::pex::post_layout(p, &r)?;
+            deck = pl.apply(&deck);
+            parasitics = Some(pl.summary);
         }
-        let deck = nl.deck(&r.to_string(), &setup);
         let opts = sim_options(Some(p), backend(a)?.unwrap_or(c.sim.backend));
         let analyses: Vec<_> = c.sim.enabled().cloned().collect();
         let res = ics_sim::simulate(&deck, &analyses, &opts).map_err(|e| e.to_string())?;
@@ -1057,14 +1056,26 @@ impl State {
 
     fn post_layout_parasitics(&self, a: &Args) -> Result<Value, String> {
         let (p, r) = self.cell_arg(a)?;
-        let (lines, summary) = ics_core::pex::post_layout_lines(p, &r)?;
+        let pl = ics_core::pex::post_layout(p, &r)?;
         let x = extract(layout_of(p, &r)?, p, &p.tech);
         let caps: Vec<Value> = ics_core::pex::net_caps(&x, &p.tech)
             .iter()
             .take(50)
             .map(|c| json!({"layout_net": c.net, "fF": sig(c.farads * 1e15)}))
             .collect();
-        Ok(json!({"cell": r.to_string(), "summary": summary, "spice": lines, "largest_net_caps": caps}))
+        let coupling: Vec<Value> = ics_core::pex::coupling_caps(&x, &p.tech)
+            .iter()
+            .take(50)
+            .map(|c| json!({"layout_nets": [c.a, c.b], "fF": sig(c.farads * 1e15)}))
+            .collect();
+        Ok(json!({
+            "cell": r.to_string(),
+            "summary": pl.summary,
+            "spice": pl.caps,
+            "junctions": pl.junctions,
+            "largest_net_caps": caps,
+            "largest_coupling_caps": coupling,
+        }))
     }
 
     fn export_gds(&self, a: &Args) -> Result<Value, String> {

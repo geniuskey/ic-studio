@@ -51,8 +51,9 @@ Linux needs the usual windowing libraries:
   labels, live connectivity, property inspector, SPICE netlister
 - Operating point, DC sweep, AC and transient analyses on the built-in Rust MNA engine or
   ngspice; waveform viewer with Bode plots and automatic measurements
-- Optional post-layout simulation: wire capacitance extracted from the layout is added to
-  the matching schematic nets
+- Optional post-layout simulation: wire capacitance to substrate, lateral and overlap
+  coupling between nets, and MOS drain / source junctions (`ad as pd ps`) extracted from the
+  layout are added to the matching schematic nets and devices
 
 **Layout**
 - Hierarchy: cell instances and arrays (GDS SREF / AREF) with 90° rotations and mirroring,

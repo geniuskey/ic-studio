@@ -123,6 +123,18 @@ pub struct MosModel {
     pub tox: f64,
     pub cgso: f64,
     pub cgdo: f64,
+    /// Zero-bias junction capacitance per area (F/m²) and per perimeter (F/m).
+    pub cj: f64,
+    pub cjsw: f64,
+}
+
+/// Drain / source junction geometry of a MOS instance (m², m), per device of `m`.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Junctions {
+    pub ad: f64,
+    pub as_: f64,
+    pub pd: f64,
+    pub ps: f64,
 }
 
 /// Node index: 0 is ground.
@@ -136,7 +148,7 @@ pub enum Element {
     V { name: String, a: Node, b: Node, src: Source },
     I { name: String, a: Node, b: Node, src: Source },
     D { name: String, a: Node, k: Node, model: DiodeModel },
-    M { name: String, d: Node, g: Node, s: Node, b: Node, model: MosModel, w: f64, l: f64, m: f64 },
+    M { name: String, d: Node, g: Node, s: Node, b: Node, model: MosModel, w: f64, l: f64, m: f64, junctions: Junctions },
 }
 
 impl Element {
@@ -330,6 +342,8 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
                         tox: g("tox", 1e-7),
                         cgso: g("cgso", 0.0),
                         cgdo: g("cgdo", 0.0),
+                        cj: g("cj", 0.0),
+                        cjsw: g("cjsw", 0.0),
                     },
                 );
             }
@@ -433,6 +447,12 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
                     w: p.get("w").copied().unwrap_or(1e-6),
                     l: p.get("l").copied().unwrap_or(1e-6),
                     m: p.get("m").copied().unwrap_or(1.0),
+                    junctions: Junctions {
+                        ad: p.get("ad").copied().unwrap_or(0.0),
+                        as_: p.get("as").copied().unwrap_or(0.0),
+                        pd: p.get("pd").copied().unwrap_or(0.0),
+                        ps: p.get("ps").copied().unwrap_or(0.0),
+                    },
                 }
             }
             _ => return Err(err(ln, format!("unsupported element '{}' (built-in engine supports R C L V I D M)", t[0]))),

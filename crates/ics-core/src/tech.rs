@@ -92,6 +92,10 @@ pub struct LayerCap {
     pub area: f64,
     /// Fringe capacitance in aF per µm of edge.
     pub fringe: f64,
+    /// Lateral coupling in aF: a parallel neighbour on the same layer at spacing s over a run
+    /// length L adds `coupling · L / s` (0 = none).
+    #[serde(default)]
+    pub coupling: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -187,9 +191,14 @@ impl Tech {
             ],
             drc_deck: None,
             // Illustrative 180nm-class values (field oxide to substrate), not foundry data.
-            caps: [("poly", 100.0, 45.0), ("metal1", 38.0, 40.0), ("metal2", 16.0, 32.0), ("metal3", 10.0, 28.0)]
-                .map(|(layer, area, fringe)| LayerCap { layer: layer.into(), area, fringe })
-                .into(),
+            caps: [
+                ("poly", 100.0, 45.0, 7.0),
+                ("metal1", 38.0, 40.0, 17.0),
+                ("metal2", 16.0, 32.0, 20.0),
+                ("metal3", 10.0, 28.0, 20.0),
+            ]
+            .map(|(layer, area, fringe, coupling)| LayerCap { layer: layer.into(), area, fringe, coupling })
+            .into(),
         }
     }
 }

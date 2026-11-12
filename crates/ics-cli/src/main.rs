@@ -252,18 +252,12 @@ fn run(cli: Cli) -> Result<(), String> {
             let c = p.cell(&r).unwrap();
             let sch = c.schematic.as_ref().ok_or("cell has no schematic")?;
             let nl = ics_core::netlist::netlist(sch);
-            let mut setup = c.sim.clone();
-            if parasitics || setup.parasitics {
-                let (lines, summary) = ics_core::pex::post_layout_lines(&p, &r)?;
-                eprintln!("{summary}");
-                setup.extra = format!(
-                    "{}
-* --- layout parasitics ---
-{lines}",
-                    setup.extra.trim_end()
-                );
+            let mut deck = nl.deck(&r.to_string(), &c.sim);
+            if parasitics || c.sim.parasitics {
+                let pl = ics_core::pex::post_layout(&p, &r)?;
+                eprintln!("{}", pl.summary);
+                deck = pl.apply(&deck);
             }
-            let deck = nl.deck(&r.to_string(), &setup);
             let mut opts = SimOptions { backend: c.sim.backend, ..Default::default() };
             if let Some(b) = b {
                 opts.backend = backend(b);

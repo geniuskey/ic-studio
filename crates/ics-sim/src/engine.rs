@@ -136,7 +136,14 @@ impl Engine {
                 }
                 Element::C { a, b, c, .. } => caps.push(Cap { a: *a, b: *b, c: *c }),
                 Element::D { a, k, model, .. } if model.cjo > 0.0 => caps.push(Cap { a: *a, b: *k, c: model.cjo }),
-                Element::M { d, g, s, model, w, l, m, .. } => {
+                Element::M { d, g, s, b, model, w, l, m, junctions: j, .. } => {
+                    // Junctions are linearised at zero bias.
+                    for (t, area, perim) in [(*d, j.ad, j.pd), (*s, j.as_, j.ps)] {
+                        let cj = (model.cj * area + model.cjsw * perim) * m;
+                        if cj > 0.0 && t != *b {
+                            caps.push(Cap { a: t, b: *b, c: cj });
+                        }
+                    }
                     let cox = EPS_OX / model.tox;
                     let cgs = (2.0 / 3.0) * cox * w * l * m + model.cgso * w * m;
                     let cgd = model.cgdo * w * m;
@@ -377,7 +384,7 @@ impl Engine {
         let mut out = vec![];
         for e in &self.c.elements {
             match e {
-                Element::M { name, d, g, s, b, model, w, l, m } => {
+                Element::M { name, d, g, s, b, model, w, l, m, .. } => {
                     let v = |n| self.v(x, n);
                     let ev = mos_eval(model, *w, *l, *m, v(*d), v(*g), v(*s), v(*b));
                     out.push(DeviceOp {
@@ -710,6 +717,20 @@ mod tests {
         let ds = e.run_ac(100, fc, fc * 1.001).unwrap();
         let db = ds.get("v(out)").unwrap().db()[0];
         assert!((db + 3.0103).abs() < 0.01, "{db}");
+    }
+
+    #[test]
+    fn mos_junction_caps() {
+        let deck = |j: &str| {
+            format!(
+                "* t\nV1 in 0 DC 0 AC 1\nR1 in out 1meg\nM1 out 0 0 0 nm w=1u l=1u {j}\n.model nm nmos (vto=0.7 cj=1m cjsw=0.5n)\n.end"
+            )
+        };
+        let fc = 1.0 / (2.0 * std::f64::consts::PI * 1e6 * 2e-15);
+        let db = |j: &str| engine(&deck(j)).run_ac(100, fc, fc * 1.001).unwrap().get("v(out)").unwrap().db()[0];
+        assert!((db("ad=1p pd=2u") + 3.0103).abs() < 0.01);
+        assert!((db("as=1p ps=2u") + 3.0103).abs() > 1.0, "the source junction is shorted to the bulk");
+        assert!(db("").abs() < 0.01);
     }
 
     #[test]

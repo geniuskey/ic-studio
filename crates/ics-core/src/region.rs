@@ -138,6 +138,19 @@ impl Region {
         self.boolean(&outside.dilated(right, top, left, bottom), BoolOp::Not)
     }
 
+    /// Boundary length: rect edges not shared with an abutting rect.
+    pub fn perimeter(&self) -> i64 {
+        let mut horiz: BTreeMap<i64, [Vec<(i64, i64)>; 2]> = BTreeMap::new();
+        let mut vert: BTreeMap<i64, [Vec<(i64, i64)>; 2]> = BTreeMap::new();
+        for q in &self.rects {
+            horiz.entry(q.y0).or_default()[0].push((q.x0, q.x1));
+            horiz.entry(q.y1).or_default()[1].push((q.x0, q.x1));
+            vert.entry(q.x0).or_default()[0].push((q.y0, q.y1));
+            vert.entry(q.x1).or_default()[1].push((q.y0, q.y1));
+        }
+        horiz.into_values().chain(vert.into_values()).map(|[mut lo, mut hi]| exposed(&mut lo, &mut hi)).sum()
+    }
+
     /// Edge-connected components, each as its own (canonical) region.
     pub fn parts(&self) -> Vec<Region> {
         self.components().into_iter().map(|c| Region { rects: c.into_iter().map(|i| self.rects[i]).collect() }).collect()
@@ -638,6 +651,19 @@ fn trace_loop(edges: &[GridEdge]) -> Option<Vec<(usize, usize)>> {
     let first = (0..corners.len()).min_by_key(|&k| (corners[k].1, corners[k].0))?;
     corners.rotate_left(first);
     Some(corners)
+}
+
+/// Length of the symmetric difference of two sets of disjoint intervals on one line.
+fn exposed(a: &mut [(i64, i64)], b: &mut [(i64, i64)]) -> i64 {
+    a.sort_unstable();
+    b.sort_unstable();
+    let len = |v: &[(i64, i64)]| v.iter().map(|(s, e)| e - s).sum::<i64>();
+    let (mut i, mut j, mut shared) = (0, 0, 0);
+    while i < a.len() && j < b.len() {
+        shared += (a[i].1.min(b[j].1) - a[i].0.max(b[j].0)).max(0);
+        if a[i].1 < b[j].1 { i += 1 } else { j += 1 }
+    }
+    len(a) + len(b) - 2 * shared
 }
 
 #[cfg(test)]

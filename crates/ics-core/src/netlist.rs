@@ -6,8 +6,8 @@ use crate::sim_setup::SimSetup;
 
 /// Generic default device models (level-1 style) used when no PDK models are given.
 pub const DEFAULT_MODELS: &str = "\
-.model nmos nmos (level=1 vto=0.45 kp=280u lambda=0.08 gamma=0.4 phi=0.8 tox=4n cgso=0.3n cgdo=0.3n cj=1m)
-.model pmos pmos (level=1 vto=-0.45 kp=70u lambda=0.1 gamma=0.4 phi=0.8 tox=4n cgso=0.3n cgdo=0.3n cj=1m)
+.model nmos nmos (level=1 vto=0.45 kp=280u lambda=0.08 gamma=0.4 phi=0.8 tox=4n cgso=0.3n cgdo=0.3n cj=1m cjsw=0.3n)
+.model pmos pmos (level=1 vto=-0.45 kp=70u lambda=0.1 gamma=0.4 phi=0.8 tox=4n cgso=0.3n cgdo=0.3n cj=1m cjsw=0.3n)
 .model dmod d (is=1e-14 n=1 rs=10 cjo=1p)";
 
 #[derive(Debug, Clone)]
@@ -37,7 +37,7 @@ impl Netlist {
     }
 }
 
-fn spice_name(inst: &Instance) -> String {
+pub(crate) fn spice_name(inst: &Instance) -> String {
     let prefix = inst.kind.spice_prefix().unwrap_or('X');
     let name = inst.name.trim().replace(' ', "_");
     if name.chars().next().is_some_and(|c| c.eq_ignore_ascii_case(&prefix)) { name } else { format!("{prefix}{name}") }

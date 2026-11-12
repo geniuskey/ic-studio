@@ -731,11 +731,10 @@ impl IcStudio {
             self.warn(format!("netlist: {w}"));
         }
         if parasitics && let Some(p) = &self.project {
-            match ics_core::pex::post_layout_lines(p, &r) {
-                Ok((lines, summary)) => {
-                    let at = deck.find("\n.temp").map_or(deck.len(), |i| i + 1);
-                    deck.insert_str(at, &format!("* --- layout parasitics ---\n{lines}"));
-                    self.info(summary);
+            match ics_core::pex::post_layout(p, &r) {
+                Ok(pl) => {
+                    deck = pl.apply(&deck);
+                    self.info(pl.summary);
                 }
                 Err(e) => self.warn(format!("Parasitics not included: {e}")),
             }
