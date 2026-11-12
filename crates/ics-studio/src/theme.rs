@@ -162,6 +162,17 @@ pub fn apply(ctx: &egui::Context, dark: bool) {
     });
 }
 
+/// Text color for labels painted on a saturated fill (buttons, badges): whichever of
+/// near-black or white has the higher contrast.
+pub fn on_fill(fill: Color32) -> Color32 {
+    let lin = |c: u8| {
+        let v = c as f32 / 255.0;
+        if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+    };
+    let l = 0.2126 * lin(fill.r()) + 0.7152 * lin(fill.g()) + 0.0722 * lin(fill.b());
+    if (l + 0.05) / 0.06 > 1.05 / (l + 0.05) { DARK.bg_canvas } else { Color32::WHITE }
+}
+
 /// Small uppercase section header used in side panels.
 pub fn section(ui: &mut egui::Ui, text: &str) {
     let p = palette(ui.ctx());

@@ -1091,7 +1091,7 @@ impl IcStudio {
         egui::MenuBar::new().ui(ui, |ui| {
             let (r, p) = ui.allocate_painter(Vec2::new(22.0, 22.0), Sense::hover());
             p.rect_filled(r.rect.shrink(1.0), 5.0, pal.accent);
-            p.text(r.rect.center(), Align2::CENTER_CENTER, "IC", FontId::proportional(10.5), Color32::WHITE);
+            p.text(r.rect.center(), Align2::CENTER_CENTER, "IC", FontId::proportional(10.5), theme::on_fill(pal.accent));
             ui.menu_button("File", |ui| {
                 if ui.button("New Project…").clicked() {
                     q.push(Command::NewProjectDialog);

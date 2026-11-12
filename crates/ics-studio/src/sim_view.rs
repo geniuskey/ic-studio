@@ -172,14 +172,15 @@ pub fn setup_panel(
 
     ui.add_space(4.0);
     let running = state.is_running();
+    let fill = if running { pal.bg_hover } else { pal.simulation };
     let btn = egui::Button::new(
         RichText::new(if running { "⏳  Running…" } else { "▶  Run Simulation" }).size(15.0).strong().color(if running {
             pal.text_weak
         } else {
-            Color32::WHITE
+            theme::on_fill(fill)
         }),
     )
-    .fill(if running { pal.bg_hover } else { pal.simulation.gamma_multiply(0.9) })
+    .fill(fill)
     .min_size(egui::vec2(ui.available_width(), 34.0));
     if ui.add_enabled(!running, btn).on_hover_text("F5 / ⌘↩").clicked() {
         run = true;
