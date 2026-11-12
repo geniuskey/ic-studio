@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::home_view;
 use crate::icons::{self, Icon};
-use crate::layout_view::{LayCtx, LayTool, LayoutEditor, fmt_count, um};
+use crate::layout_view::{LayCtx, LayRequest, LayTool, LayoutEditor, fmt_count, um};
 use crate::schematic_view::{SchTool, SchematicEditor, device_palette};
 use crate::sim_view::{self, SimEvent, SimState};
 use crate::theme::{self, Palette};
@@ -1149,13 +1149,72 @@ impl IcStudio {
                         });
                     });
                     egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| {
-                        let o = ed.canvas(ui, l, &mut cx);
-                        changed |= o.changed;
-                        open = open.take().or(o.open);
+                        changed |= ed.canvas(ui, l, &mut cx).changed;
                     });
+                }
+                let mut log: Vec<(bool, String)> = vec![];
+                let mut touched = false;
+                for req in std::mem::take(&mut ed.requests) {
+                    match req {
+                        LayRequest::Open(c) => open = Some(c),
+                        LayRequest::PlacePCell { pcell, trans, array } => match project.ensure_pcell(&pcell) {
+                            Ok(cr) => {
+                                ed.history.push(&lay);
+                                ed.selection = [lay.add_instance(cr, trans, array)].into();
+                                touched = true;
+                            }
+                            Err(e) => log.push((false, format!("PCell: {e}"))),
+                        },
+                        LayRequest::SetPCell { inst, pcell } => match project.ensure_pcell(&pcell) {
+                            Ok(cr) => {
+                                ed.history.push(&lay);
+                                if let Some(i) = lay.instance_mut(inst) {
+                                    i.cell = cr;
+                                    touched = true;
+                                }
+                            }
+                            Err(e) => log.push((false, format!("PCell: {e}"))),
+                        },
+                        LayRequest::MakeCell { ids, origin } => {
+                            let mut k = 1;
+                            let name = loop {
+                                let n = format!("{}_sub{k}", r.cell);
+                                if project.cell(&CellRef::new(&r.lib, &n)).is_none() {
+                                    break n;
+                                }
+                                k += 1;
+                            };
+                            ed.history.push(&lay);
+                            let mut c = Cell::new(&name);
+                            c.description = format!("Extracted from {}", r.cell);
+                            c.layout = Some(lay.extract(&ids, origin));
+                            match project.add_cell(&r.lib, c) {
+                                Ok(cr) => {
+                                    log.push((true, format!("Moved {} item(s) into new cell {cr}", ids.len())));
+                                    ed.selection = [lay.add_instance(cr, ics_core::Trans::new(origin.0, origin.1), None)].into();
+                                    touched = true;
+                                }
+                                Err(e) => {
+                                    ed.history.undo(&mut lay);
+                                    log.push((false, e));
+                                }
+                            }
+                        }
+                    }
+                }
+                if touched {
+                    self.hier.invalidate(&r);
+                    changed = true;
                 }
                 if let Some(c) = project.cell_mut(&r) {
                     c.layout = Some(lay);
+                }
+                for (ok, m) in log {
+                    if ok {
+                        self.ok(m);
+                    } else {
+                        self.error(m);
+                    }
                 }
                 if let Some(o) = open {
                     self.queue.push(Command::OpenCell(o, Some(Workspace::Layout)));

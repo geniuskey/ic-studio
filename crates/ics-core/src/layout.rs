@@ -1,6 +1,8 @@
 //! Full-custom layout database: shapes on technology layers and placed cell instances,
 //! in database units (dbu). Layout y grows upwards (GDS convention).
 
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 
 use crate::geom::IRect;
@@ -22,6 +24,21 @@ pub struct Trans {
 
 impl Trans {
     pub const IDENTITY: Trans = Trans { x: 0, y: 0, rot: 0, mirror: false };
+
+    /// 90° counter-clockwise rotation about `p`.
+    pub fn rotate_about(p: (i64, i64)) -> Trans {
+        Trans { x: p.0 + p.1, y: p.1 - p.0, rot: 1, mirror: false }
+    }
+
+    /// Flip left-right (x -> -x) about the vertical line through `p`.
+    pub fn flip_x_about(p: (i64, i64)) -> Trans {
+        Trans { x: 2 * p.0, y: 0, rot: 2, mirror: true }
+    }
+
+    /// Flip top-bottom (y -> -y) about the horizontal line through `p`.
+    pub fn flip_y_about(p: (i64, i64)) -> Trans {
+        Trans { x: 0, y: 2 * p.1, rot: 0, mirror: true }
+    }
 
     pub fn new(x: i64, y: i64) -> Self {
         Self { x, y, rot: 0, mirror: false }
@@ -405,6 +422,60 @@ impl Layout {
         self.shapes.iter().map(|s| s.bbox()).reduce(|a, b| a.union(&b))
     }
 
+    /// Apply `t` to the given shapes and instances (e.g. a rotation about a pivot).
+    pub fn transform_items(&mut self, ids: &BTreeSet<u64>, t: &Trans) {
+        for s in self.shapes.iter_mut().filter(|s| ids.contains(&s.id)) {
+            s.geom = s.geom.transformed(t);
+        }
+        for i in self.instances.iter_mut().filter(|i| ids.contains(&i.id)) {
+            i.trans = t.compose(&i.trans);
+            if let Some(a) = i.array.as_mut() {
+                a.col = t.apply_vec(a.col);
+                a.row = t.apply_vec(a.row);
+            }
+        }
+    }
+
+    /// Replace the given instances by the contents of their cells, one level deep (nested
+    /// instances become instances of this cell). Returns the ids of the new items.
+    pub fn flatten_instances(&mut self, ids: &BTreeSet<u64>, src: &dyn LayoutSource) -> Vec<u64> {
+        let targets: Vec<CellInst> = self.instances.iter().filter(|i| ids.contains(&i.id)).cloned().collect();
+        let mut out = vec![];
+        for inst in targets {
+            let Some(child) = src.layout(&inst.cell) else { continue };
+            self.remove(inst.id);
+            let (c, r) = inst.dims();
+            for j in 0..r {
+                for i in 0..c {
+                    let t = inst.element_trans(i, j);
+                    for s in &child.shapes {
+                        out.push(self.add(s.layer, s.geom.transformed(&t)));
+                    }
+                    for ci in &child.instances {
+                        let array = ci.array.map(|a| ArraySpec { col: t.apply_vec(a.col), row: t.apply_vec(a.row), ..a });
+                        out.push(self.add_instance(ci.cell.clone(), t.compose(&ci.trans), array));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Move the given items out into a new layout whose origin is `origin` in this layout.
+    pub fn extract(&mut self, ids: &BTreeSet<u64>, origin: (i64, i64)) -> Layout {
+        let mut out = Layout::default();
+        let t = Trans::new(-origin.0, -origin.1);
+        for s in self.shapes.iter().filter(|s| ids.contains(&s.id)) {
+            out.add(s.layer, s.geom.transformed(&t));
+        }
+        for i in self.instances.iter().filter(|i| ids.contains(&i.id)) {
+            out.add_instance(i.cell.clone(), t.compose(&i.trans), i.array);
+        }
+        self.shapes.retain(|s| !ids.contains(&s.id));
+        self.instances.retain(|i| !ids.contains(&i.id));
+        out
+    }
+
     /// Point instances of `from` at `to` (used when cells are renamed or imported).
     pub fn rename_refs(&mut self, from: &CellRef, to: &CellRef) -> bool {
         let mut any = false;
@@ -544,6 +615,46 @@ mod tests {
         // GDS: 90° rotates +x onto +y; mirror flips y before rotating.
         assert_eq!(Trans::with(0, 0, 1, false).apply((1, 0)), (0, 1));
         assert_eq!(Trans::with(0, 0, 0, true).apply((1, 2)), (1, -2));
+    }
+
+    #[test]
+    fn pivot_transforms() {
+        let p = (100, 50);
+        assert_eq!(Trans::rotate_about(p).apply(p), p);
+        assert_eq!(Trans::rotate_about(p).apply((110, 50)), (100, 60));
+        assert_eq!(Trans::flip_x_about(p).apply((110, 70)), (90, 70));
+        assert_eq!(Trans::flip_y_about(p).apply((110, 70)), (110, 30));
+    }
+
+    #[test]
+    fn flatten_extract_and_transform_items() {
+        use std::collections::HashMap;
+        let leaf = CellRef::new("w", "leaf");
+        let mut child = Layout::default();
+        child.add_rect(1, 0, 0, 10, 20);
+        let mut src = HashMap::new();
+        src.insert(leaf.clone(), child);
+        let mut top = Layout::default();
+        let id = top.add_instance(
+            leaf.clone(),
+            Trans::with(100, 0, 1, false),
+            Some(ArraySpec { cols: 2, rows: 1, col: (50, 0), row: (0, 0) }),
+        );
+        let before = flatten(&top, &src, 8).into_iter().map(|f| f.geom).collect::<Vec<_>>();
+        let new = top.flatten_instances(&[id].into(), &src);
+        assert_eq!(new.len(), 2);
+        assert!(top.instances.is_empty());
+        assert_eq!(top.shapes.iter().map(|s| s.geom.clone()).collect::<Vec<_>>(), before);
+
+        let ids: BTreeSet<u64> = top.ids().collect();
+        let sub = top.extract(&ids, (80, 0));
+        assert!(top.is_empty());
+        assert_eq!(sub.shapes[0].geom, Geometry::Rect(IRect::new(0, 0, 20, 10)));
+
+        let mut l = Layout::default();
+        let r = l.add_rect(1, 0, 0, 30, 10);
+        l.transform_items(&[r].into(), &Trans::rotate_about((0, 0)));
+        assert_eq!(l.shapes[0].geom, Geometry::Rect(IRect::new(-10, 0, 0, 30)));
     }
 
     #[test]

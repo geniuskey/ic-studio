@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::gds::{GdsImport, sanitize_name, unique_name};
 use crate::layout::Layout;
+use crate::pcell::{PCELL_LIB, PCell};
 use crate::schematic::Schematic;
 use crate::sim_setup::SimSetup;
 use crate::tech::Tech;
@@ -111,6 +112,8 @@ struct Manifest {
 struct CellMeta {
     #[serde(default)]
     description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pcell: Option<PCell>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -120,11 +123,20 @@ pub struct Cell {
     pub schematic: Option<Schematic>,
     pub layout: Option<Layout>,
     pub sim: SimSetup,
+    /// Set for generated PCell variants.
+    pub pcell: Option<PCell>,
 }
 
 impl Cell {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), description: String::new(), schematic: None, layout: None, sim: SimSetup::default() }
+        Self {
+            name: name.into(),
+            description: String::new(),
+            schematic: None,
+            layout: None,
+            sim: SimSetup::default(),
+            pcell: None,
+        }
     }
 
     pub fn has_view(&self, v: ViewKind) -> bool {
@@ -208,6 +220,25 @@ impl Project {
         l.cells.push(cell);
         l.cells.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(r)
+    }
+
+    /// The cell holding PCell variant `p` in [`PCELL_LIB`], generating it on first use.
+    pub fn ensure_pcell(&mut self, p: &PCell) -> std::result::Result<CellRef, String> {
+        let r = CellRef::new(PCELL_LIB, p.variant_name());
+        if self.cell(&r).is_some() {
+            return Ok(r);
+        }
+        let layout = p.generate(&self.tech)?;
+        if self.library_mut(PCELL_LIB).is_none() {
+            self.add_library(PCELL_LIB)?;
+        }
+        let cell = Cell {
+            description: p.summary(self.tech.dbu_per_um),
+            layout: Some(layout),
+            pcell: Some(p.clone()),
+            ..Cell::new(&r.cell)
+        };
+        self.add_cell(PCELL_LIB, cell)
     }
 
     /// Add the cells of a GDS import as a new library named after `name_hint` (made valid and
@@ -295,7 +326,10 @@ impl Project {
             for cell in &lib.cells {
                 let dir = root.join(&lib.name).join(&cell.name);
                 fs::create_dir_all(&dir).map_err(io_err(&dir))?;
-                write_json(&dir.join("cell.json"), &CellMeta { description: cell.description.clone() })?;
+                write_json(
+                    &dir.join("cell.json"),
+                    &CellMeta { description: cell.description.clone(), pcell: cell.pcell.clone() },
+                )?;
                 write_json(&dir.join("sim.json"), &cell.sim)?;
                 sync_view(&dir.join("schematic.json"), cell.schematic.as_ref())?;
                 sync_view(&dir.join("layout.json"), cell.layout.as_ref())?;
@@ -334,7 +368,7 @@ impl Project {
                     let schematic = opt("schematic.json")?.map(|p| read_json(&p)).transpose()?;
                     let layout = opt("layout.json")?.map(|p| read_json(&p)).transpose()?;
                     let sim = opt("sim.json")?.map(|p| read_json(&p)).transpose()?.unwrap_or_default();
-                    cells.push(Cell { name, description: meta.description, schematic, layout, sim });
+                    cells.push(Cell { name, description: meta.description, schematic, layout, sim, pcell: meta.pcell });
                 }
             }
             cells.sort_by(|a, b| a.name.cmp(&b.name));
@@ -381,5 +415,41 @@ mod tests {
         q.delete_cell(&r).unwrap();
         assert!(!dir.join(&r.lib).join(&r.cell).exists());
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn ensure_pcell_is_idempotent_and_persists() {
+        let mut p = Project::new("pc");
+        let nmos = PCell::Mos { pmos: false, w: 1000, l: 180, fingers: 2 };
+        let a = p.ensure_pcell(&nmos).unwrap();
+        assert_eq!(a, CellRef::new(PCELL_LIB, "nmos_w1000_l180_nf2"));
+        assert_eq!(p.ensure_pcell(&nmos).unwrap(), a);
+        let res = p.ensure_pcell(&PCell::PolyRes { w: 400, l: 5000 }).unwrap();
+        assert_ne!(res, a);
+        let lib = p.libraries.iter().find(|l| l.name == PCELL_LIB).unwrap();
+        assert_eq!(lib.cells.len(), 2);
+        let c = p.cell(&a).unwrap();
+        assert_eq!(c.pcell.as_ref(), Some(&nmos));
+        assert_eq!(c.description, "nmos W=1um L=0.18um nf=2");
+        assert!(c.layout.as_ref().is_some_and(|l| !l.is_empty()));
+        assert!(p.ensure_pcell(&PCell::Mos { pmos: false, w: 1000, l: 180, fingers: 0 }).is_err());
+        assert_eq!(p.libraries.iter().find(|l| l.name == PCELL_LIB).unwrap().cells.len(), 2);
+
+        let dir = std::env::temp_dir().join(format!("ics-pcell-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        p.save_as(&dir).unwrap();
+        let q = Project::open(&dir).unwrap();
+        assert_eq!(q.libraries, p.libraries);
+        assert_eq!(q.tech, p.tech);
+        assert_eq!(q.cell(&a).unwrap().pcell.as_ref(), Some(&nmos));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn old_tech_without_vias_loads() {
+        let mut v = serde_json::to_value(Tech::generic()).unwrap();
+        v.as_object_mut().unwrap().remove("vias");
+        let t: Tech = serde_json::from_value(v).unwrap();
+        assert!(t.vias.is_empty());
     }
 }

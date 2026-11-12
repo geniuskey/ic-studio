@@ -79,6 +79,61 @@ fn layout_array_of_arrays() {
 }
 
 #[test]
+fn layout_pcells() {
+    scenario("10_layout_pcells", true, Some("devices"), "layout", false);
+}
+
+fn shape_count(h: &Harness<'_, IcStudio>, cell: &str) -> usize {
+    let p = h.state().project().unwrap();
+    let (_, c) = p.all_cells().find(|(_, c)| c.name == cell).unwrap();
+    c.layout.as_ref().unwrap().shapes.len()
+}
+
+fn click(h: &mut Harness<'_, IcStudio>, p: egui::Pos2) {
+    h.hover_at(p);
+    h.step();
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos: p,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        });
+        h.step();
+    }
+    // Let the double-click window pass so separate clicks stay separate.
+    std::thread::sleep(Duration::from_millis(350));
+    h.step();
+}
+
+/// Draw an L-shaped polygon with the polygon tool, then undo it.
+#[test]
+fn layout_draw_polygon() {
+    let args =
+        LaunchArgs { project: None, demo: true, workspace: Some("layout".into()), cell: Some("inv_chain".into()), run: false };
+    let mut h = Harness::builder().with_size(egui::vec2(1440.0, 900.0)).wgpu().build_eframe(|cc| IcStudio::new(cc, args));
+    h.run_steps(4);
+    let before = shape_count(&h, "inv_chain");
+    h.hover_at(egui::pos2(800.0, 650.0));
+    h.run_steps(2);
+    h.key_press(egui::Key::G);
+    h.run_steps(2);
+    for p in [(700.0, 620.0), (900.0, 620.0), (900.0, 660.0), (760.0, 660.0), (760.0, 700.0)] {
+        click(&mut h, egui::pos2(p.0, p.1));
+    }
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert_eq!(shape_count(&h, "inv_chain"), before + 1, "polygon should be added");
+    let p = h.state().project().unwrap();
+    let (_, c) = p.all_cells().find(|(_, c)| c.name == "inv_chain").unwrap();
+    let last = c.layout.as_ref().unwrap().shapes.last().unwrap();
+    assert!(matches!(&last.geom, ics_core::Geometry::Polygon { points } if points.len() == 6), "{:?}", last.geom);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run_steps(3);
+    assert_eq!(shape_count(&h, "inv_chain"), before);
+}
+
+#[test]
 fn schematic_annotated() {
     // Run OP first, then show the annotated schematic.
     scenario_then(
@@ -99,6 +154,7 @@ fn glyph_coverage() {
         include_str!("../src/app.rs"),
         include_str!("../src/home_view.rs"),
         include_str!("../src/layout_view.rs"),
+        include_str!("../src/layout_view/edit.rs"),
         include_str!("../src/schematic_view.rs"),
         include_str!("../src/sim_view.rs"),
         include_str!("../src/theme.rs"),

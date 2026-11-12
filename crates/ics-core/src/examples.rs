@@ -56,6 +56,7 @@ pub fn rc_lowpass() -> Cell {
         schematic: Some(s),
         layout: None,
         sim,
+        pcell: None,
     }
 }
 
@@ -110,6 +111,7 @@ pub fn cmos_inverter() -> Cell {
         schematic: Some(s),
         layout: Some(inverter_layout(&Tech::generic())),
         sim,
+        pcell: None,
     }
 }
 
@@ -146,6 +148,7 @@ pub fn diode_clipper() -> Cell {
         schematic: Some(s),
         layout: None,
         sim,
+        pcell: None,
     }
 }
 
@@ -191,7 +194,14 @@ pub fn inverter_layout(tech: &Tech) -> Layout {
 }
 
 fn layout_cell(name: &str, description: &str, layout: Layout) -> Cell {
-    Cell { name: name.into(), description: description.into(), schematic: None, layout: Some(layout), sim: SimSetup::default() }
+    Cell {
+        name: name.into(),
+        description: description.into(),
+        schematic: None,
+        layout: Some(layout),
+        sim: SimSetup::default(),
+        pcell: None,
+    }
 }
 
 /// Inverter cell pitch (its boundary) in the generic technology.
@@ -242,5 +252,14 @@ pub fn demo_project() -> Project {
     for c in [cmos_inverter(), rc_lowpass(), diode_clipper()].into_iter().chain(hier) {
         p.add_cell("work", c).expect("unique");
     }
+    let mut devices = Layout::default();
+    let mut x = 0;
+    for pc in crate::pcell::PCell::defaults() {
+        let r = p.ensure_pcell(&pc).expect("default pcells generate");
+        let w = p.cell(&r).and_then(|c| c.layout.as_ref()).and_then(Layout::shapes_bbox).map_or(5000, |b| b.width());
+        devices.add_instance(r, Trans::new(x, 0), None);
+        x += w + 3000;
+    }
+    p.add_cell("work", layout_cell("devices", "Parametric devices placed from the pcells library", devices)).expect("unique");
     p
 }

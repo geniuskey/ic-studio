@@ -35,6 +35,19 @@ pub struct LayerDef {
     pub routing: bool,
 }
 
+/// A via / contact between two conducting layers, with its cut rules (dbu).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ViaDef {
+    pub name: String,
+    pub bottom: String,
+    pub cut: String,
+    pub top: String,
+    pub cut_size: i64,
+    pub cut_spacing: i64,
+    pub enc_bottom: i64,
+    pub enc_top: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Tech {
     pub name: String,
@@ -43,6 +56,8 @@ pub struct Tech {
     /// Layout manufacturing / snap grid in dbu.
     pub grid: i64,
     pub layers: Vec<LayerDef>,
+    #[serde(default)]
+    pub vias: Vec<ViaDef>,
 }
 
 impl Tech {
@@ -52,6 +67,10 @@ impl Tech {
 
     pub fn layer_index(&self, name: &str) -> Option<usize> {
         self.layers.iter().position(|l| l.name.eq_ignore_ascii_case(name))
+    }
+
+    pub fn via(&self, name: &str) -> Option<&ViaDef> {
+        self.vias.iter().find(|v| v.name.eq_ignore_ascii_case(name))
     }
 
     pub fn layer_by_gds(&self, layer: u16, datatype: u16) -> Option<usize> {
@@ -69,6 +88,16 @@ impl Tech {
             min_width: w,
             min_spacing: s,
             routing,
+        };
+        let v = |name: &str, bottom: &str, cut: &str, top: &str, size: i64, space: i64, eb: i64, et: i64| ViaDef {
+            name: name.into(),
+            bottom: bottom.into(),
+            cut: cut.into(),
+            top: top.into(),
+            cut_size: size,
+            cut_spacing: space,
+            enc_bottom: eb,
+            enc_top: et,
         };
         Tech {
             name: "generic180".into(),
@@ -88,6 +117,12 @@ impl Tech {
                 l("metal3", 11, [240, 170, 80, 120], FillStyle::Hatch, 280, 280, true),
                 l("text", 63, [255, 255, 255, 255], FillStyle::Outline, 0, 0, false),
                 l("boundary", 62, [160, 160, 170, 255], FillStyle::Outline, 0, 0, false),
+            ],
+            vias: vec![
+                v("contact", "active", "contact", "metal1", 220, 250, 100, 60),
+                v("polycon", "poly", "contact", "metal1", 220, 250, 100, 60),
+                v("via1", "metal1", "via1", "metal2", 260, 260, 60, 60),
+                v("via2", "metal2", "via2", "metal3", 260, 260, 60, 60),
             ],
         }
     }

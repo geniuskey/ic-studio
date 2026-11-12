@@ -6,35 +6,64 @@ use eframe::egui::{self, Align2, Color32, FontId, Key, Mesh, Pos2, Rect, Sense, 
 use ics_core::geom::IRect;
 use ics_core::hier::{self, CellIndex, Hier, LayoutSource, ViewQuery};
 use ics_core::layout::{ArraySpec, DrcViolation, Geometry, Layout, Shape, Trans, run_basic_drc};
-use ics_core::project::CellRef;
+use ics_core::project::{CellRef, Project};
 use ics_core::tech::{FillStyle, LayerDef, Tech};
 
 use crate::canvas::{View2D, nice_step};
 use crate::history::History;
 use crate::theme::{self, Palette};
 
+mod edit;
+pub use edit::LayRequest;
+use edit::{EditState, Handle};
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum LayTool {
     Select,
     Rect,
+    Polygon,
     Path,
     Label,
+    Via,
     Instance,
     Ruler,
 }
 
 impl LayTool {
-    pub const ALL: [LayTool; 6] =
-        [LayTool::Select, LayTool::Rect, LayTool::Path, LayTool::Label, LayTool::Instance, LayTool::Ruler];
+    pub const ALL: [LayTool; 8] = [
+        LayTool::Select,
+        LayTool::Rect,
+        LayTool::Polygon,
+        LayTool::Path,
+        LayTool::Label,
+        LayTool::Via,
+        LayTool::Instance,
+        LayTool::Ruler,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
             LayTool::Select => "Select",
             LayTool::Rect => "Rectangle",
+            LayTool::Polygon => "Polygon",
             LayTool::Path => "Path",
             LayTool::Label => "Label",
+            LayTool::Via => "Via",
             LayTool::Instance => "Instance",
             LayTool::Ruler => "Ruler",
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            LayTool::Select => "S",
+            LayTool::Rect => "R",
+            LayTool::Polygon => "G",
+            LayTool::Path => "P",
+            LayTool::Label => "L",
+            LayTool::Via => "V",
+            LayTool::Instance => "I",
+            LayTool::Ruler => "K",
         }
     }
 }
@@ -44,13 +73,14 @@ enum LDrag {
     Rubber { start: Pos2 },
     Create { start: (i64, i64) },
     Ruler { start: (i64, i64) },
+    Handle { id: u64, handle: Handle, start: (i64, i64), orig: Geometry, cur: Geometry },
 }
 
 /// Everything the layout editor needs besides the layout being edited.
 pub struct LayCtx<'a> {
     pub cell: &'a CellRef,
     /// Resolves instances. The edited cell itself is not reachable through it.
-    pub src: &'a dyn LayoutSource,
+    pub src: &'a Project,
     pub hier: &'a mut Hier,
     pub tech: &'a Tech,
     /// Cells with a layout view, candidates for placement.
@@ -97,6 +127,12 @@ pub struct LayoutEditor {
     pub place_cols: u32,
     pub place_rows: u32,
     pub stats: DrawStats,
+    poly_pts: Vec<(i64, i64)>,
+    hot: Option<Handle>,
+    ed: EditState,
+    inst_pcell: Option<(u64, ics_core::pcell::PCell)>,
+    /// Edits for the application to carry out (they touch other cells).
+    pub requests: Vec<LayRequest>,
 }
 
 impl Default for LayoutEditor {
@@ -124,6 +160,11 @@ impl Default for LayoutEditor {
             place_cols: 1,
             place_rows: 1,
             stats: DrawStats::default(),
+            poly_pts: vec![],
+            hot: None,
+            ed: EditState::default(),
+            inst_pcell: None,
+            requests: vec![],
         }
     }
 }
@@ -494,8 +535,6 @@ fn hit(layout: &Layout, idx: &CellIndex, visible: &[bool], x: i64, y: i64, tol: 
 #[derive(Default)]
 pub struct LayOutput {
     pub changed: bool,
-    /// The user asked to open (descend into) this cell.
-    pub open: Option<CellRef>,
 }
 
 impl LayoutEditor {
@@ -515,6 +554,7 @@ impl LayoutEditor {
     pub fn set_tool(&mut self, t: LayTool) {
         self.tool = t;
         self.path_pts.clear();
+        self.poly_pts.clear();
         if t != LayTool::Ruler {
             self.ruler = None;
         }
@@ -594,6 +634,11 @@ impl LayoutEditor {
     fn placement(&self, cx: &mut LayCtx, at: (i64, i64)) -> Option<(CellRef, Trans, Option<ArraySpec>, IRect)> {
         let cell = self.place.clone()?;
         let cb = cx.hier.get(&cell, cx.src)?.bbox?;
+        let (t, array) = self.place_trans(at, cb);
+        Some((cell, t, array, cb))
+    }
+
+    fn place_trans(&self, at: (i64, i64), cb: IRect) -> (Trans, Option<ArraySpec>) {
         let t = Trans::with(at.0, at.1, self.place_rot, self.place_mirror);
         let lin = Trans::with(0, 0, self.place_rot, self.place_mirror).apply_rect(cb);
         let array = (self.place_cols * self.place_rows > 1).then(|| ArraySpec {
@@ -602,10 +647,20 @@ impl LayoutEditor {
             col: (lin.width(), 0),
             row: (0, lin.height()),
         });
-        Some((cell, t, array, cb))
+        (t, array)
     }
 
-    fn handle_keys(&mut self, ui: &egui::Ui, l: &mut Layout, tech: &Tech) -> bool {
+    fn finish_polygon(&mut self, l: &mut Layout) -> bool {
+        let pts = std::mem::take(&mut self.poly_pts);
+        let Some(g) = edit::finish_polygon(&pts) else { return false };
+        self.history.push(l);
+        let id = l.add(self.active_layer, g);
+        self.selection = [id].into();
+        true
+    }
+
+    fn handle_keys(&mut self, ui: &egui::Ui, l: &mut Layout, cx: &mut LayCtx) -> bool {
+        let tech = cx.tech;
         if ui.ctx().egui_wants_keyboard_input() {
             return false;
         }
@@ -631,27 +686,41 @@ impl LayoutEditor {
                 }
                 continue;
             }
+            if shift && matches!(k, Key::R | Key::X | Key::Y) {
+                let kind = match k {
+                    Key::R => 0,
+                    Key::X => 1,
+                    _ => 2,
+                };
+                changed |= self.transform_selection(l, cx, kind);
+                continue;
+            }
             match k {
                 Key::Escape => {
-                    if !self.path_pts.is_empty() {
+                    if !self.path_pts.is_empty() || !self.poly_pts.is_empty() {
                         self.path_pts.clear();
+                        self.poly_pts.clear();
                     } else if self.tool != LayTool::Select {
                         self.set_tool(LayTool::Select);
                     } else {
                         self.selection.clear();
                     }
                 }
-                Key::Enter => changed |= self.finish_path(l, tech),
+                Key::Enter => changed |= self.finish_path(l, tech) || self.finish_polygon(l),
                 Key::Delete | Key::Backspace => {
                     if !self.path_pts.is_empty() {
                         self.path_pts.pop();
+                    } else if !self.poly_pts.is_empty() {
+                        self.poly_pts.pop();
                     } else {
                         changed |= self.delete_selection(l);
                     }
                 }
                 Key::R => self.set_tool(LayTool::Rect),
+                Key::G => self.set_tool(LayTool::Polygon),
                 Key::P => self.set_tool(LayTool::Path),
                 Key::L => self.set_tool(LayTool::Label),
+                Key::V => self.set_tool(LayTool::Via),
                 Key::I => self.set_tool(LayTool::Instance),
                 Key::K => self.set_tool(LayTool::Ruler),
                 Key::S => self.set_tool(LayTool::Select),
@@ -690,7 +759,7 @@ impl LayoutEditor {
             self.needs_fit = false;
         }
         self.view.handle_navigation(ui, &resp, rect);
-        if resp.hovered() && self.handle_keys(ui, l, tech) {
+        if resp.hovered() && self.handle_keys(ui, l, cx) {
             out.changed = true;
             cx.touched();
         }
@@ -699,6 +768,16 @@ impl LayoutEditor {
         self.cursor = world.map(|w| self.snap(w, tech.grid));
         let tol = (5.0 / self.view.scale) as i64;
         let shift = ui.input(|i| i.modifiers.shift || i.modifiers.command);
+        // The single selected shape exposes vertex / edge handles.
+        let handle_shape: Option<Shape> = match (self.tool, self.selection.len()) {
+            (LayTool::Select, 1) => l.shape(*self.selection.first().unwrap()).cloned(),
+            _ => None,
+        };
+        self.hot = match (&handle_shape, hover, &self.drag) {
+            (Some(s), Some(h), None) => edit::hit_handle(&s.geom, &self.view, rect, h),
+            (_, _, Some(LDrag::Handle { handle, .. })) => Some(*handle),
+            _ => None,
+        };
 
         match self.tool {
             LayTool::Select => {
@@ -706,17 +785,29 @@ impl LayoutEditor {
                     let press = ui.input(|i| i.pointer.press_origin()).unwrap_or(rect.center());
                     let pw = self.view.to_world(rect, press);
                     let idx = cx.index(l);
-                    match hit(l, &idx, &self.visible, pw.0 as i64, pw.1 as i64, tol) {
-                        Some(id) => {
-                            if !self.selection.contains(&id) {
-                                if !shift {
-                                    self.selection.clear();
+                    let on_handle =
+                        handle_shape.as_ref().and_then(|s| edit::hit_handle(&s.geom, &self.view, rect, press).map(|h| (s, h)));
+                    if let Some((s, h)) = on_handle {
+                        self.drag = Some(LDrag::Handle {
+                            id: s.id,
+                            handle: h,
+                            start: self.snap(pw, tech.grid),
+                            orig: s.geom.clone(),
+                            cur: s.geom.clone(),
+                        });
+                    } else {
+                        match hit(l, &idx, &self.visible, pw.0 as i64, pw.1 as i64, tol) {
+                            Some(id) => {
+                                if !self.selection.contains(&id) {
+                                    if !shift {
+                                        self.selection.clear();
+                                    }
+                                    self.selection.insert(id);
                                 }
-                                self.selection.insert(id);
+                                self.drag = Some(LDrag::Move { start: self.snap(pw, tech.grid), offset: (0, 0) });
                             }
-                            self.drag = Some(LDrag::Move { start: self.snap(pw, tech.grid), offset: (0, 0) });
+                            None => self.drag = Some(LDrag::Rubber { start: press }),
                         }
-                        None => self.drag = Some(LDrag::Rubber { start: press }),
                     }
                 }
                 if let Some(w) = world
@@ -725,7 +816,9 @@ impl LayoutEditor {
                     let idx = cx.index(l);
                     let h = hit(l, &idx, &self.visible, w.0 as i64, w.1 as i64, tol);
                     if resp.double_clicked() {
-                        out.open = h.and_then(|id| l.instance(id)).map(|i| i.cell.clone());
+                        if let Some(i) = h.and_then(|id| l.instance(id)) {
+                            self.requests.push(LayRequest::Open(i.cell.clone()));
+                        }
                     } else {
                         match h {
                             Some(id) => {
@@ -743,10 +836,32 @@ impl LayoutEditor {
                     }
                 }
             }
-            LayTool::Rect => {
+            LayTool::Rect | LayTool::Via => {
                 if resp.drag_started_by(egui::PointerButton::Primary) {
                     let press = ui.input(|i| i.pointer.press_origin()).unwrap_or(rect.center());
                     self.drag = Some(LDrag::Create { start: self.snap(self.view.to_world(rect, press), tech.grid) });
+                }
+                if self.tool == LayTool::Via
+                    && resp.clicked()
+                    && let Some(c) = self.cursor
+                    && self.place_via(l, tech, c, None)
+                {
+                    out.changed = true;
+                    cx.touched();
+                }
+            }
+            LayTool::Polygon => {
+                if let Some(c) = self.cursor {
+                    if resp.clicked() {
+                        let p = edit::constrain(self.poly_pts.last().copied(), c, shift);
+                        if self.poly_pts.last() != Some(&p) {
+                            self.poly_pts.push(p);
+                        }
+                    }
+                    if (resp.double_clicked() || resp.secondary_clicked()) && self.finish_polygon(l) {
+                        out.changed = true;
+                        cx.touched();
+                    }
                 }
             }
             LayTool::Ruler => {
@@ -795,6 +910,15 @@ impl LayoutEditor {
             LayTool::Instance => {
                 if resp.clicked()
                     && let Some(c) = self.cursor
+                    && self.ed.pcell.is_some()
+                {
+                    if let Some(cb) = self.pcell_bbox(tech) {
+                        let (trans, array) = self.place_trans(c, cb);
+                        let pcell = self.ed.pcell.clone().unwrap();
+                        self.requests.push(LayRequest::PlacePCell { pcell, trans, array });
+                    }
+                } else if resp.clicked()
+                    && let Some(c) = self.cursor
                     && let Some((cell, t, array, _)) = self.placement(cx, c)
                 {
                     self.history.push(l);
@@ -811,11 +935,36 @@ impl LayoutEditor {
             match &mut self.drag {
                 Some(LDrag::Move { start, offset }) => *offset = (c.0 - start.0, c.1 - start.1),
                 Some(LDrag::Ruler { start }) => self.ruler = Some((*start, c)),
+                Some(LDrag::Handle { handle, start, orig, cur, .. }) => {
+                    *cur = edit::drag_handle(orig, *handle, (c.0 - start.0, c.1 - start.1));
+                }
                 _ => {}
             }
         }
         if resp.drag_stopped() {
             match self.drag.take() {
+                Some(LDrag::Handle { id, orig, cur, .. }) => {
+                    if cur != orig
+                        && let Some(s) = l.shape(id).cloned()
+                    {
+                        self.history.push(l);
+                        if let Some(t) = l.shape_mut(id) {
+                            *t = edit::with_geom(&s, cur);
+                        }
+                        out.changed = true;
+                        cx.touched();
+                    }
+                }
+                Some(LDrag::Create { start }) if self.tool == LayTool::Via => {
+                    if let Some(c) = self.cursor
+                        && c.0 != start.0
+                        && c.1 != start.1
+                        && self.place_via(l, tech, c, Some(IRect::new(start.0, start.1, c.0, c.1)))
+                    {
+                        out.changed = true;
+                        cx.touched();
+                    }
+                }
                 Some(LDrag::Move { offset, .. }) => {
                     if offset != (0, 0) {
                         self.history.push(l);
@@ -926,6 +1075,37 @@ impl LayoutEditor {
                 );
             }
         }
+        // Vertex / edge handles and the shape being reshaped.
+        if let Some(LDrag::Handle { cur, .. }) = &self.drag {
+            let ghost = ics_core::layout::Shape { id: 0, layer: 0, geom: cur.clone() };
+            let b = screen_rect(&self.view, rect, ghost.bbox());
+            match cur {
+                Geometry::Polygon { points } => {
+                    let pts: Vec<Pos2> = points.iter().map(|p| self.view.to_screen(rect, p.0 as f64, p.1 as f64)).collect();
+                    painter.add(egui::Shape::closed_line(pts, Stroke::new(1.5, pal.warning)));
+                }
+                Geometry::Path { points, width } => {
+                    for q in path_quads(points, *width) {
+                        let sp: Vec<Pos2> = q.iter().map(|p| self.view.to_screen(rect, p.0, p.1)).collect();
+                        painter.add(egui::Shape::closed_line(sp, Stroke::new(1.5, pal.warning)));
+                    }
+                }
+                _ => {
+                    painter.rect_stroke(b, 0.0, Stroke::new(1.5, pal.warning), StrokeKind::Middle);
+                }
+            }
+            edit::draw_handles(&painter, cur, &self.view, rect, &pal, self.hot);
+        } else if let Some(s) = &handle_shape {
+            edit::draw_handles(&painter, &s.geom, &self.view, rect, &pal, self.hot);
+        }
+        if !self.poly_pts.is_empty() {
+            let mut pts: Vec<Pos2> = self.poly_pts.iter().map(|p| self.view.to_screen(rect, p.0 as f64, p.1 as f64)).collect();
+            if let Some(c) = self.cursor {
+                let p = edit::constrain(self.poly_pts.last().copied(), c, shift);
+                pts.push(self.view.to_screen(rect, p.0 as f64, p.1 as f64));
+            }
+            edit::draw_polygon_preview(&painter, &pts, layer_color(&tech.layers[self.active_layer]));
+        }
         // Tool previews
         let def = &tech.layers[self.active_layer];
         if let (Some(LDrag::Create { start }), Some(c)) = (&self.drag, self.cursor) {
@@ -941,7 +1121,14 @@ impl LayoutEditor {
             && let Some(c) = self.cursor
             && hover.is_some()
         {
-            match self.placement(cx, c) {
+            let pending = match self.ed.pcell.clone() {
+                Some(p) => self.pcell_bbox(tech).map(|cb| {
+                    let (t, array) = self.place_trans(c, cb);
+                    (CellRef::new(ics_core::pcell::PCELL_LIB, p.variant_name()), t, array, cb)
+                }),
+                None => self.placement(cx, c),
+            };
+            match pending {
                 Some((cell, t, array, cb)) => {
                     let inst = ics_core::layout::CellInst { id: 0, cell, trans: t, array };
                     let b = screen_rect(&self.view, rect, inst.bbox(cb));
@@ -1064,7 +1251,19 @@ impl LayoutEditor {
                 ui.text_edit_singleline(&mut self.label_text).labelled_by(l.id);
             });
         }
+        if self.tool == LayTool::Polygon {
+            theme::section(ui, "Polygon");
+            ui.label(
+                egui::RichText::new("Click vertices (Manhattan; hold Shift for any angle) · Enter / double-click to close")
+                    .small()
+                    .color(pal.text_weak),
+            );
+        }
+        if self.tool == LayTool::Via {
+            self.via_panel(ui, tech);
+        }
         if self.tool == LayTool::Instance {
+            self.pcell_panel(ui, tech);
             self.placement_panel(ui, cx);
         }
         ui.add_space(6.0);
@@ -1157,6 +1356,7 @@ impl LayoutEditor {
                 let on = self.place.as_ref() == Some(c);
                 if ui.selectable_label(on, c.to_string()).clicked() {
                     self.place = Some(c.clone());
+                    self.ed.pcell = None;
                 }
             }
         });
@@ -1275,11 +1475,29 @@ impl LayoutEditor {
             if focus {
                 self.history.push(l);
             }
+            let pcell = cx.src.cell(&s.cell).and_then(|c| c.pcell.clone());
             if s != before {
                 if let Some(t) = l.instance_mut(id) {
                     *t = s;
                 }
                 changed = true;
+            }
+            if let Some(p) = pcell {
+                if self.inst_pcell.as_ref().is_none_or(|(i, _)| *i != id) {
+                    self.inst_pcell = Some((id, p.clone()));
+                }
+                ui.add_space(6.0);
+                theme::section(ui, &format!("PCell · {}", p.kind_name()));
+                if let Some((_, edited)) = self.inst_pcell.as_mut() {
+                    edit::pcell_params(ui, edited, tech, "inst");
+                    let valid = edited.generate(tech);
+                    if let Err(e) = &valid {
+                        ui.label(egui::RichText::new(e).small().color(pal.warning));
+                    }
+                    if ui.add_enabled(*edited != p && valid.is_ok(), egui::Button::new("Apply")).clicked() {
+                        self.requests.push(LayRequest::SetPCell { inst: id, pcell: edited.clone() });
+                    }
+                }
             }
             ui.add_space(8.0);
             if ui.button("🗑 Delete").clicked() {
@@ -1385,6 +1603,11 @@ impl LayoutEditor {
             });
         }
         if changed {
+            cx.touched();
+        }
+        let ops_changed = if self.selection.is_empty() { self.layer_ops_panel(ui, l, cx) } else { self.ops_panel(ui, l, cx) };
+        if ops_changed {
+            changed = true;
             cx.touched();
         }
         ui.add_space(12.0);
