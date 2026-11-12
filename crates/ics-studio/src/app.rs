@@ -11,10 +11,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::home_view;
 use crate::icons::{self, Icon};
-use crate::layout_view::{LayTool, LayoutEditor, um};
+use crate::layout_view::{LayCtx, LayTool, LayoutEditor, fmt_count, um};
 use crate::schematic_view::{SchTool, SchematicEditor, device_palette};
 use crate::sim_view::{self, SimEvent, SimState};
 use crate::theme::{self, Palette};
+use ics_core::hier::Hier;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, Hash)]
 pub enum Workspace {
@@ -146,6 +147,7 @@ pub struct IcStudio {
     active: Option<CellRef>,
     sch_eds: HashMap<CellRef, SchematicEditor>,
     lay_eds: HashMap<CellRef, LayoutEditor>,
+    hier: Hier,
     sims: HashMap<CellRef, SimState>,
     log: Vec<LogLine>,
     started: Instant,
@@ -178,6 +180,7 @@ impl IcStudio {
             active: None,
             sch_eds: HashMap::new(),
             lay_eds: HashMap::new(),
+            hier: Hier::default(),
             sims: HashMap::new(),
             log: vec![],
             started: Instant::now(),
@@ -253,6 +256,7 @@ impl IcStudio {
         self.active = None;
         self.sch_eds.clear();
         self.lay_eds.clear();
+        self.hier.clear();
         self.sims.clear();
         self.workspace = Workspace::Home;
         // open the first cell as a convenience
@@ -439,6 +443,7 @@ impl IcStudio {
                             c.layout.get_or_insert_with(Layout::default);
                         }
                     }
+                    self.hier.clear();
                     self.mark_dirty();
                     self.info(format!("Created {} view for {r}", v.label()));
                 }
@@ -518,6 +523,9 @@ impl IcStudio {
                         }
                         _ => false,
                     };
+                    if changed {
+                        self.hier.invalidate(&r);
+                    }
                 }
             }
             _ => {}
@@ -559,28 +567,27 @@ impl IcStudio {
 
     fn export_gds(&mut self, library: bool) {
         let Some(p) = &self.project else { return };
-        let cells: Vec<(String, &Layout)> = if library {
-            p.all_cells().filter_map(|(r, c)| c.layout.as_ref().map(|l| (r.cell.clone(), l))).collect()
+        let tops: Vec<CellRef> = if library {
+            p.all_cells().filter(|(_, c)| c.layout.is_some()).map(|(r, _)| r).collect()
         } else {
             match (self.active.as_ref(), self.active_cell().and_then(|c| c.layout.as_ref())) {
-                (Some(r), Some(l)) => vec![(r.cell.clone(), l)],
+                (Some(r), Some(_)) => vec![r.clone()],
                 _ => {
                     self.warn("Active cell has no layout".into());
                     return;
                 }
             }
         };
-        if cells.is_empty() {
+        if tops.is_empty() {
             self.warn("No layouts to export".into());
             return;
         }
-        let default = if library { format!("{}.gds", p.name) } else { format!("{}.gds", cells[0].0) };
+        let default = if library { format!("{}.gds", p.name) } else { format!("{}.gds", tops[0].cell) };
         let Some(path) = rfd::FileDialog::new().set_file_name(default).add_filter("GDSII", &["gds", "gds2"]).save_file() else {
             return;
         };
-        let refs: Vec<(&str, &Layout)> = cells.iter().map(|(n, l)| (n.as_str(), *l)).collect();
-        let bytes = ics_core::gds::write_gds(&p.name, &refs, &p.tech);
-        let n = refs.len();
+        let n = tops.iter().flat_map(|t| ics_core::hier::descendants(p, t)).collect::<std::collections::HashSet<_>>().len();
+        let bytes = ics_core::gds::write_gds_hier(&p.name, p, &tops, &p.tech);
         match std::fs::write(&path, &bytes) {
             Ok(()) => self.ok(format!("Exported {n} cell(s) to {} ({} bytes)", path.display(), bytes.len())),
             Err(e) => self.error(format!("GDS export failed: {e}")),
@@ -597,37 +604,34 @@ impl IcStudio {
                 return;
             }
         };
-        match ics_core::gds::read_gds(&data, &p.tech) {
-            Ok(imp) => {
-                let lib = p.libraries[0].name.clone();
-                let mut opened = vec![];
-                for (name, layout) in imp.cells {
-                    let mut n: String =
-                        name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect();
-                    if n.is_empty() {
-                        n = "imported".into();
-                    }
-                    let base = n.clone();
-                    let mut k = 1;
-                    while p.cell(&CellRef::new(&lib, &n)).is_some() {
-                        n = format!("{base}_{k}");
-                        k += 1;
-                    }
-                    let mut c = Cell::new(&n);
-                    c.description = format!("Imported from {}", path.file_name().unwrap_or_default().to_string_lossy());
-                    c.layout = Some(layout);
-                    if let Ok(r) = p.add_cell(&lib, c) {
-                        opened.push(r);
-                    }
-                }
-                let skipped = imp.skipped_unknown_layers;
-                let n = opened.len();
+        let t0 = Instant::now();
+        let imp = match ics_core::gds::read_gds(&data, &p.tech, "gds") {
+            Ok(imp) => imp,
+            Err(e) => {
+                self.error(format!("GDS import failed: {e}"));
+                return;
+            }
+        };
+        let skipped = imp.skipped_unknown_layers;
+        let warnings = imp.warnings.clone();
+        let n = imp.cells.len();
+        let stem = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+        match p.add_gds_library(&stem, imp) {
+            Ok((lib, tops)) => {
+                self.hier.clear();
                 self.mark_dirty();
-                self.ok(format!("Imported {n} cell(s) from {}", path.display()));
+                self.ok(format!(
+                    "Imported {n} cell(s) from {} into library '{lib}' in {:.2} s",
+                    path.display(),
+                    t0.elapsed().as_secs_f64()
+                ));
+                for w in warnings {
+                    self.warn(format!("GDS: {w}"));
+                }
                 if skipped > 0 {
                     self.warn(format!("{skipped} shape(s) on layers not in the technology were skipped"));
                 }
-                if let Some(r) = opened.into_iter().next() {
+                if let Some(r) = tops.into_iter().next() {
                     self.queue.push(Command::OpenCell(r, Some(Workspace::Layout)));
                 }
             }
@@ -1013,7 +1017,7 @@ impl IcStudio {
         let ws = self.workspace;
         if ws == Workspace::Home {
             egui::CentralPanel::default().frame(egui::Frame::new().fill(pal.bg_canvas)).show(ui, |ui| match &self.project {
-                Some(p) => home_view::project_overview(ui, p, &mut self.queue),
+                Some(p) => home_view::project_overview(ui, p, &mut self.hier, &mut self.queue),
                 None => home_view::welcome(ui, &self.settings.recent, &mut self.queue),
             });
             return;
@@ -1088,27 +1092,46 @@ impl IcStudio {
                 }
             }
             Workspace::Layout => {
+                let Some(mut lay) = cell.layout.take() else {
+                    egui::CentralPanel::default()
+                        .frame(egui::Frame::new().fill(pal.bg_canvas))
+                        .show(ui, |ui| self.no_view_placeholder(ui, &r, ViewKind::Layout));
+                    return;
+                };
+                // The edited layout is taken out of the project while the editor runs, so the
+                // project can resolve instances immutably (and cannot resolve the cell into itself).
+                let l = &mut lay;
+                let src: &Project = project;
+                let placeable: Vec<CellRef> = src.all_cells().filter(|(_, c)| c.layout.is_some()).map(|(r, _)| r).collect();
                 let ed = self.lay_eds.entry(r.clone()).or_default();
-                if let Some(l) = cell.layout.as_mut() {
-                    egui::Panel::left("lay_tools").resizable(true).default_size(230.0).show(ui, |ui| ed.layer_palette(ui, &tech));
+                let mut cx = LayCtx { cell: &r, src, hier: &mut self.hier, tech: &tech, cells: &placeable };
+                let mut open: Option<CellRef> = None;
+                {
+                    egui::Panel::left("lay_tools").resizable(true).default_size(230.0).show(ui, |ui| {
+                        if let Some(o) = ed.layer_palette(ui, l, &mut cx) {
+                            open = Some(o);
+                        }
+                    });
                     egui::Panel::right("lay_inspector").resizable(true).default_size(250.0).show(ui, |ui| {
-                        egui::ScrollArea::vertical().show(ui, |ui| changed |= ed.inspector(ui, l, &tech));
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            let (c, o) = ed.inspector(ui, l, &mut cx);
+                            changed |= c;
+                            open = open.take().or(o);
+                        });
                     });
                     egui::Panel::top("lay_toolbar").show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(ed.tool.name()).strong().color(pal.layout));
                             ui.label(RichText::new(format!("on {}", tech.layers[ed.active_layer].name)).color(pal.text_weak));
                             ui.separator();
-                            if ui.add_enabled(ed.history.can_undo(), egui::Button::new("↶")).on_hover_text("Undo (⌘Z)").clicked()
-                            {
-                                changed |= ed.undo(l);
-                            }
-                            if ui.add_enabled(ed.history.can_redo(), egui::Button::new("↷")).on_hover_text("Redo (⇧⌘Z)").clicked()
-                            {
-                                changed |= ed.redo(l);
+                            let undo = ui.add_enabled(ed.history.can_undo(), egui::Button::new("↶")).on_hover_text("Undo (⌘Z)");
+                            let redo = ui.add_enabled(ed.history.can_redo(), egui::Button::new("↷")).on_hover_text("Redo (⇧⌘Z)");
+                            if (undo.clicked() && ed.undo(l)) || (redo.clicked() && ed.redo(l)) {
+                                changed = true;
+                                cx.hier.invalidate(&r);
                             }
                             ui.separator();
-                            for t in [LayTool::Select, LayTool::Rect, LayTool::Path, LayTool::Label, LayTool::Ruler] {
+                            for t in LayTool::ALL {
                                 if ui.selectable_label(ed.tool == t, t.name()).clicked() {
                                     ed.set_tool(t);
                                 }
@@ -1126,12 +1149,16 @@ impl IcStudio {
                         });
                     });
                     egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| {
-                        changed |= ed.canvas(ui, l, &tech).changed;
+                        let o = ed.canvas(ui, l, &mut cx);
+                        changed |= o.changed;
+                        open = open.take().or(o.open);
                     });
-                } else {
-                    egui::CentralPanel::default()
-                        .frame(egui::Frame::new().fill(pal.bg_canvas))
-                        .show(ui, |ui| self.no_view_placeholder(ui, &r, ViewKind::Layout));
+                }
+                if let Some(c) = project.cell_mut(&r) {
+                    c.layout = Some(lay);
+                }
+                if let Some(o) = open {
+                    self.queue.push(Command::OpenCell(o, Some(Workspace::Layout)));
                 }
             }
             Workspace::Simulation => {
@@ -1216,6 +1243,13 @@ impl IcStudio {
                                 );
                             }
                             ui.label(RichText::new(format!("{} selected", ed.selection.len())).small().color(pal.text_weak));
+                            let s = ed.stats;
+                            let txt = format!(
+                                "{} shapes drawn{}",
+                                fmt_count(s.drawn as u64),
+                                if s.truncated { " (limit)" } else { "" }
+                            );
+                            ui.label(RichText::new(txt).small().color(if s.truncated { pal.warning } else { pal.text_weak }));
                         }
                     }
                     _ => {}
@@ -1571,6 +1605,7 @@ impl IcStudio {
                         {
                             match p.rename_cell(cell, name.trim()) {
                                 Ok(new) => {
+                                    self.hier.clear();
                                     let old = cell.clone();
                                     for t in &mut self.tabs {
                                         if *t == old {
@@ -1608,6 +1643,7 @@ impl IcStudio {
                         if ui.button(RichText::new("Delete").color(pal.danger)).clicked() {
                             let r = r.clone();
                             if let Some(p) = self.project.as_mut() {
+                                self.hier.clear();
                                 match p.delete_cell(&r) {
                                     Ok(()) => self.warn(format!("Deleted {r}")),
                                     Err(e) => self.error(format!("Delete failed: {e}")),

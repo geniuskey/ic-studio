@@ -1,8 +1,8 @@
 //! Built-in example designs used by "New project from template" and tests.
 
 use crate::geom::{Orient, Pt};
-use crate::layout::{Geometry, Layout};
-use crate::project::{Cell, Project};
+use crate::layout::{ArraySpec, Geometry, Layout, Trans};
+use crate::project::{Cell, CellRef, Project};
 use crate::schematic::{DeviceKind, Schematic};
 use crate::sim_setup::{Analysis, SimSetup};
 use crate::tech::Tech;
@@ -190,10 +190,56 @@ pub fn inverter_layout(tech: &Tech) -> Layout {
     lay
 }
 
+fn layout_cell(name: &str, description: &str, layout: Layout) -> Cell {
+    Cell { name: name.into(), description: description.into(), schematic: None, layout: Some(layout), sim: SimSetup::default() }
+}
+
+/// Inverter cell pitch (its boundary) in the generic technology.
+const INV_W: i64 = 3400;
+const INV_H: i64 = 5800;
+
+/// Hierarchical demo cells: a chain of placed inverters, an inverter array and an array of
+/// arrays (8192 inverters, about 250k flattened shapes).
+pub fn hierarchy_cells(tech: &Tech, lib: &str) -> Vec<Cell> {
+    let inv = CellRef::new(lib, "cmos_inverter");
+    let text = tech.layer_index("text").expect("generic layer");
+    let m1 = tech.layer_index("metal1").expect("generic layer");
+
+    let mut chain = Layout::default();
+    for k in 0..4 {
+        chain.add_instance(inv.clone(), Trans::new(k * INV_W, 0), None);
+    }
+    for k in 0..3 {
+        let x = k * INV_W + 2600;
+        chain.add(m1, Geometry::Path { points: vec![(x, 2060), (x + 1000, 2060)], width: 320 });
+    }
+    chain.add(text, Geometry::Label { text: "inv_chain".into(), at: (-400, 5700), size: 400 });
+
+    let mut array = Layout::default();
+    array.add_instance(inv.clone(), Trans::new(0, 0), Some(ArraySpec { cols: 16, rows: 8, col: (INV_W, 0), row: (0, INV_H) }));
+    array.add_rect(tech.layer_index("boundary").expect("generic layer"), -600, -400, 16 * INV_W - 600, 8 * INV_H - 400);
+
+    let (aw, ah) = (16 * INV_W + 2000, 8 * INV_H + 2000);
+    let mut tiles = Layout::default();
+    tiles.add_instance(
+        CellRef::new(lib, "inv_array"),
+        Trans::new(0, 0),
+        Some(ArraySpec { cols: 8, rows: 8, col: (aw, 0), row: (0, ah) }),
+    );
+    tiles.add(text, Geometry::Label { text: "8192 inverters".into(), at: (0, 8 * ah), size: 8000 });
+
+    vec![
+        layout_cell("inv_chain", "Four placed inverter instances", chain),
+        layout_cell("inv_array", "16 × 8 array of inverters (AREF)", array),
+        layout_cell("inv_tiles", "8 × 8 array of inv_array: two levels of hierarchy", tiles),
+    ]
+}
+
 pub fn demo_project() -> Project {
     let mut p = Project::new("demo");
     p.description = "Example designs shipped with IC Studio".into();
-    for c in [cmos_inverter(), rc_lowpass(), diode_clipper()] {
+    let hier = hierarchy_cells(&p.tech, "work");
+    for c in [cmos_inverter(), rc_lowpass(), diode_clipper()].into_iter().chain(hier) {
         p.add_cell("work", c).expect("unique");
     }
     p

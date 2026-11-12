@@ -1,10 +1,12 @@
-//! Layout workspace: full-custom polygon editor with layer palette and basic DRC.
+//! Layout workspace: hierarchical full-custom editor with layer palette, cell placement and DRC.
 
 use std::collections::BTreeSet;
 
-use eframe::egui::{self, Align2, Color32, FontId, Key, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
+use eframe::egui::{self, Align2, Color32, FontId, Key, Mesh, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use ics_core::geom::IRect;
-use ics_core::layout::{DrcViolation, Geometry, Layout, Shape, run_basic_drc};
+use ics_core::hier::{self, CellIndex, Hier, LayoutSource, ViewQuery};
+use ics_core::layout::{ArraySpec, DrcViolation, Geometry, Layout, Shape, Trans, run_basic_drc};
+use ics_core::project::CellRef;
 use ics_core::tech::{FillStyle, LayerDef, Tech};
 
 use crate::canvas::{View2D, nice_step};
@@ -17,26 +19,58 @@ pub enum LayTool {
     Rect,
     Path,
     Label,
+    Instance,
     Ruler,
 }
 
 impl LayTool {
+    pub const ALL: [LayTool; 6] =
+        [LayTool::Select, LayTool::Rect, LayTool::Path, LayTool::Label, LayTool::Instance, LayTool::Ruler];
+
     pub fn name(self) -> &'static str {
         match self {
             LayTool::Select => "Select",
             LayTool::Rect => "Rectangle",
             LayTool::Path => "Path",
             LayTool::Label => "Label",
+            LayTool::Instance => "Instance",
             LayTool::Ruler => "Ruler",
         }
     }
 }
 
 enum LDrag {
-    Move { start: (i64, i64), snapshot: Layout },
+    Move { start: (i64, i64), offset: (i64, i64) },
     Rubber { start: Pos2 },
     Create { start: (i64, i64) },
     Ruler { start: (i64, i64) },
+}
+
+/// Everything the layout editor needs besides the layout being edited.
+pub struct LayCtx<'a> {
+    pub cell: &'a CellRef,
+    /// Resolves instances. The edited cell itself is not reachable through it.
+    pub src: &'a dyn LayoutSource,
+    pub hier: &'a mut Hier,
+    pub tech: &'a Tech,
+    /// Cells with a layout view, candidates for placement.
+    pub cells: &'a [CellRef],
+}
+
+impl LayCtx<'_> {
+    fn index(&mut self, l: &Layout) -> std::sync::Arc<CellIndex> {
+        self.hier.get_for(self.cell, l, self.src)
+    }
+
+    fn touched(&mut self) {
+        self.hier.invalidate(self.cell);
+    }
+}
+
+#[derive(Default, Clone, Copy)]
+pub struct DrawStats {
+    pub drawn: usize,
+    pub truncated: bool,
 }
 
 pub struct LayoutEditor {
@@ -55,12 +89,20 @@ pub struct LayoutEditor {
     pub drc: Option<Vec<DrcViolation>>,
     pub cursor: Option<(i64, i64)>,
     pub show_grid: bool,
+    /// Deepest hierarchy level drawn with its contents.
+    pub max_depth: u32,
+    pub place: Option<CellRef>,
+    pub place_rot: u8,
+    pub place_mirror: bool,
+    pub place_cols: u32,
+    pub place_rows: u32,
+    pub stats: DrawStats,
 }
 
 impl Default for LayoutEditor {
     fn default() -> Self {
         Self {
-            view: View2D::new(0.08, true, 1e-5, 50.0),
+            view: View2D::new(0.08, true, 1e-7, 50.0),
             needs_fit: true,
             tool: LayTool::Select,
             active_layer: 6,
@@ -75,6 +117,13 @@ impl Default for LayoutEditor {
             drc: None,
             cursor: None,
             show_grid: true,
+            max_depth: 32,
+            place: None,
+            place_rot: 0,
+            place_mirror: false,
+            place_cols: 1,
+            place_rows: 1,
+            stats: DrawStats::default(),
         }
     }
 }
@@ -89,15 +138,21 @@ pub fn um(dbu: i64, tech: &Tech) -> String {
     s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
+fn fill_alpha(def: &LayerDef) -> f32 {
+    let a = def.color[3] as f32 / 255.0;
+    let base = match def.fill {
+        FillStyle::Solid => 0.55,
+        FillStyle::Outline => 0.0,
+        _ => 0.18,
+    };
+    base * a
+}
+
 /// Fill a screen-space rect with the layer's stipple pattern (screen anchored so adjacent shapes line up).
 fn pattern_rect(painter: &egui::Painter, r: Rect, def: &LayerDef, emphasis: f32) {
     let c = layer_color(def);
     let a = def.color[3] as f32 / 255.0;
-    let base_alpha = match def.fill {
-        FillStyle::Solid => 0.55,
-        FillStyle::Outline => 0.0,
-        _ => 0.18,
-    } * a;
+    let base_alpha = fill_alpha(def);
     if base_alpha > 0.0 {
         painter.rect_filled(r, 0.0, c.gamma_multiply(base_alpha * emphasis));
     }
@@ -150,6 +205,22 @@ fn pattern_rect(painter: &egui::Painter, r: Rect, def: &LayerDef, emphasis: f32)
     painter.rect_stroke(r, 0.0, Stroke::new(1.0, c.gamma_multiply(emphasis)), StrokeKind::Inside);
 }
 
+fn at_least_px(r: Rect, px: f32) -> Rect {
+    Rect::from_center_size(r.center(), Vec2::new(r.width().max(px), r.height().max(px)))
+}
+
+/// Outline as four thin quads in a mesh (much cheaper than individual stroke shapes).
+fn mesh_outline(mesh: &mut Mesh, r: Rect, w: f32, c: Color32) {
+    if r.width() <= 2.0 * w || r.height() <= 2.0 * w {
+        mesh.add_colored_rect(r, c);
+        return;
+    }
+    mesh.add_colored_rect(Rect::from_min_max(r.min, Pos2::new(r.max.x, r.min.y + w)), c);
+    mesh.add_colored_rect(Rect::from_min_max(Pos2::new(r.min.x, r.max.y - w), r.max), c);
+    mesh.add_colored_rect(Rect::from_min_max(Pos2::new(r.min.x, r.min.y + w), Pos2::new(r.min.x + w, r.max.y - w)), c);
+    mesh.add_colored_rect(Rect::from_min_max(Pos2::new(r.max.x - w, r.min.y + w), Pos2::new(r.max.x, r.max.y - w)), c);
+}
+
 fn path_quads(points: &[(i64, i64)], width: i64) -> Vec<[(f64, f64); 4]> {
     let h = width as f64 / 2.0;
     points
@@ -178,133 +249,253 @@ pub struct LayoutDrawOpts<'a> {
     pub thumbnail: bool,
     pub show_grid: bool,
     pub grid: i64,
+    pub max_depth: u32,
 }
 
-pub fn draw_layout(painter: &egui::Painter, view: &View2D, rect: Rect, layout: &Layout, tech: &Tech, o: &LayoutDrawOpts) {
+fn screen_rect(view: &View2D, rect: Rect, b: IRect) -> Rect {
+    Rect::from_two_pos(view.to_screen(rect, b.x0 as f64, b.y0 as f64), view.to_screen(rect, b.x1 as f64, b.y1 as f64))
+}
+
+fn world_view(view: &View2D, rect: Rect) -> IRect {
+    let (x0, y1) = view.to_world(rect, rect.min);
+    let (x1, y0) = view.to_world(rect, rect.max);
+    IRect::new(x0.floor() as i64, y0.floor() as i64, x1.ceil() as i64, y1.ceil() as i64)
+}
+
+fn draw_grid(painter: &egui::Painter, view: &View2D, rect: Rect, pal: &Palette, grid: i64) {
+    let step = nice_step(view.scale, 18.0, grid as f64);
+    let (x0, y1) = view.to_world(rect, rect.min);
+    let (x1, y0) = view.to_world(rect, rect.max);
+    let line =
+        |major: bool| Stroke::new(1.0, if major { pal.grid_major.gamma_multiply(0.7) } else { pal.grid.gamma_multiply(0.6) });
+    let mut x = (x0 / step).floor() * step;
+    let mut n = 0;
+    while x <= x1 && n < 400 {
+        let p = view.to_screen(rect, x, 0.0);
+        painter
+            .line_segment([Pos2::new(p.x, rect.min.y), Pos2::new(p.x, rect.max.y)], line(((x / step).round() as i64) % 5 == 0));
+        x += step;
+        n += 1;
+    }
+    let mut y = (y0 / step).floor() * step;
+    n = 0;
+    while y <= y1 && n < 400 {
+        let p = view.to_screen(rect, 0.0, y);
+        painter
+            .line_segment([Pos2::new(rect.min.x, p.y), Pos2::new(rect.max.x, p.y)], line(((y / step).round() as i64) % 5 == 0));
+        y += step;
+        n += 1;
+    }
+    let o0 = view.to_screen(rect, 0.0, 0.0);
+    let axis = Stroke::new(1.0, pal.text_weak.gamma_multiply(0.35));
+    painter.line_segment([Pos2::new(o0.x, rect.min.y), Pos2::new(o0.x, rect.max.y)], axis);
+    painter.line_segment([Pos2::new(rect.min.x, o0.y), Pos2::new(rect.max.x, o0.y)], axis);
+}
+
+/// Draw a cell with its hierarchy. Shapes are culled through the per-cell spatial indices, tiny
+/// shapes and cells collapse into boxes, and the work per frame is bounded.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_layout(
+    painter: &egui::Painter,
+    view: &View2D,
+    rect: Rect,
+    cell: &CellRef,
+    layout: &Layout,
+    src: &dyn LayoutSource,
+    hier: &mut Hier,
+    tech: &Tech,
+    o: &LayoutDrawOpts,
+) -> DrawStats {
     let pal = o.pal;
     if o.show_grid && !o.thumbnail {
-        let step = nice_step(view.scale, 18.0, o.grid as f64);
-        let (x0, y1) = view.to_world(rect, rect.min);
-        let (x1, y0) = view.to_world(rect, rect.max);
-        let mut x = (x0 / step).floor() * step;
-        let mut n = 0;
-        while x <= x1 && n < 400 {
-            let major = ((x / step).round() as i64) % 5 == 0;
-            let p = view.to_screen(rect, x, 0.0);
-            painter.line_segment(
-                [Pos2::new(p.x, rect.min.y), Pos2::new(p.x, rect.max.y)],
-                Stroke::new(1.0, if major { pal.grid_major.gamma_multiply(0.7) } else { pal.grid.gamma_multiply(0.6) }),
-            );
-            x += step;
-            n += 1;
-        }
-        let mut y = (y0 / step).floor() * step;
-        n = 0;
-        while y <= y1 && n < 400 {
-            let major = ((y / step).round() as i64) % 5 == 0;
-            let p = view.to_screen(rect, 0.0, y);
-            painter.line_segment(
-                [Pos2::new(rect.min.x, p.y), Pos2::new(rect.max.x, p.y)],
-                Stroke::new(1.0, if major { pal.grid_major.gamma_multiply(0.7) } else { pal.grid.gamma_multiply(0.6) }),
-            );
-            y += step;
-            n += 1;
-        }
-        // origin axes
-        let o0 = view.to_screen(rect, 0.0, 0.0);
-        let axis = Stroke::new(1.0, pal.text_weak.gamma_multiply(0.35));
-        painter.line_segment([Pos2::new(o0.x, rect.min.y), Pos2::new(o0.x, rect.max.y)], axis);
-        painter.line_segment([Pos2::new(rect.min.x, o0.y), Pos2::new(rect.max.x, o0.y)], axis);
+        draw_grid(painter, view, rect, &pal, o.grid);
     }
+    let idx = hier.get_for(cell, layout, src);
+    let world = world_view(view, rect);
+    let px = 1.0 / view.scale;
+    let q = ViewQuery {
+        view: world,
+        max_depth: o.max_depth,
+        min_cell: ((if o.thumbnail { 3.0 } else { 8.0 }) * px) as i64,
+        min_shape: (1.5 * px) as i64,
+        visible: o.visible,
+        limit: if o.thumbnail { 50_000 } else { 400_000 },
+    };
+    let vis = hier::query(hier, src, layout, &idx, &q);
     let selected = |id: u64| o.selection.is_some_and(|s| s.contains(&id));
     let has_sel = o.selection.is_some_and(|s| !s.is_empty());
     let to_s = |x: f64, y: f64| view.to_screen(rect, x, y);
+    let stipple = !o.thumbnail && vis.count < 20_000;
     for li in 0..tech.layers.len() {
         if !o.visible.get(li).copied().unwrap_or(true) {
             continue;
         }
         let def = &tech.layers[li];
         let c = layer_color(def);
-        for s in layout.shapes.iter().filter(|s| s.layer == li) {
-            let emphasis = if has_sel && !selected(s.id) { 0.75 } else { 1.0 };
-            let sr = {
-                let b = s.bbox();
-                Rect::from_two_pos(to_s(b.x0 as f64, b.y0 as f64), to_s(b.x1 as f64, b.y1 as f64))
-            };
-            if !sr.intersects(rect) {
-                continue;
-            }
-            match &s.geom {
-                Geometry::Rect(_) => {
-                    if o.thumbnail {
-                        painter.rect_filled(sr, 0.0, c.gamma_multiply(0.45));
-                        painter.rect_stroke(sr, 0.0, Stroke::new(0.6, c), StrokeKind::Inside);
-                    } else {
+        let fa = fill_alpha(def);
+        let mesh_slot = painter.add(egui::Shape::Noop);
+        let mut mesh = Mesh::default();
+        for b in vis.tiny.get(li).into_iter().flatten() {
+            mesh.add_colored_rect(at_least_px(screen_rect(view, rect, *b), 1.0), c.gamma_multiply(0.7));
+        }
+        for p in vis.shapes.get(li).into_iter().flatten() {
+            let emphasis = if has_sel && !(p.depth == 0 && selected(p.shape.id)) { 0.75 } else { 1.0 };
+            match &p.shape.geom {
+                Geometry::Rect(r) => {
+                    let sr = screen_rect(view, rect, p.trans.apply_rect(*r));
+                    if !sr.intersects(rect) {
+                        continue;
+                    }
+                    if sr.width() < 3.0 || sr.height() < 3.0 {
+                        mesh.add_colored_rect(at_least_px(sr, 1.0), c.gamma_multiply(0.6 * emphasis));
+                    } else if stipple {
                         pattern_rect(painter, sr, def, emphasis);
+                    } else {
+                        let clipped = sr.intersect(rect.expand(2.0));
+                        if fa > 0.0 {
+                            mesh.add_colored_rect(clipped, c.gamma_multiply(fa.max(0.25) * emphasis));
+                        }
+                        mesh_outline(&mut mesh, clipped, 1.0, c.gamma_multiply(emphasis));
                     }
                 }
                 Geometry::Polygon { points } => {
-                    let pts: Vec<Pos2> = points.iter().map(|p| to_s(p.0 as f64, p.1 as f64)).collect();
-                    painter.add(egui::Shape::closed_line(pts, Stroke::new(1.2, c)));
+                    let pts: Vec<Pos2> = points
+                        .iter()
+                        .map(|q| {
+                            let (x, y) = p.trans.apply_f((q.0 as f64, q.1 as f64));
+                            to_s(x, y)
+                        })
+                        .collect();
+                    painter.add(egui::Shape::closed_line(pts, Stroke::new(1.2, c.gamma_multiply(emphasis))));
                 }
                 Geometry::Path { points, width } => {
-                    for q in path_quads(points, *width) {
-                        let pts: Vec<Pos2> = q.iter().map(|p| to_s(p.0, p.1)).collect();
+                    for quad in path_quads(points, *width) {
+                        let pts: Vec<Pos2> = quad
+                            .iter()
+                            .map(|q| {
+                                let (x, y) = p.trans.apply_f(*q);
+                                to_s(x, y)
+                            })
+                            .collect();
                         painter.add(egui::Shape::convex_polygon(
                             pts,
                             c.gamma_multiply(0.35 * emphasis),
                             Stroke::new(1.0, c.gamma_multiply(emphasis)),
                         ));
                     }
-                    if !o.thumbnail {
-                        let center: Vec<Pos2> = points.iter().map(|p| to_s(p.0 as f64, p.1 as f64)).collect();
+                    if !o.thumbnail && p.depth == 0 {
+                        let center: Vec<Pos2> = points.iter().map(|q| to_s(q.0 as f64, q.1 as f64)).collect();
                         painter.add(egui::Shape::dashed_line(&center, Stroke::new(1.0, c.gamma_multiply(0.6)), 4.0, 4.0));
                     }
                 }
                 Geometry::Label { text, at, size } => {
-                    if !o.thumbnail {
-                        let p = to_s(at.0 as f64, at.1 as f64);
-                        let fs = ((*size as f64 * view.scale) as f32).clamp(8.0, 64.0);
-                        painter.text(
-                            p,
-                            Align2::LEFT_BOTTOM,
-                            text,
-                            FontId::proportional(fs),
-                            c.gamma_multiply(emphasis).to_opaque(),
-                        );
-                        painter.line_segment([p - Vec2::new(3.0, 0.0), p + Vec2::new(3.0, 0.0)], Stroke::new(1.0, c));
-                        painter.line_segment([p - Vec2::new(0.0, 3.0), p + Vec2::new(0.0, 3.0)], Stroke::new(1.0, c));
+                    let fs = (*size as f64 * view.scale) as f32;
+                    if o.thumbnail || (p.depth > 0 && fs < 6.0) {
+                        continue;
                     }
+                    let (x, y) = p.trans.apply_f((at.0 as f64, at.1 as f64));
+                    let sp = to_s(x, y);
+                    painter.text(
+                        sp,
+                        Align2::LEFT_BOTTOM,
+                        text,
+                        FontId::proportional(fs.clamp(8.0, 64.0)),
+                        c.gamma_multiply(emphasis).to_opaque(),
+                    );
+                    painter.line_segment([sp - Vec2::new(3.0, 0.0), sp + Vec2::new(3.0, 0.0)], Stroke::new(1.0, c));
+                    painter.line_segment([sp - Vec2::new(0.0, 3.0), sp + Vec2::new(0.0, 3.0)], Stroke::new(1.0, c));
                 }
             }
-            if selected(s.id) {
-                painter.rect_stroke(sr.expand(1.5), 0.0, Stroke::new(2.0, pal.selection), StrokeKind::Outside);
+        }
+        painter.set(mesh_slot, egui::Shape::mesh(mesh));
+    }
+
+    // Instances shown as boxes (beyond the level limit, too small, or missing).
+    let mut mesh = Mesh::default();
+    let mut names = 0;
+    for b in &vis.boxes {
+        let sr = screen_rect(view, rect, b.rect);
+        let col = if b.missing { pal.danger } else { pal.text_weak.gamma_multiply(0.8) };
+        mesh_outline(&mut mesh, sr.intersect(rect.expand(2.0)), 1.0, col);
+        if !o.thumbnail && sr.width() > 70.0 && sr.height() > 18.0 && names < 400 {
+            names += 1;
+            let label = if b.missing { format!("{} (missing)", b.cell) } else { b.cell.cell.clone() };
+            painter.text(sr.center(), Align2::CENTER_CENTER, label, FontId::proportional(11.0), col);
+        }
+    }
+    painter.add(egui::Shape::mesh(mesh));
+
+    // Frames of the top cell's own instances.
+    if !o.thumbnail {
+        for i in idx.instances_in(world) {
+            let (Some(b), Some(inst)) = (idx.instance_bbox(layout, i), layout.instances.get(i)) else { continue };
+            let sr = screen_rect(view, rect, b);
+            let sel = selected(inst.id);
+            let st = if sel { Stroke::new(2.0, pal.selection) } else { Stroke::new(1.0, pal.text_weak.gamma_multiply(0.9)) };
+            painter.rect_stroke(sr, 0.0, st, if sel { StrokeKind::Outside } else { StrokeKind::Inside });
+            if sr.width() > 50.0 && sr.height() > 16.0 {
+                let (c, r) = inst.dims();
+                let name = if c * r > 1 { format!("{} [{c}×{r}]", inst.cell.cell) } else { inst.cell.cell.clone() };
+                let at = Pos2::new(sr.min.x.max(rect.min.x) + 4.0, sr.min.y.max(rect.min.y) + 3.0);
+                painter.text(
+                    at,
+                    Align2::LEFT_TOP,
+                    name,
+                    FontId::proportional(11.0),
+                    if sel { pal.selection } else { pal.text_weak },
+                );
             }
         }
     }
+
+    // Selected top-level shapes.
+    if has_sel {
+        for s in layout.shapes.iter().filter(|s| selected(s.id)) {
+            let sr = screen_rect(view, rect, s.bbox());
+            painter.rect_stroke(sr.expand(1.5), 0.0, Stroke::new(2.0, pal.selection), StrokeKind::Outside);
+        }
+    }
+    DrawStats { drawn: vis.count, truncated: vis.truncated }
 }
 
-fn hit(layout: &Layout, visible: &[bool], x: i64, y: i64, tol: i64) -> Option<u64> {
-    // Topmost layer first, then latest shape.
-    let mut best: Option<(usize, usize, u64)> = None;
-    for s in &layout.shapes {
-        if !visible.get(s.layer).copied().unwrap_or(true) {
+/// Topmost item (shape or instance) of the top cell under the cursor.
+fn hit(layout: &Layout, idx: &CellIndex, visible: &[bool], x: i64, y: i64, tol: i64) -> Option<u64> {
+    let area = IRect::new(x - tol, y - tol, x + tol, y + tol);
+    let mut best: Option<(i128, usize, u64)> = None;
+    let mut consider = |b: IRect, layer: usize, id: u64| {
+        let a = b.width().max(1) as i128 * b.height().max(1) as i128;
+        // Prefer smaller items (more specific), then higher layers.
+        if best.is_none_or(|(ba, bl, _)| a < ba || (a == ba && layer > bl)) {
+            best = Some((a, layer, id));
+        }
+    };
+    for (li, vis) in visible.iter().enumerate() {
+        if !vis {
             continue;
         }
-        if s.hit(x, y, tol) {
-            // Prefer smaller shapes when overlapping (more specific), then higher layers.
-            let area = (s.bbox().width().max(1) as f64 * s.bbox().height().max(1) as f64) as usize;
-            let key = (usize::MAX - area, s.layer, s.id);
-            if best.is_none_or(|b| (key.0, key.1) > (b.0, b.1)) {
-                best = Some(key);
+        for i in idx.shapes_in(li, area) {
+            if let Some(s) = layout.shapes.get(i)
+                && s.hit(x, y, tol)
+            {
+                consider(s.bbox(), s.layer, s.id);
             }
+        }
+    }
+    for i in idx.instances_in(area) {
+        if let (Some(b), Some(inst)) = (idx.instance_bbox(layout, i), layout.instances.get(i))
+            && b.contains(x, y)
+        {
+            consider(b, 0, inst.id);
         }
     }
     best.map(|b| b.2)
 }
 
+#[derive(Default)]
 pub struct LayOutput {
     pub changed: bool,
+    /// The user asked to open (descend into) this cell.
+    pub open: Option<CellRef>,
 }
 
 impl LayoutEditor {
@@ -362,6 +553,9 @@ impl LayoutEditor {
                 let mut g = Shape { id: 0, ..s };
                 g.translate(off, -off);
                 sel.insert(l.add(g.layer, g.geom));
+            } else if let Some(i) = l.instance(id).cloned() {
+                let t = Trans { x: i.trans.x + off, y: i.trans.y - off, ..i.trans };
+                sel.insert(l.add_instance(i.cell, t, i.array));
             }
         }
         self.selection = sel;
@@ -374,9 +568,7 @@ impl LayoutEditor {
         }
         self.history.push(l);
         for id in &self.selection {
-            if let Some(s) = l.shape_mut(*id) {
-                s.translate(dx, dy);
-            }
+            l.translate_item(*id, dx, dy);
         }
         true
     }
@@ -396,6 +588,21 @@ impl LayoutEditor {
         let id = l.add(self.active_layer, Geometry::Path { points: pts, width: w });
         self.selection = [id].into();
         true
+    }
+
+    /// Transform and array used when placing the chosen cell at `at`.
+    fn placement(&self, cx: &mut LayCtx, at: (i64, i64)) -> Option<(CellRef, Trans, Option<ArraySpec>, IRect)> {
+        let cell = self.place.clone()?;
+        let cb = cx.hier.get(&cell, cx.src)?.bbox?;
+        let t = Trans::with(at.0, at.1, self.place_rot, self.place_mirror);
+        let lin = Trans::with(0, 0, self.place_rot, self.place_mirror).apply_rect(cb);
+        let array = (self.place_cols * self.place_rows > 1).then(|| ArraySpec {
+            cols: self.place_cols.max(1),
+            rows: self.place_rows.max(1),
+            col: (lin.width(), 0),
+            row: (0, lin.height()),
+        });
+        Some((cell, t, array, cb))
     }
 
     fn handle_keys(&mut self, ui: &egui::Ui, l: &mut Layout, tech: &Tech) -> bool {
@@ -418,7 +625,7 @@ impl LayoutEditor {
         for k in keys {
             if cmd {
                 match k {
-                    Key::A => self.selection = l.shapes.iter().map(|s| s.id).collect(),
+                    Key::A => self.selection = l.ids().collect(),
                     Key::D => changed |= self.duplicate(l, tech.grid),
                     _ => {}
                 }
@@ -445,6 +652,7 @@ impl LayoutEditor {
                 Key::R => self.set_tool(LayTool::Rect),
                 Key::P => self.set_tool(LayTool::Path),
                 Key::L => self.set_tool(LayTool::Label),
+                Key::I => self.set_tool(LayTool::Instance),
                 Key::K => self.set_tool(LayTool::Ruler),
                 Key::S => self.set_tool(LayTool::Select),
                 Key::F => self.needs_fit = true,
@@ -452,22 +660,27 @@ impl LayoutEditor {
                 Key::ArrowRight => changed |= self.nudge(l, g, 0),
                 Key::ArrowUp => changed |= self.nudge(l, 0, g),
                 Key::ArrowDown => changed |= self.nudge(l, 0, -g),
+                Key::Num0 | Key::Num1 | Key::Num2 | Key::Num3 | Key::Num4 | Key::Num5 | Key::Num6 | Key::Num7 | Key::Num8 => {
+                    self.max_depth = k.name().parse().unwrap_or(32);
+                }
+                Key::Num9 => self.max_depth = 32,
                 _ => {}
             }
         }
         changed
     }
 
-    pub fn canvas(&mut self, ui: &mut egui::Ui, l: &mut Layout, tech: &Tech) -> LayOutput {
+    pub fn canvas(&mut self, ui: &mut egui::Ui, l: &mut Layout, cx: &mut LayCtx) -> LayOutput {
+        let tech = cx.tech;
         self.sync_layers(tech);
         let pal = theme::palette(ui.ctx());
-        let mut changed = false;
+        let mut out = LayOutput::default();
         let (resp, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
         let rect = resp.rect;
         let painter = painter.with_clip_rect(rect);
         painter.rect_filled(rect, 0.0, if pal.dark { Color32::from_rgb(0x0e, 0x10, 0x13) } else { pal.bg_canvas });
         if self.needs_fit {
-            match l.bbox() {
+            match cx.index(l).bbox {
                 Some(b) => self.view.fit(rect, (b.x0 as f64, b.y0 as f64), (b.x1 as f64, b.y1 as f64), 50.0),
                 None => {
                     self.view.scale = 0.08;
@@ -477,8 +690,9 @@ impl LayoutEditor {
             self.needs_fit = false;
         }
         self.view.handle_navigation(ui, &resp, rect);
-        if resp.hovered() {
-            changed |= self.handle_keys(ui, l, tech);
+        if resp.hovered() && self.handle_keys(ui, l, tech) {
+            out.changed = true;
+            cx.touched();
         }
         let hover = resp.hover_pos();
         let world = hover.map(|p| self.view.to_world(rect, p));
@@ -491,8 +705,8 @@ impl LayoutEditor {
                 if resp.drag_started_by(egui::PointerButton::Primary) {
                     let press = ui.input(|i| i.pointer.press_origin()).unwrap_or(rect.center());
                     let pw = self.view.to_world(rect, press);
-                    let (px, py) = (pw.0 as i64, pw.1 as i64);
-                    match hit(l, &self.visible, px, py, tol) {
+                    let idx = cx.index(l);
+                    match hit(l, &idx, &self.visible, pw.0 as i64, pw.1 as i64, tol) {
                         Some(id) => {
                             if !self.selection.contains(&id) {
                                 if !shift {
@@ -500,26 +714,32 @@ impl LayoutEditor {
                                 }
                                 self.selection.insert(id);
                             }
-                            self.drag = Some(LDrag::Move { start: self.snap(pw, tech.grid), snapshot: l.clone() });
+                            self.drag = Some(LDrag::Move { start: self.snap(pw, tech.grid), offset: (0, 0) });
                         }
                         None => self.drag = Some(LDrag::Rubber { start: press }),
                     }
                 }
-                if resp.clicked()
-                    && let Some(w) = world
+                if let Some(w) = world
+                    && (resp.clicked() || resp.double_clicked())
                 {
-                    match hit(l, &self.visible, w.0 as i64, w.1 as i64, tol) {
-                        Some(id) => {
-                            if shift {
-                                if !self.selection.remove(&id) {
-                                    self.selection.insert(id);
+                    let idx = cx.index(l);
+                    let h = hit(l, &idx, &self.visible, w.0 as i64, w.1 as i64, tol);
+                    if resp.double_clicked() {
+                        out.open = h.and_then(|id| l.instance(id)).map(|i| i.cell.clone());
+                    } else {
+                        match h {
+                            Some(id) => {
+                                if shift {
+                                    if !self.selection.remove(&id) {
+                                        self.selection.insert(id);
+                                    }
+                                } else {
+                                    self.selection = [id].into();
                                 }
-                            } else {
-                                self.selection = [id].into();
                             }
+                            None if !shift => self.selection.clear(),
+                            None => {}
                         }
-                        None if !shift => self.selection.clear(),
-                        None => {}
                     }
                 }
             }
@@ -548,12 +768,14 @@ impl LayoutEditor {
                             self.path_pts.push(p);
                         }
                     }
-                    if resp.double_clicked() {
-                        changed |= self.finish_path(l, tech);
+                    if resp.double_clicked() && self.finish_path(l, tech) {
+                        out.changed = true;
+                        cx.touched();
                     }
                 }
-                if resp.secondary_clicked() {
-                    changed |= self.finish_path(l, tech);
+                if resp.secondary_clicked() && self.finish_path(l, tech) {
+                    out.changed = true;
+                    cx.touched();
                 }
             }
             LayTool::Label => {
@@ -565,38 +787,43 @@ impl LayoutEditor {
                         self.history.push(l);
                         let id = l.add(self.active_layer, Geometry::Label { text: t, at: c, size: 250 });
                         self.selection = [id].into();
-                        changed = true;
+                        out.changed = true;
+                        cx.touched();
                     }
+                }
+            }
+            LayTool::Instance => {
+                if resp.clicked()
+                    && let Some(c) = self.cursor
+                    && let Some((cell, t, array, _)) = self.placement(cx, c)
+                {
+                    self.history.push(l);
+                    let id = l.add_instance(cell, t, array);
+                    self.selection = [id].into();
+                    out.changed = true;
+                    cx.touched();
                 }
             }
         }
 
         // Drag updates
-        if let Some(w) = world {
-            let c = self.snap(w, tech.grid);
-            match &self.drag {
-                Some(LDrag::Move { start, snapshot }) => {
-                    let (dx, dy) = (c.0 - start.0, c.1 - start.1);
-                    let mut next = snapshot.clone();
-                    for id in &self.selection {
-                        if let Some(s) = next.shape_mut(*id) {
-                            s.translate(dx, dy);
-                        }
-                    }
-                    if next != *l {
-                        *l = next;
-                    }
-                }
+        if let Some(c) = self.cursor {
+            match &mut self.drag {
+                Some(LDrag::Move { start, offset }) => *offset = (c.0 - start.0, c.1 - start.1),
                 Some(LDrag::Ruler { start }) => self.ruler = Some((*start, c)),
                 _ => {}
             }
         }
         if resp.drag_stopped() {
             match self.drag.take() {
-                Some(LDrag::Move { snapshot, .. }) => {
-                    if snapshot != *l {
-                        self.history.push(&snapshot);
-                        changed = true;
+                Some(LDrag::Move { offset, .. }) => {
+                    if offset != (0, 0) {
+                        self.history.push(l);
+                        for id in &self.selection {
+                            l.translate_item(*id, offset.0, offset.1);
+                        }
+                        out.changed = true;
+                        cx.touched();
                     }
                 }
                 Some(LDrag::Create { start }) => {
@@ -607,7 +834,8 @@ impl LayoutEditor {
                         self.history.push(l);
                         let id = l.add_rect(self.active_layer, start.0, start.1, c.0, c.1);
                         self.selection = [id].into();
-                        changed = true;
+                        out.changed = true;
+                        cx.touched();
                     }
                 }
                 Some(LDrag::Rubber { start }) => {
@@ -618,15 +846,24 @@ impl LayoutEditor {
                         if !shift {
                             self.selection.clear();
                         }
-                        for s in &l.shapes {
-                            let bb = s.bbox();
-                            if self.visible.get(s.layer).copied().unwrap_or(true)
-                                && bb.x0 >= r.x0
-                                && bb.x1 <= r.x1
-                                && bb.y0 >= r.y0
-                                && bb.y1 <= r.y1
+                        let inside = |bb: IRect| bb.x0 >= r.x0 && bb.x1 <= r.x1 && bb.y0 >= r.y0 && bb.y1 <= r.y1;
+                        let idx = cx.index(l);
+                        for (li, vis) in self.visible.iter().enumerate() {
+                            if *vis {
+                                for i in idx.shapes_in(li, r) {
+                                    if let Some(s) = l.shapes.get(i)
+                                        && inside(s.bbox())
+                                    {
+                                        self.selection.insert(s.id);
+                                    }
+                                }
+                            }
+                        }
+                        for i in idx.instances_in(r) {
+                            if let (Some(b), Some(inst)) = (idx.instance_bbox(l, i), l.instances.get(i))
+                                && inside(b)
                             {
-                                self.selection.insert(s.id);
+                                self.selection.insert(inst.id);
                             }
                         }
                     }
@@ -635,11 +872,14 @@ impl LayoutEditor {
             }
         }
 
-        draw_layout(
+        self.stats = draw_layout(
             &painter,
             &self.view,
             rect,
+            cx.cell,
             l,
+            cx.src,
+            cx.hier,
             tech,
             &LayoutDrawOpts {
                 pal,
@@ -648,18 +888,42 @@ impl LayoutEditor {
                 thumbnail: false,
                 show_grid: self.show_grid,
                 grid: tech.grid,
+                max_depth: self.max_depth,
             },
         );
 
         // Overlays: DRC markers
         if let Some(v) = &self.drc {
             for x in v {
-                let r = Rect::from_two_pos(
-                    self.view.to_screen(rect, x.area.x0 as f64, x.area.y0 as f64),
-                    self.view.to_screen(rect, x.area.x1 as f64, x.area.y1 as f64),
-                )
-                .expand(3.0);
+                let r = screen_rect(&self.view, rect, x.area).expand(3.0);
                 painter.rect_stroke(r, 2.0, Stroke::new(2.0, pal.danger), StrokeKind::Outside);
+            }
+        }
+        // Move preview: ghost outlines of the selection at the drag offset.
+        if let Some(LDrag::Move { offset, .. }) = &self.drag
+            && *offset != (0, 0)
+        {
+            let idx = cx.index(l);
+            let ghost = Stroke::new(1.5, pal.selection.gamma_multiply(0.9));
+            for (i, inst) in l.instances.iter().enumerate() {
+                if self.selection.contains(&inst.id)
+                    && let Some(b) = idx.instance_bbox(l, i)
+                {
+                    painter.rect_stroke(
+                        screen_rect(&self.view, rect, b.translate(offset.0, offset.1)),
+                        0.0,
+                        ghost,
+                        StrokeKind::Middle,
+                    );
+                }
+            }
+            for s in l.shapes.iter().filter(|s| self.selection.contains(&s.id)) {
+                painter.rect_stroke(
+                    screen_rect(&self.view, rect, s.bbox().translate(offset.0, offset.1)),
+                    0.0,
+                    ghost,
+                    StrokeKind::Middle,
+                );
             }
         }
         // Tool previews
@@ -672,6 +936,39 @@ impl LayoutEditor {
             pattern_rect(&painter, r, def, 1.0);
             let txt = format!("{} × {} µm", um((c.0 - start.0).abs(), tech), um((c.1 - start.1).abs(), tech));
             painter.text(r.right_bottom() + Vec2::new(6.0, 6.0), Align2::LEFT_TOP, txt, FontId::monospace(11.0), pal.text);
+        }
+        if self.tool == LayTool::Instance
+            && let Some(c) = self.cursor
+            && hover.is_some()
+        {
+            match self.placement(cx, c) {
+                Some((cell, t, array, cb)) => {
+                    let inst = ics_core::layout::CellInst { id: 0, cell, trans: t, array };
+                    let b = screen_rect(&self.view, rect, inst.bbox(cb));
+                    painter.rect_filled(b, 0.0, pal.layout.gamma_multiply(0.08));
+                    painter.rect_stroke(b, 0.0, Stroke::new(1.5, pal.layout), StrokeKind::Middle);
+                    let e = screen_rect(&self.view, rect, t.apply_rect(cb));
+                    painter.rect_stroke(e, 0.0, Stroke::new(1.0, pal.layout.gamma_multiply(0.7)), StrokeKind::Middle);
+                    painter.text(
+                        e.left_top() + Vec2::new(4.0, 3.0),
+                        Align2::LEFT_TOP,
+                        &inst.cell.cell,
+                        FontId::proportional(11.0),
+                        pal.layout,
+                    );
+                }
+                None => {
+                    if let Some(h) = hover {
+                        painter.text(
+                            h + Vec2::new(14.0, 14.0),
+                            Align2::LEFT_TOP,
+                            "Choose a cell to place in the left panel",
+                            FontId::proportional(12.0),
+                            pal.text_weak,
+                        );
+                    }
+                }
+            }
         }
         if let Some(start) = self.drag.as_ref().and_then(|d| if let LDrag::Rubber { start } = d { Some(*start) } else { None })
             && let Some(h) = hover
@@ -712,11 +1009,11 @@ impl LayoutEditor {
             painter.rect_filled(r, 4.0, pal.bg_panel.gamma_multiply(0.92));
             painter.galley(r.min + Vec2::new(5.0, 2.0), g, pal.warning);
         }
-        if l.shapes.is_empty() {
+        if l.is_empty() {
             painter.text(
                 rect.center(),
                 Align2::CENTER_CENTER,
-                "Empty layout — choose a layer on the left, then press R and drag to draw a rectangle.\nP draws paths, L places labels, K measures, scroll to zoom, right-drag to pan.",
+                "Empty layout — choose a layer on the left, then press R and drag to draw a rectangle.\nP draws paths, L places labels, I places cells, K measures, scroll to zoom, right-drag to pan.",
                 FontId::proportional(14.0),
                 pal.text_weak,
             );
@@ -741,12 +1038,15 @@ impl LayoutEditor {
                 egui::CursorIcon::Crosshair
             });
         }
-        LayOutput { changed }
+        out
     }
 
-    pub fn layer_palette(&mut self, ui: &mut egui::Ui, tech: &Tech) {
+    /// Left panel: tool options, cell placement, hierarchy tree and layers. Returns a cell to open.
+    pub fn layer_palette(&mut self, ui: &mut egui::Ui, l: &Layout, cx: &mut LayCtx) -> Option<CellRef> {
+        let tech = cx.tech;
         self.sync_layers(tech);
         let pal = theme::palette(ui.ctx());
+        let mut open = None;
         if self.tool == LayTool::Path {
             theme::section(ui, "Path");
             ui.horizontal(|ui| {
@@ -764,6 +1064,23 @@ impl LayoutEditor {
                 ui.text_edit_singleline(&mut self.label_text).labelled_by(l.id);
             });
         }
+        if self.tool == LayTool::Instance {
+            self.placement_panel(ui, cx);
+        }
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            theme::section(ui, "Hierarchy");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let dv = ui
+                    .add(egui::DragValue::new(&mut self.max_depth).range(0..=32))
+                    .on_hover_text("Hierarchy levels drawn with their contents (keys 0-9)");
+                let lv = ui.label(egui::RichText::new("levels").small().color(pal.text_weak));
+                dv.labelled_by(lv.id);
+            });
+        });
+        egui::ScrollArea::vertical().id_salt("hier_tree").max_height(180.0).show(ui, |ui| {
+            hier_node(ui, cx.src, cx.cell, Some(l), None, 0, &mut open);
+        });
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             theme::section(ui, &format!("Layers · {}", tech.name));
@@ -824,17 +1141,153 @@ impl LayoutEditor {
                 ));
             }
         });
+        open
     }
 
-    pub fn inspector(&mut self, ui: &mut egui::Ui, l: &mut Layout, tech: &Tech) -> bool {
+    fn placement_panel(&mut self, ui: &mut egui::Ui, cx: &mut LayCtx) {
+        let pal = theme::palette(ui.ctx());
+        theme::section(ui, "Place cell");
+        let candidates: Vec<&CellRef> =
+            cx.cells.iter().filter(|c| *c != cx.cell && !hier::would_cycle(cx.src, cx.cell, c)).collect();
+        if candidates.is_empty() {
+            ui.label(egui::RichText::new("No other cells with a layout").small().color(pal.text_weak));
+        }
+        egui::ScrollArea::vertical().id_salt("place_cells").max_height(140.0).show(ui, |ui| {
+            for c in candidates {
+                let on = self.place.as_ref() == Some(c);
+                if ui.selectable_label(on, c.to_string()).clicked() {
+                    self.place = Some(c.clone());
+                }
+            }
+        });
+        egui::Grid::new("place_opts").num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| {
+            let l = ui.label("Rotation");
+            egui::ComboBox::from_id_salt("place_rot")
+                .selected_text(format!("{}°", self.place_rot as u32 * 90))
+                .show_ui(ui, |ui| {
+                    for r in 0..4u8 {
+                        ui.selectable_value(&mut self.place_rot, r, format!("{}°", r as u32 * 90));
+                    }
+                })
+                .response
+                .labelled_by(l.id);
+            ui.end_row();
+            ui.label("");
+            ui.checkbox(&mut self.place_mirror, "Mirror about x");
+            ui.end_row();
+            let l = ui.label("Columns");
+            ui.add(egui::DragValue::new(&mut self.place_cols).range(1..=10_000)).labelled_by(l.id);
+            ui.end_row();
+            let l = ui.label("Rows");
+            ui.add(egui::DragValue::new(&mut self.place_rows).range(1..=10_000)).labelled_by(l.id);
+            ui.end_row();
+        });
+        ui.label(egui::RichText::new("Click to place · arrays abut at the cell extent").small().color(pal.text_weak));
+        ui.add_space(4.0);
+    }
+
+    /// Right panel. Returns (changed, cell to open).
+    pub fn inspector(&mut self, ui: &mut egui::Ui, l: &mut Layout, cx: &mut LayCtx) -> (bool, Option<CellRef>) {
+        let tech = cx.tech;
         let pal = theme::palette(ui.ctx());
         let mut changed = false;
-        if self.selection.len() == 1 {
-            let id = *self.selection.iter().next().unwrap();
-            let Some(before) = l.shape(id).cloned() else {
-                self.selection.clear();
-                return false;
-            };
+        let mut open = None;
+        let k = tech.dbu_per_um as f64;
+        let um_edit = |ui: &mut egui::Ui, label: &str, v: &mut i64, focus: &mut bool| {
+            let l = ui.label(label);
+            let mut f = *v as f64 / k;
+            let r = ui.add(egui::DragValue::new(&mut f).speed(0.01).max_decimals(3).suffix(" µm")).labelled_by(l.id);
+            *focus |= r.drag_started() || r.gained_focus();
+            let nv = ((f * k / tech.grid as f64).round() as i64) * tech.grid;
+            if nv != *v {
+                *v = nv;
+            }
+            ui.end_row();
+        };
+        let single = (self.selection.len() == 1).then(|| *self.selection.iter().next().unwrap());
+        if let Some(id) = single
+            && let Some(before) = l.instance(id).cloned()
+        {
+            let mut s = before.clone();
+            let mut focus = false;
+            theme::section(ui, "Instance");
+            egui::Grid::new("inst_props").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                ui.label("Cell");
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(s.cell.to_string()).strong());
+                    if ui.small_button("Open").on_hover_text("Open this cell (double-click the instance)").clicked() {
+                        open = Some(s.cell.clone());
+                    }
+                });
+                ui.end_row();
+                um_edit(ui, "x", &mut s.trans.x, &mut focus);
+                um_edit(ui, "y", &mut s.trans.y, &mut focus);
+                let ll = ui.label("Rotation");
+                egui::ComboBox::from_id_salt("inst_rot")
+                    .selected_text(format!("{}°", s.trans.rot as u32 * 90))
+                    .show_ui(ui, |ui| {
+                        for r in 0..4u8 {
+                            focus |= ui.selectable_value(&mut s.trans.rot, r, format!("{}°", r as u32 * 90)).clicked();
+                        }
+                    })
+                    .response
+                    .labelled_by(ll.id);
+                ui.end_row();
+                ui.label("");
+                focus |= ui.checkbox(&mut s.trans.mirror, "Mirror about x").clicked();
+                ui.end_row();
+                ui.label("");
+                let mut is_array = s.array.is_some();
+                if ui.checkbox(&mut is_array, "Array").clicked() {
+                    focus = true;
+                    let cb = cx.hier.get(&s.cell, cx.src).and_then(|c| c.bbox).unwrap_or_default();
+                    let lin = Trans { x: 0, y: 0, ..s.trans }.apply_rect(cb);
+                    s.array = is_array.then_some(ArraySpec { cols: 2, rows: 1, col: (lin.width(), 0), row: (0, lin.height()) });
+                }
+                ui.end_row();
+                if let Some(a) = s.array.as_mut() {
+                    let l1 = ui.label("Columns");
+                    let r = ui.add(egui::DragValue::new(&mut a.cols).range(1..=100_000)).labelled_by(l1.id);
+                    focus |= r.drag_started() || r.gained_focus();
+                    ui.end_row();
+                    let l2 = ui.label("Rows");
+                    let r = ui.add(egui::DragValue::new(&mut a.rows).range(1..=100_000)).labelled_by(l2.id);
+                    focus |= r.drag_started() || r.gained_focus();
+                    ui.end_row();
+                    um_edit(ui, "Column pitch", &mut a.col.0, &mut focus);
+                    um_edit(ui, "Row pitch", &mut a.row.1, &mut focus);
+                }
+                if let Some(ci) = cx.hier.get(&s.cell, cx.src) {
+                    if let Some(b) = ci.bbox {
+                        ui.label("Cell size");
+                        ui.label(format!("{} × {} µm", um(b.width(), tech), um(b.height(), tech)));
+                        ui.end_row();
+                    }
+                    ui.label("Flat shapes");
+                    ui.label(fmt_count(ci.flat_shapes * s.count()));
+                    ui.end_row();
+                } else {
+                    ui.label("Status");
+                    ui.colored_label(pal.danger, "cell not found");
+                    ui.end_row();
+                }
+            });
+            if focus {
+                self.history.push(l);
+            }
+            if s != before {
+                if let Some(t) = l.instance_mut(id) {
+                    *t = s;
+                }
+                changed = true;
+            }
+            ui.add_space(8.0);
+            if ui.button("🗑 Delete").clicked() {
+                changed |= self.delete_selection(l);
+            }
+        } else if let Some(id) = single
+            && let Some(before) = l.shape(id).cloned()
+        {
             let mut s = before.clone();
             theme::section(ui, "Shape");
             let mut focus = false;
@@ -852,18 +1305,6 @@ impl LayoutEditor {
                     .response
                     .labelled_by(ll.id);
                 ui.end_row();
-                let k = tech.dbu_per_um as f64;
-                let um_edit = |ui: &mut egui::Ui, label: &str, v: &mut i64, focus: &mut bool| {
-                    let l = ui.label(label);
-                    let mut f = *v as f64 / k;
-                    let r = ui.add(egui::DragValue::new(&mut f).speed(0.01).max_decimals(3).suffix(" µm")).labelled_by(l.id);
-                    *focus |= r.drag_started() || r.gained_focus();
-                    let nv = ((f * k / tech.grid as f64).round() as i64) * tech.grid;
-                    if nv != *v {
-                        *v = nv;
-                    }
-                    ui.end_row();
-                };
                 match &mut s.geom {
                     Geometry::Rect(r) => {
                         um_edit(ui, "x0", &mut r.x0, &mut focus);
@@ -910,19 +1351,27 @@ impl LayoutEditor {
             if ui.button("🗑 Delete").clicked() {
                 changed |= self.delete_selection(l);
             }
-        } else if self.selection.len() > 1 {
+        } else if !self.selection.is_empty() {
+            self.selection.retain(|id| l.shape(*id).is_some() || l.instance(*id).is_some());
             theme::section(ui, "Selection");
-            ui.label(format!("{} shapes selected", self.selection.len()));
+            ui.label(format!("{} items selected", self.selection.len()));
             if ui.button("🗑 Delete").clicked() {
                 changed |= self.delete_selection(l);
             }
         } else {
+            let idx = cx.index(l);
             theme::section(ui, "Cell");
             egui::Grid::new("lay_stats").num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| {
                 ui.label("Shapes");
-                ui.label(l.shapes.len().to_string());
+                ui.label(fmt_count(l.shapes.len() as u64));
                 ui.end_row();
-                if let Some(b) = l.bbox() {
+                ui.label("Instances");
+                ui.label(fmt_count(l.instances.len() as u64));
+                ui.end_row();
+                ui.label("Flat shapes");
+                ui.label(fmt_count(idx.flat_shapes));
+                ui.end_row();
+                if let Some(b) = idx.bbox {
                     ui.label("Extent");
                     ui.label(format!("{} × {} µm", um(b.width(), tech), um(b.height(), tech)));
                     ui.end_row();
@@ -935,11 +1384,14 @@ impl LayoutEditor {
                 ui.end_row();
             });
         }
+        if changed {
+            cx.touched();
+        }
         ui.add_space(12.0);
         theme::section(ui, "Design Rule Check");
         ui.horizontal(|ui| {
-            if ui.button("▶ Run DRC").on_hover_text("Built-in min width / spacing checks").clicked() {
-                self.drc = Some(run_basic_drc(l, tech));
+            if ui.button("▶ Run DRC").on_hover_text("Built-in min width / spacing checks on the flattened cell").clicked() {
+                self.drc = Some(run_basic_drc(l, cx.src, tech));
             }
             if self.drc.is_some() && ui.button("Clear").clicked() {
                 self.drc = None;
@@ -952,7 +1404,7 @@ impl LayoutEditor {
             } else {
                 ui.colored_label(pal.danger, format!("{} violation(s)", v.len()));
                 egui::ScrollArea::vertical().id_salt("drc").max_height(220.0).show(ui, |ui| {
-                    for x in v {
+                    for x in v.iter().take(1000) {
                         if ui
                             .add(egui::Button::new(egui::RichText::new(&x.rule).small()).frame(false))
                             .on_hover_text("Click to zoom")
@@ -969,8 +1421,72 @@ impl LayoutEditor {
             self.view.center = c;
             self.view.scale = self.view.scale.max(0.3);
         }
-        changed
+        (changed, open)
     }
+}
+
+pub fn fmt_count(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, ch) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// One row of the hierarchy tree: the cell link, its placement count and its children.
+fn hier_node(
+    ui: &mut egui::Ui,
+    src: &dyn LayoutSource,
+    cell: &CellRef,
+    layout: Option<&Layout>,
+    count: Option<u64>,
+    depth: u32,
+    open: &mut Option<CellRef>,
+) {
+    let mut kids: Vec<(CellRef, u64)> = vec![];
+    let layout = layout.or_else(|| src.layout(cell));
+    if let Some(l) = layout {
+        for inst in &l.instances {
+            match kids.iter_mut().find(|(c, _)| c == &inst.cell) {
+                Some(k) => k.1 += inst.count(),
+                None => kids.push((inst.cell.clone(), inst.count())),
+            }
+        }
+    }
+    let header = |ui: &mut egui::Ui, open: &mut Option<CellRef>| {
+        let missing = layout.is_none();
+        let text = egui::RichText::new(&cell.cell);
+        let text = if depth == 0 { text.strong() } else { text };
+        if depth == 0 {
+            ui.label(text);
+        } else if missing {
+            ui.label(text.strikethrough()).on_hover_text("cell not found");
+        } else if ui.link(text).on_hover_text(format!("Open {cell}")).clicked() {
+            *open = Some(cell.clone());
+        }
+        if let Some(n) = count {
+            ui.label(egui::RichText::new(format!("×{}", fmt_count(n))).small().weak());
+        }
+    };
+    if kids.is_empty() || depth >= 12 {
+        ui.horizontal(|ui| {
+            ui.add_space(18.0);
+            header(ui, open);
+        });
+        return;
+    }
+    let id = ui.make_persistent_id(("hier", cell, depth));
+    egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, depth == 0)
+        .show_header(ui, |ui| header(ui, open))
+        .body(|ui| {
+            for (c, n) in &kids {
+                hier_node(ui, src, c, None, Some(*n), depth + 1, open);
+            }
+        });
 }
 
 fn manhattan(from: (i64, i64), to: (i64, i64)) -> (i64, i64) {

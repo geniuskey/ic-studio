@@ -7,6 +7,7 @@ pub mod connectivity;
 pub mod examples;
 pub mod gds;
 pub mod geom;
+pub mod hier;
 pub mod layout;
 pub mod netlist;
 pub mod project;
@@ -16,7 +17,7 @@ pub mod tech;
 pub mod units;
 
 pub use geom::{IRect, Orient, Pt};
-pub use layout::{Geometry, Layout, Shape};
+pub use layout::{ArraySpec, CellInst, Geometry, Layout, Shape, Trans};
 pub use project::{Cell, CellRef, Library, Project, ViewKind};
 pub use schematic::{DeviceKind, Instance, NetLabel, SchObj, Schematic, Wire};
 pub use sim_setup::{Analysis, AnalysisEntry, Backend, SimSetup};

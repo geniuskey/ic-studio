@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use eframe::egui::{self, Align2, FontId, RichText, Sense, Stroke, StrokeKind, Vec2};
+use ics_core::hier::Hier;
 use ics_core::{CellRef, Project, ViewKind};
 
 use crate::app::{Command, Workspace};
@@ -104,7 +105,7 @@ pub fn welcome(ui: &mut egui::Ui, recent: &[PathBuf], q: &mut Vec<Command>) {
     });
 }
 
-pub fn project_overview(ui: &mut egui::Ui, project: &Project, q: &mut Vec<Command>) {
+pub fn project_overview(ui: &mut egui::Ui, project: &Project, hier: &mut Hier, q: &mut Vec<Command>) {
     let pal = theme::palette(ui.ctx());
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.add_space(24.0);
@@ -167,16 +168,19 @@ pub fn project_overview(ui: &mut egui::Ui, project: &Project, q: &mut Vec<Comman
                                     );
                                 }
                             } else if let Some(l) = &cell.layout
-                                && let Some(b) = l.bbox()
+                                && let Some(b) = hier.get_for(&r, l, project).bbox
                             {
-                                let mut v = View2D::new(0.01, true, 1e-6, 10.0);
+                                let mut v = View2D::new(0.01, true, 1e-9, 10.0);
                                 v.fit(thumb, (b.x0 as f64, b.y0 as f64), (b.x1 as f64, b.y1 as f64), 10.0);
                                 let vis = vec![true; project.tech.layers.len()];
                                 draw_layout(
                                     &tp,
                                     &v,
                                     thumb,
+                                    &r,
                                     l,
+                                    project,
+                                    hier,
                                     &project.tech,
                                     &LayoutDrawOpts {
                                         pal,
@@ -185,6 +189,7 @@ pub fn project_overview(ui: &mut egui::Ui, project: &Project, q: &mut Vec<Comman
                                         thumbnail: true,
                                         show_grid: false,
                                         grid: 10,
+                                        max_depth: 32,
                                     },
                                 );
                             }

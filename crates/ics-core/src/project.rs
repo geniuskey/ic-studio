@@ -10,11 +10,13 @@
 //! <root>/<lib>/<cell>/sim.json
 //! ```
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::gds::{GdsImport, sanitize_name, unique_name};
 use crate::layout::Layout;
 use crate::schematic::Schematic;
 use crate::sim_setup::SimSetup;
@@ -208,6 +210,30 @@ impl Project {
         Ok(r)
     }
 
+    /// Add the cells of a GDS import as a new library named after `name_hint` (made valid and
+    /// unique). Returns the library name and the top cells of the import.
+    pub fn add_gds_library(
+        &mut self,
+        name_hint: &str,
+        mut imp: GdsImport,
+    ) -> std::result::Result<(String, Vec<CellRef>), String> {
+        if imp.cells.is_empty() {
+            return Err("the GDS file contains no cells".into());
+        }
+        let mut used: HashSet<String> = self.libraries.iter().map(|l| l.name.to_ascii_lowercase()).collect();
+        let lib = unique_name(&sanitize_name(name_hint), &mut used);
+        imp.sanitize_names(&lib);
+        let tops = imp.top_cells().into_iter().map(|c| CellRef::new(&lib, c)).collect();
+        let mut cells: Vec<Cell> = imp
+            .cells
+            .into_iter()
+            .map(|(name, layout)| Cell { description: "Imported from GDS".into(), layout: Some(layout), ..Cell::new(name) })
+            .collect();
+        cells.sort_by(|a, b| a.name.cmp(&b.name));
+        self.libraries.push(Library { name: lib.clone(), cells });
+        Ok((lib, tops))
+    }
+
     /// Delete a cell from memory and (if saved) from disk.
     pub fn delete_cell(&mut self, r: &CellRef) -> Result<()> {
         if let Some(l) = self.library_mut(&r.lib) {
@@ -237,7 +263,15 @@ impl Project {
         }
         let c = self.cell_mut(r).ok_or("no such cell")?;
         c.name = new_name.to_string();
-        Ok(CellRef::new(&r.lib, new_name))
+        let to = CellRef::new(&r.lib, new_name);
+        for lib in &mut self.libraries {
+            for c in &mut lib.cells {
+                if let Some(l) = c.layout.as_mut() {
+                    l.rename_refs(r, &to);
+                }
+            }
+        }
+        Ok(to)
     }
 
     pub fn save_as(&mut self, root: &Path) -> Result<()> {

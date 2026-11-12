@@ -69,6 +69,16 @@ fn layout_workspace() {
 }
 
 #[test]
+fn layout_hierarchy() {
+    scenario("08_layout_hierarchy", true, Some("inv_chain"), "layout", false);
+}
+
+#[test]
+fn layout_array_of_arrays() {
+    scenario("09_layout_tiles", true, Some("inv_tiles"), "layout", false);
+}
+
+#[test]
 fn schematic_annotated() {
     // Run OP first, then show the annotated schematic.
     scenario_then(

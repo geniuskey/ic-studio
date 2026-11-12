@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
+use ics_core::hier::{LayoutSource, descendants};
 use ics_core::units::format_eng;
 use ics_core::{Backend, CellRef, Project};
 use ics_sim::{SimOptions, SimResults};
@@ -57,7 +58,7 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Export a cell layout to GDSII.
+    /// Export a cell layout and every cell it places to GDSII.
     Gds {
         project: PathBuf,
         cell: String,
@@ -66,6 +67,14 @@ enum Cmd {
     },
     /// Run the basic built-in DRC on a cell layout.
     Drc { project: PathBuf, cell: String },
+    /// Import a GDSII file as a new library.
+    ImportGds {
+        project: PathBuf,
+        file: PathBuf,
+        /// Library name (defaults to the file name; made unique).
+        #[arg(long)]
+        lib: Option<String>,
+    },
 }
 
 fn resolve(p: &Project, cell: &str) -> Result<CellRef, String> {
@@ -152,7 +161,9 @@ fn run(cli: Cli) -> Result<(), String> {
                     if c.layout.is_some() {
                         views.push("layout");
                     }
-                    println!("    {:<20} [{}] {}", c.name, views.join(", "), c.description);
+                    let insts = c.layout.as_ref().map_or(0, |l| l.instances.len());
+                    let insts = if insts > 0 { format!(" ({insts} instances)") } else { String::new() };
+                    println!("    {:<20} [{}]{insts} {}", c.name, views.join(", "), c.description);
                 }
             }
         }
@@ -194,22 +205,49 @@ fn run(cli: Cli) -> Result<(), String> {
         Cmd::Gds { project, cell, out } => {
             let p = Project::open(&project).map_err(|e| e.to_string())?;
             let r = resolve(&p, &cell)?;
-            let lay = p.cell(&r).unwrap().layout.as_ref().ok_or("cell has no layout")?;
-            let bytes = ics_core::gds::write_gds(&r.lib, &[(&r.cell, lay)], &p.tech);
+            p.cell(&r).unwrap().layout.as_ref().ok_or("cell has no layout")?;
+            let bytes = ics_core::gds::write_gds_hier(&r.lib, &p, std::slice::from_ref(&r), &p.tech);
             std::fs::write(&out, &bytes).map_err(|e| e.to_string())?;
-            println!("wrote {} ({} shapes, {} bytes)", out.display(), lay.shapes.len(), bytes.len());
+            let layouts: Vec<_> = descendants(&p, &r).iter().filter_map(|c| p.layout(c)).collect();
+            let shapes: usize = layouts.iter().map(|l| l.shapes.len()).sum();
+            let insts: usize = layouts.iter().map(|l| l.instances.len()).sum();
+            println!(
+                "wrote {} ({} cells, {shapes} shapes, {insts} instances, {} bytes)",
+                out.display(),
+                layouts.len(),
+                bytes.len()
+            );
         }
         Cmd::Drc { project, cell } => {
             let p = Project::open(&project).map_err(|e| e.to_string())?;
             let r = resolve(&p, &cell)?;
             let lay = p.cell(&r).unwrap().layout.as_ref().ok_or("cell has no layout")?;
-            let v = ics_core::layout::run_basic_drc(lay, &p.tech);
+            let v = ics_core::layout::run_basic_drc(lay, &p, &p.tech);
             for x in &v {
                 println!("{}  at ({}, {})-({}, {})", x.rule, x.area.x0, x.area.y0, x.area.x1, x.area.y1);
             }
             println!("{} violation(s)", v.len());
             if !v.is_empty() {
                 return Err("DRC failed".into());
+            }
+        }
+        Cmd::ImportGds { project, file, lib } => {
+            let mut p = Project::open(&project).map_err(|e| e.to_string())?;
+            let data = std::fs::read(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+            let imp = ics_core::gds::read_gds(&data, &p.tech, "gds")?;
+            let (skipped, warnings) = (imp.skipped_unknown_layers, imp.warnings.clone());
+            let hint = lib.unwrap_or_else(|| file.file_stem().map_or("gds".into(), |s| s.to_string_lossy().to_string()));
+            let (name, tops) = p.add_gds_library(&hint, imp)?;
+            p.save().map_err(|e| e.to_string())?;
+            let n = p.libraries.iter().find(|l| l.name == name).map_or(0, |l| l.cells.len());
+            println!("library {name}: {n} cells");
+            let tops: Vec<&str> = tops.iter().map(|t| t.cell.as_str()).collect();
+            println!("top cells: {}", tops.join(", "));
+            if skipped > 0 {
+                eprintln!("warning: {skipped} shape(s) on layers unknown to the technology were skipped");
+            }
+            for w in &warnings {
+                eprintln!("warning: {w}");
             }
         }
     }
