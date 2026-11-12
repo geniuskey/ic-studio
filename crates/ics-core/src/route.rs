@@ -12,11 +12,15 @@
 //! - Nets are routed shortest first. Each net grows a tree from one extracted piece: an A* search
 //!   from the tree to the nearest other piece, repeated until all pieces are joined. Metal1 costs
 //!   more (it is the device layer); higher layers alternate horizontal / vertical preference.
+//! - Rip-up and reroute: a connection that finds no path searches again across other nets' wires
+//!   at a penalty; the nets it crosses are ripped up, the connection is made, and the ripped nets
+//!   are queued to be routed again. A net is ripped up at most [`MAX_RIPS`] times, and the penalty
+//!   grows with its rip-ups, so the process ends. Incomplete nets get one more attempt at the end.
 //! - Wires are drawn as width x width squares on the nodes joined by bars, vias as single cuts.
-//!   Nothing is ripped up: a connection that finds no path is reported and left as a flyline.
+//!   A connection that still finds no path is reported and left as a flyline.
 
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet, VecDeque};
 
 use rstar::{AABB, RTree, RTreeObject};
 
@@ -39,12 +43,12 @@ const MARGIN_TRACKS: i64 = 3;
 const M1_COST: u64 = 4;
 const WRONG_WAY_COST: u64 = 3;
 
-/// Routing passes: after a pass that leaves nets unrouted, they are moved to the front and the
-/// routing is redone from scratch; the best pass wins.
-const PASSES: usize = 4;
+/// Rip-ups allowed per net.
+pub const MAX_RIPS: u32 = 3;
+/// Cost of crossing another net's wire while looking for nets to rip up, in pitches per node
+/// (times the victim's rip-ups + 1).
+const RIP_PENALTY_PITCHES: u64 = 20;
 
-/// A net to route: (bounding half-perimeter, name, extracted pieces, terminals off conductors).
-type Job = (i64, String, Vec<usize>, usize);
 type Wires = HashMap<usize, Vec<IRect>>;
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -58,11 +62,16 @@ pub struct RouteReport {
     /// Total wire length in dbu.
     pub wire_length: i64,
     pub vias: usize,
+    /// Wires ripped up to make room for other nets (and routed again).
+    pub ripups: usize,
 }
 
 impl RouteReport {
     pub fn summary(&self) -> String {
         let mut s = format!("routed {} net(s) with {} connection(s), {} via(s)", self.routed.len(), self.connections, self.vias);
+        if self.ripups > 0 {
+            s += &format!(", {} rip-up(s)", self.ripups);
+        }
         if !self.failed.is_empty() {
             s += &format!("; unrouted: {}", self.failed.join("; "));
         }
@@ -202,9 +211,9 @@ impl Grid {
     }
 }
 
-/// Block the nodes of other nets on the same layer whose squares would come closer than the
-/// spacing to node `i` (centres less than `reach` apart).
-fn block_near(g: &mut Grid, uf: &[usize], i: usize, r: usize, reach: i64) {
+/// Nodes on the same layer whose squares would come closer than the spacing to node `i`
+/// (centres less than `reach` apart), without `i`.
+fn near(g: &Grid, i: usize, reach: i64) -> Vec<usize> {
     let (k, iy, ix) = g.pos(i);
     let (x, y) = (g.xs[ix], g.ys[iy]);
     let span = |v: &[i64], c: usize, at: i64| {
@@ -213,198 +222,334 @@ fn block_near(g: &mut Grid, uf: &[usize], i: usize, r: usize, reach: i64) {
         lo..hi
     };
     let (xr, yr) = (span(&g.xs, ix, x), span(&g.ys, iy, y));
-    for jy in yr {
-        for jx in xr.clone() {
-            let j = g.idx(k, jx, jy);
-            if j != i && owner(uf, g.node[j]) != Some(r) {
-                g.node[j] = BLOCKED;
+    yr.flat_map(|jy| xr.clone().map(move |jx| (jx, jy))).map(|(jx, jy)| g.idx(k, jx, jy)).filter(|&j| j != i).collect()
+}
+
+/// Layout net owning a static node or wire state.
+fn owner(s: u32) -> Option<usize> {
+    (s != FREE && s != BLOCKED).then(|| s as usize - 1)
+}
+
+/// A schematic net to connect: its extracted pieces (`groups`) and terminals off conductors.
+struct Job {
+    span: i64,
+    net: String,
+    groups: Vec<usize>,
+    floating: usize,
+}
+
+/// Routing state over the static grid: the committed wires of every job, removable job by job.
+struct Router<'a> {
+    g: &'a Grid,
+    st: &'a Stack,
+    jobs: &'a [Job],
+    /// Group index of each extracted net, per job.
+    group_of: Vec<HashMap<usize, usize>>,
+    /// Job + 1 of the wire on each node (0 = none).
+    occupant: Vec<u32>,
+    /// Jobs whose wires come within spacing of a node.
+    blockers: HashMap<usize, Vec<u32>>,
+    paths: Vec<Vec<Vec<usize>>>,
+    connected: Vec<Vec<bool>>,
+    rips: Vec<u32>,
+    max_rips: u32,
+    ripups: usize,
+}
+
+/// A node or wire usable by a job: free, or owned by one of its extracted pieces.
+fn usable(group_of: &HashMap<usize, usize>, s: u32) -> bool {
+    s == FREE || owner(s).is_some_and(|n| group_of.contains_key(&n))
+}
+
+impl Router<'_> {
+    /// Other jobs whose wires sit on or near node `i`.
+    fn conflicts(&self, j: usize, i: usize) -> impl Iterator<Item = usize> + '_ {
+        let occ = self.occupant[i].checked_sub(1).map(|o| o as usize).filter(|&o| o != j);
+        let near = self.blockers.get(&i).into_iter().flatten().map(|&b| b as usize).filter(move |&b| b != j);
+        occ.into_iter().chain(near)
+    }
+
+    /// Shortest path (target first) from job `j`'s tree to one of its unconnected pieces, and the
+    /// jobs it crosses. With `relaxed`, nodes of other jobs that may still be ripped up are
+    /// allowed at a penalty.
+    fn search(&self, j: usize, relaxed: bool) -> Option<(Vec<usize>, BTreeSet<usize>)> {
+        let (g, groups, done) = (self.g, &self.group_of[j], &self.connected[j]);
+        let target = |i: usize| owner(g.node[i]).and_then(|n| groups.get(&n)).is_some_and(|&k| !done[k]);
+        let penalty = |i: usize| -> Option<u64> {
+            let mut worst = None;
+            for v in self.conflicts(j, i) {
+                if !relaxed || self.rips[v] >= self.max_rips {
+                    return None;
+                }
+                worst = worst.max(Some(self.rips[v]));
             }
-        }
-    }
-}
-
-fn find(uf: &[usize], mut i: usize) -> usize {
-    while uf[i] != i {
-        i = uf[i];
-    }
-    i
-}
-
-/// Owner (net root) of a node or wire state.
-fn owner(uf: &[usize], s: u32) -> Option<usize> {
-    (s != FREE && s != BLOCKED).then(|| find(uf, s as usize - 1))
-}
-
-/// Shortest path (node indices, target first) from the nodes of net `r` to a node of any net in
-/// `targets`.
-fn search(g: &Grid, st: &Stack, uf: &[usize], r: usize, targets: &BTreeSet<usize>) -> Option<Vec<usize>> {
-    let n = g.node.len();
-    let ok = |s: u32| s == FREE || owner(uf, s).is_some_and(|o| o == r || targets.contains(&o));
-    let mut bb: Option<(i64, i64, i64, i64)> = None;
-    let mut sources = Vec::new();
-    for (i, &s) in g.node.iter().enumerate() {
-        match owner(uf, s) {
-            Some(o) if o == r => sources.push(i),
-            Some(o) if targets.contains(&o) => {
+            Some(worst.map_or(0, |r| RIP_PENALTY_PITCHES * (1 + r as u64) * self.st.pitch as u64))
+        };
+        let mut bb: Option<(i64, i64, i64, i64)> = None;
+        let mut sources = Vec::new();
+        for i in 0..g.node.len() {
+            let tree =
+                self.occupant[i] == j as u32 + 1 || owner(g.node[i]).and_then(|n| groups.get(&n)).is_some_and(|&k| done[k]);
+            if tree {
+                sources.push(i);
+            } else if target(i) && penalty(i).is_some() {
                 let (_, iy, ix) = g.pos(i);
                 let (x, y) = (g.xs[ix], g.ys[iy]);
                 bb = Some(bb.map_or((x, y, x, y), |(a, b, c, d)| (a.min(x), b.min(y), c.max(x), d.max(y))));
             }
-            _ => {}
         }
-    }
-    let (bx0, by0, bx1, by1) = bb?;
-    let h = |i: usize| {
-        let (_, iy, ix) = g.pos(i);
-        let (x, y) = (g.xs[ix], g.ys[iy]);
-        ((bx0 - x).max(x - bx1).max(0) + (by0 - y).max(y - by1).max(0)) as u64
-    };
-    let mut dist = vec![u64::MAX; n];
-    let mut prev = vec![NONE; n];
-    let mut heap = BinaryHeap::new();
-    for &s in &sources {
-        dist[s] = 0;
-        heap.push(Reverse((h(s), s)));
-    }
-    let via_cost = 2 * st.pitch as u64;
-    while let Some(Reverse((f, i))) = heap.pop() {
-        if f != dist[i] + h(i) {
-            continue;
+        let (bx0, by0, bx1, by1) = bb?;
+        let h = |i: usize| {
+            let (_, iy, ix) = g.pos(i);
+            let (x, y) = (g.xs[ix], g.ys[iy]);
+            ((bx0 - x).max(x - bx1).max(0) + (by0 - y).max(y - by1).max(0)) as u64
+        };
+        let n = g.node.len();
+        let mut dist = vec![u64::MAX; n];
+        let mut prev = vec![NONE; n];
+        let mut heap = BinaryHeap::new();
+        for &s in &sources {
+            dist[s] = 0;
+            heap.push(Reverse((h(s), s)));
         }
-        if owner(uf, g.node[i]).is_some_and(|o| targets.contains(&o)) {
-            let mut path = vec![i];
-            let mut c = i;
-            while prev[c] != NONE {
-                c = prev[c] as usize;
-                path.push(c);
-            }
-            return Some(path);
-        }
-        let (k, iy, ix) = g.pos(i);
+        let via_cost = 2 * self.st.pitch as u64;
         let (nx, ny) = (g.xs.len(), g.ys.len());
-        let horiz_factor = if k == 0 {
-            M1_COST
-        } else if k % 2 == 1 {
-            1
-        } else {
-            WRONG_WAY_COST
-        };
-        let vert_factor = if k == 0 {
-            M1_COST
-        } else if k % 2 == 0 {
-            1
-        } else {
-            WRONG_WAY_COST
-        };
-        let mut step = |j: usize, cost: u64, wire: Option<u32>| {
-            if !ok(g.node[j]) || wire.is_some_and(|w| !ok(w)) {
-                return;
+        while let Some(Reverse((f, i))) = heap.pop() {
+            if f != dist[i] + h(i) {
+                continue;
             }
-            let d = dist[i] + cost;
-            if d < dist[j] {
-                dist[j] = d;
-                prev[j] = i as u32;
-                heap.push(Reverse((d + h(j), j)));
+            if target(i) {
+                let mut path = vec![i];
+                let mut c = i;
+                while prev[c] != NONE {
+                    c = prev[c] as usize;
+                    path.push(c);
+                }
+                let crossed = path.iter().flat_map(|&p| self.conflicts(j, p)).collect();
+                return Some((path, crossed));
             }
-        };
-        if ix + 1 < nx {
-            step(g.idx(k, ix + 1, iy), (g.xs[ix + 1] - g.xs[ix]) as u64 * horiz_factor, Some(g.right[i]));
+            let (k, iy, ix) = g.pos(i);
+            let horiz = if k == 0 {
+                M1_COST
+            } else if k % 2 == 1 {
+                1
+            } else {
+                WRONG_WAY_COST
+            };
+            let vert = if k == 0 {
+                M1_COST
+            } else if k % 2 == 0 {
+                1
+            } else {
+                WRONG_WAY_COST
+            };
+            let mut step = |to: usize, cost: u64, wire: Option<u32>| {
+                if !usable(groups, g.node[to]) || wire.is_some_and(|w| !usable(groups, w)) {
+                    return;
+                }
+                let Some(extra) = penalty(to) else { return };
+                let d = dist[i] + cost + extra;
+                if d < dist[to] {
+                    dist[to] = d;
+                    prev[to] = i as u32;
+                    heap.push(Reverse((d + h(to), to)));
+                }
+            };
+            if ix + 1 < nx {
+                step(g.idx(k, ix + 1, iy), (g.xs[ix + 1] - g.xs[ix]) as u64 * horiz, Some(g.right[i]));
+            }
+            if ix > 0 {
+                let to = g.idx(k, ix - 1, iy);
+                step(to, (g.xs[ix] - g.xs[ix - 1]) as u64 * horiz, Some(g.right[to]));
+            }
+            if iy + 1 < ny {
+                step(g.idx(k, ix, iy + 1), (g.ys[iy + 1] - g.ys[iy]) as u64 * vert, Some(g.up[i]));
+            }
+            if iy > 0 {
+                let to = g.idx(k, ix, iy - 1);
+                step(to, (g.ys[iy] - g.ys[iy - 1]) as u64 * vert, Some(g.up[to]));
+            }
+            if k + 1 < g.nl {
+                step(g.idx(k + 1, ix, iy), via_cost, None);
+            }
+            if k > 0 {
+                step(g.idx(k - 1, ix, iy), via_cost, None);
+            }
         }
-        if ix > 0 {
-            let j = g.idx(k, ix - 1, iy);
-            step(j, (g.xs[ix] - g.xs[ix - 1]) as u64 * horiz_factor, Some(g.right[j]));
-        }
-        if iy + 1 < ny {
-            step(g.idx(k, ix, iy + 1), (g.ys[iy + 1] - g.ys[iy]) as u64 * vert_factor, Some(g.up[i]));
-        }
-        if iy > 0 {
-            let j = g.idx(k, ix, iy - 1);
-            step(j, (g.ys[iy] - g.ys[iy - 1]) as u64 * vert_factor, Some(g.up[j]));
-        }
-        if k + 1 < g.nl {
-            step(g.idx(k + 1, ix, iy), via_cost, None);
-        }
-        if k > 0 {
-            step(g.idx(k - 1, ix, iy), via_cost, None);
-        }
+        None
     }
-    None
+
+    fn commit(&mut self, j: usize, path: Vec<usize>) {
+        let piece = owner(self.g.node[path[0]]).and_then(|n| self.group_of[j].get(&n).copied()).expect("target piece");
+        self.connected[j][piece] = true;
+        for &i in &path {
+            if self.occupant[i] == 0 {
+                self.occupant[i] = j as u32 + 1;
+            }
+            let (k, _, _) = self.g.pos(i);
+            for n in near(self.g, i, self.st.width + self.st.spacing[k]) {
+                self.blockers.entry(n).or_default().push(j as u32);
+            }
+        }
+        self.paths[j].push(path);
+    }
+
+    fn rip(&mut self, v: usize) {
+        for path in std::mem::take(&mut self.paths[v]) {
+            for i in path {
+                if self.occupant[i] == v as u32 + 1 {
+                    self.occupant[i] = 0;
+                }
+                let (k, _, _) = self.g.pos(i);
+                for n in near(self.g, i, self.st.width + self.st.spacing[k]) {
+                    if let Some(b) = self.blockers.get_mut(&n) {
+                        if let Some(p) = b.iter().position(|&x| x == v as u32) {
+                            b.swap_remove(p);
+                        }
+                        if b.is_empty() {
+                            self.blockers.remove(&n);
+                        }
+                    }
+                }
+            }
+        }
+        self.connected[v].iter_mut().enumerate().for_each(|(k, c)| *c = k == 0);
+        self.rips[v] += 1;
+        self.ripups += 1;
+    }
+
+    /// Connect the remaining pieces of job `j`, ripping up other jobs when it is blocked.
+    /// Returns the ripped jobs.
+    fn route_job(&mut self, j: usize) -> Vec<usize> {
+        let mut ripped = Vec::new();
+        while self.connected[j].contains(&false) {
+            if let Some((path, _)) = self.search(j, false) {
+                self.commit(j, path);
+                continue;
+            }
+            let Some((path, crossed)) = self.search(j, true) else { break };
+            if crossed.is_empty() {
+                break;
+            }
+            for v in crossed {
+                self.rip(v);
+                ripped.push(v);
+            }
+            self.commit(j, path);
+        }
+        ripped
+    }
 }
 
-/// One routing pass over `order` on a fresh copy of the grid: the report, the new shapes per
-/// layer and the nets left with unreached pieces.
-fn run(mut grid: Grid, st: &Stack, order: &[Job], nets: usize, g: i64) -> (RouteReport, Wires, HashSet<String>) {
-    let mut report = RouteReport::default();
-    let mut unreached = HashSet::new();
-    let half = st.width / 2;
-    let mut uf: Vec<usize> = (0..nets).collect();
-    let mut wires: HashMap<usize, Vec<IRect>> = HashMap::new();
-    for (_, net, groups, floating) in order.iter().cloned() {
-        if floating > 0 {
-            report.failed.push(format!("{net}: {floating} terminal(s) not on conducting geometry"));
-            continue;
-        }
-        let Some(&first) = groups.first() else { continue };
-        let r = find(&uf, first);
-        let mut remaining: BTreeSet<usize> = groups.iter().map(|&n| find(&uf, n)).filter(|&n| n != r).collect();
-        let pieces = remaining.len() + 1;
-        if pieces == 1 {
-            continue;
-        }
-        while !remaining.is_empty() {
-            let Some(path) = search(&grid, st, &uf, r, &remaining) else { break };
-            let reached = owner(&uf, grid.node[path[0]]).expect("target node");
-            for w in path.windows(2) {
-                let ((ka, ya, xa), (kb, yb, xb)) = (grid.pos(w[0]), grid.pos(w[1]));
-                let (pa, pb) = ((grid.xs[xa], grid.ys[ya]), (grid.xs[xb], grid.ys[yb]));
-                if ka == kb {
-                    let bar =
-                        IRect::new(pa.0.min(pb.0) - half, pa.1.min(pb.1) - half, pa.0.max(pb.0) + half, pa.1.max(pb.1) + half);
-                    wires.entry(st.layers[ka]).or_default().push(bar);
-                    report.wire_length += (pa.0 - pb.0).abs() + (pa.1 - pb.1).abs();
-                    let wire = if ya == yb { grid.idx(ka, xa.min(xb), ya) } else { grid.idx(ka, xa, ya.min(yb)) };
-                    let slot = if ya == yb { &mut grid.right[wire] } else { &mut grid.up[wire] };
-                    if *slot == FREE {
-                        *slot = r as u32 + 1;
-                    }
-                } else {
-                    let (cut, size) = st.cuts[ka.min(kb)];
-                    let c0 = (snap(pa.0 - size / 2, g), snap(pa.1 - size / 2, g));
-                    wires.entry(cut).or_default().push(IRect::new(c0.0, c0.1, c0.0 + size, c0.1 + size));
-                    report.vias += 1;
+/// Route every job: shortest first, ripped-up jobs are queued again; jobs left incomplete get one
+/// more attempt at the end.
+fn run<'a>(grid: &'a Grid, st: &'a Stack, jobs: &'a [Job], max_rips: u32) -> Router<'a> {
+    let mut r = Router {
+        g: grid,
+        st,
+        jobs,
+        group_of: jobs.iter().map(|j| j.groups.iter().enumerate().map(|(k, &n)| (n, k)).collect()).collect(),
+        occupant: vec![0; grid.node.len()],
+        blockers: HashMap::new(),
+        paths: vec![Vec::new(); jobs.len()],
+        connected: jobs.iter().map(|j| (0..j.groups.len()).map(|k| k == 0).collect()).collect(),
+        rips: vec![0; jobs.len()],
+        max_rips,
+        ripups: 0,
+    };
+    let routable: Vec<usize> = (0..jobs.len()).filter(|&j| jobs[j].floating == 0 && jobs[j].groups.len() > 1).collect();
+    let mut queue: VecDeque<usize> = routable.iter().copied().collect();
+    for _ in 0..2 {
+        let mut budget = routable.len() * (max_rips as usize + 2);
+        while let Some(j) = queue.pop_front() {
+            if budget == 0 {
+                break;
+            }
+            budget -= 1;
+            for v in r.route_job(j) {
+                if !queue.contains(&v) {
+                    queue.push_back(v);
                 }
             }
-            uf[reached] = r;
-            for &i in &path {
-                let (k, iy, ix) = grid.pos(i);
-                let (x, y) = (grid.xs[ix], grid.ys[iy]);
-                wires.entry(st.layers[k]).or_default().push(IRect::new(x - half, y - half, x + half, y + half));
-                if grid.node[i] == FREE {
-                    grid.node[i] = r as u32 + 1;
-                }
-                block_near(&mut grid, &uf, i, r, st.width + st.spacing[k]);
-            }
-            remaining.remove(&reached);
-            report.connections += 1;
         }
-        if remaining.is_empty() {
-            report.routed.push(net);
-        } else {
-            report.failed.push(format!("{net}: {} of {pieces} pieces not reached", remaining.len()));
-            unreached.insert(net);
+        queue = routable.iter().copied().filter(|&j| r.connected[j].contains(&false)).collect();
+        if queue.is_empty() {
+            break;
         }
     }
+    r
+}
 
-    (report, wires, unreached)
+impl Router<'_> {
+    /// The report and the wire / via shapes per layer of the committed paths.
+    fn finish(&self, g: i64) -> (RouteReport, Wires) {
+        let (grid, st) = (self.g, self.st);
+        let half = st.width / 2;
+        let mut report = RouteReport { ripups: self.ripups, ..Default::default() };
+        let mut wires: Wires = HashMap::new();
+        for (j, job) in self.jobs.iter().enumerate() {
+            if job.floating > 0 {
+                report.failed.push(format!("{}: {} terminal(s) not on conducting geometry", job.net, job.floating));
+                continue;
+            }
+            if job.groups.len() < 2 {
+                continue;
+            }
+            for path in &self.paths[j] {
+                report.connections += 1;
+                for w in path.windows(2) {
+                    let ((ka, ya, xa), (kb, yb, xb)) = (grid.pos(w[0]), grid.pos(w[1]));
+                    let (pa, pb) = ((grid.xs[xa], grid.ys[ya]), (grid.xs[xb], grid.ys[yb]));
+                    if ka == kb {
+                        let bar = IRect::new(
+                            pa.0.min(pb.0) - half,
+                            pa.1.min(pb.1) - half,
+                            pa.0.max(pb.0) + half,
+                            pa.1.max(pb.1) + half,
+                        );
+                        wires.entry(st.layers[ka]).or_default().push(bar);
+                        report.wire_length += (pa.0 - pb.0).abs() + (pa.1 - pb.1).abs();
+                    } else {
+                        let (cut, size) = st.cuts[ka.min(kb)];
+                        let c0 = (snap(pa.0 - size / 2, g), snap(pa.1 - size / 2, g));
+                        wires.entry(cut).or_default().push(IRect::new(c0.0, c0.1, c0.0 + size, c0.1 + size));
+                        report.vias += 1;
+                    }
+                }
+                for &i in path {
+                    let (k, iy, ix) = grid.pos(i);
+                    let (x, y) = (grid.xs[ix], grid.ys[iy]);
+                    wires.entry(st.layers[k]).or_default().push(IRect::new(x - half, y - half, x + half, y + half));
+                }
+            }
+            let missing = self.connected[j].iter().filter(|c| !**c).count();
+            if missing == 0 {
+                report.routed.push(job.net.clone());
+            } else {
+                report.failed.push(format!("{}: {missing} of {} pieces not reached", job.net, job.groups.len()));
+            }
+        }
+        (report, wires)
+    }
 }
 
 /// Route the flylines of `layout` (see [`sdl::ratsnest`]) and add the wires to it.
 pub fn route(sch: &Schematic, layout: &mut Layout, src: &dyn LayoutSource, tech: &Tech) -> Result<RouteReport, String> {
+    route_with(sch, layout, src, tech, MAX_RIPS)
+}
+
+/// [`route`] with at most `max_rips` rip-ups per net (0 = greedy, nothing is ripped up).
+pub fn route_with(
+    sch: &Schematic,
+    layout: &mut Layout,
+    src: &dyn LayoutSource,
+    tech: &Tech,
+    max_rips: u32,
+) -> Result<RouteReport, String> {
     let st = stack(tech)?;
     let pins = sdl::terminal_pins(sch, layout, src);
-    let report = RouteReport::default();
     let Some(mut bb) = flatten(layout, src, 64).iter().map(|s| s.geom.bbox()).reduce(|a, b| a.union(&b)) else {
-        return Ok(report);
+        return Ok(RouteReport::default());
     };
     let ex: Extraction = extract::extract(layout, src, tech);
 
@@ -454,7 +599,7 @@ pub fn route(sch: &Schematic, layout: &mut Layout, src: &dyn LayoutSource, tech:
         }
     }
 
-    let mut order: Vec<Job> = Vec::new();
+    let mut jobs: Vec<Job> = Vec::new();
     for (net, ps) in &pins {
         let mut groups: Vec<usize> = Vec::new();
         let mut floating = 0;
@@ -469,24 +614,11 @@ pub fn route(sch: &Schematic, layout: &mut Layout, src: &dyn LayoutSource, tech:
         for &(_, p) in ps {
             (lo, hi) = ((lo.0.min(p.0), lo.1.min(p.1)), (hi.0.max(p.0), hi.1.max(p.1)));
         }
-        order.push(((hi.0 - lo.0) + (hi.1 - lo.1), net.clone(), groups, floating));
+        jobs.push(Job { span: (hi.0 - lo.0) + (hi.1 - lo.1), net: net.clone(), groups, floating });
     }
-    order.sort();
+    jobs.sort_by(|a, b| (a.span, &a.net).cmp(&(b.span, &b.net)));
 
-    let mut best: Option<(RouteReport, Wires)> = None;
-    for _ in 0..PASSES {
-        let (rep, wires, unreached) = run(grid.clone(), &st, &order, ex.nets.len(), g);
-        let better = best.as_ref().is_none_or(|(b, _)| (rep.failed.len(), rep.wire_length) < (b.failed.len(), b.wire_length));
-        if better {
-            best = Some((rep, wires));
-        }
-        let before: Vec<String> = order.iter().map(|j| j.1.clone()).collect();
-        order.sort_by_key(|j| !unreached.contains(&j.1));
-        if unreached.is_empty() || order.iter().map(|j| &j.1).eq(before.iter()) {
-            break;
-        }
-    }
-    let (report, wires) = best.expect("at least one pass");
+    let (report, wires) = run(&grid, &st, &jobs, max_rips).finish(g);
 
     let mut layers: Vec<(usize, Vec<IRect>)> = wires.into_iter().collect();
     layers.sort_by_key(|(l, _)| *l);
@@ -590,6 +722,28 @@ mod tests {
         layout.add(text, crate::layout::Geometry::Label { text: "shield".into(), at: (bb.x0 - 4000, bb.y0 - 4000), size: 200 });
         let rep = route(&sch, &mut layout, &project, &project.tech).unwrap();
         check_routed("shielded inverter", &project, &sch, &layout, &rep);
+    }
+
+    #[test]
+    fn rips_up_blocking_wires() {
+        let mut project = Project::new("t");
+        let sch = crate::examples::ring_osc5(&mut project).schematic.unwrap();
+        let mut two_layers = project.tech.clone();
+        let m3 = two_layers.layer_index("metal3").unwrap();
+        two_layers.layers[m3].routing = false;
+        let mut shielded = place(&mut project, &sch);
+        let bb = flatten(&shielded, &project, 8).iter().map(|s| s.geom.bbox()).reduce(|a, b| a.union(&b)).unwrap();
+        shielded.add_rect(m3, bb.x0 - 5000, bb.y0 - 5000, bb.x1 + 5000, bb.y1 + 5000);
+        for (name, base, tech) in
+            [("metal1/2 only", place(&mut project, &sch), &two_layers), ("under a metal3 plate", shielded, &project.tech)]
+        {
+            let mut greedy = base.clone();
+            assert!(!route_with(&sch, &mut greedy, &project, tech, 0).unwrap().failed.is_empty(), "{name}: greedy succeeds");
+            let mut layout = base;
+            let rep = route(&sch, &mut layout, &project, tech).unwrap();
+            assert!(rep.ripups > 0 && rep.summary().contains("rip-up"), "{name}: {rep:?}");
+            check_routed(name, &project, &sch, &layout, &rep);
+        }
     }
 
     #[test]

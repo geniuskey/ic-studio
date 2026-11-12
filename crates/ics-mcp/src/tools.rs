@@ -480,7 +480,7 @@ pub fn definitions() -> Vec<Value> {
         tool(
             "route",
             &format!(
-                "Maze-route the flylines of a cell: connect the device terminals of every schematic net that are not yet connected, with DRC-clean wires and vias on the metal stack (metal1 and up) added to the cell's top level. Existing geometry is avoided; nothing is ripped up. Returns routed and failed nets and the flylines left. Place the devices first with generate_layout. {NOT_SAVED}"
+                "Maze-route the flylines of a cell: connect the device terminals of every schematic net that are not yet connected, with DRC-clean wires and vias on the metal stack (metal1 and up) added to the cell's top level. Existing geometry is avoided; when a connection is blocked by wires routed earlier, those nets are ripped up and rerouted. Returns routed and failed nets and the flylines left. Place the devices first with generate_layout. {NOT_SAVED}"
             ),
             json!({"cell": cell()}),
             &["cell"],
@@ -1005,6 +1005,7 @@ impl State {
             "failed": rep.failed,
             "connections": rep.connections,
             "vias": rep.vias,
+            "ripups": rep.ripups,
             "wire_length_um": sig(rep.wire_length as f64 / um),
             "unrouted_flylines": left,
         }))

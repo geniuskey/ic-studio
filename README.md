@@ -84,7 +84,8 @@ Linux needs the usual windowing libraries:
   PMOS / NMOS rows, abutting devices that share a source / drain net (shared diffusion),
   with merged wells and implants and a bulk tap per row
 - Flylines show schematic connections that are not yet routed; a maze router (A* on a
-  terminal-aligned grid over metal1 and up) wires them DRC-clean around existing geometry
+  terminal-aligned grid over metal1 and up) wires them DRC-clean around existing geometry,
+  ripping up and rerouting nets that block each other
 - Cross-probing: selecting a device in one view selects it in the other
 
 **Technology**
@@ -222,5 +223,5 @@ mouse input, and check accessibility labels and glyph coverage.
 - OASIS and LEF / DEF
 - Python API (PyO3)
 - Resistor / capacitor recognition in LVS; incremental and hierarchical DRC
-- Rip-up and reroute; non-Manhattan Boolean operations
+- Non-Manhattan Boolean operations; matched (common-centroid) placement
 - Parametric sweeps, corners and optimisation loops
