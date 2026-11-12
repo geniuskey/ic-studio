@@ -236,3 +236,6 @@ Copyright (C) 2026 geniuskey
 IC Studio is free software: you can redistribute it and/or modify it under the terms of the
 GNU General Public License as published by the Free Software Foundation, either version 3 of
 the License, or (at your option) any later version. See [LICENSE](LICENSE).
+
+Contributions are accepted under the [Contributor License Agreement](CLA.md); a bot asks you
+to sign it on your first pull request.
