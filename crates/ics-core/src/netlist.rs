@@ -131,14 +131,20 @@ pub fn netlist_for(sch: &Schematic, tech: &Tech, corner: &str) -> Netlist {
                     }
                 };
                 let unit = tech.length_unit();
-                let len = |k: &str| match (unit, parse_spice(inst.param(k))) {
-                    (LengthUnit::Um, Some(v)) => fmt_num(v * unit.per_metre()),
+                let scaled = |k: &str, dim: i32| match (unit, parse_spice(inst.param(k))) {
+                    (LengthUnit::Um, Some(v)) => fmt_num(v * unit.per_metre().powi(dim)),
                     _ => inst.param(k).to_string(),
                 };
+                let len = |k: &str| scaled(k, 1);
                 let mut l = format!("{name} {} {} {} {bulk} {model} w={} l={}", net("d"), net("g"), net("s"), len("w"), len("l"));
                 let m = inst.param("m").trim();
                 if !m.is_empty() && m != "1" {
                     l += &format!(" m={m}");
+                }
+                for (k, dim) in [("ad", 2), ("as", 2), ("pd", 1), ("ps", 1)] {
+                    if !inst.param(k).trim().is_empty() {
+                        l += &format!(" {k}={}", scaled(k, dim));
+                    }
                 }
                 l
             }

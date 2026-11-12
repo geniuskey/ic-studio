@@ -72,7 +72,7 @@ Comparison rules:
 - Net names are compared case-insensitively; `0`, `gnd` and `vss` are treated as the same.
 
 The demo cell `cmos_inverter` deliberately has LVS findings (a PMOS width and the load
-capacitor); `nand2`, `nor2`, `ring_osc5`, `current_mirror`, `ota5t` and `sram6t` are clean.
+capacitor); `nand2`, `nor2`, `ring_osc5`, `current_mirror`, `ota5t`, `sram6t` and `aps3t` are clean.
 
 ## Sign-off with external tools
 

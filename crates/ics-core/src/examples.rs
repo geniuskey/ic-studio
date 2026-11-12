@@ -876,6 +876,131 @@ pub fn sram_array(tech: &Tech, lib: &str) -> Cell {
     layout_cell("sram_array", "8 x 8 array of 6T SRAM bit cells (AREF)", r.finish())
 }
 
+/// 3T pixel pitch: abutting pixels share the reset / select lines, the supply and the column line.
+const PIX_X: (i64, i64) = (-3700, 6500);
+const PIX_Y: (i64, i64) = (-1000, 9200);
+const PIX_T: Tracks = Tracks { wn: 1000, wp: 0, mid: 3 };
+const PIX_COL: i64 = 2400;
+const PIX_SF: (i64, i64) = (1000, 500);
+/// n+ / p-substrate photodiode diffusion, merged with the reset source (`as` / `ps` of RST).
+const PIX_PD: IRect = IRect { x0: -3300, y0: -400, x1: -900, y1: 8400 };
+const PIX_ROWS: i64 = 8;
+const PIX_COLS: i64 = 8;
+
+/// 3T active pixel (image sensor): reset RST, source follower SF and row select SEL over an
+/// n+ / p-substrate photodiode. The schematic models the photodiode by its photocurrent; the
+/// integrating node `pd` is the SF gate. Reset and select run horizontally on metal2 edge to
+/// edge, the column line vertically on metal3.
+pub fn aps3t(p: &mut Project) -> Cell {
+    let o = Orient::default();
+    let mut s = Schematic::default();
+    let devices =
+        [((0, 10), "180n", ["vdd", "rst", "pd"]), ((8, 10), "500n", ["vdd", "pd", "x"]), ((16, 10), "180n", ["col", "sel", "x"])];
+    for (k, (at, l, nets)) in devices.into_iter().enumerate() {
+        let id = mos(&mut s, DeviceKind::Nmos, at, false, "1u", l, None);
+        if k == 0 {
+            set(&mut s, id, &[("as", "21p"), ("ps", "22u")]);
+        }
+        let pins = s.instance(id).expect("instance").pin_positions();
+        for (pin, net) in ["d", "g", "s"].into_iter().zip(nets) {
+            let at = pins.iter().find(|(n, _)| *n == pin).expect("MOS pin").1;
+            if net == "vdd" {
+                s.add_instance(DeviceKind::Supply, at, o);
+            } else {
+                s.add_label(net, at);
+            }
+        }
+    }
+    source(&mut s, (-24, 8), "vdd", &[("dc", "1.8")]);
+    source(&mut s, (-18, 8), "rst", &[("dc", "1.8"), ("tran", "PULSE(1.8 0 50n 1n 1n 400n 600n)")]);
+    source(&mut s, (-12, 8), "sel", &[("dc", "1.8")]);
+    for (x, net, i) in [(24, "pd", "30n"), (30, "col", "2u")] {
+        let id = s.add_instance(DeviceKind::ISource, Pt::new(x, 8), o);
+        set(&mut s, id, &[("dc", i)]);
+        s.add_label(net, Pt::new(x, 6));
+        s.add_instance(DeviceKind::Ground, Pt::new(x, 10), o);
+    }
+    let mut sim = sim(&["tran"]);
+    set_tran(&mut sim, "1n", "600n");
+
+    let (t, (x0, x1), (y0, y1)) = (PIX_T, PIX_X, PIX_Y);
+    let mut r = Router::new(&p.tech);
+    place_columns(&mut r, p, t, PIX_COL, &[("", NW, "RST", NW), ("", NW, "SF", PIX_SF), ("", NW, "SEL", NW)]);
+    let (m1, m2, m3) = (r.layer("metal1"), r.layer("metal2"), r.layer("metal3"));
+    let h = WIRE / 2;
+
+    for (dev, track, net) in [("RST", 0, "rst"), ("SEL", 1, "sel")] {
+        let y = t.mid(track);
+        r.tap(dev, "G", y);
+        r.lay.add_rect(m2, x0, y - h, x1, y + h);
+        r.label(net, (x0 + 200, y));
+    }
+
+    let a = r.centre_tap("RST", "S");
+    let g = r.tap("SF", "G", t.mid(2));
+    r.route(&[a, (a.0, t.mid(2)), g]);
+    r.label("pd", g);
+
+    let sf = r.centre_tap("SF", "S");
+    let sel = r.centre_tap("SEL", "S");
+    r.route(&[sf, sel]);
+    r.label("x", sf);
+
+    let d = r.centre_tap("SEL", "D");
+    r.via("via2", d);
+    r.lay.add_rect(m3, d.0 - h, y0, d.0 + h, y1);
+    r.label("col", d);
+
+    let y = t.bottom(0);
+    r.tap("RST", "D", y);
+    r.tap("SF", "D", y);
+    r.lay.add_rect(m2, x0, y - h, x1, y + h);
+    r.label("vdd", (x0 + 200, y));
+
+    let (active, nplus) = (r.layer("active"), r.layer("nplus"));
+    let enc = p.tech.rules.implant_enc;
+    r.lay.add(active, Geometry::Rect(PIX_PD));
+    r.lay.add_rect(nplus, PIX_PD.x0 - enc, PIX_PD.y0 - enc, PIX_PD.x1 + enc, PIX_PD.y1 + enc);
+    let contact = (PIX_PD.x1 - 300, a.1);
+    r.via("contact", contact);
+    r.lay.add_rect(m1, contact.0 - h, a.1 - h, a.0, a.1 + h);
+
+    let boundary = r.layer("boundary");
+    r.lay.add_rect(boundary, x0, y0, x1, y1);
+    full_flow_cell("aps3t", "3T active pixel with n+ / p-sub photodiode, abutting pitch (DRC / LVS clean)", s, r.finish(), sim)
+}
+
+/// 8 x 8 image sensor pixel array of `aps3t`: labelled reset / select rows and column lines.
+pub fn pixel_array(tech: &Tech, lib: &str) -> Cell {
+    let (t, (x0, x1), (y0, y1)) = (PIX_T, PIX_X, PIX_Y);
+    let (pitch_x, pitch_y) = (x1 - x0, y1 - y0);
+    let mut r = Router::new(tech);
+    r.lay.add_instance(
+        CellRef::new(lib, "aps3t"),
+        Trans::new(0, 0),
+        Some(ArraySpec { cols: PIX_COLS as u32, rows: PIX_ROWS as u32, col: (pitch_x, 0), row: (0, pitch_y) }),
+    );
+    let (strap, y) = (x0 - 500, t.bottom(0));
+    for row in 0..PIX_ROWS {
+        let at = (strap, y + row * pitch_y);
+        r.route(&[at, (x0, at.1)]);
+        r.via("via2", at);
+    }
+    r.route(&[(strap, y), (strap, y + (PIX_ROWS - 1) * pitch_y)]);
+    r.label("vdd", (strap, y));
+    for row in 0..PIX_ROWS {
+        r.label(&format!("rst{row}"), (x0 + 200, t.mid(0) + row * pitch_y));
+        r.label(&format!("sel{row}"), (x0 + 200, t.mid(1) + row * pitch_y));
+    }
+    let drain = 2 * PIX_COL + crate::pcell::mos_columns(tech, NW.1, 1).expect("MOS columns")[1];
+    for col in 0..PIX_COLS {
+        r.label(&format!("col{col}"), (col * pitch_x + drain, y0 + 100));
+    }
+    let boundary = r.layer("boundary");
+    r.lay.add_rect(boundary, x0 - 1000, y0, x0 + PIX_COLS * pitch_x, y0 + PIX_ROWS * pitch_y);
+    layout_cell("pixel_array", "8 x 8 image sensor array of 3T pixels (AREF)", r.finish())
+}
+
 pub fn demo_project() -> Project {
     let mut p = Project::new("demo");
     p.description = "Example designs shipped with IC Studio".into();
@@ -883,12 +1008,13 @@ pub fn demo_project() -> Project {
     for c in [cmos_inverter(), rc_lowpass(), diode_clipper()].into_iter().chain(hier) {
         p.add_cell("work", c).expect("unique");
     }
-    for make in [nand2, nor2, ring_osc5, current_mirror, ota5t, sram6t] {
+    for make in [nand2, nor2, ring_osc5, current_mirror, ota5t, sram6t, aps3t] {
         let c = make(&mut p);
         p.add_cell("work", c).expect("unique");
     }
-    let array = sram_array(&p.tech, "work");
-    p.add_cell("work", array).expect("unique");
+    for c in [sram_array(&p.tech, "work"), pixel_array(&p.tech, "work")] {
+        p.add_cell("work", c).expect("unique");
+    }
     let mut devices = Layout::default();
     let mut x = 0;
     for pc in crate::pcell::PCell::defaults() {
@@ -970,5 +1096,23 @@ mod tests {
         assert_eq!(x.devices.len() as i64, 6 * SRAM_ROWS * SRAM_COLS);
         let labelled = x.nets.iter().filter(|n| n.labelled).count() as i64;
         assert_eq!(labelled, 2 + SRAM_ROWS + 2 * SRAM_COLS);
+    }
+
+    #[test]
+    fn aps3t_full_flow() {
+        full_flow("aps3t");
+    }
+
+    #[test]
+    fn pixel_array_drc_and_extraction() {
+        let p = demo_project();
+        let lay = p.cell(&CellRef::new("work", "pixel_array")).and_then(|c| c.layout.as_ref()).expect("array layout");
+        let v = run_tech_deck(lay, &p, &p.tech).unwrap().violations;
+        assert!(v.is_empty(), "{:?}", v.iter().take(10).map(|v| (&v.rule, v.marker)).collect::<Vec<_>>());
+        let x = extract(lay, &p, &p.tech);
+        assert!(x.warnings.is_empty(), "{:?}", x.warnings);
+        assert_eq!(x.devices.len() as i64, 3 * PIX_ROWS * PIX_COLS);
+        let labelled = x.nets.iter().filter(|n| n.labelled).count() as i64;
+        assert_eq!(labelled, 1 + 2 * PIX_ROWS + PIX_COLS);
     }
 }
