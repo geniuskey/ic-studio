@@ -128,7 +128,7 @@ pub fn project_overview(ui: &mut egui::Ui, project: &Project, hier: &mut Hier, q
                         q.push(Command::NewCellDialog);
                     }
                     if ui.button("⬆ Import GDS / OASIS…").clicked() {
-                        q.push(Command::ImportGds);
+                        q.push(Command::ImportGds(None));
                     }
                     if ui.button("⬇ Export library GDS…").clicked() {
                         q.push(Command::ExportLibraryGds);

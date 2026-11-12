@@ -554,3 +554,42 @@ fn layout_signoff() {
     drop(h);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn import_oasis() {
+    let src = ics_core::examples::demo_project();
+    let (top, _) = src.all_cells().find(|(_, c)| c.name == "pixel_array").unwrap();
+    let dir = std::env::temp_dir().join(format!("ics-ui-oasis-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("pixels.oas");
+    std::fs::write(&file, ics_core::oasis::write_oasis_hier(&src, std::slice::from_ref(&top), &src.tech)).unwrap();
+
+    let args = LaunchArgs { project: None, demo: true, workspace: Some("layout".into()), cell: None, run: false };
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1440.0, 900.0))
+        .with_pixels_per_point(1.0)
+        .wgpu()
+        .build_eframe(|cc| IcStudio::new(cc, args));
+    h.run_steps(4);
+    h.state_mut().command(Command::ImportGds(Some(file)));
+    h.run_steps(6);
+    settle(&mut h, "17_import_oasis");
+
+    let console: Vec<String> = h.state().console_lines().map(str::to_string).collect();
+    assert!(console.iter().any(|l| l.starts_with("Imported 4 cell(s)") && l.contains("library 'pixels'")), "{console:?}");
+    assert!(!console.iter().any(|l| l.contains("import failed")), "{console:?}");
+    let p = h.state().project().unwrap();
+    let lib = p.libraries.iter().find(|l| l.name == "pixels").expect("imported library");
+    for c in &lib.cells {
+        let (_, orig) = src.all_cells().find(|(_, o)| o.name == c.name).unwrap();
+        let (a, b) = (c.layout.as_ref().unwrap(), orig.layout.as_ref().unwrap());
+        assert_eq!((a.shapes.len(), a.instances.len()), (b.shapes.len(), b.instances.len()), "{}", c.name);
+    }
+    assert_eq!(h.state().workspace(), Workspace::Layout);
+    let img = h.render().expect("render");
+    if let Ok(dir) = std::env::var("ICS_SHOT_DIR") {
+        std::fs::create_dir_all(&dir).unwrap();
+        img.save(std::path::Path::new(&dir).join("17_import_oasis.png")).unwrap();
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}

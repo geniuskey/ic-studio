@@ -92,8 +92,8 @@ pub enum Command {
     RunSignoff(Option<String>),
     GenerateLayout,
     RouteFlylines,
-    /// Import a GDSII or OASIS file (detected from its contents).
-    ImportGds,
+    /// Import a GDSII or OASIS file (detected from its contents); `None` asks for the file.
+    ImportGds(Option<PathBuf>),
     ImportTech,
     /// Replace the technology with a PDK file (see `ics_core::pdk`); `None` asks for the file.
     LoadPdk(Option<PathBuf>),
@@ -620,7 +620,7 @@ impl IcStudio {
             Command::ExportLibraryGds => self.export_stream(true, StreamFormat::Gds),
             Command::ExportOasis => self.export_stream(false, StreamFormat::Oasis),
             Command::ExportLibraryOasis => self.export_stream(true, StreamFormat::Oasis),
-            Command::ImportGds => self.import_gds(),
+            Command::ImportGds(path) => self.import_gds(path),
             Command::ImportTech => self.import_tech(),
             Command::LoadPdk(path) => {
                 if let Some(path) = path.or_else(|| rfd::FileDialog::new().add_filter("IC Studio PDK", &["toml"]).pick_file()) {
@@ -936,14 +936,15 @@ impl IcStudio {
         }
     }
 
-    fn import_gds(&mut self) {
+    fn import_gds(&mut self, path: Option<PathBuf>) {
         let Some(p) = self.project.as_mut() else { return };
-        let Some(path) = rfd::FileDialog::new()
-            .add_filter("GDSII / OASIS", &["gds", "gds2", "gdsii", "oas", "oasis"])
-            .add_filter("GDSII", &["gds", "gds2", "gdsii"])
-            .add_filter("OASIS", &["oas", "oasis"])
-            .pick_file()
-        else {
+        let Some(path) = path.or_else(|| {
+            rfd::FileDialog::new()
+                .add_filter("GDSII / OASIS", &["gds", "gds2", "gdsii", "oas", "oasis"])
+                .add_filter("GDSII", &["gds", "gds2", "gdsii"])
+                .add_filter("OASIS", &["oas", "oasis"])
+                .pick_file()
+        }) else {
             return;
         };
         let data = match std::fs::read(&path) {
@@ -1121,7 +1122,7 @@ impl IcStudio {
                 }
                 ui.menu_button("Import", |ui| {
                     if ui.add_enabled(has_project, egui::Button::new("GDSII / OASIS…")).clicked() {
-                        q.push(Command::ImportGds);
+                        q.push(Command::ImportGds(None));
                     }
                     if ui.add_enabled(has_project, egui::Button::new("KLayout layer properties…")).clicked() {
                         q.push(Command::ImportTech);
@@ -1895,7 +1896,7 @@ impl IcStudio {
             ("Export library GDSII…".into(), "", Command::ExportLibraryGds),
             ("Export cell OASIS…".into(), "", Command::ExportOasis),
             ("Export library OASIS…".into(), "", Command::ExportLibraryOasis),
-            ("Import GDSII / OASIS…".into(), "", Command::ImportGds),
+            ("Import GDSII / OASIS…".into(), "", Command::ImportGds(None)),
             ("Import technology (KLayout .lyp)…".into(), "", Command::ImportTech),
             ("Load PDK…".into(), "", Command::LoadPdk(None)),
             ("Export SPICE netlist…".into(), "", Command::ExportNetlist),
@@ -2508,6 +2509,11 @@ impl IcStudio {
 
     pub fn workspace(&self) -> Workspace {
         self.workspace
+    }
+
+    /// Console messages, oldest first.
+    pub fn console_lines(&self) -> impl Iterator<Item = &str> {
+        self.log.iter().map(|l| l.text.as_str())
     }
 
     /// True while any background simulation is running (used by UI tests).
