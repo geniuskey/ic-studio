@@ -138,12 +138,14 @@ ics lvs myproj cmos_inverter                            # non-zero exit on diffe
 | `ring_osc5` | 5-stage ring oscillator, fully routed (no flylines); about 8.8 GHz on the built-in simulator |
 | `current_mirror` | NMOS current mirror with a 20 µA reference; DC sweep of the output voltage |
 | `ota5t` | 5-transistor OTA (NMOS pair, PMOS mirror load); about 42 dB open-loop gain in AC |
+| `sram6t` | 6T SRAM bit cell: routed PCell layout on an abutting pitch, DRC and LVS clean; transient write and hold |
+| `sram_array` | 8 × 8 array (AREF) of `sram6t` with labelled word lines, bit lines and supply straps |
 | `inv_chain` | Four placed `cmos_inverter` instances |
 | `inv_array` | 16 × 8 array (AREF) of inverters |
 | `inv_tiles` | 8 × 8 array of `inv_array`: 8192 inverters, two levels of hierarchy |
 | `devices` | One instance of every PCell (NMOS, PMOS, poly resistor, MOM capacitor) |
 
-The routed cells (`nand2`, `nor2`, `ring_osc5`, `current_mirror`, `ota5t`) run the whole
+The routed cells (`nand2`, `nor2`, `ring_osc5`, `current_mirror`, `ota5t`, `sram6t`) run the whole
 flow: simulate the schematic, open the layout, run DRC and LVS, and simulate again with
 `--parasitics`.
 

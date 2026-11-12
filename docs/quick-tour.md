@@ -22,6 +22,8 @@ use the generic 180 nm technology.
 | `ring_osc5` | 5-stage ring oscillator, fully routed |
 | `current_mirror` | NMOS current mirror with a 20 µA reference: DC sweep of the output |
 | `ota5t` | 5-transistor OTA: about 42 dB open-loop gain in AC |
+| `sram6t` | 6T SRAM bit cell, DRC and LVS clean: transient write and hold |
+| `sram_array` | 8 x 8 array of `sram6t` |
 | `inv_chain` | Four placed `cmos_inverter` instances |
 | `inv_array` | 16 x 8 array of inverters |
 | `inv_tiles` | 8 x 8 array of `inv_array`: 8192 inverters, two levels of hierarchy |

@@ -254,7 +254,7 @@ pub fn hierarchy_cells(tech: &Tech, lib: &str) -> Vec<Cell> {
 }
 
 /// MOS device. The bulk goes to a label `bulk` if given, else to the source (PMOS) or ground (NMOS).
-fn mos(s: &mut Schematic, kind: DeviceKind, at: (i32, i32), mirror: bool, w: &str, l: &str, bulk: Option<&str>) {
+fn mos(s: &mut Schematic, kind: DeviceKind, at: (i32, i32), mirror: bool, w: &str, l: &str, bulk: Option<&str>) -> u64 {
     let id = s.add_instance(kind, Pt::new(at.0, at.1), Orient { rot: 0, mirror });
     set(s, id, &[("w", w), ("l", l)]);
     let pins = s.instance(id).expect("instance").pin_positions();
@@ -269,6 +269,7 @@ fn mos(s: &mut Schematic, kind: DeviceKind, at: (i32, i32), mirror: bool, w: &st
             s.add_instance(DeviceKind::Ground, b, Orient::default());
         }
     }
+    id
 }
 
 /// Test-bench voltage source from `net` to ground.
@@ -748,6 +749,133 @@ pub fn ota5t(p: &mut Project) -> Cell {
     full_flow_cell("ota5t", "5-transistor OTA: NMOS pair, PMOS mirror load (DRC / LVS clean)", s, r.finish(), sim)
 }
 
+/// 6T SRAM bit cell pitch: abutting cells share word lines, rails and bit lines.
+const SRAM_X: (i64, i64) = (-400, 7600);
+const SRAM_Y: (i64, i64) = (-1000, 6800);
+const SRAM_T: Tracks = Tracks { wn: 1000, wp: 1000, mid: 3 };
+const SRAM_ROWS: i64 = 8;
+const SRAM_COLS: i64 = 8;
+
+/// 6T SRAM bit cell: cross-coupled inverters (P1/N1, P2/N2) and access devices A1, A2. Word
+/// line and rails run horizontally on metal2 edge to edge, the bit lines vertically on metal3.
+pub fn sram6t(p: &mut Project) -> Cell {
+    let o = Orient::default();
+    let mut s = Schematic::default();
+    let devices = [
+        (DeviceKind::Nmos, (0, 10), ["bl", "wl", "q"]),
+        (DeviceKind::Pmos, (8, 4), ["q", "qb", "vdd"]),
+        (DeviceKind::Nmos, (8, 10), ["q", "qb", "gnd"]),
+        (DeviceKind::Pmos, (16, 4), ["qb", "q", "vdd"]),
+        (DeviceKind::Nmos, (16, 10), ["qb", "q", "gnd"]),
+        (DeviceKind::Nmos, (24, 10), ["blb", "wl", "qb"]),
+    ];
+    for (kind, at, nets) in devices {
+        let id = mos(&mut s, kind, at, false, "1u", "180n", None);
+        let pins = s.instance(id).expect("instance").pin_positions();
+        for (pin, net) in ["d", "g", "s"].into_iter().zip(nets) {
+            let at = pins.iter().find(|(n, _)| *n == pin).expect("MOS pin").1;
+            match net {
+                "vdd" => {
+                    s.add_instance(DeviceKind::Supply, at, o);
+                }
+                "gnd" => {
+                    s.add_instance(DeviceKind::Ground, at, o);
+                }
+                _ => {
+                    s.add_label(net, at);
+                }
+            }
+        }
+    }
+    source(&mut s, (-24, 8), "vdd", &[("dc", "1.8")]);
+    source(&mut s, (-18, 8), "wl", &[("dc", "0"), ("tran", "PULSE(0 1.8 1n 50p 50p 1n 4n)")]);
+    source(&mut s, (-12, 8), "bl", &[("dc", "0"), ("tran", "PULSE(0 1.8 2.5n 50p 50p 4n 8n)")]);
+    source(&mut s, (-6, 8), "blb", &[("dc", "1.8"), ("tran", "PULSE(1.8 0 2.5n 50p 50p 4n 8n)")]);
+    let mut sim = sim(&["tran"]);
+    set_tran(&mut sim, "10p", "8n");
+
+    let (t, (x0, x1), (y0, y1)) = (SRAM_T, SRAM_X, SRAM_Y);
+    let mut r = Router::new(&p.tech);
+    place_columns(&mut r, p, t, GATE_COL, &[("", NW, "A1", NW), ("P1", NW, "N1", NW), ("P2", NW, "N2", NW), ("", NW, "A2", NW)]);
+    let (m2, m3) = (r.layer("metal2"), r.layer("metal3"));
+    let h = WIRE / 2;
+
+    r.tap("A1", "G", t.mid(0));
+    r.tap("A2", "G", t.mid(0));
+    r.lay.add_rect(m2, x0, t.mid(0) - h, x1, t.mid(0) + h);
+    r.label("wl", (x0 + 200, t.mid(0)));
+
+    for (track, access, gates, drains, net) in
+        [(1, "A1", ("N2", "P2"), ("N1", "P1"), "q"), (2, "A2", ("N1", "P1"), ("N2", "P2"), "qb")]
+    {
+        let y = t.mid(track);
+        let a = r.centre_tap(access, "S");
+        let g = r.tap(gates.0, "G", y);
+        r.tap(gates.1, "G", y);
+        r.route(&[a, (a.0, y), g]);
+        let nd = r.centre_tap(drains.0, "D");
+        let pd = r.centre_tap(drains.1, "D");
+        let joint = (nd.0, y);
+        r.route(&[nd, joint]);
+        r.route(&[joint, pd]);
+        r.label(net, joint);
+    }
+
+    for (dev, net) in [("A1", "bl"), ("A2", "blb")] {
+        let d = r.centre_tap(dev, "D");
+        r.via("via2", d);
+        r.lay.add_rect(m3, d.0 - h, y0, d.0 + h, y1);
+        r.label(net, d);
+    }
+
+    for (net, y, taps) in [("vdd", t.top(0), [("P1", "S"), ("P2", "S")]), ("gnd", t.bottom(0), [("N1", "S"), ("N2", "S")])] {
+        for (dev, pin) in taps {
+            r.tap(dev, pin, y);
+        }
+        r.lay.add_rect(m2, x0, y - h, x1, y + h);
+        r.label(net, (x0 + 200, y));
+    }
+
+    r.nwell = r.nwell.map(|n| IRect::new(x0, n.y0, x1, n.y1));
+    let boundary = r.layer("boundary");
+    r.lay.add_rect(boundary, x0, y0, x1, y1);
+    full_flow_cell("sram6t", "6T SRAM bit cell, abutting pitch for arrays (DRC / LVS clean)", s, r.finish(), sim)
+}
+
+/// 8 x 8 array of `sram6t` with labelled word lines and bit lines and strapped supplies.
+pub fn sram_array(tech: &Tech, lib: &str) -> Cell {
+    let (t, (x0, x1), (y0, y1)) = (SRAM_T, SRAM_X, SRAM_Y);
+    let (pitch_x, pitch_y) = (x1 - x0, y1 - y0);
+    let mut r = Router::new(tech);
+    r.lay.add_instance(
+        CellRef::new(lib, "sram6t"),
+        Trans::new(0, 0),
+        Some(ArraySpec { cols: SRAM_COLS as u32, rows: SRAM_ROWS as u32, col: (pitch_x, 0), row: (0, pitch_y) }),
+    );
+    let last = (SRAM_ROWS - 1) * pitch_y;
+    for (net, strap, y) in [("gnd", x0 - 1300, t.bottom(0)), ("vdd", x0 - 500, t.top(0))] {
+        for row in 0..SRAM_ROWS {
+            let at = (strap, y + row * pitch_y);
+            r.route(&[at, (x0, at.1)]);
+            r.via("via2", at);
+        }
+        r.route(&[(strap, y), (strap, y + last)]);
+        r.label(net, (strap, y));
+    }
+    for row in 0..SRAM_ROWS {
+        r.label(&format!("wl{row}"), (x0 + 200, t.mid(0) + row * pitch_y));
+    }
+    let drain = crate::pcell::mos_columns(tech, NW.1, 1).expect("MOS columns")[1];
+    for col in 0..SRAM_COLS {
+        let x = col * pitch_x + drain;
+        r.label(&format!("bl{col}"), (x, y0 + 100));
+        r.label(&format!("blb{col}"), (x + 3 * GATE_COL, y0 + 100));
+    }
+    let boundary = r.layer("boundary");
+    r.lay.add_rect(boundary, x0 - 2000, y0, x0 + SRAM_COLS * pitch_x, y0 + SRAM_ROWS * pitch_y);
+    layout_cell("sram_array", "8 x 8 array of 6T SRAM bit cells (AREF)", r.finish())
+}
+
 pub fn demo_project() -> Project {
     let mut p = Project::new("demo");
     p.description = "Example designs shipped with IC Studio".into();
@@ -755,10 +883,12 @@ pub fn demo_project() -> Project {
     for c in [cmos_inverter(), rc_lowpass(), diode_clipper()].into_iter().chain(hier) {
         p.add_cell("work", c).expect("unique");
     }
-    for make in [nand2, nor2, ring_osc5, current_mirror, ota5t] {
+    for make in [nand2, nor2, ring_osc5, current_mirror, ota5t, sram6t] {
         let c = make(&mut p);
         p.add_cell("work", c).expect("unique");
     }
+    let array = sram_array(&p.tech, "work");
+    p.add_cell("work", array).expect("unique");
     let mut devices = Layout::default();
     let mut x = 0;
     for pc in crate::pcell::PCell::defaults() {
@@ -822,5 +952,23 @@ mod tests {
     #[test]
     fn ota5t_full_flow() {
         full_flow("ota5t");
+    }
+
+    #[test]
+    fn sram6t_full_flow() {
+        full_flow("sram6t");
+    }
+
+    #[test]
+    fn sram_array_drc_and_extraction() {
+        let p = demo_project();
+        let lay = p.cell(&CellRef::new("work", "sram_array")).and_then(|c| c.layout.as_ref()).expect("array layout");
+        let v = run_tech_deck(lay, &p, &p.tech).unwrap().violations;
+        assert!(v.is_empty(), "{:?}", v.iter().take(10).map(|v| (&v.rule, v.marker)).collect::<Vec<_>>());
+        let x = extract(lay, &p, &p.tech);
+        assert!(x.warnings.is_empty(), "{:?}", x.warnings);
+        assert_eq!(x.devices.len() as i64, 6 * SRAM_ROWS * SRAM_COLS);
+        let labelled = x.nets.iter().filter(|n| n.labelled).count() as i64;
+        assert_eq!(labelled, 2 + SRAM_ROWS + 2 * SRAM_COLS);
     }
 }
