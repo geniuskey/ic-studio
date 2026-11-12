@@ -7,9 +7,11 @@
 //!
 //! The reader accepts every record type: name tables anywhere in the file (including after
 //! their use), all point-list and repetition types, relative xy mode, CBLOCKs, trapezoids and
-//! constrained trapezoids and circles (as polygons). XGEOMETRYs are skipped with a warning.
+//! constrained trapezoids and circles (as polygons). XGEOMETRYs, whose payload format the
+//! standard leaves to the writing tool, are skipped; warnings list them by cell, attribute
+//! and layer, along with the file's XNAME declarations.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 
 use crate::gds::{GdsImport, INST_NAME_ATTR, LayerMap, ReadOptions, StreamNames, as_rect, child_first_order, hier_refs};
@@ -539,7 +541,10 @@ struct Reader<'t> {
     done: bool,
     odd_angles: usize,
     mags: usize,
-    unsupported: usize,
+    /// Skipped XGEOMETRY elements by (cell index, attribute, layer, datatype).
+    xgeometries: BTreeMap<(Option<usize>, u64, u64, u64), usize>,
+    /// XNAME records: (attribute, name).
+    xnames: Vec<(u64, String)>,
 }
 
 /// [`read_oasis_with`] with default options: shapes on unknown layers are skipped.
@@ -570,7 +575,8 @@ pub fn read_oasis_with(data: &[u8], tech: &Tech, lib: &str, opts: ReadOptions) -
         done: false,
         odd_angles: 0,
         mags: 0,
-        unsupported: 0,
+        xgeometries: BTreeMap::new(),
+        xnames: vec![],
     };
     r.records(body)?;
     if !r.done {
@@ -640,11 +646,12 @@ impl Reader<'_> {
             PROPERTY => self.property(c)?,
             PROPERTY_REPEAT => self.attach_property(),
             XNAME | XNAME_REF => {
-                c.uint()?;
-                c.string()?;
+                let attr = c.uint()?;
+                let name = c.string()?;
                 if id == XNAME_REF {
                     c.uint()?;
                 }
+                self.xnames.push((attr, name));
             }
             XELEMENT => {
                 c.uint()?;
@@ -652,7 +659,7 @@ impl Reader<'_> {
             }
             XGEOMETRY => {
                 let info = c.byte()?;
-                c.uint()?;
+                let attr = c.uint()?;
                 if info & 0x01 != 0 {
                     self.m.layer = c.uint()?;
                 }
@@ -663,10 +670,9 @@ impl Reader<'_> {
                 let rel = self.m.relative;
                 coord(c, rel, info & 0x10 != 0, &mut self.m.geometry.0)?;
                 coord(c, rel, info & 0x08 != 0, &mut self.m.geometry.1)?;
-                if info & 0x04 != 0 {
-                    self.repetition(c)?;
-                }
-                self.unsupported += 1;
+                let n = if info & 0x04 != 0 { self.repetition(c)?.offsets().len() } else { 1 };
+                let key = (self.cells.len().checked_sub(1), attr, self.m.layer, self.m.datatype);
+                *self.xgeometries.entry(key).or_default() += n;
             }
             CBLOCK => {
                 let kind = c.uint()?;
@@ -1046,8 +1052,26 @@ impl Reader<'_> {
         if self.mags > 0 {
             w.push(format!("{} instance(s) with magnification other than 1 were placed unscaled", self.mags));
         }
-        if self.unsupported > 0 {
-            w.push(format!("{} XGEOMETRY element(s) are not supported and were skipped", self.unsupported));
+        let total: usize = self.xgeometries.values().sum();
+        if total > 0 {
+            w.push(format!(
+                "{total} XGEOMETRY element(s) were skipped: their data format is defined by the tool that wrote the file, not by OASIS"
+            ));
+            const SHOWN: usize = 5;
+            for (&(cell, attr, layer, dt), n) in self.xgeometries.iter().take(SHOWN) {
+                let cell = match cell {
+                    Some(k) => format!("cell '{}'", self.out.cells[k].0),
+                    None => "no cell".into(),
+                };
+                w.push(format!("XGEOMETRY attribute {attr} on layer {layer}/{dt} in {cell}: {n} element(s)"));
+            }
+            if self.xgeometries.len() > SHOWN {
+                w.push(format!("... and {} more XGEOMETRY group(s)", self.xgeometries.len() - SHOWN));
+            }
+        }
+        if !self.xnames.is_empty() {
+            let list: Vec<String> = self.xnames.iter().map(|(a, n)| format!("attribute {a} '{n}'")).collect();
+            w.push(format!("XNAME extension(s) declared in the file: {}", list.join(", ")));
         }
         Ok(self.out)
     }
@@ -1429,6 +1453,61 @@ mod tests {
             assert_eq!((x0, y0), (0, 0), "type {t} starts at the origin");
         }
         assert!(ctrapezoid(26, 1, 1).is_err());
+    }
+
+    #[test]
+    fn xgeometry_is_reported() {
+        let tech = Tech::generic();
+        let mut w = W(MAGIC.to_vec());
+        w.uint(START);
+        w.string(b"1.0");
+        w.real(1000.0);
+        w.uint(0);
+        for _ in 0..12 {
+            w.uint(0);
+        }
+        w.uint(XNAME);
+        w.uint(7);
+        w.string(b"vendor_curve");
+        w.uint(CELL);
+        w.string(b"top");
+        for attr in [7, 7, 9] {
+            w.uint(XGEOMETRY);
+            w.byte(if attr == 9 { 0x1F } else { 0x1B });
+            w.uint(attr);
+            w.uint(5);
+            w.uint(2);
+            w.string(b"opaque");
+            w.sint(10);
+            w.sint(20);
+            if attr == 9 {
+                w.uint(2);
+                w.uint(1);
+                w.uint(100);
+            }
+        }
+        w.uint(RECTANGLE);
+        w.byte(0x7B);
+        w.uint(u64::from(tech.layer(6).unwrap().gds_layer));
+        w.uint(u64::from(tech.layer(6).unwrap().gds_datatype));
+        w.uint(4);
+        w.uint(4);
+        w.sint(1);
+        w.sint(1);
+        w.uint(END);
+        w.string(&[0; 252]);
+        w.uint(0);
+        let imp = read_oasis(&w.0, &tech, "lib").unwrap();
+        assert_eq!(imp.cells[0].1.shapes.len(), 1, "elements after XGEOMETRY still read");
+        assert_eq!(
+            imp.warnings,
+            [
+                "5 XGEOMETRY element(s) were skipped: their data format is defined by the tool that wrote the file, not by OASIS",
+                "XGEOMETRY attribute 7 on layer 5/2 in cell 'top': 2 element(s)",
+                "XGEOMETRY attribute 9 on layer 5/2 in cell 'top': 3 element(s)",
+                "XNAME extension(s) declared in the file: attribute 7 'vendor_curve'",
+            ]
+        );
     }
 
     #[test]
