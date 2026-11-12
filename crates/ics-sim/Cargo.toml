@@ -1,0 +1,9 @@
+[package]
+name = "ics-sim"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ics-core = { version = "0.1.0", path = "../ics-core" }
+num-complex = "0.4.6"
+thiserror = "2.0.21"

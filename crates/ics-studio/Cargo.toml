@@ -1,0 +1,17 @@
+[package]
+name = "ics-studio"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+eframe = { version = "0.37.0", features = ["persistence"] }
+egui = { version = "0.37.0", features = ["monochrome_emoji_fonts"] }
+egui_plot = "0.38.0"
+ics-core = { version = "0.1.0", path = "../ics-core" }
+ics-sim = { version = "0.1.0", path = "../ics-sim" }
+rfd = "0.18.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+
+[dev-dependencies]
+egui_kittest = { version = "0.37.0", features = ["wgpu", "snapshot", "eframe"] }
