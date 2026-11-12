@@ -19,6 +19,19 @@ For other MCP clients, add a stdio server whose command is the `ics-mcp` binary,
 
 Then ask, for example: "create a demo project in ./demo and run LVS on cmos_inverter".
 
+## Agent skill
+
+The tools tell an agent what it can do; the `ic-studio` skill in `skills/ic-studio` tells
+it how to design with them: the schematic → simulation → layout → DRC → LVS → post-layout
+flow, units, how to read LVS / DRC results, the `schematic.json` format (MCP has no
+schematic editing tools) and the `ics` CLI as a fallback. Install it with:
+
+```sh
+npx skills add geniuskey/ic-studio
+```
+
+or copy `skills/ic-studio` into `~/.claude/skills/`.
+
 ## Conventions
 
 - Coordinates are in **µm**, y pointing up, snapped to the technology grid.
