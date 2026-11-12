@@ -12,7 +12,8 @@ pub const PCELL_LIB: &str = "pcells";
 /// Device rules not expressible as single-layer width / spacing (dbu).
 const GATE_CONTACT_SPACE: i64 = 160;
 const POLY_ENDCAP: i64 = 220;
-const IMPLANT_ENC: i64 = 180;
+/// Implant enclosure of active (dbu).
+pub const IMPLANT_ENC: i64 = 180;
 const NWELL_ENC: i64 = 430;
 const CAP_INSET: i64 = 100;
 const CAP_TAB_LEN: i64 = 500;
@@ -23,9 +24,26 @@ const LABEL_SIZE: i64 = 200;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PCell {
-    Mos { pmos: bool, w: i64, l: i64, fingers: u32 },
-    PolyRes { w: i64, l: i64 },
-    MomCap { w: i64, h: i64 },
+    Mos {
+        pmos: bool,
+        w: i64,
+        l: i64,
+        fingers: u32,
+    },
+    PolyRes {
+        w: i64,
+        l: i64,
+    },
+    MomCap {
+        w: i64,
+        h: i64,
+    },
+    /// Bulk contact `w` high, one contact column wide: n+ in an nwell (`well`, for PMOS bulks) or
+    /// p+ substrate tap.
+    Tap {
+        well: bool,
+        w: i64,
+    },
 }
 
 impl PCell {
@@ -46,6 +64,8 @@ impl PCell {
             PCell::Mos { pmos: true, .. } => "pmos",
             PCell::PolyRes { .. } => "poly_res",
             PCell::MomCap { .. } => "mom_cap",
+            PCell::Tap { well: true, .. } => "ntap",
+            PCell::Tap { well: false, .. } => "ptap",
         }
     }
 
@@ -56,6 +76,7 @@ impl PCell {
             PCell::Mos { w, l, fingers, .. } => format!("{k}_w{w}_l{l}_nf{fingers}"),
             PCell::PolyRes { w, l } => format!("{k}_w{w}_l{l}"),
             PCell::MomCap { w, h } => format!("{k}_w{w}_h{h}"),
+            PCell::Tap { w, .. } => format!("{k}_w{w}"),
         }
         .replace('-', "m")
     }
@@ -68,6 +89,7 @@ impl PCell {
             PCell::Mos { w, l, fingers, .. } => format!("{k} W={} L={} nf={fingers}", um(*w), um(*l)),
             PCell::PolyRes { w, l } => format!("{k} W={} L={}", um(*w), um(*l)),
             PCell::MomCap { w, h } => format!("{k} W={} H={}", um(*w), um(*h)),
+            PCell::Tap { w, .. } => format!("{k} W={}", um(*w)),
         }
     }
 
@@ -77,6 +99,7 @@ impl PCell {
             PCell::Mos { pmos, w, l, fingers } => gen_mos(tech, pmos, w, l, fingers),
             PCell::PolyRes { w, l } => gen_poly_res(tech, w, l),
             PCell::MomCap { w, h } => gen_mom_cap(tech, w, h),
+            PCell::Tap { well, w } => gen_tap(tech, well, w),
         }
     }
 }
@@ -204,6 +227,42 @@ fn centre(r: IRect) -> (i64, i64) {
     ((r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2)
 }
 
+/// Centres (x, cell coordinates) of the source / drain contact columns of a MOS PCell, left to
+/// right: source, drain, source, ...
+pub fn mos_columns(tech: &Tech, l: i64, fingers: u32) -> Result<Vec<i64>, String> {
+    let con = via_def(tech, "contact")?;
+    let g = tech.grid;
+    let (c, gcs) = (con.cut_size, snap_up(GATE_CONTACT_SPACE, g));
+    let sd_end = con.enc_bottom + c + gcs;
+    let pitch = snap(l, g) + c + 2 * gcs;
+    Ok((0..=fingers as i64).map(|k| sd_end - gcs - c / 2 + k * pitch).collect())
+}
+
+fn gen_tap(tech: &Tech, well: bool, w: i64) -> Result<Layout, String> {
+    let g = tech.grid;
+    let w = snap(w, g);
+    let active = layer(tech, "active")?;
+    let imp = layer(tech, if well { "nplus" } else { "pplus" })?;
+    let con = via_def(tech, "contact")?;
+    let side = (con.cut_size + 2 * con.enc_bottom.max(con.enc_top)).max(min_width(tech, active));
+    if w < side {
+        return Err(format!("tap height {w} is below the minimum {side}"));
+    }
+    let act = IRect::new(0, 0, side, w);
+    let mut lay = Layout::default();
+    lay.add(active, Geometry::Rect(act));
+    add_all(&mut lay, via_array(tech, con, act)?, Some(active));
+    label(&mut lay, tech, "B", centre(act));
+    let imp_min = min_width(tech, imp);
+    lay.add(imp, Geometry::Rect(grow_to(grow(act, snap_up(IMPLANT_ENC, g)), imp_min, imp_min, g)));
+    if well {
+        let nwell = layer(tech, "nwell")?;
+        let nw_min = min_width(tech, nwell);
+        lay.add(nwell, Geometry::Rect(grow_to(grow(act, snap_up(NWELL_ENC, g)), nw_min, nw_min, g)));
+    }
+    Ok(lay)
+}
+
 fn gen_mos(tech: &Tech, pmos: bool, w: i64, l: i64, fingers: u32) -> Result<Layout, String> {
     let g = tech.grid;
     let (w, l) = (snap(w, g), snap(l, g));
@@ -236,8 +295,7 @@ fn gen_mos(tech: &Tech, pmos: bool, w: i64, l: i64, fingers: u32) -> Result<Layo
     let act = IRect::new(0, 0, total, w);
     lay.add(active, Geometry::Rect(act));
 
-    for k in 0..=n {
-        let cx = sd_end - gcs - c / 2 + k * pitch;
+    for (k, cx) in mos_columns(tech, l, fingers)?.into_iter().enumerate() {
         let half = c / 2 + con_enc;
         let items = via_array(tech, con, IRect::new(cx - half, 0, cx + half, w))?;
         add_all(&mut lay, items, Some(active));
@@ -394,6 +452,11 @@ mod tests {
         }
         for (w, h) in [(600, 600), (5000, 5000), (20000, 3000)] {
             all.push(PCell::MomCap { w, h });
+        }
+        for well in [false, true] {
+            for w in [420, 1000, 5000] {
+                all.push(PCell::Tap { well, w });
+            }
         }
         for p in &all {
             let lay = p.generate(&tech).unwrap_or_else(|e| panic!("{p:?}: {e}"));

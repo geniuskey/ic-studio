@@ -64,7 +64,8 @@ Linux needs the usual windowing libraries:
   edge handles that keep Manhattan outlines Manhattan; rotate / flip; µm-accurate inspector
 - Manhattan Boolean engine: AND / OR / NOT / XOR, grow / shrink, merge, layer operations
 - Via generator (single cut or area fill) and PCells: NMOS / PMOS (W, L, fingers),
-  poly resistor and MOM capacitor, stored as ordinary cells of a `pcells` library
+  poly resistor, MOM capacitor and well / substrate taps, stored as ordinary cells of a
+  `pcells` library
 - GDSII import and export with full hierarchy; unknown GDS layers are kept
 
 **Verification**
@@ -76,7 +77,9 @@ Linux needs the usual windowing libraries:
   merging and W / L checks
 
 **Schematic ↔ layout**
-- Schematic-driven layout: place the schematic's transistors as named PCell instances
+- Schematic-driven layout: place the schematic's transistors as named PCell instances in
+  PMOS / NMOS rows, abutting devices that share a source / drain net (shared diffusion),
+  with merged wells and implants and a bulk tap per row
 - Flylines show schematic connections that are not yet routed; a maze router (A* on a
   terminal-aligned grid over metal1 and up) wires them DRC-clean around existing geometry
 - Cross-probing: selecting a device in one view selects it in the other

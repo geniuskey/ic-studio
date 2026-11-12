@@ -313,7 +313,7 @@ mod tests {
         assert_eq!(del["not_found"], json!([99999]));
 
         let generated = call(&mut s, "generate_layout", json!({"cell": "cmos_inverter"})).unwrap();
-        assert_eq!(generated["placed"].as_array().unwrap().len(), 2, "{generated}");
+        assert_eq!(generated["placed"].as_array().unwrap().len(), 4, "two devices and two taps: {generated}");
         assert!(call(&mut s, "flylines", json!({"cell": "cmos_inverter"})).unwrap()["count"].as_u64().unwrap() > 0);
         let routed = call(&mut s, "route", json!({"cell": "cmos_inverter"})).unwrap();
         assert_eq!(routed["unrouted_flylines"], 0, "{routed}");

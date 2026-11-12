@@ -1,18 +1,25 @@
 //! Schematic-driven layout: device placement from a schematic and unrouted-connection flylines.
 //!
 //! Placement puts every MOS device as a PCell instance named after its schematic instance, in two
-//! rows: PMOS (mirrored, gate contacts facing down) above NMOS (gate contacts facing up), each
-//! row ordered by schematic position. Neighbouring bounding boxes are kept apart by the largest
-//! minimum spacing of the layers the two cells use, so the placement is DRC clean by construction.
+//! rows: PMOS (mirrored, gate contacts facing down) above NMOS (gate contacts facing up).
+//! - Each row is built as chains: starting from the next device in schematic order, a device of
+//!   the same type and finger width whose outer source / drain is on the net of the chain's last
+//!   column is flipped as needed and abutted, sharing that diffusion column.
+//! - Chains are spaced by the largest spacing of the layers other than wells and implants; the
+//!   row's well and implant shapes are merged by row-wide fill rectangles.
+//! - A bulk tap closes each row: n+ in the nwell for PMOS, p+ substrate for NMOS, named
+//!   [`NTAP`] / [`PTAP`] + the row's bulk net, so flylines and the router connect it.
+//!
+//! The placement is DRC clean by construction.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::connectivity;
+use crate::connectivity::{self, Connectivity};
 use crate::extract;
 use crate::geom::IRect;
 use crate::hier::{LayoutSource, flatten};
 use crate::layout::{Geometry, Layout, Trans};
-use crate::pcell::PCell;
+use crate::pcell::{IMPLANT_ENC, PCell, mos_columns};
 use crate::project::Project;
 use crate::schematic::{DeviceKind, Instance, Schematic};
 use crate::tech::Tech;
@@ -20,8 +27,14 @@ use crate::units::parse_spice;
 
 /// Devices wider than this (µm) are split into equal fingers.
 pub const MAX_FINGER_W_UM: f64 = 5.0;
+/// Instance name prefix of the nwell tap of the PMOS row, followed by its net (e.g. `ntap:vdd`).
+pub const NTAP: &str = "ntap:";
+/// Instance name prefix of the substrate tap of the NMOS row, followed by its net.
+pub const PTAP: &str = "ptap:";
+/// Layers merged across a row instead of being spaced.
+const SOFT_LAYERS: [&str; 3] = ["nwell", "nplus", "pplus"];
 
-/// A schematic device to be placed as a PCell instance named after it.
+/// A schematic device (or row tap) to be placed as a PCell instance named after it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlannedDevice {
     pub name: String,
@@ -32,6 +45,8 @@ pub struct PlannedDevice {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SdlPlan {
     pub devices: Vec<PlannedDevice>,
+    /// Row-wide well and implant rectangles (layer, rect) covering those of the row's cells.
+    pub fills: Vec<(usize, IRect)>,
     /// Schematic devices with no generator (sources, R, C, ...), with the reason.
     pub skipped: Vec<String>,
 }
@@ -47,9 +62,24 @@ pub struct Flyline {
 struct Candidate {
     name: String,
     pcell: PCell,
-    orient: Trans,
-    bbox: IRect,
+    pmos: bool,
+    /// Finger width (dbu).
+    w: i64,
+    /// Source / drain column centres (cell coordinates) and their schematic nets.
+    cols: Vec<(i64, Option<String>)>,
+    bulk: Option<String>,
+    lay: Layout,
+    /// Extent without well and implant layers (cell coordinates).
+    core: IRect,
     space: i64,
+}
+
+impl Candidate {
+    /// Nets of the left and right outer columns.
+    fn ends(&self, flip: bool) -> (Option<&str>, Option<&str>) {
+        let (a, b) = (self.cols.first().and_then(|c| c.1.as_deref()), self.cols.last().and_then(|c| c.1.as_deref()));
+        if flip { (b, a) } else { (a, b) }
+    }
 }
 
 fn snap(v: i64, g: i64) -> i64 {
@@ -62,6 +92,10 @@ fn snap_up(v: i64, g: i64) -> i64 {
 
 fn layer_space(tech: &Tech, layer: usize) -> i64 {
     tech.layer(layer).map_or(0, |l| l.min_spacing)
+}
+
+fn soft_layers(tech: &Tech) -> Vec<usize> {
+    SOFT_LAYERS.iter().filter_map(|n| tech.layer_index(n)).collect()
 }
 
 /// PCell for a schematic MOS instance: `w` is per device and `m` its multiplier. Each of the
@@ -85,31 +119,146 @@ pub fn mos_pcell(inst: &Instance, tech: &Tech) -> Result<PCell, String> {
     Ok(PCell::Mos { pmos: inst.kind == DeviceKind::Pmos, w: snap(w / split, tech.grid), l, fingers })
 }
 
-fn candidate(inst: &Instance, tech: &Tech) -> Result<Candidate, String> {
+fn candidate(inst: &Instance, conn: &Connectivity, tech: &Tech) -> Result<Candidate, String> {
     let pcell = mos_pcell(inst, tech)?;
+    let PCell::Mos { w, l, fingers, .. } = pcell else { unreachable!("mos_pcell makes MOS cells") };
     let lay = pcell.generate(tech)?;
-    let bbox = lay.shapes_bbox().ok_or("the generator produced no shapes")?;
-    let orient = if inst.kind == DeviceKind::Pmos { Trans::with(0, 0, 0, true) } else { Trans::IDENTITY };
-    let space = lay.shapes.iter().map(|s| layer_space(tech, s.layer)).max().unwrap_or(0);
-    Ok(Candidate { name: inst.name.clone(), pcell, bbox: orient.apply_rect(bbox), orient, space })
+    let net = |pin: &str| conn.net_of(inst.id, pin).map(str::to_string);
+    let cols = mos_columns(tech, l, fingers)?
+        .into_iter()
+        .enumerate()
+        .map(|(k, x)| (x, if k % 2 == 0 { net("s") } else { net("d") }))
+        .collect();
+    let soft = soft_layers(tech);
+    let hard = lay.shapes.iter().filter(|s| !soft.contains(&s.layer) && !matches!(s.geom, Geometry::Label { .. }));
+    let core = hard.clone().map(|s| s.bbox()).reduce(|a, b| a.union(&b)).ok_or("the generator produced no shapes")?;
+    let space = hard.map(|s| layer_space(tech, s.layer)).max().unwrap_or(0);
+    let bulk_pin = inst.pin_positions().into_iter().find(|(n, _)| *n == "b").map(|(_, p)| p);
+    let bulk = if bulk_pin.is_some_and(|p| conn.unconnected_pins.contains(&p)) { None } else { net("b") };
+    Ok(Candidate { name: inst.name.clone(), pcell, pmos: inst.kind == DeviceKind::Pmos, w, cols, bulk, lay, core, space })
 }
 
-fn place_row(row: &[Candidate], y: i64, grid: i64, out: &mut Vec<PlannedDevice>) {
-    let mut x = 0;
-    for (i, c) in row.iter().enumerate() {
-        if i > 0 {
-            x += snap_up(c.space.max(row[i - 1].space), grid);
-        }
-        let trans = Trans { x: x - c.bbox.x0, y: y - c.bbox.y0, ..c.orient };
-        out.push(PlannedDevice { name: c.name.clone(), pcell: c.pcell.clone(), trans });
-        x += c.bbox.width();
+/// Orientation: PMOS mirrored top-bottom; `flip` also mirrors left-right.
+fn orient(pmos: bool, flip: bool) -> Trans {
+    match (pmos, flip) {
+        (false, false) => Trans::IDENTITY,
+        (false, true) => Trans::with(0, 0, 2, true),
+        (true, false) => Trans::with(0, 0, 0, true),
+        (true, true) => Trans::with(0, 0, 2, false),
     }
 }
 
-/// Map schematic MOS devices to PCells and arrange them in rows (PMOS above NMOS), ordered
-/// like the schematic, without overlaps.
+/// Chains of the row in placement order: (device, flipped, abutted to the previous one).
+fn chain(row: Vec<Candidate>) -> Vec<(Candidate, bool, bool)> {
+    let mut rest: Vec<Option<Candidate>> = row.into_iter().map(Some).collect();
+    let mut out: Vec<(Candidate, bool, bool)> = Vec::new();
+    while let Some(i) = rest.iter().position(Option::is_some) {
+        let c = rest[i].take().expect("present");
+        let partner = |net: Option<&str>, rest: &[Option<Candidate>]| {
+            net.is_some() && rest.iter().flatten().any(|o| o.w == c.w && (o.ends(false).0 == net || o.ends(false).1 == net))
+        };
+        let (l, r) = c.ends(false);
+        let flip = !partner(r, &rest) && partner(l, &rest);
+        out.push((c, flip, false));
+        loop {
+            let (last, flip, _) = out.last().expect("chain start");
+            let Some(net) = last.ends(*flip).1 else { break };
+            let w = last.w;
+            let next = rest.iter().position(|o| {
+                o.as_ref().is_some_and(|o| o.w == w && (o.ends(false).0 == Some(net) || o.ends(false).1 == Some(net)))
+            });
+            let Some(j) = next else { break };
+            let o = rest[j].take().expect("present");
+            let flip = o.ends(false).0 != Some(net);
+            out.push((o, flip, true));
+        }
+    }
+    out
+}
+
+/// A placed row (core bottom at y = 0): its devices and well / implant fills.
+struct Row {
+    devices: Vec<PlannedDevice>,
+    /// Generated layouts of the devices, for extents.
+    layouts: Vec<Layout>,
+}
+
+fn place_row(row: Vec<Candidate>, tech: &Tech) -> Row {
+    let g = tech.grid;
+    let mut out = Row { devices: Vec::new(), layouts: Vec::new() };
+    let mut prev: Option<(i64, i64, i64)> = None;
+    let mut bulk: HashMap<String, usize> = HashMap::new();
+    let (mut pmos, mut min_w, mut active_y0) = (false, i64::MAX, None);
+    let active = tech.layer_index("active");
+    for (c, flip, abut) in chain(row) {
+        let t0 = orient(c.pmos, flip);
+        let cb = t0.apply_rect(c.core);
+        let xs: Vec<i64> = c.cols.iter().map(|(x, _)| t0.apply((*x, 0)).0).collect();
+        let (left, right) = (xs.iter().copied().min().unwrap_or(0), xs.iter().copied().max().unwrap_or(0));
+        let tx = match prev {
+            None => -cb.x0,
+            Some((_, rc, _)) if abut => rc - left,
+            Some((x1, _, sp)) => x1 + snap_up(sp.max(c.space), g) - cb.x0,
+        };
+        let trans = Trans { x: tx, y: -cb.y0, ..t0 };
+        prev = Some((tx + cb.x1, tx + right, c.space));
+        if let Some(b) = &c.bulk {
+            *bulk.entry(b.clone()).or_default() += 1;
+        }
+        (pmos, min_w) = (c.pmos, min_w.min(c.w));
+        if active_y0.is_none() {
+            active_y0 = c.lay.shapes.iter().filter(|s| Some(s.layer) == active).map(|s| trans.apply_rect(s.bbox()).y0).min();
+        }
+        out.devices.push(PlannedDevice { name: c.name, pcell: c.pcell, trans });
+        out.layouts.push(c.lay);
+    }
+    let net = bulk.into_iter().max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0))).map(|(n, _)| n);
+    if let (Some(net), Some((x1, _, sp)), Some(ay)) = (net, prev, active_y0) {
+        let tap = PCell::Tap { well: pmos, w: min_w };
+        if let Ok(lay) = tap.generate(tech) {
+            let x = x1 + snap_up(sp.max(2 * snap_up(IMPLANT_ENC, g)), g);
+            let name = format!("{}{net}", if pmos { NTAP } else { PTAP });
+            out.devices.push(PlannedDevice { name, pcell: tap, trans: Trans::new(x, ay) });
+            out.layouts.push(lay);
+        }
+    }
+    out
+}
+
+impl Row {
+    fn extent(&self) -> Option<IRect> {
+        self.devices
+            .iter()
+            .zip(&self.layouts)
+            .filter_map(|(d, l)| l.shapes_bbox().map(|b| d.trans.apply_rect(b)))
+            .reduce(|a, b| a.union(&b))
+    }
+
+    fn fills(&self, tech: &Tech) -> Vec<(usize, IRect)> {
+        let mut by_layer: BTreeMap<usize, (IRect, usize)> = BTreeMap::new();
+        for (d, lay) in self.devices.iter().zip(&self.layouts) {
+            let soft = soft_layers(tech);
+            for s in lay.shapes.iter().filter(|s| soft.contains(&s.layer)) {
+                let r = d.trans.apply_rect(s.bbox());
+                let e = by_layer.entry(s.layer).or_insert((r, 0));
+                (e.0, e.1) = (e.0.union(&r), e.1 + 1);
+            }
+        }
+        by_layer.into_iter().filter(|(_, (_, n))| *n > 1).map(|(l, (r, _))| (l, r)).collect()
+    }
+
+    fn shift(&mut self, dy: i64) {
+        for d in &mut self.devices {
+            d.trans.y += dy;
+        }
+    }
+}
+
+/// Map schematic MOS devices to PCells and arrange them in rows (PMOS above NMOS), sharing
+/// diffusion where nets allow, with a bulk tap per row.
 pub fn plan(sch: &Schematic, tech: &Tech) -> SdlPlan {
     let mut plan = SdlPlan::default();
+    let conn = connectivity::extract(sch);
     let mut mos: Vec<&Instance> = Vec::new();
     for inst in &sch.instances {
         match inst.kind {
@@ -121,17 +270,22 @@ pub fn plan(sch: &Schematic, tech: &Tech) -> SdlPlan {
     mos.sort_by(|a, b| (a.pos.x, a.pos.y, &a.name).cmp(&(b.pos.x, b.pos.y, &b.name)));
     let (mut prow, mut nrow) = (Vec::new(), Vec::new());
     for inst in mos {
-        match candidate(inst, tech) {
-            Ok(c) if inst.kind == DeviceKind::Pmos => prow.push(c),
+        match candidate(inst, &conn, tech) {
+            Ok(c) if c.pmos => prow.push(c),
             Ok(c) => nrow.push(c),
             Err(e) => plan.skipped.push(format!("{}: {e}", inst.name)),
         }
     }
-    let n_height = nrow.iter().map(|c| c.bbox.height()).max();
-    let row_gap = snap_up(prow.iter().chain(&nrow).map(|c| c.space).max().unwrap_or(0), tech.grid);
-    let p_y = n_height.map_or(0, |h| h + row_gap);
-    place_row(&prow, p_y, tech.grid, &mut plan.devices);
-    place_row(&nrow, 0, tech.grid, &mut plan.devices);
+    let row_gap = snap_up(tech.layers.iter().map(|l| l.min_spacing).max().unwrap_or(0), tech.grid);
+    let nrow = place_row(nrow, tech);
+    let mut prow = place_row(prow, tech);
+    if let (Some(n), Some(p)) = (nrow.extent(), prow.extent()) {
+        prow.shift(n.y1 + row_gap - p.y0);
+    }
+    for row in [prow, nrow] {
+        plan.fills.extend(row.fills(tech));
+        plan.devices.extend(row.devices);
+    }
     plan
 }
 
@@ -140,7 +294,8 @@ fn flat_bbox(layout: &Layout, src: &dyn LayoutSource) -> Option<IRect> {
 }
 
 /// Place the planned devices that are not in `layout` yet (matched by instance name). Existing
-/// named instances are left where they are. Returns the names placed.
+/// named instances are left where they are. Returns the names placed. The well / implant fills
+/// are added only when every planned device is new.
 ///
 /// When the new devices would come closer than the technology's largest spacing to existing
 /// content, they are all shifted to the right of it (bottom aligned).
@@ -153,7 +308,9 @@ pub fn apply(project: &mut Project, layout: &mut Layout, plan: &SdlPlan) -> Resu
             project.cell(&cell).and_then(|c| c.layout.as_ref()).and_then(Layout::shapes_bbox).map(|b| d.trans.apply_rect(b));
         todo.push((d, cell, bbox));
     }
-    let new_bbox = todo.iter().filter_map(|t| t.2).reduce(|a, b| a.union(&b));
+    let fresh = !todo.is_empty() && todo.len() == plan.devices.len();
+    let fills: &[(usize, IRect)] = if fresh { &plan.fills } else { &[] };
+    let new_bbox = todo.iter().filter_map(|t| t.2).chain(fills.iter().map(|f| f.1)).reduce(|a, b| a.union(&b));
     let gap = snap_up(project.tech.layers.iter().map(|l| l.min_spacing).max().unwrap_or(0), project.tech.grid);
     let (dx, dy) = match (flat_bbox(layout, project), new_bbox) {
         (Some(e), Some(n)) if e.spacing(&n) < gap || e.intersects(&n) => (e.x1 + gap - n.x0, e.y0 - n.y0),
@@ -167,16 +324,20 @@ pub fn apply(project: &mut Project, layout: &mut Layout, plan: &SdlPlan) -> Resu
         }
         placed.push(d.name.clone());
     }
+    for &(l, r) in fills {
+        layout.add(l, Geometry::Rect(r.translate(dx, dy)));
+    }
     Ok(placed)
 }
 
 /// Device terminals per schematic net: the transformed centres of the "D", "G" and "S" labels
-/// of each named layout instance matching a schematic MOS instance (bulk is not a terminal).
+/// of each named layout instance matching a schematic MOS instance (MOS bulks are not
+/// terminals), and the "B" label of each row tap ([`NTAP`] / [`PTAP`] + net).
 pub fn terminals(sch: &Schematic, layout: &Layout, src: &dyn LayoutSource) -> BTreeMap<String, Vec<(i64, i64)>> {
     terminal_pins(sch, layout, src).into_iter().map(|(net, pins)| (net, pins.into_iter().map(|(_, p)| p).collect())).collect()
 }
 
-/// A device terminal: its pin ("d", "g" or "s") and position.
+/// A device terminal: its pin ("d", "g", "s", or "b" for a tap) and position.
 pub type Pin = (&'static str, (i64, i64));
 
 /// [`terminals`] with the pin of each point.
@@ -203,6 +364,18 @@ pub fn terminal_pins(sch: &Schematic, layout: &Layout, src: &dyn LayoutSource) -
                 for i in 0..cols {
                     pts.push((pin, placed.element_trans(i, j).apply(c)));
                 }
+            }
+        }
+    }
+    for placed in &layout.instances {
+        let Some(name) = placed.name.as_deref() else { continue };
+        let Some(net) = name.strip_prefix(NTAP).or_else(|| name.strip_prefix(PTAP)).filter(|n| !n.is_empty()) else { continue };
+        let Some(child) = src.layout(&placed.cell) else { continue };
+        for s in &child.shapes {
+            if matches!(&s.geom, Geometry::Label { text, .. } if text == "B") {
+                let b = s.geom.bbox();
+                let c = placed.trans.apply(((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2));
+                out.entry(net.to_string()).or_default().push(("b", c));
             }
         }
     }
@@ -317,16 +490,20 @@ mod tests {
         let p = plan(&sch, &tech);
         let mp = sch.instances.iter().find(|i| i.kind == DeviceKind::Pmos).unwrap().name.clone();
         let mn = sch.instances.iter().find(|i| i.kind == DeviceKind::Nmos).unwrap().name.clone();
-        assert_eq!(p.devices.len(), 2);
-        assert_eq!(p.devices[0].name, mp);
+        let names: Vec<&str> = p.devices.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, [mp.as_str(), "ntap:vdd", mn.as_str(), "ptap:0"]);
         assert_eq!(p.devices[0].pcell, PCell::Mos { pmos: true, w: 2000, l: 180, fingers: 1 });
-        assert_eq!(p.devices[1].name, mn);
-        assert_eq!(p.devices[1].pcell, PCell::Mos { pmos: false, w: 1000, l: 180, fingers: 1 });
+        assert_eq!(p.devices[1].pcell, PCell::Tap { well: true, w: 2000 });
+        assert_eq!(p.devices[2].pcell, PCell::Mos { pmos: false, w: 1000, l: 180, fingers: 1 });
+        assert_eq!(p.devices[3].pcell, PCell::Tap { well: false, w: 1000 });
 
         let boxes: Vec<IRect> =
             p.devices.iter().map(|d| d.trans.apply_rect(d.pcell.generate(&tech).unwrap().shapes_bbox().unwrap())).collect();
-        assert_eq!((boxes[1].x0, boxes[1].y0), (0, 0));
-        assert!(boxes[0].y0 >= boxes[1].y1 + 1400, "{boxes:?}");
+        let (prow, nrow) = (boxes[0].union(&boxes[1]), boxes[2].union(&boxes[3]));
+        assert!(prow.y0 >= nrow.y1 + 1400, "{boxes:?}");
+        let nwell = tech.layer_index("nwell").unwrap();
+        let well = p.fills.iter().find(|f| f.0 == nwell).expect("row nwell").1;
+        assert!(well.x0 <= boxes[0].x0 && well.x1 >= boxes[1].x1, "one nwell over the PMOS and its tap");
 
         let mut skipped = p.skipped.clone();
         skipped.sort();
@@ -367,10 +544,11 @@ mod tests {
         let mut layout = Layout::default();
         let p = plan(&inverter(), &project.tech);
         let placed = apply(&mut project, &mut layout, &p).unwrap();
-        assert_eq!(placed.len(), 2);
+        assert_eq!(placed.len(), 4);
         assert_drc_clean(&layout, &project);
+        let shapes = layout.shapes.len();
         assert!(apply(&mut project, &mut layout, &p).unwrap().is_empty());
-        assert_eq!(layout.instances.len(), 2);
+        assert_eq!((layout.instances.len(), layout.shapes.len()), (4, shapes));
 
         let mut s = Schematic::default();
         for (i, x) in [0, 10, 20].into_iter().enumerate() {
@@ -398,8 +576,10 @@ mod tests {
 
         let mut partial = Layout::default();
         let first = PlannedDevice { trans: Trans::new(50_000, 0), ..p.devices[0].clone() };
-        apply(&mut project, &mut partial, &SdlPlan { devices: vec![first], skipped: vec![] }).unwrap();
-        assert_eq!(apply(&mut project, &mut partial, &p).unwrap(), [p.devices[1].name.clone()]);
+        apply(&mut project, &mut partial, &SdlPlan { devices: vec![first], ..Default::default() }).unwrap();
+        let rest: Vec<String> = p.devices[1..].iter().map(|d| d.name.clone()).collect();
+        assert_eq!(apply(&mut project, &mut partial, &p).unwrap(), rest);
+        assert!(partial.shapes.is_empty(), "no fills for a partial placement");
         assert_eq!(partial.instances[1].trans, p.devices[1].trans);
     }
 
@@ -412,16 +592,42 @@ mod tests {
         apply(&mut project, &mut layout, &p).unwrap();
         let fl = ratsnest(&sch, &layout, &project, &project.tech);
         let nets: Vec<&str> = fl.iter().map(|f| f.net.as_str()).collect();
-        assert_eq!(nets, ["in", "out"]);
+        assert_eq!(nets, ["0", "in", "out", "vdd"], "the taps join their bulk nets");
         assert_eq!(ratsnest(&sch, &layout, &project, &project.tech), fl);
 
         let m1 = project.tech.layer_index("metal1").unwrap();
-        let gate = &fl[0];
+        let gate = fl.iter().find(|f| f.net == "in").unwrap();
         let (lo, hi) = if gate.a.1 < gate.b.1 { (gate.a, gate.b) } else { (gate.b, gate.a) };
         let ym = snap((lo.1 + hi.1) / 2, 10);
         layout.add(m1, Geometry::Path { points: vec![lo, (lo.0, ym), (hi.0, ym), hi], width: 230 });
         let fl = ratsnest(&sch, &layout, &project, &project.tech);
-        assert_eq!(fl.iter().map(|f| f.net.as_str()).collect::<Vec<_>>(), ["out"]);
+        assert_eq!(fl.iter().map(|f| f.net.as_str()).collect::<Vec<_>>(), ["0", "out", "vdd"]);
+    }
+
+    #[test]
+    fn shared_diffusion_and_merged_wells() {
+        let mut project = Project::new("t");
+        let tech = project.tech.clone();
+        let sch = crate::examples::nand2(&mut project).schematic.unwrap();
+        let p = plan(&sch, &tech);
+        let columns = |d: &PlannedDevice| -> Vec<i64> {
+            let PCell::Mos { l, fingers, .. } = d.pcell else { return vec![] };
+            mos_columns(&tech, l, fingers).unwrap().into_iter().map(|x| d.trans.apply((x, 0)).0).collect()
+        };
+        let nmos: Vec<&PlannedDevice> = p.devices.iter().filter(|d| matches!(d.pcell, PCell::Mos { pmos: false, .. })).collect();
+        let pmos: Vec<&PlannedDevice> = p.devices.iter().filter(|d| matches!(d.pcell, PCell::Mos { pmos: true, .. })).collect();
+        assert_eq!((nmos.len(), pmos.len()), (2, 2));
+        for pair in [&nmos, &pmos] {
+            let (a, b) = (columns(pair[0]), columns(pair[1]));
+            assert!(a.iter().any(|x| b.contains(x)), "series NMOS and parallel PMOS share a column: {a:?} {b:?}");
+        }
+        let mut layout = Layout::default();
+        apply(&mut project, &mut layout, &p).unwrap();
+        assert_drc_clean(&layout, &project);
+        let x = extract::extract(&layout, &project, &tech);
+        let nwell = tech.layer_index("nwell").unwrap();
+        assert_eq!(x.nets.iter().filter(|n| n.shapes.iter().any(|(l, _)| *l == nwell)).count(), 1, "one merged nwell");
+        assert_eq!(x.devices.len(), 4);
     }
 
     #[test]

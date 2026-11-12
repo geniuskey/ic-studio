@@ -652,6 +652,7 @@ pub(super) fn pcell_params(ui: &mut egui::Ui, p: &mut PCell, tech: &Tech, salt: 
             len(ui, "W", w);
             len(ui, "H", h);
         }
+        PCell::Tap { w, .. } => len(ui, "H", w),
     });
     *p != before
 }

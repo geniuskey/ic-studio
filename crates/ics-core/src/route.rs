@@ -39,6 +39,14 @@ const MARGIN_TRACKS: i64 = 3;
 const M1_COST: u64 = 4;
 const WRONG_WAY_COST: u64 = 3;
 
+/// Routing passes: after a pass that leaves nets unrouted, they are moved to the front and the
+/// routing is redone from scratch; the best pass wins.
+const PASSES: usize = 4;
+
+/// A net to route: (bounding half-perimeter, name, extracted pieces, terminals off conductors).
+type Job = (i64, String, Vec<usize>, usize);
+type Wires = HashMap<usize, Vec<IRect>>;
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RouteReport {
     /// Schematic nets whose terminals are all connected now.
@@ -172,6 +180,7 @@ fn classify(tree: &RTree<Item>, shape: IRect, space: i64) -> u32 {
     }
 }
 
+#[derive(Clone)]
 struct Grid {
     xs: Vec<i64>,
     ys: Vec<i64>,
@@ -322,11 +331,78 @@ fn search(g: &Grid, st: &Stack, uf: &[usize], r: usize, targets: &BTreeSet<usize
     None
 }
 
+/// One routing pass over `order` on a fresh copy of the grid: the report, the new shapes per
+/// layer and the nets left with unreached pieces.
+fn run(mut grid: Grid, st: &Stack, order: &[Job], nets: usize, g: i64) -> (RouteReport, Wires, HashSet<String>) {
+    let mut report = RouteReport::default();
+    let mut unreached = HashSet::new();
+    let half = st.width / 2;
+    let mut uf: Vec<usize> = (0..nets).collect();
+    let mut wires: HashMap<usize, Vec<IRect>> = HashMap::new();
+    for (_, net, groups, floating) in order.iter().cloned() {
+        if floating > 0 {
+            report.failed.push(format!("{net}: {floating} terminal(s) not on conducting geometry"));
+            continue;
+        }
+        let Some(&first) = groups.first() else { continue };
+        let r = find(&uf, first);
+        let mut remaining: BTreeSet<usize> = groups.iter().map(|&n| find(&uf, n)).filter(|&n| n != r).collect();
+        let pieces = remaining.len() + 1;
+        if pieces == 1 {
+            continue;
+        }
+        while !remaining.is_empty() {
+            let Some(path) = search(&grid, st, &uf, r, &remaining) else { break };
+            let reached = owner(&uf, grid.node[path[0]]).expect("target node");
+            for w in path.windows(2) {
+                let ((ka, ya, xa), (kb, yb, xb)) = (grid.pos(w[0]), grid.pos(w[1]));
+                let (pa, pb) = ((grid.xs[xa], grid.ys[ya]), (grid.xs[xb], grid.ys[yb]));
+                if ka == kb {
+                    let bar =
+                        IRect::new(pa.0.min(pb.0) - half, pa.1.min(pb.1) - half, pa.0.max(pb.0) + half, pa.1.max(pb.1) + half);
+                    wires.entry(st.layers[ka]).or_default().push(bar);
+                    report.wire_length += (pa.0 - pb.0).abs() + (pa.1 - pb.1).abs();
+                    let wire = if ya == yb { grid.idx(ka, xa.min(xb), ya) } else { grid.idx(ka, xa, ya.min(yb)) };
+                    let slot = if ya == yb { &mut grid.right[wire] } else { &mut grid.up[wire] };
+                    if *slot == FREE {
+                        *slot = r as u32 + 1;
+                    }
+                } else {
+                    let (cut, size) = st.cuts[ka.min(kb)];
+                    let c0 = (snap(pa.0 - size / 2, g), snap(pa.1 - size / 2, g));
+                    wires.entry(cut).or_default().push(IRect::new(c0.0, c0.1, c0.0 + size, c0.1 + size));
+                    report.vias += 1;
+                }
+            }
+            uf[reached] = r;
+            for &i in &path {
+                let (k, iy, ix) = grid.pos(i);
+                let (x, y) = (grid.xs[ix], grid.ys[iy]);
+                wires.entry(st.layers[k]).or_default().push(IRect::new(x - half, y - half, x + half, y + half));
+                if grid.node[i] == FREE {
+                    grid.node[i] = r as u32 + 1;
+                }
+                block_near(&mut grid, &uf, i, r, st.width + st.spacing[k]);
+            }
+            remaining.remove(&reached);
+            report.connections += 1;
+        }
+        if remaining.is_empty() {
+            report.routed.push(net);
+        } else {
+            report.failed.push(format!("{net}: {} of {pieces} pieces not reached", remaining.len()));
+            unreached.insert(net);
+        }
+    }
+
+    (report, wires, unreached)
+}
+
 /// Route the flylines of `layout` (see [`sdl::ratsnest`]) and add the wires to it.
 pub fn route(sch: &Schematic, layout: &mut Layout, src: &dyn LayoutSource, tech: &Tech) -> Result<RouteReport, String> {
     let st = stack(tech)?;
     let pins = sdl::terminal_pins(sch, layout, src);
-    let mut report = RouteReport::default();
+    let report = RouteReport::default();
     let Some(mut bb) = flatten(layout, src, 64).iter().map(|s| s.geom.bbox()).reduce(|a, b| a.union(&b)) else {
         return Ok(report);
     };
@@ -378,8 +454,7 @@ pub fn route(sch: &Schematic, layout: &mut Layout, src: &dyn LayoutSource, tech:
         }
     }
 
-    let mut uf: Vec<usize> = (0..ex.nets.len()).collect();
-    let mut order: Vec<(i64, String, Vec<usize>, usize)> = Vec::new();
+    let mut order: Vec<Job> = Vec::new();
     for (net, ps) in &pins {
         let mut groups: Vec<usize> = Vec::new();
         let mut floating = 0;
@@ -398,61 +473,20 @@ pub fn route(sch: &Schematic, layout: &mut Layout, src: &dyn LayoutSource, tech:
     }
     order.sort();
 
-    let mut wires: HashMap<usize, Vec<IRect>> = HashMap::new();
-    for (_, net, groups, floating) in order {
-        if floating > 0 {
-            report.failed.push(format!("{net}: {floating} terminal(s) not on conducting geometry"));
-            continue;
+    let mut best: Option<(RouteReport, Wires)> = None;
+    for _ in 0..PASSES {
+        let (rep, wires, unreached) = run(grid.clone(), &st, &order, ex.nets.len(), g);
+        let better = best.as_ref().is_none_or(|(b, _)| (rep.failed.len(), rep.wire_length) < (b.failed.len(), b.wire_length));
+        if better {
+            best = Some((rep, wires));
         }
-        let Some(&first) = groups.first() else { continue };
-        let r = find(&uf, first);
-        let mut remaining: BTreeSet<usize> = groups.iter().map(|&n| find(&uf, n)).filter(|&n| n != r).collect();
-        let pieces = remaining.len() + 1;
-        if pieces == 1 {
-            continue;
-        }
-        while !remaining.is_empty() {
-            let Some(path) = search(&grid, &st, &uf, r, &remaining) else { break };
-            let reached = owner(&uf, grid.node[path[0]]).expect("target node");
-            for w in path.windows(2) {
-                let ((ka, ya, xa), (kb, yb, xb)) = (grid.pos(w[0]), grid.pos(w[1]));
-                let (pa, pb) = ((grid.xs[xa], grid.ys[ya]), (grid.xs[xb], grid.ys[yb]));
-                if ka == kb {
-                    let bar =
-                        IRect::new(pa.0.min(pb.0) - half, pa.1.min(pb.1) - half, pa.0.max(pb.0) + half, pa.1.max(pb.1) + half);
-                    wires.entry(st.layers[ka]).or_default().push(bar);
-                    report.wire_length += (pa.0 - pb.0).abs() + (pa.1 - pb.1).abs();
-                    let wire = if ya == yb { grid.idx(ka, xa.min(xb), ya) } else { grid.idx(ka, xa, ya.min(yb)) };
-                    let slot = if ya == yb { &mut grid.right[wire] } else { &mut grid.up[wire] };
-                    if *slot == FREE {
-                        *slot = r as u32 + 1;
-                    }
-                } else {
-                    let (cut, size) = st.cuts[ka.min(kb)];
-                    let c0 = (snap(pa.0 - size / 2, g), snap(pa.1 - size / 2, g));
-                    wires.entry(cut).or_default().push(IRect::new(c0.0, c0.1, c0.0 + size, c0.1 + size));
-                    report.vias += 1;
-                }
-            }
-            uf[reached] = r;
-            for &i in &path {
-                let (k, iy, ix) = grid.pos(i);
-                let (x, y) = (grid.xs[ix], grid.ys[iy]);
-                wires.entry(st.layers[k]).or_default().push(IRect::new(x - half, y - half, x + half, y + half));
-                if grid.node[i] == FREE {
-                    grid.node[i] = r as u32 + 1;
-                }
-                block_near(&mut grid, &uf, i, r, st.width + st.spacing[k]);
-            }
-            remaining.remove(&reached);
-            report.connections += 1;
-        }
-        if remaining.is_empty() {
-            report.routed.push(net);
-        } else {
-            report.failed.push(format!("{net}: {} of {pieces} pieces not reached", remaining.len()));
+        let before: Vec<String> = order.iter().map(|j| j.1.clone()).collect();
+        order.sort_by_key(|j| !unreached.contains(&j.1));
+        if unreached.is_empty() || order.iter().map(|j| &j.1).eq(before.iter()) {
+            break;
         }
     }
+    let (report, wires) = best.expect("at least one pass");
 
     let mut layers: Vec<(usize, Vec<IRect>)> = wires.into_iter().collect();
     layers.sort_by_key(|(l, _)| *l);
@@ -491,6 +525,8 @@ mod tests {
         let x = extract::extract(layout, project, &project.tech);
         let lvs = compare(sch, &x, &opts);
         assert!(lvs.matched, "{name}: {:?}", lvs.errors);
+        let lvs = compare(sch, &x, &LvsOptions { ignore_bulk: false, ..opts });
+        assert!(lvs.matched, "{name} with bulks: {:?}", lvs.errors);
     }
 
     #[test]

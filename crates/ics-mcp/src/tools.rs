@@ -301,7 +301,8 @@ fn pcell_from(kind: &str, params: &Args, tech: &Tech) -> Result<PCell, String> {
         }
         "poly_res" => PCell::PolyRes { w: len("w", 0.4)?, l: len("l", 5.0)? },
         "mom_cap" => PCell::MomCap { w: len("w", 5.0)?, h: len("h", 5.0)? },
-        k => return Err(format!("unknown pcell kind '{k}' (use nmos, pmos, poly_res or mom_cap)")),
+        "ntap" | "ptap" => PCell::Tap { well: kind == "ntap", w: len("w", 1.0)? },
+        k => return Err(format!("unknown pcell kind '{k}' (use nmos, pmos, poly_res, mom_cap, ntap or ptap)")),
     })
 }
 
