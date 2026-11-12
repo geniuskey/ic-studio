@@ -116,6 +116,9 @@ pub struct SimSetup {
     /// Temperature in °C.
     #[serde(default = "default_temp")]
     pub temp: f64,
+    /// Include layout parasitics (`pex::post_layout_lines`) in the deck.
+    #[serde(default)]
+    pub parasitics: bool,
 }
 
 fn default_temp() -> f64 {
@@ -140,6 +143,7 @@ impl Default for SimSetup {
             ],
             extra: String::new(),
             temp: 27.0,
+            parasitics: false,
         }
     }
 }

@@ -1,11 +1,11 @@
 //! Application shell: workspaces, project explorer, tabs, commands, dialogs and persistence.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use eframe::egui::{self, Align2, Color32, FontId, Key, KeyboardShortcut, Modifiers, RichText, Sense, Stroke, Vec2};
-use ics_core::{Cell, CellRef, Layout, Project, Schematic, ViewKind, examples};
+use ics_core::{Cell, CellRef, Layout, Project, SchObj, Schematic, ViewKind, examples};
 use ics_sim::SimOptions;
 use serde::{Deserialize, Serialize};
 
@@ -81,6 +81,7 @@ pub enum Command {
     RunDrc,
     ExtractNets,
     RunLvs,
+    GenerateLayout,
     ImportGds,
     ExportNetlist,
     ToggleTheme,
@@ -151,6 +152,8 @@ pub struct IcStudio {
     sch_eds: HashMap<CellRef, SchematicEditor>,
     lay_eds: HashMap<CellRef, LayoutEditor>,
     hier: Hier,
+    /// Device names last selected in either editor, for cross-probing.
+    probe: Option<(CellRef, BTreeSet<String>)>,
     sims: HashMap<CellRef, SimState>,
     log: Vec<LogLine>,
     started: Instant,
@@ -184,6 +187,7 @@ impl IcStudio {
             sch_eds: HashMap::new(),
             lay_eds: HashMap::new(),
             hier: Hier::default(),
+            probe: None,
             sims: HashMap::new(),
             log: vec![],
             started: Instant::now(),
@@ -463,6 +467,7 @@ impl IcStudio {
             Command::RunDrc => self.verify(Verify::Drc),
             Command::ExtractNets => self.verify(Verify::Extract),
             Command::RunLvs => self.verify(Verify::Lvs),
+            Command::GenerateLayout => self.generate_layout(),
             Command::ExportGds => self.export_gds(false),
             Command::ExportLibraryGds => self.export_gds(true),
             Command::ImportGds => self.import_gds(),
@@ -541,6 +546,79 @@ impl IcStudio {
         }
     }
 
+    fn generate_layout(&mut self) {
+        let (Some(r), Some(p)) = (self.active.clone(), self.project.as_mut()) else { return };
+        let Some(sch) = p.cell(&r).and_then(|c| c.schematic.clone()) else {
+            self.warn(format!("{r} has no schematic"));
+            return;
+        };
+        let plan = ics_core::sdl::plan(&sch, &p.tech);
+        let mut lay = p.cell_mut(&r).and_then(|c| c.layout.take()).unwrap_or_default();
+        let ed = self.lay_eds.entry(r.clone()).or_default();
+        ed.history.push(&lay);
+        let res = ics_core::sdl::apply(p, &mut lay, &plan);
+        ed.layout_changed();
+        ed.show_flylines = true;
+        ed.request_fit();
+        if let Some(c) = p.cell_mut(&r) {
+            c.layout = Some(lay);
+        }
+        self.hier.invalidate(&r);
+        for s in &plan.skipped {
+            self.info(format!("Not placed: {s}"));
+        }
+        match res {
+            Ok(names) if names.is_empty() => self.info("Every schematic device is already placed".into()),
+            Ok(names) => {
+                self.mark_dirty();
+                self.ok(format!("Placed {} device(s): {}", names.len(), names.join(", ")));
+            }
+            Err(e) => self.error(format!("Generate layout: {e}")),
+        }
+        self.workspace = Workspace::Layout;
+    }
+
+    /// Cross-probing: keep the selected device names in step between schematic and layout.
+    fn sync_probe(&mut self) {
+        let (Some(r), Some(p)) = (self.active.clone(), &self.project) else { return };
+        let Some(cell) = p.cell(&r) else { return };
+        let (Some(sch), Some(lay)) = (&cell.schematic, &cell.layout) else { return };
+        let sch_names: BTreeSet<String> = self.sch_eds.get(&r).map_or_else(BTreeSet::new, |ed| {
+            ed.selection
+                .iter()
+                .filter_map(|o| if let SchObj::Instance(i) = o { sch.instance(*i).map(|x| x.name.clone()) } else { None })
+                .collect()
+        });
+        let lay_names: BTreeSet<String> = self.lay_eds.get(&r).map_or_else(BTreeSet::new, |ed| {
+            lay.instances.iter().filter(|i| ed.selection.contains(&i.id)).filter_map(|i| i.name.clone()).collect()
+        });
+        let (from, names) = match self.workspace {
+            Workspace::Schematic => (Workspace::Schematic, sch_names),
+            Workspace::Layout => (Workspace::Layout, lay_names),
+            _ => return,
+        };
+        if self.probe.as_ref().is_some_and(|(c, n)| c == &r && n == &names) {
+            return;
+        }
+        self.probe = Some((r.clone(), names.clone()));
+        if names.is_empty() {
+            return;
+        }
+        if from == Workspace::Schematic {
+            let ids: BTreeSet<u64> =
+                lay.instances.iter().filter(|i| i.name.as_ref().is_some_and(|n| names.contains(n))).map(|i| i.id).collect();
+            if !ids.is_empty() {
+                self.lay_eds.entry(r).or_default().selection = ids;
+            }
+        } else {
+            let objs: BTreeSet<SchObj> =
+                sch.instances.iter().filter(|i| names.contains(&i.name)).map(|i| SchObj::Instance(i.id)).collect();
+            if !objs.is_empty() {
+                self.sch_eds.entry(r).or_default().selection = objs;
+            }
+        }
+    }
+
     fn verify(&mut self, what: Verify) {
         let (Some(r), Some(p)) = (self.active.clone(), self.project.as_mut()) else { return };
         let Some(lay) = p.cell_mut(&r).and_then(|c| c.layout.take()) else {
@@ -576,9 +654,20 @@ impl IcStudio {
             return;
         }
         let backend = cell.sim.backend;
-        let (deck, warnings) = self.netlist_active().unwrap();
+        let parasitics = cell.sim.parasitics && cell.layout.is_some();
+        let (mut deck, warnings) = self.netlist_active().unwrap();
         for w in warnings {
             self.warn(format!("netlist: {w}"));
+        }
+        if parasitics && let Some(p) = &self.project {
+            match ics_core::pex::post_layout_lines(p, &r) {
+                Ok((lines, summary)) => {
+                    let at = deck.find("\n.temp").map_or(deck.len(), |i| i + 1);
+                    deck.insert_str(at, &format!("* --- layout parasitics ---\n{lines}"));
+                    self.info(summary);
+                }
+                Err(e) => self.warn(format!("Parasitics not included: {e}")),
+            }
         }
         let opts = self.sim_options(backend);
         self.info(format!(
@@ -813,6 +902,10 @@ impl IcStudio {
                 }
                 if ui.button("Run LVS").clicked() {
                     q.push(Command::RunLvs);
+                }
+                ui.separator();
+                if ui.button("Generate Layout from Schematic").clicked() {
+                    q.push(Command::GenerateLayout);
                 }
             });
             ui.menu_button("Help", |ui| {
@@ -1109,6 +1202,7 @@ impl IcStudio {
                             }
                             ui.separator();
                             ui.checkbox(&mut ed.show_grid, "Grid");
+
                             ui.add_enabled(op.is_some(), egui::Checkbox::new(&mut ed.annotate_op, "Annotate OP"))
                                 .on_disabled_hover_text("Run an operating point simulation first");
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1177,6 +1271,9 @@ impl IcStudio {
                                 ed.request_fit();
                             }
                             ui.checkbox(&mut ed.show_grid, "Grid");
+                            ui.checkbox(&mut ed.show_flylines, "Flylines")
+                                .on_hover_text("Unrouted connections from the schematic");
+
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 if ui.button("⬇ GDS").on_hover_text("Export this cell as GDSII").clicked() {
                                     self.queue.push(Command::ExportGds);
@@ -1453,6 +1550,7 @@ impl IcStudio {
             ("Run DRC".into(), "", Command::RunDrc),
             ("Extract nets".into(), "", Command::ExtractNets),
             ("Run LVS".into(), "", Command::RunLvs),
+            ("Generate layout from schematic".into(), "", Command::GenerateLayout),
             ("Export cell GDSII…".into(), "", Command::ExportGds),
             ("Export library GDSII…".into(), "", Command::ExportLibraryGds),
             ("Import GDSII…".into(), "", Command::ImportGds),
@@ -1950,6 +2048,7 @@ impl eframe::App for IcStudio {
             }
             self.workspace_ui(ui);
         });
+        self.sync_probe();
 
         self.command_palette(&ctx);
         self.dialogs(&ctx);

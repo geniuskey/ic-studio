@@ -222,6 +222,9 @@ pub struct CellInst {
     pub trans: Trans,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub array: Option<ArraySpec>,
+    /// Instance name; ties a placed device to its schematic instance (e.g. "M1").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 impl CellInst {
@@ -372,7 +375,7 @@ impl Layout {
 
     pub fn add_instance(&mut self, cell: CellRef, trans: Trans, array: Option<ArraySpec>) -> u64 {
         let id = self.alloc_id();
-        self.instances.push(CellInst { id, cell, trans, array });
+        self.instances.push(CellInst { id, cell, trans, array, name: None });
         id
     }
 
@@ -566,6 +569,7 @@ mod tests {
             cell: CellRef::new("work", "c"),
             trans: Trans::new(0, 0),
             array: Some(ArraySpec { cols: 10, rows: 5, col: (1000, 0), row: (0, 2000) }),
+            name: None,
         };
         let child = IRect::new(0, 0, 500, 500);
         assert_eq!(inst.bbox(child), IRect::new(0, 0, 9500, 8500));

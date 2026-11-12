@@ -49,6 +49,9 @@ enum Cmd {
         /// Emit results as JSON on stdout.
         #[arg(long)]
         json: bool,
+        /// Add layout parasitic capacitances (also enabled by the saved setup).
+        #[arg(long)]
+        parasitics: bool,
     },
     /// Simulate a raw SPICE file using its own dot analyses.
     Spice {
@@ -212,13 +215,24 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             print!("{}", nl.deck(&r.to_string(), &c.sim));
         }
-        Cmd::Sim { project, cell, backend: b, json } => {
+        Cmd::Sim { project, cell, backend: b, json, parasitics } => {
             let p = Project::open(&project).map_err(|e| e.to_string())?;
             let r = resolve(&p, &cell)?;
             let c = p.cell(&r).unwrap();
             let sch = c.schematic.as_ref().ok_or("cell has no schematic")?;
             let nl = ics_core::netlist::netlist(sch);
-            let deck = nl.deck(&r.to_string(), &c.sim);
+            let mut setup = c.sim.clone();
+            if parasitics || setup.parasitics {
+                let (lines, summary) = ics_core::pex::post_layout_lines(&p, &r)?;
+                eprintln!("{summary}");
+                setup.extra = format!(
+                    "{}
+* --- layout parasitics ---
+{lines}",
+                    setup.extra.trim_end()
+                );
+            }
+            let deck = nl.deck(&r.to_string(), &setup);
             let mut opts = SimOptions { backend: c.sim.backend, ..Default::default() };
             if let Some(b) = b {
                 opts.backend = backend(b);

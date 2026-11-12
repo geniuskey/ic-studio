@@ -188,6 +188,11 @@ pub fn setup_panel(ui: &mut egui::Ui, cell: &mut Cell, state: &mut SimState, ngs
         let l = ui.label("Temperature");
         ui.add(egui::DragValue::new(&mut setup.temp).range(-55.0..=200.0).suffix(" °C")).labelled_by(l.id);
     });
+    let has_layout = cell.layout.is_some();
+    ui.add_enabled(has_layout, egui::Checkbox::new(&mut cell.sim.parasitics, "Include layout parasitics"))
+        .on_hover_text("Extract wire capacitance from the layout and add it to the matching schematic nets")
+        .on_disabled_hover_text("This cell has no layout");
+    let setup: &mut SimSetup = &mut cell.sim;
     ui.add_space(6.0);
     theme::section(ui, "Analyses");
     for entry in &mut setup.analyses {

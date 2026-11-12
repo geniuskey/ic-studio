@@ -89,6 +89,11 @@ fn layout_lvs() {
 }
 
 #[test]
+fn layout_from_schematic() {
+    scenario_then("13_layout_sdl", true, Some("cmos_inverter"), "schematic", false, Some(Command::GenerateLayout));
+}
+
+#[test]
 fn layout_pcells() {
     scenario("10_layout_pcells", true, Some("devices"), "layout", false);
 }

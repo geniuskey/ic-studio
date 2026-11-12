@@ -48,6 +48,16 @@ pub struct ViaDef {
     pub enc_top: i64,
 }
 
+/// Wire capacitance to substrate of a conducting layer, used by parasitic extraction (`pex`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LayerCap {
+    pub layer: String,
+    /// Area capacitance in aF per µm².
+    pub area: f64,
+    /// Fringe capacitance in aF per µm of edge.
+    pub fringe: f64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Tech {
     pub name: String,
@@ -61,6 +71,9 @@ pub struct Tech {
     /// DRC rule deck (see `drc`); `None` uses the deck derived from the layer rules.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drc_deck: Option<String>,
+    /// Parasitic capacitance coefficients per conducting layer (layers without one are ignored).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub caps: Vec<LayerCap>,
 }
 
 impl Tech {
@@ -79,6 +92,10 @@ impl Tech {
     /// The DRC deck: `drc_deck`, or the deck derived from the layer and via rules.
     pub fn deck_text(&self) -> String {
         self.drc_deck.clone().unwrap_or_else(|| crate::drc::default_deck_text(self))
+    }
+
+    pub fn layer_cap(&self, name: &str) -> Option<&LayerCap> {
+        self.caps.iter().find(|c| c.layer.eq_ignore_ascii_case(name))
     }
 
     pub fn layer_by_gds(&self, layer: u16, datatype: u16) -> Option<usize> {
@@ -133,6 +150,10 @@ impl Tech {
                 v("via2", "metal2", "via2", "metal3", 260, 260, 60, 60),
             ],
             drc_deck: None,
+            // Illustrative 180nm-class values (field oxide to substrate), not foundry data.
+            caps: [("poly", 100.0, 45.0), ("metal1", 38.0, 40.0), ("metal2", 16.0, 32.0), ("metal3", 10.0, 28.0)]
+                .map(|(layer, area, fringe)| LayerCap { layer: layer.into(), area, fringe })
+                .into(),
         }
     }
 }
@@ -140,5 +161,27 @@ impl Tech {
 impl Default for Tech {
     fn default() -> Self {
         Tech::generic()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn json_round_trip_with_caps() {
+        let t = Tech::generic();
+        let json = serde_json::to_string(&t).unwrap();
+        assert!(json.contains("\"caps\""));
+        assert_eq!(serde_json::from_str::<Tech>(&json).unwrap(), t);
+    }
+
+    #[test]
+    fn old_json_without_caps_loads() {
+        let mut v = serde_json::to_value(Tech::generic()).unwrap();
+        v.as_object_mut().unwrap().remove("caps");
+        let t: Tech = serde_json::from_value(v).unwrap();
+        assert!(t.caps.is_empty());
+        assert_eq!(t.layers, Tech::generic().layers);
     }
 }

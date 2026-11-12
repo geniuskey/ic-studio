@@ -133,6 +133,9 @@ pub struct LayoutEditor {
     hot: Option<Handle>,
     ed: EditState,
     inst_pcell: Option<(u64, ics_core::pcell::PCell)>,
+    /// Draw unrouted schematic connections.
+    pub show_flylines: bool,
+    flylines: Option<Vec<ics_core::sdl::Flyline>>,
     /// Edits for the application to carry out (they touch other cells).
     pub requests: Vec<LayRequest>,
 }
@@ -166,6 +169,8 @@ impl Default for LayoutEditor {
             hot: None,
             ed: EditState::default(),
             inst_pcell: None,
+            show_flylines: false,
+            flylines: None,
             requests: vec![],
         }
     }
@@ -549,6 +554,12 @@ impl LayoutEditor {
         }
     }
 
+    /// Drop results derived from the layout (verification, flylines).
+    pub fn layout_changed(&mut self) {
+        self.verify.layout_changed();
+        self.flylines = None;
+    }
+
     pub fn request_fit(&mut self) {
         self.needs_fit = true;
     }
@@ -564,11 +575,13 @@ impl LayoutEditor {
 
     pub fn undo(&mut self, l: &mut Layout) -> bool {
         self.selection.clear();
+        self.layout_changed();
         self.history.undo(l)
     }
 
     pub fn redo(&mut self, l: &mut Layout) -> bool {
         self.selection.clear();
+        self.layout_changed();
         self.history.redo(l)
     }
 
@@ -1045,9 +1058,27 @@ impl LayoutEditor {
         );
 
         if out.changed {
-            self.verify.layout_changed();
+            self.layout_changed();
         }
         self.draw_verify(&painter, &self.view, rect, &pal);
+        if self.show_flylines {
+            if self.flylines.is_none()
+                && let Some(sch) = cx.src.cell(cx.cell).and_then(|c| c.schematic.as_ref())
+            {
+                self.flylines = Some(ics_core::sdl::ratsnest(sch, l, cx.src, tech));
+            }
+            let st = Stroke::new(1.2, pal.warning.gamma_multiply(0.9));
+            for f in self.flylines.iter().flatten() {
+                let a = self.view.to_screen(rect, f.a.0 as f64, f.a.1 as f64);
+                let b = self.view.to_screen(rect, f.b.0 as f64, f.b.1 as f64);
+                painter.add(egui::Shape::dashed_line(&[a, b], st, 5.0, 3.0));
+                painter.circle_filled(a, 2.5, st.color);
+                painter.circle_filled(b, 2.5, st.color);
+                if a.distance(b) > 60.0 {
+                    painter.text(a + (b - a) * 0.5, Align2::CENTER_BOTTOM, &f.net, FontId::proportional(11.0), st.color);
+                }
+            }
+        }
         // Move preview: ghost outlines of the selection at the drag offset.
         if let Some(LDrag::Move { offset, .. }) = &self.drag
             && *offset != (0, 0)
@@ -1130,7 +1161,7 @@ impl LayoutEditor {
             };
             match pending {
                 Some((cell, t, array, cb)) => {
-                    let inst = ics_core::layout::CellInst { id: 0, cell, trans: t, array };
+                    let inst = ics_core::layout::CellInst { id: 0, cell, trans: t, array, name: None };
                     let b = screen_rect(&self.view, rect, inst.bbox(cb));
                     painter.rect_filled(b, 0.0, pal.layout.gamma_multiply(0.08));
                     painter.rect_stroke(b, 0.0, Stroke::new(1.5, pal.layout), StrokeKind::Middle);
@@ -1611,7 +1642,7 @@ impl LayoutEditor {
             cx.touched();
         }
         if changed {
-            self.verify.layout_changed();
+            self.layout_changed();
         }
         self.verify_panel(ui, l, cx);
         (changed, open)
