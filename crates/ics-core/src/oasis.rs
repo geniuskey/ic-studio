@@ -7,7 +7,7 @@
 //!
 //! The reader accepts every record type: name tables anywhere in the file (including after
 //! their use), all point-list and repetition types, relative xy mode, CBLOCKs, trapezoids and
-//! circles (as polygons). CTRAPEZOIDs and XGEOMETRYs are skipped with a warning.
+//! constrained trapezoids and circles (as polygons). XGEOMETRYs are skipped with a warning.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -500,6 +500,7 @@ struct Modal {
     start_ext: i64,
     end_ext: i64,
     radius: u64,
+    ctrapezoid_type: u64,
     repetition: Option<Rep>,
     prop_name: Option<NameRef>,
     prop_values: Vec<PropValue>,
@@ -510,7 +511,6 @@ enum Local {
     Rect(i64, i64),
     Poly(Vec<(i64, i64)>),
     Path { points: Vec<(i64, i64)>, half_width: i64, start: i64, end: i64 },
-    Skip,
 }
 
 const CELLNAMES: usize = 0;
@@ -894,7 +894,7 @@ impl Reader<'_> {
             }
             CTRAPEZOID => {
                 if info & 0x80 != 0 {
-                    c.uint()?;
+                    self.m.ctrapezoid_type = c.uint()?;
                 }
                 if info & 0x40 != 0 {
                     self.m.width = c.uint()?;
@@ -902,7 +902,7 @@ impl Reader<'_> {
                 if info & 0x20 != 0 {
                     self.m.height = c.uint()?;
                 }
-                Local::Skip
+                Local::Poly(ctrapezoid(self.m.ctrapezoid_type, self.m.width as i64, self.m.height as i64)?)
             }
             _ => {
                 if info & 0x20 != 0 {
@@ -923,10 +923,6 @@ impl Reader<'_> {
         coord(c, rel, info & 0x10 != 0, &mut self.m.geometry.0)?;
         coord(c, rel, info & 0x08 != 0, &mut self.m.geometry.1)?;
         let offsets = if info & 0x04 != 0 { self.repetition(c)?.offsets() } else { vec![(0, 0)] };
-        if matches!(local, Local::Skip) {
-            self.unsupported += offsets.len();
-            return Ok(());
-        }
         let Some(ci) = self.cells.len().checked_sub(1) else { return Ok(()) };
         let Some(layer) = self.layer(self.m.layer, self.m.datatype) else { return Ok(()) };
         let (x, y) = self.m.geometry;
@@ -966,7 +962,6 @@ impl Reader<'_> {
                 adjust_end(&mut v, n - 1, n - 2, self.sc(*end - half_width));
                 Some(Geometry::Path { points: v, width: self.sc(2 * half_width) })
             }
-            Local::Skip => None,
         }
     }
 
@@ -1052,10 +1047,45 @@ impl Reader<'_> {
             w.push(format!("{} instance(s) with magnification other than 1 were placed unscaled", self.mags));
         }
         if self.unsupported > 0 {
-            w.push(format!("{} CTRAPEZOID / XGEOMETRY element(s) are not supported and were skipped", self.unsupported));
+            w.push(format!("{} XGEOMETRY element(s) are not supported and were skipped", self.unsupported));
         }
         Ok(self.out)
     }
+}
+
+/// Vertices of CTRAPEZOID type `t` with width `w` and height `h`. Types 0-7 are horizontal
+/// trapezoids with 45° sides, 8-15 their vertical counterparts, 16-23 right and isosceles
+/// triangles and 24 / 25 a rectangle / square; dimensions a type implies replace the given ones.
+fn ctrapezoid(t: u64, w: i64, h: i64) -> Result<Vec<(i64, i64)>, String> {
+    Ok(match t {
+        0 => vec![(0, 0), (0, h), (w - h, h), (w, 0)],
+        1 => vec![(0, 0), (0, h), (w, h), (w - h, 0)],
+        2 => vec![(0, 0), (h, h), (w, h), (w, 0)],
+        3 => vec![(h, 0), (0, h), (w, h), (w, 0)],
+        4 => vec![(0, 0), (h, h), (w - h, h), (w, 0)],
+        5 => vec![(h, 0), (0, h), (w, h), (w - h, 0)],
+        6 => vec![(0, 0), (h, h), (w, h), (w - h, 0)],
+        7 => vec![(h, 0), (0, h), (w - h, h), (w, 0)],
+        8 => vec![(0, 0), (0, h), (w, h - w), (w, 0)],
+        9 => vec![(0, 0), (0, h - w), (w, h), (w, 0)],
+        10 => vec![(0, 0), (0, h), (w, h), (w, w)],
+        11 => vec![(0, w), (0, h), (w, h), (w, 0)],
+        12 => vec![(0, 0), (0, h), (w, h - w), (w, w)],
+        13 => vec![(0, w), (0, h - w), (w, h), (w, 0)],
+        14 => vec![(0, 0), (0, h - w), (w, h), (w, w)],
+        15 => vec![(0, w), (0, h), (w, h - w), (w, 0)],
+        16 => vec![(0, 0), (0, w), (w, 0)],
+        17 => vec![(0, 0), (0, w), (w, w)],
+        18 => vec![(0, 0), (w, w), (w, 0)],
+        19 => vec![(0, w), (w, w), (w, 0)],
+        20 => vec![(0, 0), (h, h), (2 * h, 0)],
+        21 => vec![(0, h), (2 * h, h), (h, 0)],
+        22 => vec![(0, 0), (0, 2 * w), (w, w)],
+        23 => vec![(w, 0), (0, w), (w, 2 * w)],
+        24 => vec![(0, 0), (0, h), (w, h), (w, 0)],
+        25 => vec![(0, 0), (0, w), (w, w), (w, 0)],
+        _ => return Err(format!("invalid CTRAPEZOID type {t}")),
+    })
 }
 
 fn coord(c: &mut Cur, relative: bool, present: bool, v: &mut i64) -> Result<(), String> {
@@ -1289,6 +1319,26 @@ mod tests {
         w.sint(-10);
         w.sint(0);
         w.sint(0);
+        // Constrained trapezoids: type 0 sets the modal type, the second reuses it with a new
+        // width; types 20 and 25 take their implied dimension from the other one.
+        w.uint(CTRAPEZOID);
+        w.byte(0xF8);
+        w.uint(0);
+        w.uint(40);
+        w.uint(20);
+        w.sint(0);
+        w.sint(0);
+        w.uint(CTRAPEZOID);
+        w.byte(0x40);
+        w.uint(60);
+        w.uint(CTRAPEZOID);
+        w.byte(0xA0);
+        w.uint(20);
+        w.uint(10);
+        w.uint(CTRAPEZOID);
+        w.byte(0xC0);
+        w.uint(25);
+        w.uint(8);
         w.uint(CELL);
         w.string(b"top");
         // Explicit name with magnification and odd angle, then a list repetition by refnum.
@@ -1339,6 +1389,11 @@ mod tests {
         assert_eq!(g[6], &Geometry::Label { text: "vdd".into(), at: (1, 2), size: 250 });
         assert_eq!(g[7], &Geometry::Label { text: "vdd".into(), at: (16, 2), size: 250 });
         assert_eq!(g[8], &Geometry::Polygon { points: vec![(5, 10), (15, 10), (20, 0), (0, 0)] });
+        assert_eq!(g[9], &Geometry::Polygon { points: vec![(0, 0), (0, 10), (10, 10), (20, 0)] });
+        assert_eq!(g[10], &Geometry::Polygon { points: vec![(0, 0), (0, 10), (20, 10), (30, 0)] });
+        assert_eq!(g[11], &Geometry::Polygon { points: vec![(0, 0), (5, 5), (10, 0)] });
+        assert_eq!(g[12], &Geometry::Rect(IRect::new(0, 0, 4, 4)));
+        assert_eq!(g.len(), 13);
         let insts = &imp.cells[1].1.instances;
         assert_eq!(insts.len(), 3);
         assert!(insts.iter().all(|i| i.cell == CellRef::new("lib", "leaf")));
@@ -1347,6 +1402,33 @@ mod tests {
         let names: Vec<Option<&str>> = insts.iter().map(|i| i.name.as_deref()).collect();
         assert_eq!(names, [None, Some("XA"), Some("XA")]);
         assert_eq!(imp.warnings.len(), 2, "{:?}", imp.warnings);
+    }
+
+    #[test]
+    fn ctrapezoid_types_are_simple_polygons() {
+        let area = |p: &[(i64, i64)]| -> i64 {
+            let n = p.len();
+            (0..n).map(|k| p[k].0 * p[(k + 1) % n].1 - p[(k + 1) % n].0 * p[k].1).sum::<i64>().abs() / 2
+        };
+        for t in 0..26 {
+            let (w, h) = if (8..16).contains(&t) { (20, 60) } else { (60, 20) };
+            let p = ctrapezoid(t, w, h).unwrap();
+            let expected = match t {
+                0..=3 => w * h - h * h / 2,
+                4..=7 => w * h - h * h,
+                8..=11 => w * h - w * w / 2,
+                12..=15 => w * h - w * w,
+                16..=19 => w * w / 2,
+                20 | 21 => h * h,
+                22 | 23 => w * w,
+                24 => w * h,
+                _ => w * w,
+            };
+            assert_eq!(area(&p), expected, "type {t}: {p:?}");
+            let (x0, y0) = (p.iter().map(|q| q.0).min().unwrap(), p.iter().map(|q| q.1).min().unwrap());
+            assert_eq!((x0, y0), (0, 0), "type {t} starts at the origin");
+        }
+        assert!(ctrapezoid(26, 1, 1).is_err());
     }
 
     #[test]
