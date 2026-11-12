@@ -253,7 +253,7 @@ const SHORTCUTS: &[ShortcutGroup] = &[
             ("F", "Fit view"),
             ("Esc", "Cancel, back to Select, clear selection"),
             ("Del / Backspace", "Delete selection"),
-            ("Mod+A / Mod+D", "Select all / duplicate"),
+            ("Mod+A / Mod+D", "Select all / duplicate (layout: deselect all)"),
         ],
     ),
     (
@@ -271,23 +271,31 @@ const SHORTCUTS: &[ShortcutGroup] = &[
     (
         "Layout",
         &[
-            ("S", "Select (click again to cycle overlapping items)"),
+            ("Esc", "Cancel the command, back to Select"),
+            ("S", "Stretch an edge or vertex"),
             ("M / C", "Move, copy: reference point, then destination"),
-            ("R G P", "Rectangle, polygon, path"),
-            ("L V I K", "Label, via, instance, ruler"),
-            ("Shift+C", "Chop a box out of shapes"),
+            ("Right-click / Shift+right-click", "Rotate, flip while moving or copying"),
+            ("R / Shift+P / P", "Rectangle, polygon, path"),
+            ("L O I K", "Label, via, instance, ruler"),
+            ("Shift+C / Shift+M", "Chop, merge"),
+            ("Shift+O", "Rotate the selection 90°"),
             ("+ / - (in path)", "Change metal and drop a via"),
-            ("Mod+C / Mod+X / Mod+V", "Yank, cut, paste"),
-            ("Enter", "Finish path or polygon"),
-            ("Backspace", "Remove last point while drawing"),
-            ("Arrows (+Shift)", "Nudge 10 (100) grid steps, pan if nothing selected"),
-            ("Shift+R / X / Y", "Rotate, flip X, flip Y"),
+            ("u / Shift+U", "Undo, redo"),
+            ("y / Shift+Y", "Yank, paste (also Mod+C / Mod+V)"),
+            ("T", "Layer tap: activate the layer under the cursor"),
+            ("G", "Toggle gravity"),
+            ("Mod+A / Mod+D", "Select all, deselect all"),
+            ("Shift+X / Shift+B", "Descend into an instance, return"),
+            ("Shift+N", "Mark net mode"),
+            ("Enter / Backspace", "Finish, remove last point while drawing"),
+            ("Arrows / Shift+arrows", "Pan, nudge the selection 10 snap steps"),
             ("Z / Shift+Z", "Zoom box, zoom out"),
             ("[ / ]", "Zoom out, in at the cursor"),
             ("W / Shift+W", "Previous, next view"),
+            ("F", "Fit"),
             ("Shift+K", "Clear rulers"),
-            ("0 … 8, 9", "Drawn hierarchy depth, 9 = all"),
             ("Shift+F / Mod+F", "All levels, top level only"),
+            ("0 … 8, 9", "Drawn hierarchy depth, 9 = all"),
             ("Right-to-left box", "Select everything the box touches"),
         ],
     ),
@@ -306,6 +314,8 @@ pub struct IcStudio {
     active: Option<CellRef>,
     sch_eds: HashMap<CellRef, SchematicEditor>,
     lay_eds: HashMap<CellRef, LayoutEditor>,
+    /// Cells descended from with Shift+X, for Shift+B (return).
+    lay_return: Vec<CellRef>,
     hier: Hier,
     /// Device names last selected in either editor, for cross-probing.
     probe: Option<(CellRef, BTreeSet<String>)>,
@@ -342,6 +352,7 @@ impl IcStudio {
             active: None,
             sch_eds: HashMap::new(),
             lay_eds: HashMap::new(),
+            lay_return: vec![],
             hier: Hier::default(),
             probe: None,
             sims: HashMap::new(),
@@ -1654,6 +1665,15 @@ impl IcStudio {
                 for req in std::mem::take(&mut ed.requests) {
                     match req {
                         LayRequest::Open(c) => open = Some(c),
+                        LayRequest::Descend(c) => {
+                            self.lay_return.push(r.clone());
+                            log.push((true, format!("Descended into {c} (Shift+B returns)")));
+                            open = Some(c);
+                        }
+                        LayRequest::Return => match self.lay_return.pop() {
+                            Some(c) => open = Some(c),
+                            None => log.push((false, "Return: already at the top cell".into())),
+                        },
                         LayRequest::SetDeck(text) => {
                             project.tech.drc_deck = Some(text);
                             changed = true;
@@ -2572,6 +2592,10 @@ impl IcStudio {
 
     pub fn project(&self) -> Option<&Project> {
         self.project.as_ref()
+    }
+
+    pub fn active_ref(&self) -> Option<&CellRef> {
+        self.active.as_ref()
     }
 
     pub fn workspace(&self) -> Workspace {

@@ -20,6 +20,10 @@ use crate::theme::{self, Palette};
 #[derive(Debug, Clone)]
 pub enum LayRequest {
     Open(CellRef),
+    /// Open a placed cell, remembering this one for [`LayRequest::Return`].
+    Descend(CellRef),
+    /// Go back to the cell descended from.
+    Return,
     PlacePCell {
         pcell: PCell,
         trans: Trans,
@@ -202,6 +206,29 @@ pub(super) fn drag_handle(g: &Geometry, h: Handle, d: (i64, i64)) -> Geometry {
     }
 }
 
+fn seg_dist(p: (i64, i64), a: (i64, i64), b: (i64, i64)) -> f64 {
+    let (px, py, ax, ay, bx, by) = (p.0 as f64, p.1 as f64, a.0 as f64, a.1 as f64, b.0 as f64, b.1 as f64);
+    let (dx, dy) = (bx - ax, by - ay);
+    let len2 = dx * dx + dy * dy;
+    let t = if len2 > 0.0 { (((px - ax) * dx + (py - ay) * dy) / len2).clamp(0.0, 1.0) } else { 0.0 };
+    ((ax + t * dx - px).powi(2) + (ay + t * dy - py).powi(2)).sqrt()
+}
+
+/// The vertex within `tol` of `p`, else the nearest edge (stretch).
+pub(super) fn nearest_handle(g: &Geometry, p: (i64, i64), tol: i64) -> Option<Handle> {
+    let (pts, closed) = outline(g)?;
+    let n = pts.len();
+    let d = |q: (i64, i64)| seg_dist(p, q, q);
+    let vertex = pts.iter().enumerate().map(|(i, q)| (i, d(*q))).filter(|x| x.1 <= tol as f64).min_by(|a, b| a.1.total_cmp(&b.1));
+    if let Some((i, _)) = vertex {
+        return Some(Handle::Vertex(i));
+    }
+    (0..edges(n, closed))
+        .map(|i| (i, seg_dist(p, pts[i], pts[(i + 1) % n])))
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(i, _)| Handle::Edge(i))
+}
+
 /// Closed polygon from clicked points; a final corner is added to keep Manhattan outlines Manhattan.
 pub(super) fn finish_polygon(pts: &[(i64, i64)]) -> Option<Geometry> {
     let mut pts = pts.to_vec();
@@ -351,6 +378,11 @@ impl LayoutEditor {
         out
     }
 
+    /// Merge (Shift+M): union of the selected shapes, per layer.
+    pub(super) fn merge_selection(&mut self, l: &mut Layout) -> bool {
+        self.rewrite_selection(l, |r| r.clone())
+    }
+
     /// Replace the selected shapes of each layer by `f(union of them)`.
     fn rewrite_selection(&mut self, l: &mut Layout, f: impl Fn(&Region) -> Region) -> bool {
         let groups = self.selected_shapes_by_layer(l);
@@ -477,13 +509,13 @@ impl LayoutEditor {
         ui.add_space(8.0);
         theme::section(ui, "Edit");
         ui.horizontal_wrapped(|ui| {
-            if ui.button("Rotate 90°").on_hover_text("Counter-clockwise about the selection centre (Shift+R)").clicked() {
+            if ui.button("Rotate 90°").on_hover_text("Counter-clockwise about the selection centre (Shift+O)").clicked() {
                 changed |= self.transform_selection(l, cx, 0);
             }
-            if ui.button("Flip X").on_hover_text("Mirror left-right (Shift+X)").clicked() {
+            if ui.button("Flip X").on_hover_text("Mirror left-right").clicked() {
                 changed |= self.transform_selection(l, cx, 1);
             }
-            if ui.button("Flip Y").on_hover_text("Mirror top-bottom (Shift+Y)").clicked() {
+            if ui.button("Flip Y").on_hover_text("Mirror top-bottom").clicked() {
                 changed |= self.transform_selection(l, cx, 2);
             }
         });
@@ -501,8 +533,8 @@ impl LayoutEditor {
         });
         if has_shapes {
             ui.horizontal_wrapped(|ui| {
-                if ui.button("Merge").on_hover_text("Union of the selected shapes, per layer").clicked() {
-                    changed |= self.rewrite_selection(l, |r| r.clone());
+                if ui.button("Merge").on_hover_text("Union of the selected shapes, per layer (Shift+M)").clicked() {
+                    changed |= self.merge_selection(l);
                 }
                 let lb = ui.label("Size");
                 ui.add(egui::DragValue::new(&mut self.ed.size_um).speed(0.01).max_decimals(3).suffix(" µm")).labelled_by(lb.id);

@@ -306,7 +306,7 @@ fn layout_draw_polygon() {
     let before = shape_count(&h, "inv_chain");
     h.hover_at(egui::pos2(800.0, 650.0));
     h.run_steps(2);
-    h.key_press(egui::Key::G);
+    h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::P);
     h.run_steps(2);
     for p in [(700.0, 620.0), (900.0, 620.0), (900.0, 660.0), (760.0, 660.0), (760.0, 700.0)] {
         click(&mut h, egui::pos2(p.0, p.1));
@@ -807,6 +807,19 @@ fn layout_virtuoso_commands() {
     assert_eq!((b1.width(), b1.height()), (b0.width(), b0.height()));
     assert!((b1.x0 - b0.x0 - 1250).abs() <= 10 && b1.y0 == b0.y0, "moved by the reference vector: {b0:?} -> {b1:?}");
 
+    // Stretch the right edge 40 px (500 nm) to the right, undo with u, redo with Shift+U.
+    key(&mut h, none, egui::Key::S);
+    click(&mut h, egui::pos2(800.0, 440.0));
+    click(&mut h, egui::pos2(840.0, 440.0));
+    let b2 = shapes_of(&h, "scratch")[0].bbox();
+    assert!((b2.width() - b1.width() - 500).abs() <= 10 && b2.x0 == b1.x0, "stretched: {b1:?} -> {b2:?}");
+    key(&mut h, none, egui::Key::U);
+    assert_eq!(shapes_of(&h, "scratch")[0].bbox(), b1, "u undoes");
+    key(&mut h, egui::Modifiers::SHIFT, egui::Key::U);
+    assert_eq!(shapes_of(&h, "scratch")[0].bbox(), b2, "Shift+U redoes");
+
+    key(&mut h, none, egui::Key::Escape);
+    click(&mut h, egui::pos2(750.0, 440.0));
     key(&mut h, egui::Modifiers::COMMAND, egui::Key::C);
     key(&mut h, egui::Modifiers::COMMAND, egui::Key::V);
     assert!(h.state().layout_editor(&r).unwrap().paste.is_some(), "paste follows the cursor");
@@ -837,6 +850,17 @@ fn layout_virtuoso_commands() {
     click(&mut h, egui::pos2(1000.0, 220.0));
     assert_eq!(h.state().layout_editor(&r).unwrap().rulers.len(), 1, "ruler stays on screen");
 
+    // Layer tap picks the layer of the shape under the cursor.
+    let m1 = h.state().project().unwrap().tech.layer_index("metal1").unwrap();
+    h.hover_at(egui::pos2(750.0, 440.0));
+    h.run_steps(2);
+    key(&mut h, none, egui::Key::T);
+    assert_eq!(h.state().layout_editor(&r).unwrap().active_layer, m1, "T taps metal1");
+    h.hover_at(egui::pos2(700.0, 300.0));
+    h.run_steps(2);
+    key(&mut h, none, egui::Key::T);
+    assert_eq!(h.state().layout_editor(&r).unwrap().active_layer, m2, "T taps metal2");
+
     let before = h.state().layout_editor(&r).unwrap().view.scale;
     key(&mut h, none, egui::Key::Z);
     click(&mut h, egui::pos2(580.0, 380.0));
@@ -852,4 +876,24 @@ fn layout_virtuoso_commands() {
     h.hover_at(egui::pos2(720.0, 370.0));
     h.run_steps(3);
     shot(&mut h, "15_layout_virtuoso");
+}
+
+/// Shift+X descends into the instance under the cursor, Shift+B returns.
+#[test]
+fn layout_descend_and_return() {
+    let args =
+        LaunchArgs { project: None, demo: true, workspace: Some("layout".into()), cell: Some("inv_chain".into()), run: false };
+    let mut h = app(args);
+    let top = h.state().active_ref().cloned().unwrap();
+    h.hover_at(egui::pos2(865.0, 440.0));
+    h.run_steps(2);
+    h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::X);
+    h.run_steps(4);
+    let child = h.state().active_ref().cloned().unwrap();
+    assert_ne!(child, top, "descended into a placed cell");
+    h.hover_at(egui::pos2(865.0, 440.0));
+    h.run_steps(2);
+    h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::B);
+    h.run_steps(4);
+    assert_eq!(h.state().active_ref(), Some(&top), "returned to the top cell");
 }

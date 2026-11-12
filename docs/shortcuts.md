@@ -31,7 +31,7 @@ Canvas keys work while the mouse is over the canvas and no text field has focus.
 | `Esc` | Cancel the current operation, then back to Select, then clear the selection |
 | `Del`, `Backspace` | Delete the selection |
 | `Ctrl+A` | Select all |
-| `Ctrl+D` | Duplicate the selection |
+| `Ctrl+D` | Duplicate the selection (layout: deselect all) |
 | `Shift`/`Ctrl`+click | Add to or remove from the selection |
 
 ## Schematic
@@ -50,29 +50,44 @@ Canvas keys work while the mouse is over the canvas and no text field has focus.
 
 ## Layout
 
+Layout keys follow the Cadence Virtuoso (IC6) default bindkeys.
+
 | Keys | Action |
 |---|---|
-| `S` | Select (click the same spot again to cycle through overlapping items) |
+| `Esc` | Cancel the command and return to Select |
+| `S` | Stretch: click an edge or vertex, then the destination |
 | `M` / `C` | Move / copy: click the reference point, then the destination (copy repeats) |
-| `R` `G` `P` | Rectangle (drag or two clicks), polygon, path |
-| `L` `V` `I` `K` | Label, via, instance, ruler |
-| `Shift+C` | Chop a box out of the selected shapes (or any shape under it) |
+| Right-click / `Shift`+right-click | While moving or copying: rotate 90° / flip sideways |
+| `R` | Rectangle (drag or two clicks) |
+| `Shift+P` / `P` | Polygon / path |
+| `L` / `O` / `I` / `K` | Label / via / instance / ruler |
+| `Shift+C` / `Shift+M` | Chop / merge |
+| `Shift+O` | Rotate the selection 90° (or what is being moved) |
 | `+` / `-` while drawing a path | Drop a via and continue on the metal above / below |
-| `Mod+C` / `Mod+X` / `Mod+V` | Yank, cut, paste (the paste follows the cursor until you click) |
+| `u` / `Shift+U` | Undo / redo (`Ctrl+Z` / `Ctrl+Y` also work) |
+| `y` / `Shift+Y` | Yank / paste (`Ctrl+C` / `Ctrl+X` / `Ctrl+V` also work) |
+| `T` | Layer tap: make the layer under the cursor active |
+| `G` | Toggle gravity snapping |
+| `Ctrl+A` / `Ctrl+D` | Select all / deselect all |
+| `Shift+X` / `Shift+B` | Descend into the instance under the cursor / return |
+| `Shift+N` | Mark net mode (click a shape to highlight its net after **Extract**) |
 | `Enter` | Finish a path or polygon |
 | `Backspace` | Remove the last point while drawing |
 | `Shift`+click | Any-angle polygon point |
-| Arrow keys | Nudge the selection 10 grid steps (`Shift`: 100); pan when nothing is selected |
-| `Shift+R` | Rotate the selection 90° |
-| `Shift+X` / `Shift+Y` | Flip horizontally / vertically |
+| Arrow keys | Pan |
+| `Shift`+arrow keys | Nudge the selection 10 snap steps |
 | `Z` / `Shift+Z` | Zoom box / zoom out |
 | `[` / `]` | Zoom out / in at the cursor |
 | `W` / `Shift+W` | Previous / next view |
+| `F` | Fit |
 | `Shift+K` | Clear all rulers |
+| `Shift+F` / `Ctrl+F` | All levels / top level only |
 | `0` ... `8`, `9` | Hierarchy levels drawn (`9` = all) |
-| `Shift+F` / `Mod+F` | All levels / top level only |
+| Click the same spot again | Cycle through overlapping items |
 | Right-to-left box | Select everything the box touches (left-to-right: only what it encloses) |
 | Double-click instance | Open its cell |
+
+`Ctrl+Z` stays undo, as in the rest of the application (Virtuoso binds it to zoom in).
 
 ## Simulation plots
 
