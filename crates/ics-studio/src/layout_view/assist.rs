@@ -5,13 +5,14 @@ use std::collections::BTreeSet;
 
 use eframe::egui::{self, Rect, Stroke, StrokeKind};
 use ics_core::geom::IRect;
-use ics_core::hier::CellIndex;
-use ics_core::layout::{CellInst, Geometry, Layout, Shape};
+use ics_core::hier::{CellIndex, Hier, LayoutSource};
+use ics_core::layout::{CellInst, Geometry, Layout, Shape, Trans};
+use ics_core::project::CellRef;
 use ics_core::region::{BoolOp, Region};
 use ics_core::tech::Tech;
 use serde::{Deserialize, Serialize};
 
-use super::{LayCtx, LayoutEditor, manhattan, screen_rect, um};
+use super::{LayCtx, LayoutEditor, Live, manhattan, screen_rect, um};
 use crate::canvas::View2D;
 use crate::theme::{self, Palette};
 
@@ -113,19 +114,73 @@ fn gap_rect(a: IRect, b: IRect) -> IRect {
     IRect::new(x0, y0, x1, y1)
 }
 
-/// Design-rule-driven feedback for shapes being drawn or moved: gaps to same-layer shapes of
-/// the cell closer than the minimum spacing, and (if `width`) candidates narrower than the
-/// minimum width.
-pub(super) fn drd_marks(
-    l: &Layout,
-    idx: &CellIndex,
-    tech: &Tech,
-    cands: &[(usize, IRect)],
+/// Hierarchy levels searched below a cell for DRD neighbours.
+const DRD_DEPTH: u32 = 16;
+/// Most neighbour rectangles gathered for one candidate.
+const DRD_NEAR: usize = 4096;
+
+/// Rectangles on `layer` touching `area` (in the frame `t` maps `layout` into) from `layout`
+/// and the cells it places. At the top level, items in `skip` are left out; `path` names the
+/// placement to leave out (the cell edited in place), one instance and element per level.
+#[allow(clippy::too_many_arguments)]
+fn neighbours(
+    src: &dyn LayoutSource,
+    hier: &mut Hier,
+    cell: &CellRef,
+    layout: &Layout,
+    t: Trans,
+    depth: u32,
     skip: &BTreeSet<u64>,
-    width: bool,
-) -> Vec<IRect> {
+    path: Option<&[(u64, (u32, u32))]>,
+    layer: usize,
+    area: IRect,
+    out: &mut Vec<IRect>,
+) {
+    let local = t.inverse().apply_rect(area);
+    let idx = hier.get_for(cell, layout, src);
+    for i in idx.shapes_in(layer, local) {
+        let Some(s) = layout.shapes.get(i).filter(|s| depth > 0 || !skip.contains(&s.id)) else { continue };
+        out.extend(shape_rects(&s.geom).into_iter().filter(|r| r.intersects(&local)).map(|r| t.apply_rect(r)));
+    }
+    if depth >= DRD_DEPTH {
+        return;
+    }
+    for i in idx.instances_in(local) {
+        let (Some(inst), Some(cb)) = (layout.instances.get(i), idx.child_bbox(i)) else { continue };
+        if depth == 0 && skip.contains(&inst.id) {
+            continue;
+        }
+        let Some(child) = src.layout(&inst.cell) else { continue };
+        for e in inst.visible_elements(cb, local) {
+            let next = match path {
+                Some([(id, el), rest @ ..]) if *id == inst.id && *el == e => {
+                    if rest.is_empty() {
+                        continue;
+                    }
+                    Some(rest)
+                }
+                _ => None,
+            };
+            if out.len() >= DRD_NEAR {
+                return;
+            }
+            let tc = t.compose(&inst.element_trans(e.0, e.1));
+            neighbours(src, hier, &inst.cell, child, tc, depth + 1, skip, next, layer, area, out);
+        }
+    }
+}
+
+/// Design-rule-driven feedback for shapes being drawn or moved: gaps closer than the minimum
+/// spacing to same-layer shapes of the cell, of the cells it places and (edited in place) of
+/// the surrounding cells, and (if `width`) candidates narrower than the minimum width.
+pub(super) fn drd_marks(l: &Layout, cx: &mut LayCtx, cands: &[(usize, IRect)], skip: &BTreeSet<u64>, width: bool) -> Vec<IRect> {
+    let tech = cx.tech;
+    let live = Live { src: cx.src, cell: cx.cell, layout: l };
+    let root = cx.context.and_then(|c| Some((c, live.layout(&c.root)?)));
+    let none = BTreeSet::new();
     let mut out = vec![];
-    for &(layer, r) in cands.iter().take(256) {
+    let mut near = vec![];
+    for &(layer, r) in cands.iter().take(512) {
         let Some(def) = tech.layer(layer) else { continue };
         if width && def.min_width > 0 && r.width().min(r.height()) < def.min_width {
             out.push(r);
@@ -135,20 +190,61 @@ pub(super) fn drd_marks(
             continue;
         }
         let area = IRect::new(r.x0 - sp, r.y0 - sp, r.x1 + sp, r.y1 + sp);
-        for i in idx.shapes_in(layer, area) {
-            let Some(s) = l.shapes.get(i).filter(|s| !skip.contains(&s.id)) else { continue };
-            for o in shape_rects(&s.geom) {
-                let d = r.spacing(&o);
-                if d > 0 && d < sp && !r.intersects(&o) {
-                    out.push(gap_rect(r, o));
-                }
+        near.clear();
+        neighbours(&live, cx.hier, cx.cell, l, Trans::IDENTITY, 0, skip, None, layer, area, &mut near);
+        if let Some((c, rl)) = root {
+            let path = Some(c.path.as_slice());
+            neighbours(&live, cx.hier, &c.root, rl, c.to_root.inverse(), 0, &none, path, layer, area, &mut near);
+        }
+        for o in &near {
+            let d = r.spacing(o);
+            if d > 0 && d < sp && !r.intersects(o) {
+                out.push(gap_rect(r, *o));
             }
         }
         if out.len() > 500 {
             break;
         }
     }
+    out.sort_by_key(|r| (r.x0, r.y0, r.x1, r.y1));
+    out.dedup();
     out
+}
+
+/// DRD candidates of a placement moved by `t`: the shapes of its cell within the largest
+/// minimum spacing of its outline (only those can come close to its surroundings).
+pub(super) fn inst_cands(cx: &mut LayCtx, inst: &CellInst, t: Trans, out: &mut Vec<(usize, IRect)>) {
+    let Some(child) = cx.src.layout(&inst.cell) else { return };
+    let Some(cb) = cx.hier.get_for(&inst.cell, child, cx.src).bbox else { return };
+    let (c, r) = inst.dims();
+    let none = BTreeSet::new();
+    let mut near = vec![];
+    for (layer, def) in cx.tech.layers.iter().enumerate() {
+        let sp = def.min_spacing;
+        if sp <= 0 {
+            continue;
+        }
+        for (i, j) in (0..r).flat_map(|j| (0..c).map(move |i| (i, j))).take(64) {
+            let tc = t.compose(&inst.element_trans(i, j));
+            let b = tc.apply_rect(cb);
+            let bands = [
+                IRect::new(b.x0, b.y0, b.x0 + sp, b.y1),
+                IRect::new(b.x1 - sp, b.y0, b.x1, b.y1),
+                IRect::new(b.x0, b.y0, b.x1, b.y0 + sp),
+                IRect::new(b.x0, b.y1 - sp, b.x1, b.y1),
+            ];
+            for band in bands {
+                near.clear();
+                neighbours(cx.src, cx.hier, &inst.cell, child, tc, 1, &none, None, layer, band, &mut near);
+                out.extend(near.iter().map(|&o| (layer, o)));
+            }
+            if out.len() > 512 {
+                return;
+            }
+        }
+    }
+    out.sort_by_key(|&(l, r)| (l, r.x0, r.y0, r.x1, r.y1));
+    out.dedup();
 }
 
 pub(super) fn draw_drd(painter: &egui::Painter, view: &View2D, rect: Rect, pal: &Palette, marks: &[IRect]) {

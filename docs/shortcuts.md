@@ -69,7 +69,7 @@ Layout keys follow the Cadence Virtuoso (IC6) default bindkeys.
 | `T` | Layer tap: make the layer under the cursor active |
 | `G` | Toggle gravity snapping |
 | `Ctrl+A` / `Ctrl+D` | Select all / deselect all |
-| `Shift+X` / `Shift+B` | Descend into the instance under the cursor / return |
+| `Shift+X` / `Shift+B` | Edit the instance under the cursor in place / return |
 | `Shift+N` | Mark net mode (click a shape to highlight its net after **Extract**) |
 | `Enter` | Finish a path or polygon |
 | `Backspace` | Remove the last point while drawing |

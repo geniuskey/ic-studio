@@ -12,9 +12,10 @@ use ics_mcp::{ToolResult, tools};
 use ics_sim::SimOptions;
 use serde::{Deserialize, Serialize};
 
+use crate::canvas::View2D;
 use crate::home_view;
 use crate::icons::{self, Icon};
-use crate::layout_view::{LayCtx, LayRequest, LayTool, LayoutEditor, Verify, fmt_count, um};
+use crate::layout_view::{EipContext, LayCtx, LayRequest, LayTool, LayoutEditor, Verify, fmt_count, um};
 use crate::schematic_view::{SchTool, SchematicEditor, device_palette};
 use crate::sim_view::{self, SimEvent, SimState};
 use crate::theme::{self, Palette};
@@ -285,7 +286,7 @@ const SHORTCUTS: &[ShortcutGroup] = &[
             ("T", "Layer tap: activate the layer under the cursor"),
             ("G", "Toggle gravity"),
             ("Mod+A / Mod+D", "Select all, deselect all"),
-            ("Shift+X / Shift+B", "Descend into an instance, return"),
+            ("Shift+X / Shift+B", "Edit an instance in place, return"),
             ("Shift+N", "Mark net mode"),
             ("Enter / Backspace", "Finish, remove last point while drawing"),
             ("Arrows / Shift+arrows", "Pan, nudge the selection 10 snap steps"),
@@ -301,6 +302,25 @@ const SHORTCUTS: &[ShortcutGroup] = &[
     ),
 ];
 
+struct Descent {
+    parent: CellRef,
+    child: CellRef,
+    /// Edited in place: the instance, its array element and child-to-parent transform.
+    at: Option<(u64, (u32, u32), ics_core::Trans)>,
+}
+
+/// The edit-in-place chain ending at `r`, if `r` was entered in place.
+fn eip_context(stack: &[Descent], r: &CellRef) -> Option<EipContext> {
+    let (mut cur, mut t, mut path) = (r, ics_core::Trans::IDENTITY, vec![]);
+    for d in stack.iter().rev() {
+        let Some((inst, elem, at)) = d.at.filter(|_| &d.child == cur) else { break };
+        t = at.compose(&t);
+        path.insert(0, (inst, elem));
+        cur = &d.parent;
+    }
+    (!path.is_empty()).then(|| EipContext { root: cur.clone(), to_root: t, path })
+}
+
 struct PaletteState {
     query: String,
     sel: usize,
@@ -314,8 +334,8 @@ pub struct IcStudio {
     active: Option<CellRef>,
     sch_eds: HashMap<CellRef, SchematicEditor>,
     lay_eds: HashMap<CellRef, LayoutEditor>,
-    /// Cells descended from with Shift+X, for Shift+B (return).
-    lay_return: Vec<CellRef>,
+    /// Cells edited in place with Shift+X, for Shift+B (return).
+    lay_return: Vec<Descent>,
     hier: Hier,
     /// Device names last selected in either editor, for cross-probing.
     probe: Option<(CellRef, BTreeSet<String>)>,
@@ -855,7 +875,7 @@ impl IcStudio {
         let tech = p.tech.clone();
         let ed = self.lay_eds.entry(r.clone()).or_default();
         let msg = {
-            let cx = LayCtx { cell: &r, src: p, hier: &mut self.hier, tech: &tech, cells: &[] };
+            let cx = LayCtx { cell: &r, src: p, hier: &mut self.hier, tech: &tech, cells: &[], context: None };
             ed.start_verification(what, &lay, &cx, ctx)
         };
         if let Some(c) = p.cell_mut(&r) {
@@ -1573,8 +1593,14 @@ impl IcStudio {
                 let l = &mut lay;
                 let src: &Project = project;
                 let placeable: Vec<CellRef> = src.all_cells().filter(|(_, c)| c.layout.is_some()).map(|(r, _)| r).collect();
+                let context = eip_context(&self.lay_return, &r);
                 let ed = self.lay_eds.entry(r.clone()).or_default();
-                let mut cx = LayCtx { cell: &r, src, hier: &mut self.hier, tech: &tech, cells: &placeable };
+                let orient = context.as_ref().map_or(ics_core::Trans::IDENTITY, |c| c.to_root);
+                if ed.view.orient != orient {
+                    ed.view.set_orient(orient);
+                }
+                let mut cx =
+                    LayCtx { cell: &r, src, hier: &mut self.hier, tech: &tech, cells: &placeable, context: context.as_ref() };
                 let mut open: Option<CellRef> = None;
                 {
                     egui::Panel::left("lay_tools").resizable(true).default_size(230.0).show(ui, |ui| {
@@ -1654,6 +1680,13 @@ impl IcStudio {
                             if ui.button("⬇ GDS").on_hover_text("Export this cell as GDSII").clicked() {
                                 self.queue.push(Command::ExportGds);
                             }
+                            if let Some(c) = cx.context {
+                                ui.separator();
+                                ui.label(RichText::new(format!("Editing in place in {}", c.root.cell)).color(pal.accent));
+                                if ui.button("Return").on_hover_text("Leave edit-in-place (Shift+B)").clicked() {
+                                    ed.requests.push(LayRequest::Return);
+                                }
+                            }
                         });
                     });
                     egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| {
@@ -1662,16 +1695,30 @@ impl IcStudio {
                 }
                 let mut log: Vec<(bool, String)> = vec![];
                 let mut touched = false;
+                let mut handoff: Option<(CellRef, View2D)> = None;
                 for req in std::mem::take(&mut ed.requests) {
                     match req {
                         LayRequest::Open(c) => open = Some(c),
-                        LayRequest::Descend(c) => {
-                            self.lay_return.push(r.clone());
-                            log.push((true, format!("Descended into {c} (Shift+B returns)")));
-                            open = Some(c);
+                        LayRequest::Descend { cell, inst, elem, trans } => {
+                            handoff = Some((cell.clone(), View2D { orient: ed.view.orient.compose(&trans), ..ed.view }));
+                            self.lay_return.push(Descent {
+                                parent: r.clone(),
+                                child: cell.clone(),
+                                at: Some((inst, elem, trans)),
+                            });
+                            log.push((true, format!("Editing {cell} in place (Shift+B returns)")));
+                            open = Some(cell);
                         }
                         LayRequest::Return => match self.lay_return.pop() {
-                            Some(c) => open = Some(c),
+                            Some(d) => {
+                                if let Some((_, _, t)) = d.at.filter(|_| d.child == r) {
+                                    handoff = Some((
+                                        d.parent.clone(),
+                                        View2D { orient: ed.view.orient.compose(&t.inverse()), ..ed.view },
+                                    ));
+                                }
+                                open = Some(d.parent);
+                            }
                             None => log.push((false, "Return: already at the top cell".into())),
                         },
                         LayRequest::SetDeck(text) => {
@@ -1728,6 +1775,9 @@ impl IcStudio {
                     ed.layout_changed();
                     self.hier.invalidate(&r);
                     changed = true;
+                }
+                if let Some((c, v)) = handoff {
+                    self.lay_eds.entry(c).or_default().adopt_view(v);
                 }
                 if let Some(c) = project.cell_mut(&r) {
                     c.layout = Some(lay);

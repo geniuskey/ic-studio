@@ -155,7 +155,7 @@ fn deck_errors(errs: &[drc::DeckError]) -> Vec<String> {
 impl LayoutEditor {
     fn zoom_to(&mut self, a: IRect) {
         self.push_view();
-        self.view.center = ((a.x0 + a.x1) as f64 / 2.0, (a.y0 + a.y1) as f64 / 2.0);
+        self.view.center_on((a.x0 + a.x1) as f64 / 2.0, (a.y0 + a.y1) as f64 / 2.0);
         let size = a.width().max(a.height()).max(200) as f64;
         self.view.scale = (300.0 / size).clamp(self.view.min_scale, self.view.max_scale);
         self.verify.marker = Some(a);

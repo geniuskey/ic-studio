@@ -20,8 +20,14 @@ use crate::theme::{self, Palette};
 #[derive(Debug, Clone)]
 pub enum LayRequest {
     Open(CellRef),
-    /// Open a placed cell, remembering this one for [`LayRequest::Return`].
-    Descend(CellRef),
+    /// Edit a placed cell in place (one array element, `trans` maps it into this cell),
+    /// remembering this one for [`LayRequest::Return`].
+    Descend {
+        cell: CellRef,
+        inst: u64,
+        elem: (u32, u32),
+        trans: Trans,
+    },
     /// Go back to the cell descended from.
     Return,
     PlacePCell {

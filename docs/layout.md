@@ -57,7 +57,9 @@ While drawing a polygon or path, `Backspace` removes the last point and `Esc` ca
 - **DRD** (design-rule-driven editing, on by default) shows the minimum-spacing halo of a
   rectangle being drawn and marks in red every gap to a same-layer shape that is closer
   than the minimum spacing, and shapes narrower than the minimum width. It works while
-  drawing rectangles and paths, moving, copying and pasting.
+  drawing rectangles and paths, moving, copying and pasting. Neighbours inside placed cells
+  count too (at any depth), as do the shapes around a cell edited in place; a moved or
+  pasted instance is checked by the shapes along its outline.
 - **Layer tap**: `T` makes the layer of the shape under the cursor the active layer.
 - **Changing metal while routing**: with the Path tool, press `+` (or `=` / `PageUp`) to
   end the path at the cursor, drop the via to the routing layer above and continue on it;
@@ -97,7 +99,8 @@ While drawing a polygon or path, `Backspace` removes the last point and `Esc` ca
 | Deselect all | `Ctrl+D` |
 | Delete | `Del` or `Backspace` |
 | Undo / redo | `u` / `Shift+U`, or `Ctrl+Z` / `Ctrl+Shift+Z` or `Ctrl+Y` |
-| Open a placed cell | Double-click the instance, `Shift+X` over it (`Shift+B` returns), or **Open** in the inspector |
+| Edit in place | `Shift+X` over an instance (or with one selected) edits its cell, or the array element under the cursor, inside the parent: the surroundings stay visible, dimmed, in the parent's orientation, and DRD checks against them. `Shift+B` or **Return** in the toolbar goes back |
+| Open a placed cell | Double-click the instance, or **Open** in the inspector |
 
 The **Edit** section of the right panel (shown when something is selected) also has:
 

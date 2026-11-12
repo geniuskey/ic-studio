@@ -124,6 +124,31 @@ pub struct LayCtx<'a> {
     pub tech: &'a Tech,
     /// Cells with a layout view, candidates for placement.
     pub cells: &'a [CellRef],
+    /// Set while the cell is edited in place inside a parent.
+    pub context: Option<&'a EipContext>,
+}
+
+/// Edit-in-place: the outermost cell the edited one was entered from, shown dimmed around it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EipContext {
+    pub root: CellRef,
+    /// Edited cell to root coordinates (also the editor's display transform).
+    pub to_root: Trans,
+    /// Instance id and array element at each level from the root down to the edited placement.
+    pub path: Vec<(u64, (u32, u32))>,
+}
+
+/// The project with the edited cell (taken out of it while the editor runs) put back.
+pub struct Live<'a> {
+    pub src: &'a Project,
+    pub cell: &'a CellRef,
+    pub layout: &'a Layout,
+}
+
+impl LayoutSource for Live<'_> {
+    fn layout(&self, cell: &CellRef) -> Option<&Layout> {
+        if cell == self.cell { Some(self.layout) } else { self.src.layout(cell) }
+    }
 }
 
 impl LayCtx<'_> {
@@ -445,6 +470,7 @@ impl Raster {
     #[allow(clippy::too_many_arguments)]
     fn stamp(&mut self, plane: usize, sp: &Sprite, bits: &[u64], t: &Trans, view: &View2D, rect: Rect) {
         let p = sp.pixel() as f64;
+        let t = &view.orient.compose(t);
         let k = view.scale / self.cell as f64;
         let ys = if view.y_up { -1.0 } else { 1.0 };
         let c0 = ((rect.center().x - self.origin.x) / self.cell, (rect.center().y - self.origin.y) / self.cell);
@@ -635,12 +661,17 @@ fn screen_rect(view: &View2D, rect: Rect, b: IRect) -> Rect {
 }
 
 fn world_view(view: &View2D, rect: Rect) -> IRect {
-    let (x0, y1) = view.to_world(rect, rect.min);
-    let (x1, y0) = view.to_world(rect, rect.max);
-    IRect::new(x0.floor() as i64, y0.floor() as i64, x1.ceil() as i64, y1.ceil() as i64)
+    let (a, b) = (view.to_world(rect, rect.min), view.to_world(rect, rect.max));
+    IRect::new(a.0.min(b.0).floor() as i64, a.1.min(b.1).floor() as i64, a.0.max(b.0).ceil() as i64, a.1.max(b.1).ceil() as i64)
 }
 
+fn canvas_bg(pal: &Palette) -> Color32 {
+    if pal.dark { Color32::from_rgb(0x0e, 0x10, 0x13) } else { pal.bg_canvas }
+}
+
+/// Grid in display coordinates (the parent's frame during edit-in-place).
 fn draw_grid(painter: &egui::Painter, view: &View2D, rect: Rect, pal: &Palette, grid: i64) {
+    let view = &View2D { orient: Trans::IDENTITY, ..*view };
     let step = nice_step(view.scale, 18.0, grid as f64);
     let (x0, y1) = view.to_world(rect, rect.min);
     let (x1, y0) = view.to_world(rect, rect.max);
@@ -955,6 +986,12 @@ impl LayoutEditor {
     pub fn layout_changed(&mut self) {
         self.verify.layout_changed();
         self.flylines = None;
+    }
+
+    /// Take over a view (entering or leaving edit-in-place keeps the picture in place).
+    pub fn adopt_view(&mut self, v: View2D) {
+        self.view = v;
+        self.needs_fit = false;
     }
 
     pub fn request_fit(&mut self) {
@@ -1383,7 +1420,7 @@ impl LayoutEditor {
         }
     }
 
-    /// Descend (Shift+X) into the selected instance or the one under the cursor.
+    /// Edit in place (Shift+X) the selected instance or the one under the cursor.
     fn descend(&mut self, l: &Layout, cx: &mut LayCtx, at: Option<(i64, i64)>, tol: i64) {
         let sel = (self.selection.len() == 1).then(|| l.instance(*self.selection.first().unwrap())).flatten();
         let under = || {
@@ -1391,10 +1428,21 @@ impl LayoutEditor {
             let idx = cx.index(l);
             hits(l, &idx, &[], true, p.0, p.1, tol).into_iter().find_map(|id| l.instance(id))
         };
-        match sel.or_else(under) {
-            Some(i) => self.requests.push(LayRequest::Descend(i.cell.clone())),
-            None => self.note(false, "Descend: select an instance or point at one"),
-        }
+        let Some(i) = sel.or_else(under) else {
+            self.note(false, "Edit in place: select an instance or point at one");
+            return;
+        };
+        let child = cx.src.layout(&i.cell).and_then(|c| cx.hier.get_for(&i.cell, c, cx.src).bbox);
+        let (c, r) = i.dims();
+        let elem = match (at, child) {
+            (Some(p), Some(b)) => (0..r)
+                .flat_map(|j| (0..c).map(move |k| (k, j)))
+                .find(|&(k, j)| i.element_trans(k, j).apply_rect(b).contains(p.0, p.1))
+                .unwrap_or((0, 0)),
+            _ => (0, 0),
+        };
+        let trans = i.element_trans(elem.0, elem.1);
+        self.requests.push(LayRequest::Descend { cell: i.cell.clone(), inst: i.id, elem, trans });
     }
 
     /// Box entry for box tools and zoom: drag it, or click two corners.
@@ -1537,15 +1585,51 @@ impl LayoutEditor {
             painter.rect_stroke(screen_rect(&self.view, rect, t.apply_rect(b)), 0.0, ghost, StrokeKind::Middle);
         }
         if self.drd {
-            let cands: Vec<(usize, IRect)> = l
+            let mut cands: Vec<(usize, IRect)> = l
                 .shapes
                 .iter()
                 .filter(|s| self.selection.contains(&s.id))
                 .flat_map(|s| assist::shape_rects(&s.geom).into_iter().map(move |r| (s.layer, t.apply_rect(r))))
                 .collect();
+            for inst in l.instances.iter().filter(|i| self.selection.contains(&i.id)) {
+                assist::inst_cands(cx, inst, t, &mut cands);
+            }
             let skip = if moving { self.selection.clone() } else { BTreeSet::new() };
-            let idx = cx.index(l);
-            assist::draw_drd(painter, &self.view, rect, pal, &assist::drd_marks(l, &idx, cx.tech, &cands, &skip, false));
+            assist::draw_drd(painter, &self.view, rect, pal, &assist::drd_marks(l, cx, &cands, &skip, false));
+        }
+    }
+
+    /// Edit-in-place surroundings: the root cell drawn dimmed in the edited cell's frame, with
+    /// the edited placement outlined.
+    fn draw_context(&self, painter: &egui::Painter, rect: Rect, l: &Layout, cx: &mut LayCtx, ctx: &EipContext, pal: &Palette) {
+        let key = CellRef::new("<in-place>", &ctx.root.cell);
+        let mut wrap = Layout::default();
+        wrap.add_instance(ctx.root.clone(), ctx.to_root.inverse(), None);
+        let live = Live { src: cx.src, cell: cx.cell, layout: l };
+        cx.hier.invalidate(&key);
+        draw_layout(
+            painter,
+            &self.view,
+            rect,
+            &key,
+            &wrap,
+            &live,
+            cx.hier,
+            cx.tech,
+            &LayoutDrawOpts {
+                pal: *pal,
+                visible: &self.visible,
+                selection: None,
+                thumbnail: false,
+                show_grid: self.show_grid,
+                grid: self.snap_step(cx.tech),
+                max_depth: self.max_depth.saturating_add(1),
+            },
+        );
+        cx.hier.invalidate(&key);
+        painter.rect_filled(rect, 0.0, canvas_bg(pal).gamma_multiply(0.7));
+        if let Some(b) = cx.index(l).bbox {
+            assist::dashed_rect(painter, screen_rect(&self.view, rect, b).expand(2.0), Stroke::new(1.5, pal.accent));
         }
     }
 
@@ -1557,7 +1641,7 @@ impl LayoutEditor {
         let (resp, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
         let rect = resp.rect;
         let painter = painter.with_clip_rect(rect);
-        painter.rect_filled(rect, 0.0, if pal.dark { Color32::from_rgb(0x0e, 0x10, 0x13) } else { pal.bg_canvas });
+        painter.rect_filled(rect, 0.0, canvas_bg(&pal));
         if self.needs_fit {
             match cx.index(l).bbox {
                 Some(b) => self.view.fit(rect, (b.x0 as f64, b.y0 as f64), (b.x1 as f64, b.y1 as f64), 50.0),
@@ -1894,6 +1978,9 @@ impl LayoutEditor {
             }
         }
 
+        if let Some(ctx) = cx.context {
+            self.draw_context(&painter, rect, l, cx, ctx, &pal);
+        }
         self.stats = draw_layout(
             &painter,
             &self.view,
@@ -1908,7 +1995,7 @@ impl LayoutEditor {
                 visible: &self.visible,
                 selection: Some(&self.selection),
                 thumbnail: false,
-                show_grid: self.show_grid,
+                show_grid: self.show_grid && cx.context.is_none(),
                 grid: self.snap_step(tech),
                 max_depth: self.max_depth,
             },
@@ -1964,8 +2051,7 @@ impl LayoutEditor {
                 && let Some(layer) = l.shape(*id).map(|s| s.layer)
             {
                 let cands: Vec<(usize, IRect)> = assist::shape_rects(&cur).into_iter().map(|r| (layer, r)).collect();
-                let idx = cx.index(l);
-                let marks = assist::drd_marks(l, &idx, tech, &cands, &[*id].into(), true);
+                let marks = assist::drd_marks(l, cx, &cands, &[*id].into(), true);
                 assist::draw_drd(&painter, &self.view, rect, &pal, &marks);
             }
         }
@@ -1978,13 +2064,15 @@ impl LayoutEditor {
                 painter.rect_stroke(screen_rect(&self.view, rect, b.translate(c.0, c.1)), 0.0, ghost, StrokeKind::Middle);
             }
             if self.drd {
-                let cands: Vec<(usize, IRect)> = clip
+                let mut cands: Vec<(usize, IRect)> = clip
                     .shapes
                     .iter()
                     .flat_map(|s| assist::shape_rects(&s.geom).into_iter().map(move |r| (s.layer, r.translate(c.0, c.1))))
                     .collect();
-                let idx = cx.index(l);
-                let marks = assist::drd_marks(l, &idx, tech, &cands, &BTreeSet::new(), false);
+                for inst in &clip.instances {
+                    assist::inst_cands(cx, inst, Trans::new(c.0, c.1), &mut cands);
+                }
+                let marks = assist::drd_marks(l, cx, &cands, &BTreeSet::new(), false);
                 assist::draw_drd(&painter, &self.view, rect, &pal, &marks);
             }
         }
@@ -2024,8 +2112,7 @@ impl LayoutEditor {
                         pattern_rect(&painter, r, def, 1.0);
                         if self.drd {
                             let w = IRect::new(start.0, start.1, c.0, c.1);
-                            let idx = cx.index(l);
-                            let marks = assist::drd_marks(l, &idx, tech, &[(self.active_layer, w)], &BTreeSet::new(), true);
+                            let marks = assist::drd_marks(l, cx, &[(self.active_layer, w)], &BTreeSet::new(), true);
                             let sp = def.min_spacing;
                             if sp > 0 && w.width() > 0 && w.height() > 0 {
                                 let halo = IRect::new(w.x0 - sp, w.y0 - sp, w.x1 + sp, w.y1 + sp);
@@ -2124,8 +2211,7 @@ impl LayoutEditor {
             if self.drd {
                 let cands: Vec<(usize, IRect)> =
                     Geometry::Path { points: pts, width: w }.rects().into_iter().map(|r| (self.active_layer, r)).collect();
-                let idx = cx.index(l);
-                let marks = assist::drd_marks(l, &idx, tech, &cands, &BTreeSet::new(), false);
+                let marks = assist::drd_marks(l, cx, &cands, &BTreeSet::new(), false);
                 assist::draw_drd(&painter, &self.view, rect, &pal, &marks);
             }
         }
@@ -2714,6 +2800,45 @@ pub(super) fn manhattan(from: (i64, i64), to: (i64, i64)) -> (i64, i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// DRD sees shapes inside placed cells, and while editing in place those of the
+    /// surroundings, but not the edited placement's own stale copy.
+    #[test]
+    fn drd_checks_the_hierarchy_and_the_edit_in_place_context() {
+        let mut p = Project::new("t");
+        let tech = p.tech.clone();
+        let m = tech.layers.iter().position(|d| d.min_spacing > 0).unwrap();
+        let sp = tech.layers[m].min_spacing;
+        let mut leaf = ics_core::Cell::new("leaf");
+        let mut ll = Layout::default();
+        ll.add_rect(m, 0, 0, 1000, 1000);
+        leaf.layout = Some(ll);
+        let leaf = p.add_cell("work", leaf).unwrap();
+        let mut top = ics_core::Cell::new("top");
+        let mut tl = Layout::default();
+        let inst = tl.add_instance(leaf.clone(), Trans::new(5000, 0), None);
+        tl.add_rect(m, 6000 + sp / 2, 0, 7000, 1000);
+        top.layout = Some(tl.clone());
+        let top = p.add_cell("work", top).unwrap();
+        let mut hier = Hier::default();
+
+        // In `top`: a box just left of the placed leaf is too close to its metal.
+        let cand = [(m, IRect::new(3000, 0, 5000 - sp / 2, 1000))];
+        let none = BTreeSet::new();
+        let mut cx = LayCtx { cell: &top, src: &p, hier: &mut hier, tech: &tech, cells: &[], context: None };
+        assert!(!assist::drd_marks(&tl, &mut cx, &cand, &none, false).is_empty(), "shape inside an instance");
+        assert!(assist::drd_marks(&tl, &mut cx, &cand, &[inst].into(), false).is_empty(), "moved instance skipped");
+
+        // Editing `leaf` in place: a box on its right edge comes close to the top-level shape.
+        let ll = p.cell_mut(&leaf).unwrap().layout.take().unwrap();
+        let ctx = EipContext { root: top.clone(), to_root: Trans::new(5000, 0), path: vec![(inst, (0, 0))] };
+        let mut cx = LayCtx { cell: &leaf, src: &p, hier: &mut hier, tech: &tech, cells: &[], context: Some(&ctx) };
+        let near_top = [(m, IRect::new(500, 0, 1000, 1000))];
+        assert!(!assist::drd_marks(&ll, &mut cx, &near_top, &none, false).is_empty(), "context shape");
+        let inside = [(m, IRect::new(-2000, 0, -sp / 2, 1000))];
+        let marks = assist::drd_marks(&ll, &mut cx, &inside, &[ll.shapes[0].id].into(), false);
+        assert!(marks.is_empty(), "the edited placement itself is not context: {marks:?}");
+    }
 
     #[test]
     fn move_with_rotation_maps_reference_point_to_destination() {

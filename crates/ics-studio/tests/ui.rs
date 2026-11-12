@@ -878,7 +878,7 @@ fn layout_virtuoso_commands() {
     shot(&mut h, "15_layout_virtuoso");
 }
 
-/// Shift+X descends into the instance under the cursor, Shift+B returns.
+/// Shift+X edits the instance under the cursor in place, Shift+B returns.
 #[test]
 fn layout_descend_and_return() {
     let args =
@@ -887,13 +887,20 @@ fn layout_descend_and_return() {
     let top = h.state().active_ref().cloned().unwrap();
     h.hover_at(egui::pos2(865.0, 440.0));
     h.run_steps(2);
+    let before = h.state().layout_editor(&top).unwrap().view;
     h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::X);
     h.run_steps(4);
     let child = h.state().active_ref().cloned().unwrap();
     assert_ne!(child, top, "descended into a placed cell");
+    let v = h.state().layout_editor(&child).unwrap().view;
+    assert_eq!((v.center, v.scale), (before.center, before.scale), "edit in place keeps the picture");
+    assert!(!v.orient.is_identity(), "the child is shown in the parent's frame");
+    shot(&mut h, "16_layout_edit_in_place");
     h.hover_at(egui::pos2(865.0, 440.0));
     h.run_steps(2);
     h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::B);
     h.run_steps(4);
     assert_eq!(h.state().active_ref(), Some(&top), "returned to the top cell");
+    let after = h.state().layout_editor(&top).unwrap().view;
+    assert_eq!((after.center, after.scale, after.orient), (before.center, before.scale, before.orient));
 }
