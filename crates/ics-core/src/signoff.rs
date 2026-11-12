@@ -636,7 +636,7 @@ pub fn parse_lvsdb(text: &str, top: &str) -> LvsOutcome {
                 };
                 if let Some(m) = line.find("B('") {
                     let body = &line[m + 3..];
-                    messages.push(body.rfind("')").map_or(body, |e| &body[..e]).replace("\\n", " "));
+                    messages.push(unescape_lvsdb(body.rfind("')").map_or(body, |e| &body[..e])));
                 }
             }
         } else if in_top && let Some(m) = line.find("B('") {
@@ -649,11 +649,29 @@ pub fn parse_lvsdb(text: &str, top: &str) -> LvsOutcome {
                 } else {
                     "info"
                 };
-                messages.push(format!("{kind}: {}", &body[..end]));
+                messages.push(format!("{kind}: {}", unescape_lvsdb(&body[..end])));
             }
         }
     }
     LvsOutcome { matched, messages }
+}
+
+/// A quoted lvsdb string: `\n` becomes a space and `\x` becomes `x`.
+fn unescape_lvsdb(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push(' '),
+            Some(e) => out.push(e),
+            None => out.push('\\'),
+        }
+    }
+    out
 }
 
 /// Overall result of a Calibre LVS report.
@@ -760,6 +778,8 @@ mod tests {
         assert_eq!(o.matched, Some(false));
         assert_eq!(o.messages, ["error: Net out is not matching any net from reference netlist"]);
         assert_eq!(parse_lvsdb("", "inv").matched, None);
+        let ports = parse_lvsdb(" X(inv INV 1\n  L(\n   M(E B('Port mismatch \\'$1\\' vs. \\'GND\\''))\n", "inv");
+        assert_eq!(ports.messages, ["error: Port mismatch '$1' vs. 'GND'"]);
         let skipped = parse_lvsdb(" X(inv INV S B('could not be compared:\\n  A: sub')\n", "inv");
         assert_eq!((skipped.matched, skipped.messages[0].as_str()), (None, "could not be compared:   A: sub"));
         let rep = "   OVERALL COMPARISON RESULTS\n\n   #       ###################      _   _   \n   #       #                 #      *   *   \n   #   #   #     CORRECT     #       |    \n";
