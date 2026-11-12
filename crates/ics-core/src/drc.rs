@@ -8,21 +8,28 @@
 //! [NAME:] enclosure  INNER OUTER MIN
 //! [NAME:] extension  LAYER_A LAYER_B MIN
 //! [NAME:] area       LAYER MIN
+//! [NAME:] antenna    METAL RATIO
+//! [NAME:] density    LAYER MIN% MAX% WINDOW [STEP]
 //! NAME = LAYER and|or|not|xor LAYER
 //! NAME = LAYER size DIST
+//! NAME = LAYER wide MIN
 //! ```
 //! A `NAME = ...` line defines a derived layer (e.g. `gate = poly and active`) from technology
 //! layers or earlier derived layers; later lines use it like any layer. `not` is `A` minus `B`,
-//! `size` grows (DIST > 0) or shrinks (DIST < 0) with square corners. Derived layers are only
-//! computed when a rule needs them; violations on them carry no technology layer.
+//! `size` grows (DIST > 0) or shrinks (DIST < 0) with square corners, `wide` keeps the parts of
+//! the layer at least MIN wide (covered by a MIN x MIN square inside it). Wide-metal spacing is
+//! `m1w = metal1 wide 10` with `separation m1w metal1 0.6`. Derived layers are only computed
+//! when a rule needs them; violations on them carry no technology layer.
 //! Rule kinds, operators and layer names are case-insensitive. Unnamed rules are called
-//! `<layer>.W`, `<layer>.S`, `<a>.SEP.<b>`, `<inner>.EN.<outer>`, `<a>.EX.<b>` and `<layer>.A`.
+//! `<layer>.W`, `<layer>.S`, `<a>.SEP.<b>`, `<inner>.EN.<outer>`, `<a>.EX.<b>`, `<layer>.A`,
+//! `<layer>.ANT` and `<layer>.DEN`.
 //!
 //! Every check works on the merged geometry of each layer (all Manhattan shapes of the
 //! flattened top cell; labels are ignored and non-Manhattan shapes are skipped and counted).
 //! Coordinates are integers, so a region is a set of 1 x 1 dbu pixels and the morphology
-//! below is exact for any (odd or even) MIN. Distances use the square (Chebyshev) metric:
-//! two pieces `dx` apart horizontally and `dy` apart vertically are `max(dx, dy)` apart.
+//! below is exact for any (odd or even) MIN. Facing edges are measured across; corner-to-corner
+//! distances in `space` and `separation` are Euclidean (`sqrt(dx² + dy²)`). Sizing (`size`,
+//! `enclosure`, `extension`, `wide`) uses square corners.
 //!
 //! - `width L MIN`: the parts of L not covered by any MIN x MIN square inside L (L minus its
 //!   morphological opening with a MIN square). Long narrow bars, necks and slivers are flagged;
@@ -44,6 +51,12 @@
 //!   with the full width of the crossing. Flags the missing part of that MIN deep band.
 //!   Edges of `A AND B` that are edges of A inside B carry no requirement.
 //! - `area L MIN`: edge-connected pieces of L with an area below MIN.
+//! - `antenna M RATIO`: for every net formed by poly, diffusion and the metals up to M (through
+//!   the technology vias), not connected to diffusion, the area of M over the gate area
+//!   (`poly AND active`) of the net must not exceed RATIO. Flags the M pieces of such nets.
+//! - `density L MIN% MAX% WINDOW [STEP]`: L must cover between MIN% and MAX% of every WINDOW x
+//!   WINDOW µm window, stepped by STEP µm (default WINDOW / 2) over the extent of the layout
+//!   (windows are clipped to it). Flags the failing windows.
 //!
 //! Every connected piece of a rule's violation region becomes one [`Violation`] marked by its
 //! bounding box, at most [`MAX_VIOLATIONS_PER_RULE`] per rule (see [`DrcReport::capped`]).
@@ -65,6 +78,8 @@ pub const MAX_VIOLATIONS_PER_RULE: usize = 10_000;
 
 const MAX_DEPTH: u32 = 64;
 const POLY_ENDCAP_UM: &str = "0.22";
+/// Metal to gate area ratio of the derived deck's antenna rules.
+const ANTENNA_RATIO: u32 = 400;
 
 /// A layer computed from earlier layers. Indices count the technology layers first, then the
 /// deck's derived layers in definition order (see [`Deck::layer_names`]).
@@ -80,13 +95,18 @@ pub enum LayerExpr {
         a: usize,
         by: i64,
     },
+    /// Parts at least `min` dbu wide (morphological opening with a `min` square).
+    Wide {
+        a: usize,
+        min: i64,
+    },
 }
 
 impl LayerExpr {
     pub fn inputs(&self) -> Vec<usize> {
         match *self {
             LayerExpr::Bool { a, b, .. } => vec![a, b],
-            LayerExpr::Size { a, .. } => vec![a],
+            LayerExpr::Size { a, .. } | LayerExpr::Wide { a, .. } => vec![a],
         }
     }
 
@@ -96,6 +116,10 @@ impl LayerExpr {
         match *self {
             LayerExpr::Bool { a, op, b } => get(a).boolean(get(b), op),
             LayerExpr::Size { a, by } => get(a).sized(by),
+            LayerExpr::Wide { a, min } => {
+                let k = (min - 1).max(0);
+                get(a).eroded(0, 0, k, k).dilated(0, 0, k, k)
+            }
         }
     }
 }
@@ -121,6 +145,7 @@ impl DerivedLayer {
                 format!("{} = {} {op} {}", self.name, n(a), n(b))
             }
             LayerExpr::Size { a, by } => format!("{} = {} size {}", self.name, n(a), fmt_um(by, tech)),
+            LayerExpr::Wide { a, min } => format!("{} = {} wide {}", self.name, n(a), fmt_um(min, tech)),
         }
     }
 }
@@ -128,28 +153,77 @@ impl DerivedLayer {
 /// A rule with lengths in dbu and areas in dbu². Layers index [`Deck::layer_names`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum Rule {
-    Width { layer: usize, min: i64 },
-    Space { layer: usize, min: i64 },
-    Separation { a: usize, b: usize, min: i64 },
-    Enclosure { inner: usize, outer: usize, min: i64 },
-    Extension { a: usize, b: usize, min: i64 },
-    Area { layer: usize, min: i128 },
+    Width {
+        layer: usize,
+        min: i64,
+    },
+    Space {
+        layer: usize,
+        min: i64,
+    },
+    Separation {
+        a: usize,
+        b: usize,
+        min: i64,
+    },
+    Enclosure {
+        inner: usize,
+        outer: usize,
+        min: i64,
+    },
+    Extension {
+        a: usize,
+        b: usize,
+        min: i64,
+    },
+    Area {
+        layer: usize,
+        min: i128,
+    },
+    /// Metal area over gate area of nets not tied to diffusion, with the vias (bottom, cut, top)
+    /// up to the metal's level.
+    Antenna {
+        layer: usize,
+        ratio: f64,
+        poly: usize,
+        active: usize,
+        vias: Vec<(usize, usize, usize)>,
+    },
+    /// Coverage between `min` and `max` percent per `window` square stepped by `step` (dbu).
+    Density {
+        layer: usize,
+        min: f64,
+        max: f64,
+        window: i64,
+        step: i64,
+    },
 }
 
 impl Rule {
     /// Layers the rule reads.
     pub fn layers(&self) -> Vec<usize> {
         match *self {
-            Rule::Width { layer, .. } | Rule::Space { layer, .. } | Rule::Area { layer, .. } => vec![layer],
+            Rule::Width { layer, .. } | Rule::Space { layer, .. } | Rule::Area { layer, .. } | Rule::Density { layer, .. } => {
+                vec![layer]
+            }
             Rule::Separation { a, b, .. } | Rule::Extension { a, b, .. } => vec![a, b],
             Rule::Enclosure { inner, outer, .. } => vec![inner, outer],
+            Rule::Antenna { layer, poly, active, ref vias, .. } => {
+                let mut v = vec![layer, poly, active];
+                v.extend(vias.iter().flat_map(|&(b, c, t)| [b, c, t]));
+                v
+            }
         }
     }
 
     /// Layer the violations are reported on.
     pub fn checked_layer(&self) -> usize {
         match *self {
-            Rule::Width { layer, .. } | Rule::Space { layer, .. } | Rule::Area { layer, .. } => layer,
+            Rule::Width { layer, .. }
+            | Rule::Space { layer, .. }
+            | Rule::Area { layer, .. }
+            | Rule::Antenna { layer, .. }
+            | Rule::Density { layer, .. } => layer,
             Rule::Separation { b, .. } => b,
             Rule::Enclosure { inner, .. } => inner,
             Rule::Extension { a, .. } => a,
@@ -166,6 +240,8 @@ impl Rule {
             Rule::Enclosure { inner, outer, .. } => format!("{}.EN.{}", n(inner), n(outer)),
             Rule::Extension { a, b, .. } => format!("{}.EX.{}", n(a), n(b)),
             Rule::Area { layer, .. } => format!("{}.A", n(layer)),
+            Rule::Antenna { layer, .. } => format!("{}.ANT", n(layer)),
+            Rule::Density { layer, .. } => format!("{}.DEN", n(layer)),
         }
     }
 
@@ -183,6 +259,10 @@ impl Rule {
                 let d = tech.dbu_per_um.max(1) as f64;
                 format!("{} area < {} µm²", n(layer), min as f64 / (d * d))
             }
+            Rule::Antenna { layer, ratio, .. } => format!("{} antenna ratio > {ratio}", n(layer)),
+            Rule::Density { layer, min, max, window, .. } => {
+                format!("{} density outside {min}-{max} % ({} µm windows)", n(layer), um(window))
+            }
         }
     }
 
@@ -199,6 +279,10 @@ impl Rule {
             Rule::Area { layer, min } => {
                 let d = tech.dbu_per_um.max(1) as f64;
                 format!("area {} {}", n(layer), min as f64 / (d * d))
+            }
+            Rule::Antenna { layer, ratio, .. } => format!("antenna {} {ratio}", n(layer)),
+            Rule::Density { layer, min, max, window, step } => {
+                format!("density {} {min} {max} {} {}", n(layer), um(window), um(step))
             }
         }
     }
@@ -310,7 +394,7 @@ fn parse_derived(lhs: &str, rhs: &str, names: &[String], tech: &Tech) -> Result<
     }
     let toks: Vec<&str> = rhs.split_whitespace().collect();
     if toks.len() != 3 {
-        errs.push(format!("expected '{name} = LAYER and|or|not|xor LAYER' or '{name} = LAYER size DIST'"));
+        errs.push(format!("expected '{name} = LAYER and|or|not|xor LAYER' or '{name} = LAYER size|wide DIST'"));
         return Err(errs);
     }
     let a = lookup(names, toks[0], &mut errs);
@@ -325,14 +409,20 @@ fn parse_derived(lhs: &str, rhs: &str, names: &[String], tech: &Tech) -> Result<
     let expr = if let Some(op) = op {
         let b = lookup(names, toks[2], &mut errs);
         a.zip(b).map(|(a, b)| LayerExpr::Bool { a, op, b })
-    } else if kind == "size" {
-        let by = toks[2].parse::<f64>().ok().filter(|v| v.is_finite()).map(|v| (v * tech.dbu_per_um as f64).round() as i64);
+    } else if kind == "size" || kind == "wide" {
+        let wide = kind == "wide";
+        let by = toks[2]
+            .parse::<f64>()
+            .ok()
+            .filter(|v| v.is_finite() && (!wide || *v > 0.0))
+            .map(|v| (v * tech.dbu_per_um as f64).round() as i64);
         if by.is_none() {
-            errs.push(format!("bad distance '{}' (expected a value in µm)", toks[2]));
+            let what = if wide { "a positive width" } else { "a value" };
+            errs.push(format!("bad distance '{}' (expected {what} in µm)", toks[2]));
         }
-        a.zip(by).map(|(a, by)| LayerExpr::Size { a, by })
+        a.zip(by).map(|(a, by)| if wide { LayerExpr::Wide { a, min: by } } else { LayerExpr::Size { a, by } })
     } else {
-        errs.push(format!("unknown operator '{}' (expected and, or, not, xor or size)", toks[1]));
+        errs.push(format!("unknown operator '{}' (expected and, or, not, xor, size or wide)", toks[1]));
         None
     };
     match expr {
@@ -356,18 +446,20 @@ fn parse_line(line: &str, names: &[String], tech: &Tech) -> Result<NamedRule, Ve
     let Some(kind) = toks.first().map(|k| k.to_ascii_lowercase()) else {
         return Err(vec!["missing rule after the name".into()]);
     };
-    let n_layers = match kind.as_str() {
-        "width" | "space" | "area" => 1,
-        "separation" | "enclosure" | "extension" => 2,
+    let (n_layers, n_nums, optional, expect) = match kind.as_str() {
+        "width" | "space" | "area" => (1, 1, 0, "LAYER MIN"),
+        "separation" | "enclosure" | "extension" => (2, 1, 0, "LAYER LAYER MIN"),
+        "antenna" => (1, 1, 0, "METAL RATIO"),
+        "density" => (1, 3, 1, "LAYER MIN% MAX% WINDOW [STEP]"),
         _ => {
             return Err(vec![format!(
-                "unknown rule kind '{kind}' (expected width, space, separation, enclosure, extension or area)"
+                "unknown rule kind '{kind}' (expected width, space, separation, enclosure, extension, area, antenna or density)"
             )]);
         }
     };
-    if toks.len() != n_layers + 2 {
-        let expect = if n_layers == 1 { "LAYER MIN" } else { "LAYER LAYER MIN" };
-        return Err(vec![format!("'{kind}' expects {expect} ({} arguments), got {}", n_layers + 1, toks.len() - 1)]);
+    let args = toks.len() - 1;
+    if args < n_layers + n_nums || args > n_layers + n_nums + optional {
+        return Err(vec![format!("'{kind}' expects {expect}, got {args} argument(s)")]);
     }
     let mut errs = Vec::new();
     let mut layers = Vec::new();
@@ -376,24 +468,64 @@ fn parse_line(line: &str, names: &[String], tech: &Tech) -> Result<NamedRule, Ve
             layers.push(l);
         }
     }
-    let num = toks[n_layers + 1];
-    let value = num.parse::<f64>().ok().filter(|v| v.is_finite() && *v >= 0.0);
-    if value.is_none() {
-        errs.push(format!("bad number '{num}' (expected a non-negative value in µm)"));
+    let mut nums = Vec::new();
+    for num in &toks[n_layers + 1..] {
+        match num.parse::<f64>().ok().filter(|v| v.is_finite() && *v >= 0.0) {
+            Some(v) => nums.push(v),
+            None => errs.push(format!("bad number '{num}' (expected a non-negative value)")),
+        }
     }
-    let Some(v) = value.filter(|_| errs.is_empty()) else { return Err(errs) };
+    if !errs.is_empty() {
+        return Err(errs);
+    }
     let d = tech.dbu_per_um as f64;
-    let min = (v * d).round() as i64;
+    let dbu = |v: f64| (v * d).round() as i64;
+    let (l0, v) = (layers[0], nums[0]);
     let rule = match kind.as_str() {
-        "width" => Rule::Width { layer: layers[0], min },
-        "space" => Rule::Space { layer: layers[0], min },
-        "area" => Rule::Area { layer: layers[0], min: (v * d * d).round() as i128 },
-        "separation" => Rule::Separation { a: layers[0], b: layers[1], min },
-        "enclosure" => Rule::Enclosure { inner: layers[0], outer: layers[1], min },
-        _ => Rule::Extension { a: layers[0], b: layers[1], min },
+        "width" => Rule::Width { layer: l0, min: dbu(v) },
+        "space" => Rule::Space { layer: l0, min: dbu(v) },
+        "area" => Rule::Area { layer: l0, min: (v * d * d).round() as i128 },
+        "separation" => Rule::Separation { a: l0, b: layers[1], min: dbu(v) },
+        "enclosure" => Rule::Enclosure { inner: l0, outer: layers[1], min: dbu(v) },
+        "extension" => Rule::Extension { a: l0, b: layers[1], min: dbu(v) },
+        "antenna" => antenna_rule(l0, v, tech).map_err(|e| vec![e])?,
+        _ => {
+            let (min, max, window) = (nums[0], nums[1], dbu(nums[2]));
+            if min > max || max > 100.0 {
+                return Err(vec![format!("density limits {min} - {max} must satisfy 0 <= MIN <= MAX <= 100")]);
+            }
+            if window <= 0 {
+                return Err(vec!["the density window must be larger than 0".into()]);
+            }
+            let step = nums.get(3).map_or(window / 2, |&s| dbu(s)).max(1);
+            Rule::Density { layer: l0, min, max, window, step }
+        }
     };
     let name = name.unwrap_or_else(|| rule.auto_name(names));
     Ok(NamedRule { name, rule })
+}
+
+/// Antenna rule for metal `layer`: the technology vias up to its level.
+fn antenna_rule(layer: usize, ratio: f64, tech: &Tech) -> Result<Rule, String> {
+    let lid = |n: &str| tech.layer_index(n);
+    let (Some(poly), Some(active)) = (lid("poly"), lid("active")) else {
+        return Err("antenna rules need 'poly' and 'active' layers".into());
+    };
+    let vias: Vec<(usize, usize, usize)> =
+        tech.vias.iter().filter_map(|v| Some((lid(&v.bottom)?, lid(&v.cut)?, lid(&v.top)?))).collect();
+    let n = tech.layers.len();
+    if layer >= n || layer == poly || layer == active || !vias.iter().any(|&(b, _, t)| b == layer || t == layer) {
+        let name = tech.layer(layer).map_or_else(|| format!("#{layer}"), |l| l.name.clone());
+        return Err(format!("antenna: '{name}' is not a metal of the via stack"));
+    }
+    let mut level = vec![0usize; n];
+    for _ in 0..vias.len() {
+        for &(b, _, t) in &vias {
+            level[t] = level[t].max(level[b] + 1);
+        }
+    }
+    let vias = vias.into_iter().filter(|&(b, _, t)| level[b] <= level[layer] && level[t] <= level[layer]).collect();
+    Ok(Rule::Antenna { layer, ratio, poly, active, vias })
 }
 
 /// A deck derived from the technology: width / space per layer plus via enclosure rules.
@@ -428,6 +560,11 @@ pub fn default_deck_text(tech: &Tech) -> String {
     let def = |n: &str| tech.layer_index(n).and_then(|i| tech.layer(i));
     if let (Some(poly), Some(active)) = (def("poly"), def("active")) {
         push(format!("extension {} {} {POLY_ENDCAP_UM}", poly.name, active.name));
+        for v in &tech.vias {
+            if let Some(top) = def(&v.top).filter(|t| t.routing && t.name != poly.name && t.name != active.name) {
+                push(format!("antenna {} {ANTENNA_RATIO}", top.name));
+            }
+        }
     }
     let mut out = format!("# DRC deck derived from technology '{}' (lengths in µm)\n", tech.name);
     for l in lines {
@@ -461,11 +598,14 @@ pub fn run(deck: &Deck, top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Dr
     }
     let mut rects: Vec<Vec<IRect>> = vec![Vec::new(); n];
     let (mut shapes, mut skipped) = (0, 0);
+    let mut extent: Option<IRect> = None;
     for f in flatten(top, src, MAX_DEPTH) {
         if f.layer >= n || matches!(f.geom, Geometry::Label { .. }) {
             continue;
         }
         shapes += 1;
+        let b = f.geom.bbox();
+        extent = Some(extent.map_or(b, |e| e.union(&b)));
         match &f.geom {
             Geometry::Rect(r) if used[f.layer] => rects[f.layer].push(*r),
             Geometry::Rect(_) => {}
@@ -483,7 +623,7 @@ pub fn run(deck: &Deck, top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Dr
     }
     let empty = Region::default();
     let layer = |l: usize| regions.get(l).unwrap_or(&empty);
-    let results = par_map(&deck.rules, |nr| check(&nr.rule, &layer).parts());
+    let results = par_map(&deck.rules, |nr| check(&nr.rule, &layer, extent).parts());
 
     let names = deck.layer_names(tech);
     let mut report = DrcReport { rules_run: deck.rules.len(), shapes, skipped, ..Default::default() };
@@ -531,7 +671,7 @@ fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> 
 }
 
 /// The violation region of one rule.
-fn check<'a>(rule: &Rule, layer: &impl Fn(usize) -> &'a Region) -> Region {
+fn check<'a>(rule: &Rule, layer: &impl Fn(usize) -> &'a Region, extent: Option<IRect>) -> Region {
     match *rule {
         Rule::Width { layer: l, min } => {
             let a = layer(l);
@@ -545,7 +685,7 @@ fn check<'a>(rule: &Rule, layer: &impl Fn(usize) -> &'a Region) -> Region {
         Rule::Separation { a, b, min } => {
             let (a, b) = (layer(a), layer(b));
             let (_, free) = split_overlapping(b, a);
-            a.sized(min).boolean(&free, BoolOp::And)
+            euclidean(a.sized(min).boolean(&free, BoolOp::And), a, min)
         }
         Rule::Enclosure { inner, outer, min } => {
             let outer = layer(outer);
@@ -556,7 +696,172 @@ fn check<'a>(rule: &Rule, layer: &impl Fn(usize) -> &'a Region) -> Region {
         Rule::Area { layer: l, min } => {
             Region::from_rects(layer(l).parts().into_iter().filter(|p| p.area() < min).flat_map(|p| p.rects().to_vec()))
         }
+        Rule::Antenna { layer: m, ratio, poly, active, ref vias } => antenna(layer, m, ratio, poly, active, vias),
+        Rule::Density { layer: l, min, max, window, step } => {
+            extent.map_or_else(Region::default, |e| density(layer(l), e, (min, max), window, step))
+        }
     }
+}
+
+fn dist2(a: &IRect, b: &IRect) -> i128 {
+    let dx = (b.x0 - a.x1).max(a.x0 - b.x1).max(0) as i128;
+    let dy = (b.y0 - a.y1).max(a.y0 - b.y1).max(0) as i128;
+    dx * dx + dy * dy
+}
+
+/// The pieces of `v` closer than `min` to `a` in the Euclidean metric.
+fn euclidean(v: Region, a: &Region, min: i64) -> Region {
+    if v.is_empty() {
+        return v;
+    }
+    let tree = RTree::bulk_load(a.rects().iter().map(|&r| Boxed(r)).collect());
+    let limit = min as i128 * min as i128;
+    let near = |p: &Region| {
+        p.rects().iter().any(|r| {
+            let q = IRect::new(r.x0 - min, r.y0 - min, r.x1 + min, r.y1 + min);
+            tree.locate_in_envelope_intersecting(aabb(q)).any(|b| dist2(r, &b.0) < limit)
+        })
+    };
+    Region::from_rects(v.parts().into_iter().filter(near).flat_map(|p| p.rects().to_vec()))
+}
+
+struct Tagged(IRect, usize);
+
+impl RTreeObject for Tagged {
+    type Envelope = AABB<[i64; 2]>;
+    fn envelope(&self) -> Self::Envelope {
+        aabb(self.0)
+    }
+}
+
+fn find(uf: &mut [usize], mut i: usize) -> usize {
+    while uf[i] != i {
+        uf[i] = uf[uf[i]];
+        i = uf[i];
+    }
+    i
+}
+
+/// Metal `m` pieces of the gate nets (up to `m`) that are not tied to diffusion and whose metal
+/// to gate area ratio exceeds `ratio`.
+fn antenna<'a>(
+    layer: &impl Fn(usize) -> &'a Region,
+    m: usize,
+    ratio: f64,
+    poly: usize,
+    active: usize,
+    vias: &[(usize, usize, usize)],
+) -> Region {
+    let (p, a) = (layer(poly), layer(active));
+    let gate = p.boolean(a, BoolOp::And);
+    if gate.is_empty() {
+        return Region::default();
+    }
+    let mut conds: Vec<(usize, Region)> = vec![(poly, p.clone()), (active, a.boolean(p, BoolOp::Not))];
+    for l in vias.iter().flat_map(|&(b, _, t)| [b, t]) {
+        if !conds.iter().any(|c| c.0 == l) {
+            conds.push((l, layer(l).clone()));
+        }
+    }
+    let mut pieces: Vec<(usize, Region)> = Vec::new();
+    let mut trees: Vec<RTree<Tagged>> = Vec::new();
+    for (ci, (_, r)) in conds.iter().enumerate() {
+        let mut items = Vec::new();
+        for part in r.parts() {
+            items.extend(part.rects().iter().map(|&q| Tagged(q, pieces.len())));
+            pieces.push((ci, part));
+        }
+        trees.push(RTree::bulk_load(items));
+    }
+    let ci_of = |l: usize| conds.iter().position(|c| c.0 == l);
+    let hits = |ci: usize, r: &IRect| -> Vec<usize> {
+        trees[ci].locate_in_envelope_intersecting(aabb(*r)).filter(|t| t.0.intersects(r)).map(|t| t.1).collect()
+    };
+    let mut uf: Vec<usize> = (0..pieces.len()).collect();
+    for &(b, c, t) in vias {
+        let (Some(bi), Some(ti)) = (ci_of(b), ci_of(t)) else { continue };
+        let cut = if b == poly { layer(c).boolean(a, BoolOp::Not) } else { layer(c).clone() };
+        for part in cut.parts() {
+            let (mut lo, mut hi) = (Vec::new(), Vec::new());
+            for r in part.rects() {
+                lo.extend(hits(bi, r));
+                hi.extend(hits(ti, r));
+            }
+            if let (Some(&first), false) = (lo.first(), hi.is_empty()) {
+                for &o in lo.iter().chain(&hi) {
+                    let (x, y) = (find(&mut uf, first), find(&mut uf, o));
+                    uf[x.max(y)] = x.min(y);
+                }
+            }
+        }
+    }
+    let n = pieces.len();
+    let (mut gate_area, mut metal_area, mut tied) = (vec![0i128; n], vec![0i128; n], vec![false; n]);
+    for g in gate.parts() {
+        if let Some(pi) = g.rects().first().and_then(|r| hits(0, r).first().copied()) {
+            let root = find(&mut uf, pi);
+            gate_area[root] += g.area();
+        }
+    }
+    let mi = ci_of(m);
+    for (i, (ci, piece)) in pieces.iter().enumerate() {
+        let root = find(&mut uf, i);
+        match *ci {
+            1 => tied[root] = true,
+            ci if Some(ci) == mi => metal_area[root] += piece.area(),
+            _ => {}
+        }
+    }
+    let bad = |root: usize| !tied[root] && gate_area[root] > 0 && metal_area[root] as f64 > ratio * gate_area[root] as f64;
+    let mut out = Vec::new();
+    for (i, (ci, piece)) in pieces.iter().enumerate() {
+        if Some(*ci) == mi && bad(find(&mut uf, i)) {
+            out.extend_from_slice(piece.rects());
+        }
+    }
+    Region::from_rects(out)
+}
+
+/// Windows of `extent` (clipped to it) where `r` covers less than `min` or more than `max`
+/// percent.
+fn density(r: &Region, extent: IRect, (min, max): (f64, f64), window: i64, step: i64) -> Region {
+    let spans = |lo: i64, hi: i64| {
+        let w = window.min(hi - lo);
+        let mut v = Vec::new();
+        if w <= 0 {
+            return v;
+        }
+        let mut s = lo;
+        loop {
+            let s0 = s.min(hi - w);
+            v.push((s0, s0 + w));
+            if s0 + w >= hi {
+                break;
+            }
+            s += step;
+        }
+        v
+    };
+    let tree = RTree::bulk_load(r.rects().iter().map(|&q| Boxed(q)).collect());
+    let mut out = Vec::new();
+    for &(x0, x1) in &spans(extent.x0, extent.x1) {
+        for &(y0, y1) in &spans(extent.y0, extent.y1) {
+            let w = IRect::new(x0, y0, x1, y1);
+            let covered: i128 = tree
+                .locate_in_envelope_intersecting(aabb(w))
+                .filter(|b| b.0.intersects(&w))
+                .map(|b| {
+                    let o = IRect::new(b.0.x0.max(x0), b.0.y0.max(y0), b.0.x1.min(x1), b.0.y1.min(y1));
+                    o.width() as i128 * o.height() as i128
+                })
+                .sum();
+            let pct = 100.0 * covered as f64 / (w.width() as f64 * w.height() as f64);
+            if pct < min || pct > max {
+                out.push(w);
+            }
+        }
+    }
+    Region::from_rects(out)
 }
 
 fn space(a: &Region, min: i64) -> Region {
@@ -585,16 +890,16 @@ fn corner_gaps(a: &Region, min: i64) -> Vec<IRect> {
             let cy = if sy > 0 { p.y1 } else { p.y0 };
             let q = IRect::new(cx, cy, cx + sx * min, cy + sy * min);
             let reach = |c: &IRect| {
-                let dx = if sx > 0 { c.x0 - cx } else { cx - c.x1 };
-                let dy = if sy > 0 { c.y0 - cy } else { cy - c.y1 };
-                (dx.max(dy), dx + dy)
+                let dx = (if sx > 0 { c.x0 - cx } else { cx - c.x1 }) as i128;
+                let dy = (if sy > 0 { c.y0 - cy } else { cy - c.y1 }) as i128;
+                dx * dx + dy * dy
             };
             let nearest = tree
                 .locate_in_envelope_intersecting(aabb(q))
                 .filter(|b| b.0.intersects(&q))
                 .map(|b| IRect::new(b.0.x0.max(q.x0), b.0.y0.max(q.y0), b.0.x1.min(q.x1), b.0.y1.min(q.y1)))
                 .min_by_key(reach);
-            let Some(c) = nearest else { continue };
+            let Some(c) = nearest.filter(|c| reach(c) < min as i128 * min as i128) else { continue };
             let mut m = IRect::new(cx, cy, if sx > 0 { c.x0 } else { c.x1 }, if sy > 0 { c.y0 } else { c.y1 });
             let (near_x, near_y) = (if sx > 0 { c.x0 } else { c.x1 - 1 }, if sy > 0 { c.y0 } else { c.y1 - 1 });
             let (back_x, back_y) = (if sx > 0 { cx - 1 } else { cx }, if sy > 0 { cy - 1 } else { cy });
@@ -842,9 +1147,9 @@ mod tests {
             [
                 (1, "unknown layer 'g'"),
                 (3, "layer 'poly' is already defined"),
-                (4, "unknown operator 'nand' (expected and, or, not, xor or size)"),
+                (4, "unknown operator 'nand' (expected and, or, not, xor, size or wide)"),
                 (5, "bad distance 'abc' (expected a value in µm)"),
-                (6, "expected 'z = LAYER and|or|not|xor LAYER' or 'z = LAYER size DIST'"),
+                (6, "expected 'z = LAYER and|or|not|xor LAYER' or 'z = LAYER size|wide DIST'"),
                 (7, "invalid layer name 'a b'"),
                 (8, "unknown layer 'nope'"),
                 (9, "layer 'G' is already defined"),
@@ -863,6 +1168,95 @@ mod tests {
             let rep = run(&d, lay, &p, &p.tech);
             let found: Vec<String> = rep.violations.iter().map(|v| format!("{} {:?}", v.rule, v.marker)).collect();
             assert!(found.is_empty(), "{cell}: {found:#?}");
+        }
+    }
+
+    #[test]
+    fn euclidean_corners() {
+        let space = "space metal1 0.23";
+        let diag = |dx: i64, dy: i64| layout(&[("metal1", (0, 0, 500, 500)), ("metal1", (500 + dx, 500 + dy, 1500, 1500))]);
+        assert!(markers(space, &diag(170, 170)).is_empty(), "0.24 µm apart diagonally");
+        assert_eq!(markers(space, &diag(160, 160)), [r(500, 500, 660, 660)]);
+        let sep = "separation poly contact 0.16";
+        let lay = |d: i64| layout(&[("poly", (0, 0, 180, 2000)), ("contact", (180 + d, 2000 + d, 400 + d, 2220 + d))]);
+        assert!(markers(sep, &lay(120)).is_empty(), "0.17 µm apart diagonally");
+        assert_eq!(markers(sep, &lay(100)).len(), 1);
+    }
+
+    #[test]
+    fn wide_metal_spacing() {
+        let deck = "m1w = metal1 wide 2\nM1.WS: separation m1w metal1 0.5";
+        let lay = layout(&[
+            ("metal1", (0, 0, 3000, 3000)),
+            ("metal1", (0, 3000, 300, 5000)),
+            ("metal1", (3400, 0, 3700, 3000)),
+            ("metal1", (5000, 0, 5300, 3000)),
+            ("metal1", (5600, 0, 5900, 3000)),
+        ]);
+        assert_eq!(markers(deck, &lay), [r(3400, 0, 3500, 3000)]);
+        let t = tech();
+        let d = parse_deck(deck, &t).unwrap();
+        assert_eq!(d.derived[0].expr, LayerExpr::Wide { a: li("metal1"), min: 2000 });
+        assert_eq!(d.derived[0].deck_line(&t, &d.layer_names(&t)), "m1w = metal1 wide 2");
+        assert!(parse_deck("x = metal1 wide 0", &t).is_err());
+    }
+
+    /// A 0.18 x 1 µm gate with its poly pad contacted to a metal1 plate `plate` µm wide.
+    fn antenna_cell(plate: i64) -> Layout {
+        let mut l = layout(&[
+            ("active", (0, 0, 1000, 1000)),
+            ("poly", (400, -300, 580, 1300)),
+            ("poly", (300, 1300, 700, 1700)),
+            ("contact", (390, 1390, 610, 1610)),
+        ]);
+        l.add_rect(li("metal1"), 300, 1300, 300 + plate * 1000, 1300 + plate * 1000);
+        l
+    }
+
+    #[test]
+    fn antenna() {
+        assert!(markers("antenna metal1 10", &antenna_cell(1)).is_empty(), "1 µm² / 0.18 µm² < 10");
+        assert_eq!(markers("antenna metal1 10", &antenna_cell(2)), [r(300, 1300, 2300, 3300)]);
+        let mut tied = antenna_cell(2);
+        tied.add_rect(li("contact"), 100, 400, 320, 620);
+        tied.add_rect(li("metal1"), 0, 300, 420, 1300);
+        assert!(markers("antenna metal1 10", &tied).is_empty(), "a diffusion connection drains the charge");
+
+        let mut m2 = antenna_cell(1);
+        m2.add_rect(li("via1"), 370, 1370, 630, 1630);
+        m2.add_rect(li("metal2"), 0, 1300, 3000, 4300);
+        assert!(markers("antenna metal1 10", &m2).is_empty());
+        assert_eq!(markers("antenna metal2 10", &m2), [r(0, 1300, 3000, 4300)]);
+
+        let t = tech();
+        let d = parse_deck("antenna metal2 400", &t).unwrap();
+        assert_eq!(d.rules[0].name, "metal2.ANT");
+        assert_eq!(d.rules[0].rule.description(&t, &d.layer_names(&t)), "metal2 antenna ratio > 400");
+        let Rule::Antenna { ref vias, .. } = d.rules[0].rule else { panic!() };
+        assert_eq!(vias.len(), 3, "contact, polycon and via1, not via2");
+        for bad in ["antenna poly 10", "antenna text 10", "antenna metal1"] {
+            assert!(parse_deck(bad, &t).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn density() {
+        let mut stripes = layout(&[("boundary", (0, 0, 20_000, 10_000))]);
+        for i in 0..10 {
+            stripes.add_rect(li("metal1"), i * 2000, 0, i * 2000 + 1000, 10_000);
+        }
+        assert!(markers("density metal1 40 60 10", &stripes).is_empty());
+        assert_eq!(markers("density metal1 60 80 10", &stripes), [r(0, 0, 20_000, 10_000)]);
+        assert!(markers("density metal2 0 10 10", &stripes).is_empty());
+        assert_eq!(markers("density metal1 40 60 3 3", &stripes).len(), 1, "3 µm windows see 1/3 or 2/3 coverage");
+
+        let t = tech();
+        let d = parse_deck("density metal1 20 80 10", &t).unwrap();
+        let names = d.layer_names(&t);
+        assert_eq!(d.rules[0].rule.deck_line(&t, &names), "density metal1 20 80 10 5");
+        assert_eq!(d.rules[0].name, "metal1.DEN");
+        for bad in ["density metal1 80 20 10", "density metal1 20 80 0", "density metal1 20", "density metal1 20 120 10"] {
+            assert!(parse_deck(bad, &t).is_err(), "{bad}");
         }
     }
 
@@ -898,6 +1292,9 @@ mod tests {
             assert!(names.contains(&n), "{n} missing in {names:?}");
         }
         assert_eq!(names.iter().filter(|n| **n == "contact.EN.metal1").count(), 1);
+        for n in ["metal1.ANT", "metal2.ANT", "metal3.ANT"] {
+            assert!(names.contains(&n), "{n} missing in {names:?}");
+        }
         assert!(deck.rules.contains(&NamedRule {
             name: "poly.EX.active".into(),
             rule: Rule::Extension { a: li("poly"), b: li("active"), min: 220 }

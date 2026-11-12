@@ -70,8 +70,10 @@ Linux needs the usual windowing libraries:
 
 **Verification**
 - DRC with a text rule deck (`width`, `space`, `separation`, `enclosure`, `extension`,
-  `area`) over technology layers and derived layers (`gate = poly and active`, `and` /
-  `or` / `not` / `xor` / `size`) on the flattened hierarchy; results grouped by rule with zoom-to-marker
+  `area`, `antenna`, `density`) over technology layers and derived layers
+  (`gate = poly and active`, `and` / `or` / `not` / `xor` / `size` / `wide` for wide-metal
+  spacing) on the flattened hierarchy, Euclidean corner distances; results grouped by rule
+  with zoom-to-marker
 - Connectivity extraction with MOS recognition, top-level labels and net highlighting
 - LVS against the schematic by iterative partition refinement, with parallel-device
   merging and W / L checks
@@ -218,6 +220,6 @@ mouse input, and check accessibility labels and glyph coverage.
 
 - OASIS and LEF / DEF
 - Python API (PyO3)
-- Euclidean DRC metrics, antenna and density rules; resistor / capacitor recognition in LVS
+- Resistor / capacitor recognition in LVS; incremental and hierarchical DRC
 - Rip-up and reroute, wire resistance; non-Manhattan Boolean operations
 - Parametric sweeps, corners and optimisation loops
