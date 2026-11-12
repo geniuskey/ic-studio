@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::home_view;
 use crate::icons::{self, Icon};
-use crate::layout_view::{LayCtx, LayRequest, LayTool, LayoutEditor, fmt_count, um};
+use crate::layout_view::{LayCtx, LayRequest, LayTool, LayoutEditor, Verify, fmt_count, um};
 use crate::schematic_view::{SchTool, SchematicEditor, device_palette};
 use crate::sim_view::{self, SimEvent, SimState};
 use crate::theme::{self, Palette};
@@ -78,6 +78,9 @@ pub enum Command {
     FitView,
     ExportGds,
     ExportLibraryGds,
+    RunDrc,
+    ExtractNets,
+    RunLvs,
     ImportGds,
     ExportNetlist,
     ToggleTheme,
@@ -457,6 +460,9 @@ impl IcStudio {
             Command::SetWorkspace(w) => self.workspace = w,
             Command::RunSimulation => self.run_simulation(ctx),
             Command::Undo | Command::Redo | Command::Delete | Command::FitView => self.editor_command(cmd),
+            Command::RunDrc => self.verify(Verify::Drc),
+            Command::ExtractNets => self.verify(Verify::Extract),
+            Command::RunLvs => self.verify(Verify::Lvs),
             Command::ExportGds => self.export_gds(false),
             Command::ExportLibraryGds => self.export_gds(true),
             Command::ImportGds => self.import_gds(),
@@ -533,6 +539,25 @@ impl IcStudio {
         if changed {
             self.mark_dirty();
         }
+    }
+
+    fn verify(&mut self, what: Verify) {
+        let (Some(r), Some(p)) = (self.active.clone(), self.project.as_mut()) else { return };
+        let Some(lay) = p.cell_mut(&r).and_then(|c| c.layout.take()) else {
+            self.warn(format!("{r} has no layout"));
+            return;
+        };
+        let tech = p.tech.clone();
+        let ed = self.lay_eds.entry(r.clone()).or_default();
+        let msg = {
+            let mut cx = LayCtx { cell: &r, src: p, hier: &mut self.hier, tech: &tech, cells: &[] };
+            ed.run_verification(what, &lay, &mut cx)
+        };
+        if let Some(c) = p.cell_mut(&r) {
+            c.layout = Some(lay);
+        }
+        self.workspace = Workspace::Layout;
+        self.info(msg);
     }
 
     fn run_simulation(&mut self, ctx: &egui::Context) {
@@ -777,6 +802,17 @@ impl IcStudio {
                 }
                 if ui.button("Export Netlist…").clicked() {
                     q.push(Command::ExportNetlist);
+                }
+            });
+            ui.menu_button("Verify", |ui| {
+                if ui.button("Run DRC").clicked() {
+                    q.push(Command::RunDrc);
+                }
+                if ui.button("Extract Nets").clicked() {
+                    q.push(Command::ExtractNets);
+                }
+                if ui.button("Run LVS").clicked() {
+                    q.push(Command::RunLvs);
                 }
             });
             ui.menu_button("Help", |ui| {
@@ -1157,6 +1193,11 @@ impl IcStudio {
                 for req in std::mem::take(&mut ed.requests) {
                     match req {
                         LayRequest::Open(c) => open = Some(c),
+                        LayRequest::SetDeck(text) => {
+                            project.tech.drc_deck = Some(text);
+                            changed = true;
+                            log.push((true, "Saved the DRC rule deck to the technology".into()));
+                        }
                         LayRequest::PlacePCell { pcell, trans, array } => match project.ensure_pcell(&pcell) {
                             Ok(cr) => {
                                 ed.history.push(&lay);
@@ -1409,6 +1450,9 @@ impl IcStudio {
             ("New project…".into(), "", Command::NewProjectDialog),
             ("New demo project".into(), "", Command::NewDemoProject),
             ("New cell…".into(), "⌘N", Command::NewCellDialog),
+            ("Run DRC".into(), "", Command::RunDrc),
+            ("Extract nets".into(), "", Command::ExtractNets),
+            ("Run LVS".into(), "", Command::RunLvs),
             ("Export cell GDSII…".into(), "", Command::ExportGds),
             ("Export library GDSII…".into(), "", Command::ExportLibraryGds),
             ("Import GDSII…".into(), "", Command::ImportGds),

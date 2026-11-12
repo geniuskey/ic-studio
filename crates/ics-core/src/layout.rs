@@ -6,9 +6,8 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 use crate::geom::IRect;
-use crate::hier::{LayoutSource, flatten};
+use crate::hier::LayoutSource;
 use crate::project::CellRef;
-use crate::tech::Tech;
 
 /// Placement transform: optional mirror about the x axis, then a counter-clockwise rotation
 /// in 90° steps, then a displacement (the GDS STRANS / ANGLE / XY convention).
@@ -489,107 +488,10 @@ impl Layout {
     }
 }
 
-/// A design rule violation.
-#[derive(Debug, Clone, PartialEq)]
-pub struct DrcViolation {
-    pub layer: usize,
-    pub rule: String,
-    pub area: IRect,
-    /// Ids of the top-level shapes involved (shapes from instances have no id here).
-    pub shapes: Vec<u64>,
-}
-
-#[derive(Clone, Copy)]
-struct DrcRect {
-    r: IRect,
-    id: Option<u64>,
-    k: usize,
-}
-
-impl rstar::RTreeObject for DrcRect {
-    type Envelope = rstar::AABB<[i64; 2]>;
-    fn envelope(&self) -> Self::Envelope {
-        rstar::AABB::from_corners([self.r.x0, self.r.y0], [self.r.x1, self.r.y1])
-    }
-}
-
-/// Small built-in DRC: minimum width and minimum same-layer spacing on Manhattan shapes of
-/// the flattened hierarchy. Intended as a placeholder until a full engine is plugged in.
-pub fn run_basic_drc(layout: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Vec<DrcViolation> {
-    let mut out = vec![];
-    let mut per_layer: Vec<Vec<DrcRect>> = vec![vec![]; tech.layers.len()];
-    for f in flatten(layout, src, 64) {
-        if f.layer < per_layer.len() {
-            for r in f.geom.rects() {
-                let k = per_layer[f.layer].len();
-                per_layer[f.layer].push(DrcRect { r, id: f.id, k });
-            }
-        }
-    }
-    let ids = |a: &DrcRect, b: Option<&DrcRect>| a.id.into_iter().chain(b.and_then(|b| b.id)).collect::<Vec<u64>>();
-    for (li, rects) in per_layer.into_iter().enumerate() {
-        let def = &tech.layers[li];
-        if def.min_width > 0 {
-            for a in &rects {
-                let w = a.r.width().min(a.r.height());
-                if w < def.min_width {
-                    out.push(DrcViolation {
-                        layer: li,
-                        rule: format!("{}.W: width {} < {} nm", def.name, w, def.min_width),
-                        area: a.r,
-                        shapes: ids(a, None),
-                    });
-                }
-            }
-        }
-        if def.min_spacing > 0 && rects.len() > 1 {
-            let s = def.min_spacing;
-            let tree = rstar::RTree::bulk_load(rects.clone());
-            for a in &rects {
-                let env = rstar::AABB::from_corners([a.r.x0 - s, a.r.y0 - s], [a.r.x1 + s, a.r.y1 + s]);
-                for b in tree.locate_in_envelope_intersecting(env) {
-                    if b.k <= a.k || (a.id.is_some() && a.id == b.id) {
-                        continue;
-                    }
-                    let (a, b) = (a.r, b);
-                    // Touching / overlapping shapes are considered merged.
-                    if a.x0 <= b.r.x1 && b.r.x0 <= a.x1 && a.y0 <= b.r.y1 && b.r.y0 <= a.y1 {
-                        continue;
-                    }
-                    let d = a.spacing(&b.r);
-                    if d < s {
-                        let area = IRect::new(a.x1.min(b.r.x1), a.y1.min(b.r.y1), a.x0.max(b.r.x0), a.y0.max(b.r.y0));
-                        out.push(DrcViolation {
-                            layer: li,
-                            rule: format!("{}.S: spacing {} < {} nm", def.name, d, s),
-                            area,
-                            shapes: vec![],
-                        });
-                    }
-                }
-            }
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hier::NoCells;
-
-    #[test]
-    fn drc_finds_width_and_spacing() {
-        let tech = Tech::generic();
-        let m1 = tech.layer_index("metal1").unwrap();
-        let mut l = Layout::default();
-        l.add_rect(m1, 0, 0, 100, 1000); // too narrow
-        l.add_rect(m1, 1000, 0, 1300, 1000);
-        l.add_rect(m1, 1400, 0, 1700, 1000); // 100nm spacing to previous
-        let v = run_basic_drc(&l, &NoCells, &tech);
-        assert!(v.iter().any(|v| v.rule.contains(".W")));
-        assert_eq!(v.iter().filter(|v| v.rule.contains(".S")).count(), 1);
-    }
+    use crate::hier::flatten;
 
     #[test]
     fn trans_compose_and_inverse() {

@@ -65,8 +65,18 @@ enum Cmd {
         #[arg(short, long)]
         out: PathBuf,
     },
-    /// Run the basic built-in DRC on a cell layout.
-    Drc { project: PathBuf, cell: String },
+    /// Run DRC on a cell layout with the technology deck (or `--deck FILE`).
+    Drc {
+        project: PathBuf,
+        cell: String,
+        /// Rule deck file to use instead of the technology deck.
+        #[arg(long)]
+        deck: Option<PathBuf>,
+    },
+    /// Extract nets and transistors from a cell layout and print them as SPICE.
+    Extract { project: PathBuf, cell: String },
+    /// Compare a cell's layout with its schematic (non-zero exit on differences).
+    Lvs { project: PathBuf, cell: String },
     /// Import a GDSII file as a new library.
     ImportGds {
         project: PathBuf,
@@ -89,6 +99,30 @@ fn backend(b: BackendArg) -> Backend {
     match b {
         BackendArg::Builtin => Backend::Builtin,
         BackendArg::Ngspice => Backend::Ngspice,
+    }
+}
+
+fn print_drc(rep: &ics_core::drc::DrcReport, deck: &ics_core::drc::Deck, dbu_per_um: i64) {
+    const SHOWN: usize = 50;
+    let um = |v: i64| v as f64 / dbu_per_um.max(1) as f64;
+    let mut total = 0;
+    for rule in &deck.rules {
+        let vs: Vec<_> = rep.violations.iter().filter(|v| v.rule == rule.name).collect();
+        let Some(first) = vs.first() else { continue };
+        let count = rep.capped.iter().find(|(n, _)| *n == rule.name).map_or(vs.len(), |c| c.1);
+        total += count;
+        println!("{}: {} ({count})", rule.name, first.description);
+        for v in vs.iter().take(SHOWN) {
+            let m = v.marker;
+            println!("  ({}, {}) - ({}, {}) µm", um(m.x0), um(m.y0), um(m.x1), um(m.y1));
+        }
+        if count > SHOWN {
+            println!("  ... {} more", count - SHOWN);
+        }
+    }
+    println!("{total} violation(s); {} rules on {} shapes in {:.0} ms", rep.rules_run, rep.shapes, rep.millis);
+    if rep.skipped > 0 {
+        eprintln!("warning: {} non-Manhattan shape(s) were not checked", rep.skipped);
     }
 }
 
@@ -218,18 +252,61 @@ fn run(cli: Cli) -> Result<(), String> {
                 bytes.len()
             );
         }
-        Cmd::Drc { project, cell } => {
+        Cmd::Drc { project, cell, deck } => {
             let p = Project::open(&project).map_err(|e| e.to_string())?;
             let r = resolve(&p, &cell)?;
             let lay = p.cell(&r).unwrap().layout.as_ref().ok_or("cell has no layout")?;
-            let v = ics_core::layout::run_basic_drc(lay, &p, &p.tech);
-            for x in &v {
-                println!("{}  at ({}, {})-({}, {})", x.rule, x.area.x0, x.area.y0, x.area.x1, x.area.y1);
-            }
-            println!("{} violation(s)", v.len());
-            if !v.is_empty() {
+            let (text, origin) = match &deck {
+                Some(f) => (std::fs::read_to_string(f).map_err(|e| format!("{}: {e}", f.display()))?, f.display().to_string()),
+                None => (p.tech.deck_text(), "technology deck".to_string()),
+            };
+            let d = ics_core::drc::parse_deck(&text, &p.tech).map_err(|errs| {
+                errs.iter().map(|e| format!("{origin}:{}: {}", e.line, e.message)).collect::<Vec<_>>().join("\n")
+            })?;
+            let rep = ics_core::drc::run(&d, lay, &p, &p.tech);
+            print_drc(&rep, &d, p.tech.dbu_per_um);
+            if !rep.violations.is_empty() {
                 return Err("DRC failed".into());
             }
+        }
+        Cmd::Extract { project, cell } => {
+            let p = Project::open(&project).map_err(|e| e.to_string())?;
+            let r = resolve(&p, &cell)?;
+            let lay = p.cell(&r).unwrap().layout.as_ref().ok_or("cell has no layout")?;
+            let x = ics_core::extract::extract(lay, &p, &p.tech);
+            for w in &x.warnings {
+                eprintln!("warning: {w}");
+            }
+            print!("{}", x.spice(&r.to_string(), p.tech.dbu_per_um));
+            println!("* {} nets, {} transistors", x.nets.len(), x.devices.len());
+        }
+        Cmd::Lvs { project, cell } => {
+            let p = Project::open(&project).map_err(|e| e.to_string())?;
+            let r = resolve(&p, &cell)?;
+            let c = p.cell(&r).unwrap();
+            let lay = c.layout.as_ref().ok_or("cell has no layout")?;
+            let sch = c.schematic.as_ref().ok_or("cell has no schematic")?;
+            let x = ics_core::extract::extract(lay, &p, &p.tech);
+            let rep = ics_core::lvs::compare(sch, &x, &ics_core::lvs::LvsOptions::default());
+            println!(
+                "{} schematic / {} layout devices, {} matched",
+                rep.schematic_devices,
+                rep.layout_devices,
+                rep.devices.len()
+            );
+            for (s, l) in &rep.devices {
+                println!("  device {s} = {l}");
+            }
+            for (s, l) in &rep.nets {
+                println!("  net {s} = {l}");
+            }
+            for e in &rep.errors {
+                println!("{:?}: {}", e.kind, e.message);
+            }
+            if !rep.matched {
+                return Err(format!("LVS: {} difference(s)", rep.errors.len()));
+            }
+            println!("LVS: layout matches schematic");
         }
         Cmd::ImportGds { project, file, lib } => {
             let mut p = Project::open(&project).map_err(|e| e.to_string())?;

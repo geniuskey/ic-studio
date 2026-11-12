@@ -324,8 +324,8 @@ fn gen_mom_cap(tech: &Tech, w: i64, h: i64) -> Result<Layout, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::drc::run_tech_deck;
     use crate::hier::NoCells;
-    use crate::layout::run_basic_drc;
     use crate::project::valid_name;
 
     fn rects_on(items: &[(usize, Geometry)], layer: usize) -> Vec<IRect> {
@@ -398,8 +398,8 @@ mod tests {
         for p in &all {
             let lay = p.generate(&tech).unwrap_or_else(|e| panic!("{p:?}: {e}"));
             assert!(!lay.is_empty());
-            let v = run_basic_drc(&lay, &NoCells, &tech);
-            assert!(v.is_empty(), "{p:?}: {:?}", v.iter().map(|v| &v.rule).collect::<Vec<_>>());
+            let v = run_tech_deck(&lay, &NoCells, &tech).unwrap().violations;
+            assert!(v.is_empty(), "{p:?}: {:?}", v.iter().map(|v| (&v.rule, v.marker)).collect::<Vec<_>>());
             for s in &lay.shapes {
                 let b = s.bbox();
                 if matches!(s.geom, Geometry::Rect(_)) {

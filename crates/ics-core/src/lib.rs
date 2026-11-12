@@ -4,11 +4,14 @@
 //! Python / MCP automation interfaces.
 
 pub mod connectivity;
+pub mod drc;
 pub mod examples;
+pub mod extract;
 pub mod gds;
 pub mod geom;
 pub mod hier;
 pub mod layout;
+pub mod lvs;
 pub mod netlist;
 pub mod pcell;
 pub mod project;

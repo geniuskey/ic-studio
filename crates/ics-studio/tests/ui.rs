@@ -79,6 +79,16 @@ fn layout_array_of_arrays() {
 }
 
 #[test]
+fn layout_drc() {
+    scenario_then("11_layout_drc", true, Some("inv_chain"), "layout", false, Some(Command::RunDrc));
+}
+
+#[test]
+fn layout_lvs() {
+    scenario_then("12_layout_lvs", true, Some("cmos_inverter"), "layout", false, Some(Command::RunLvs));
+}
+
+#[test]
 fn layout_pcells() {
     scenario("10_layout_pcells", true, Some("devices"), "layout", false);
 }
@@ -155,6 +165,7 @@ fn glyph_coverage() {
         include_str!("../src/home_view.rs"),
         include_str!("../src/layout_view.rs"),
         include_str!("../src/layout_view/edit.rs"),
+        include_str!("../src/layout_view/verify.rs"),
         include_str!("../src/schematic_view.rs"),
         include_str!("../src/sim_view.rs"),
         include_str!("../src/theme.rs"),

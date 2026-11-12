@@ -108,6 +108,41 @@ impl Region {
         self.boolean(&outside.sized(e), BoolOp::Not)
     }
 
+    pub fn translated(&self, dx: i64, dy: i64) -> Region {
+        Region { rects: self.rects.iter().map(|r| r.translate(dx, dy)).collect() }
+    }
+
+    /// Minkowski sum with the box `[-left, right] x [-bottom, top]` (all >= 0): every rectangle
+    /// `[x0, x1) x [y0, y1)` becomes `[x0 - left, x1 + right) x [y0 - bottom, y1 + top)`.
+    pub fn dilated(&self, left: i64, bottom: i64, right: i64, top: i64) -> Region {
+        if left == 0 && bottom == 0 && right == 0 && top == 0 {
+            return self.clone();
+        }
+        Region::from_rects(self.rects.iter().map(|r| IRect {
+            x0: r.x0 - left,
+            y0: r.y0 - bottom,
+            x1: r.x1 + right,
+            y1: r.y1 + top,
+        }))
+    }
+
+    /// Morphological erosion, the inverse of [`Region::dilated`] with the same arguments: a
+    /// rectangle `[x0, x1) x [y0, y1)` becomes `[x0 + left, x1 - right) x [y0 + bottom, y1 - top)`.
+    pub fn eroded(&self, left: i64, bottom: i64, right: i64, top: i64) -> Region {
+        if left == 0 && bottom == 0 && right == 0 && top == 0 {
+            return self.clone();
+        }
+        let Some(bb) = self.bbox() else { return Region::default() };
+        let m = left.max(bottom).max(right).max(top) + 1;
+        let outside = Region::from_rects([grow(&bb, m)]).boolean(self, BoolOp::Not);
+        self.boolean(&outside.dilated(right, top, left, bottom), BoolOp::Not)
+    }
+
+    /// Edge-connected components, each as its own (canonical) region.
+    pub fn parts(&self) -> Vec<Region> {
+        self.components().into_iter().map(|c| Region { rects: c.into_iter().map(|i| self.rects[i]).collect() }).collect()
+    }
+
     /// Simple, hole-free polygons (counter-clockwise, no repeated or collinear points) whose
     /// union is exactly this region and whose interiors are disjoint.
     ///
@@ -766,6 +801,34 @@ mod tests {
         assert_eq!(bar.sized(-2), reg(&[(2, 2, 98, 4)]));
         let dumbbell = reg(&[(0, 0, 20, 20), (20, 8, 40, 12), (40, 0, 60, 20)]);
         assert_eq!(dumbbell.sized(-3), reg(&[(3, 3, 17, 17), (43, 3, 57, 17)]));
+    }
+
+    #[test]
+    fn asymmetric_morphology_and_parts() {
+        let mut rng = Lcg(99);
+        for case in 0..100 {
+            let ra = rng.rects(16, 9);
+            let a = Region::from_rects(ra.clone());
+            let (l, b, rt, t) = (rng.next(3), rng.next(3), rng.next(4), rng.next(2));
+            let (dil, ero) = (a.dilated(l, b, rt, t), a.eroded(l, b, rt, t));
+            assert_canonical(&ero);
+            for y in -8..30 {
+                for x in -8..30 {
+                    let mut offsets = (-b..=t).flat_map(|dy| (-l..=rt).map(move |dx| (dx, dy)));
+                    let any = offsets.clone().any(|(dx, dy)| inside(&ra, x - dx, y - dy));
+                    let all = offsets.all(|(dx, dy)| inside(&ra, x + dx, y + dy));
+                    assert_eq!(inside(dil.rects(), x, y), any, "case {case} dilate at ({x}, {y})");
+                    assert_eq!(inside(ero.rects(), x, y), all, "case {case} erode at ({x}, {y})");
+                }
+            }
+            let parts = a.parts();
+            assert_eq!(Region::from_rects(parts.iter().flat_map(|p| p.rects().to_vec())), a);
+            for p in &parts {
+                assert_eq!(&Region::from_rects(p.rects().to_vec()), p);
+            }
+            assert_eq!(a.translated(3, -2).bbox(), a.bbox().map(|r| r.translate(3, -2)));
+        }
+        assert_eq!(reg(&[(0, 0, 10, 10), (10, 10, 20, 20), (30, 0, 40, 5)]).parts().len(), 3);
     }
 
     #[test]

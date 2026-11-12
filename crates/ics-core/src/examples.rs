@@ -164,8 +164,8 @@ pub fn inverter_layout(tech: &Tech) -> Layout {
     lay.add_rect(l("active"), 0, 2800, 2200, 4000);
     lay.add_rect(l("active"), 0, 400, 2200, 1400);
     // Poly gate + input contact pad
-    lay.add_rect(l("poly"), 1010, 200, 1190, 4200);
-    lay.add_rect(l("poly"), 400, 1820, 1190, 2180);
+    lay.add_rect(l("poly"), 1010, 180, 1190, 4220);
+    lay.add_rect(l("poly"), 400, 1790, 1190, 2210);
     lay.add_rect(l("contact"), 520, 1890, 740, 2110);
     // Source / drain contacts
     for (x, y) in [(300, 3290), (1600, 3290), (300, 790), (1600, 790)] {
@@ -176,13 +176,13 @@ pub fn inverter_layout(tech: &Tech) -> Layout {
     lay.add_rect(m1, -600, 4800, 2800, 5400);
     lay.add_rect(m1, -600, -400, 2800, 200);
     // Source straps
-    lay.add_rect(m1, 250, 3240, 570, 5000);
-    lay.add_rect(m1, 250, -200, 570, 1060);
+    lay.add_rect(m1, 240, 3230, 580, 5000);
+    lay.add_rect(m1, 240, -200, 580, 1070);
     // Output (drains)
-    lay.add(m1, Geometry::Path { points: vec![(1710, 900), (1710, 3400)], width: 320 });
+    lay.add(m1, Geometry::Path { points: vec![(1710, 900), (1710, 3400)], width: 340 });
     lay.add_rect(m1, 1550, 1900, 2600, 2220);
     // Input pin
-    lay.add_rect(m1, -400, 1840, 790, 2160);
+    lay.add_rect(m1, -400, 1830, 800, 2170);
     // Labels
     let t = l("metal1");
     lay.add(t, Geometry::Label { text: "vdd".into(), at: (-400, 4950), size: 300 });
@@ -207,6 +207,8 @@ fn layout_cell(name: &str, description: &str, layout: Layout) -> Cell {
 /// Inverter cell pitch (its boundary) in the generic technology.
 const INV_W: i64 = 3400;
 const INV_H: i64 = 5800;
+/// Array row pitch: the supply rails of stacked rows must not touch (vdd above, gnd below).
+const INV_ROW: i64 = INV_H + 400;
 
 /// Hierarchical demo cells: a chain of placed inverters, an inverter array and an array of
 /// arrays (8192 inverters, about 250k flattened shapes).
@@ -224,12 +226,15 @@ pub fn hierarchy_cells(tech: &Tech, lib: &str) -> Vec<Cell> {
         chain.add(m1, Geometry::Path { points: vec![(x, 2060), (x + 1000, 2060)], width: 320 });
     }
     chain.add(text, Geometry::Label { text: "inv_chain".into(), at: (-400, 5700), size: 400 });
+    for (name, at) in [("vdd", (-400, 5000)), ("gnd", (-400, -200)), ("in", (-300, 2000)), ("out", (3 * INV_W + 2000, 2000))] {
+        chain.add(text, Geometry::Label { text: name.into(), at, size: 250 });
+    }
 
     let mut array = Layout::default();
-    array.add_instance(inv.clone(), Trans::new(0, 0), Some(ArraySpec { cols: 16, rows: 8, col: (INV_W, 0), row: (0, INV_H) }));
-    array.add_rect(tech.layer_index("boundary").expect("generic layer"), -600, -400, 16 * INV_W - 600, 8 * INV_H - 400);
+    array.add_instance(inv.clone(), Trans::new(0, 0), Some(ArraySpec { cols: 16, rows: 8, col: (INV_W, 0), row: (0, INV_ROW) }));
+    array.add_rect(tech.layer_index("boundary").expect("generic layer"), -600, -400, 16 * INV_W - 600, 8 * INV_ROW - 400);
 
-    let (aw, ah) = (16 * INV_W + 2000, 8 * INV_H + 2000);
+    let (aw, ah) = (16 * INV_W + 2000, 8 * INV_ROW + 2000);
     let mut tiles = Layout::default();
     tiles.add_instance(
         CellRef::new(lib, "inv_array"),

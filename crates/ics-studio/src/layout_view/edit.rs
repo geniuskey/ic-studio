@@ -20,9 +20,21 @@ use crate::theme::{self, Palette};
 #[derive(Debug, Clone)]
 pub enum LayRequest {
     Open(CellRef),
-    PlacePCell { pcell: PCell, trans: Trans, array: Option<ArraySpec> },
-    SetPCell { inst: u64, pcell: PCell },
-    MakeCell { ids: BTreeSet<u64>, origin: (i64, i64) },
+    PlacePCell {
+        pcell: PCell,
+        trans: Trans,
+        array: Option<ArraySpec>,
+    },
+    SetPCell {
+        inst: u64,
+        pcell: PCell,
+    },
+    MakeCell {
+        ids: BTreeSet<u64>,
+        origin: (i64, i64),
+    },
+    /// Store a DRC rule deck in the project's technology.
+    SetDeck(String),
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]

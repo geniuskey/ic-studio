@@ -58,6 +58,9 @@ pub struct Tech {
     pub layers: Vec<LayerDef>,
     #[serde(default)]
     pub vias: Vec<ViaDef>,
+    /// DRC rule deck (see `drc`); `None` uses the deck derived from the layer rules.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drc_deck: Option<String>,
 }
 
 impl Tech {
@@ -71,6 +74,11 @@ impl Tech {
 
     pub fn via(&self, name: &str) -> Option<&ViaDef> {
         self.vias.iter().find(|v| v.name.eq_ignore_ascii_case(name))
+    }
+
+    /// The DRC deck: `drc_deck`, or the deck derived from the layer and via rules.
+    pub fn deck_text(&self) -> String {
+        self.drc_deck.clone().unwrap_or_else(|| crate::drc::default_deck_text(self))
     }
 
     pub fn layer_by_gds(&self, layer: u16, datatype: u16) -> Option<usize> {
@@ -124,6 +132,7 @@ impl Tech {
                 v("via1", "metal1", "via1", "metal2", 260, 260, 60, 60),
                 v("via2", "metal2", "via2", "metal3", 260, 260, 60, 60),
             ],
+            drc_deck: None,
         }
     }
 }

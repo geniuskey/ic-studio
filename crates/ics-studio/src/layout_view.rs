@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use eframe::egui::{self, Align2, Color32, FontId, Key, Mesh, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use ics_core::geom::IRect;
 use ics_core::hier::{self, CellIndex, Hier, LayoutSource, ViewQuery};
-use ics_core::layout::{ArraySpec, DrcViolation, Geometry, Layout, Shape, Trans, run_basic_drc};
+use ics_core::layout::{ArraySpec, Geometry, Layout, Shape, Trans};
 use ics_core::project::{CellRef, Project};
 use ics_core::tech::{FillStyle, LayerDef, Tech};
 
@@ -14,8 +14,10 @@ use crate::history::History;
 use crate::theme::{self, Palette};
 
 mod edit;
+mod verify;
 pub use edit::LayRequest;
 use edit::{EditState, Handle};
+pub use verify::Verify;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum LayTool {
@@ -116,7 +118,7 @@ pub struct LayoutEditor {
     pub path_width: i64,
     pub label_text: String,
     ruler: Option<((i64, i64), (i64, i64))>,
-    pub drc: Option<Vec<DrcViolation>>,
+    pub verify: verify::VerifyState,
     pub cursor: Option<(i64, i64)>,
     pub show_grid: bool,
     /// Deepest hierarchy level drawn with its contents.
@@ -150,7 +152,7 @@ impl Default for LayoutEditor {
             path_width: 0,
             label_text: "net".into(),
             ruler: None,
-            drc: None,
+            verify: verify::VerifyState::default(),
             cursor: None,
             show_grid: true,
             max_depth: 32,
@@ -812,6 +814,7 @@ impl LayoutEditor {
                 }
                 if let Some(w) = world
                     && (resp.clicked() || resp.double_clicked())
+                    && !self.pick_net((w.0 as i64, w.1 as i64))
                 {
                     let idx = cx.index(l);
                     let h = hit(l, &idx, &self.visible, w.0 as i64, w.1 as i64, tol);
@@ -1041,13 +1044,10 @@ impl LayoutEditor {
             },
         );
 
-        // Overlays: DRC markers
-        if let Some(v) = &self.drc {
-            for x in v {
-                let r = screen_rect(&self.view, rect, x.area).expand(3.0);
-                painter.rect_stroke(r, 2.0, Stroke::new(2.0, pal.danger), StrokeKind::Outside);
-            }
+        if out.changed {
+            self.verify.layout_changed();
         }
+        self.draw_verify(&painter, &self.view, rect, &pal);
         // Move preview: ghost outlines of the selection at the drag offset.
         if let Some(LDrag::Move { offset, .. }) = &self.drag
             && *offset != (0, 0)
@@ -1610,40 +1610,10 @@ impl LayoutEditor {
             changed = true;
             cx.touched();
         }
-        ui.add_space(12.0);
-        theme::section(ui, "Design Rule Check");
-        ui.horizontal(|ui| {
-            if ui.button("▶ Run DRC").on_hover_text("Built-in min width / spacing checks on the flattened cell").clicked() {
-                self.drc = Some(run_basic_drc(l, cx.src, tech));
-            }
-            if self.drc.is_some() && ui.button("Clear").clicked() {
-                self.drc = None;
-            }
-        });
-        let mut zoom_to: Option<IRect> = None;
-        if let Some(v) = &self.drc {
-            if v.is_empty() {
-                ui.colored_label(pal.ok, "✔ No violations");
-            } else {
-                ui.colored_label(pal.danger, format!("{} violation(s)", v.len()));
-                egui::ScrollArea::vertical().id_salt("drc").max_height(220.0).show(ui, |ui| {
-                    for x in v.iter().take(1000) {
-                        if ui
-                            .add(egui::Button::new(egui::RichText::new(&x.rule).small()).frame(false))
-                            .on_hover_text("Click to zoom")
-                            .clicked()
-                        {
-                            zoom_to = Some(x.area);
-                        }
-                    }
-                });
-            }
+        if changed {
+            self.verify.layout_changed();
         }
-        if let Some(a) = zoom_to {
-            let c = ((a.x0 + a.x1) as f64 / 2.0, (a.y0 + a.y1) as f64 / 2.0);
-            self.view.center = c;
-            self.view.scale = self.view.scale.max(0.3);
-        }
+        self.verify_panel(ui, l, cx);
         (changed, open)
     }
 }
