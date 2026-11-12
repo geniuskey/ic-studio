@@ -4,7 +4,8 @@
 //!
 //! A [`Runset`] of the technology names the tool, the check and the deck. [`run`] writes the
 //! cell and everything it places to `<cell>.gds` in a fresh work directory, plus for LVS the
-//! schematic as a `.subckt` (`<cell>_sch.cir`), runs the tool there and reads its results:
+//! schematic as a CDL-style `.subckt` (`<cell>_sch.cir`: MOS devices as `M` elements, lengths
+//! in metres), runs the tool there and reads its results:
 //!
 //! - KLayout: `klayout -b -r DECK -rd input=GDS -rd topcell=CELL -rd report=FILE
 //!   [-rd schematic=CIR] [-rd K=V ...]` (variable names configurable). DRC results come from the
@@ -376,7 +377,7 @@ pub fn run(project: &Project, cell: &CellRef, runset: &Runset, tools: &Tools) ->
             let lay = c.layout.as_ref().expect("checked");
             let x = extract(lay, project, tech);
             let lay_path = dir.join(format!("{}_lay.cir", cell.cell));
-            std::fs::write(&lay_path, layout_netlist(&x, tech, &top)).map_err(|e| format!("{}: {e}", lay_path.display()))?;
+            std::fs::write(&lay_path, layout_netlist(&x, &top)).map_err(|e| format!("{}: {e}", lay_path.display()))?;
             let report = dir.join("netgen.report");
             let s = schematic.as_deref().expect("LVS schematic");
             cmd.arg("-batch").arg("lvs");
@@ -432,9 +433,23 @@ fn spice_net(n: &str, ground: &str) -> String {
     if n == "0" { ground.to_string() } else { n.split_whitespace().collect::<Vec<_>>().join("_") }
 }
 
-/// The schematic as `.subckt TOP <named nets>` without sources, models and analyses.
+/// The technology as LVS netlists (CDL) see it: MOS devices as `M` elements and lengths in
+/// metres, whatever the simulation models need.
+fn cdl_tech(tech: &Tech) -> Tech {
+    let mut t = tech.clone();
+    for d in &mut t.devices {
+        d.subckt = false;
+    }
+    if let Some(m) = &mut t.models {
+        m.length_unit = LengthUnit::M;
+    }
+    t
+}
+
+/// The schematic as `.subckt TOP <named nets>` (CDL: MOS as `M` elements, lengths in metres)
+/// without sources, models and analyses.
 pub fn lvs_netlist(sch: &Schematic, tech: &Tech, top: &str, runset: &Runset) -> String {
-    let nl = netlist_for(sch, tech, "");
+    let nl = netlist_for(sch, &cdl_tech(tech), "");
     let skip = |line: &str| {
         let first = line.chars().next().map(|c| c.to_ascii_uppercase().to_string()).unwrap_or_default();
         line.starts_with('.') || line.starts_with('*') || runset.skip.iter().any(|s| s.eq_ignore_ascii_case(&first))
@@ -455,27 +470,18 @@ pub fn lvs_netlist(sch: &Schematic, tech: &Tech, top: &str, runset: &Runset) -> 
     s
 }
 
-/// IC Studio's extraction as `.subckt TOP <labelled nets>`, with the PDK element and length
-/// conventions of the schematic netlist.
-pub fn layout_netlist(x: &Extraction, tech: &Tech, top: &str) -> String {
+/// IC Studio's extraction as `.subckt TOP <labelled nets>`, in the conventions of
+/// [`lvs_netlist`].
+pub fn layout_netlist(x: &Extraction, top: &str) -> String {
     let net = |i: usize| x.nets.get(i).map_or("?".to_string(), |n| spice_net(&n.name, "gnd"));
     let mut ports: Vec<String> = x.nets.iter().enumerate().filter(|(_, n)| n.labelled).map(|(i, _)| net(i)).collect();
     ports.sort();
     ports.dedup();
-    let unit = tech.length_unit();
-    let len = |v: i64| {
-        let m = v as f64 / x.dbu_per_um.max(1) as f64 * 1e-6;
-        match unit {
-            LengthUnit::M => format!("{}u", m * 1e6),
-            LengthUnit::Um => format!("{}", m * 1e6),
-        }
-    };
+    let len = |v: i64| format!("{}u", v as f64 / x.dbu_per_um.max(1) as f64);
     let mut s = format!("* {top}: extracted by IC Studio\n.subckt {top} {}\n", ports.join(" "));
     for d in &x.devices {
-        let subckt = tech.devices.iter().any(|t| t.subckt && t.name == d.model);
-        let prefix = if subckt { "X" } else { "" };
         s += &format!(
-            "{prefix}{} {} {} {} {} {} w={} l={}\n",
+            "{} {} {} {} {} {} w={} l={}\n",
             d.name,
             net(d.d),
             net(d.g),
@@ -788,8 +794,11 @@ mod tests {
                 ".ends"
             ]
         );
+        let sky = crate::pdk::parse(include_str!("../../../pdks/sky130A.toml"), Path::new("."), &|_| None).unwrap().tech;
+        let cdl = lvs_netlist(c.schematic.as_ref().unwrap(), &sky, "cmos_inverter", &rs);
+        assert!(cdl.contains("\nM1 out in vdd vdd sky130_fd_pr__pfet_01v8 w=2u l=180n\n"), "{cdl}");
         let x = extract(c.layout.as_ref().unwrap(), &p, &p.tech);
-        let l = layout_netlist(&x, &p.tech, "cmos_inverter");
+        let l = layout_netlist(&x, "cmos_inverter");
         assert!(l.contains(".subckt cmos_inverter gnd in out vdd\n"), "{l}");
         assert!(l.contains("M1 out in gnd sub nmos w=1u l=0.18u\n"), "{l}");
     }
