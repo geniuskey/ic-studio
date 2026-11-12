@@ -89,11 +89,11 @@ impl View2D {
         self.center = ((min.0 + max.0) / 2.0, (min.1 + max.1) / 2.0);
     }
 
-    /// Standard EDA-style navigation: wheel / pinch zoom, middle or right drag pan,
-    /// shift+wheel / trackpad horizontal scroll pans. Returns true if the view changed.
-    pub fn handle_navigation(&mut self, ui: &egui::Ui, resp: &egui::Response, rect: Rect) -> bool {
+    /// Standard EDA-style navigation: wheel / pinch zoom, middle drag pans (and right drag, if
+    /// `right_pan`), shift+wheel / trackpad horizontal scroll pans. Returns true if the view changed.
+    pub fn handle_navigation(&mut self, ui: &egui::Ui, resp: &egui::Response, rect: Rect, right_pan: bool) -> bool {
         let mut changed = false;
-        if resp.dragged_by(egui::PointerButton::Middle) || resp.dragged_by(egui::PointerButton::Secondary) {
+        if resp.dragged_by(egui::PointerButton::Middle) || (right_pan && resp.dragged_by(egui::PointerButton::Secondary)) {
             self.pan_pixels(resp.drag_delta());
             changed = true;
         }

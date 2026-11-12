@@ -5,8 +5,12 @@ database units (1 dbu = 1 nm in the generic technology, y pointing up); the insp
 µm. Every point snaps to the snap grid (the **Snap** field in the toolbar, a multiple of the
 technology grid). The editor follows Virtuoso conventions: two-click commands with a prompt
 in the top-left corner of the canvas, bindkeys (`S` stretch, `M` move, `C` copy, `Shift+C` chop, `O` via, `T` layer tap, `u` undo,
-`Z` zoom box, `W` previous view, ...; see [Keyboard shortcuts](shortcuts.md)),
-gravity snapping and design-rule-driven feedback.
+`Z` zoom box, `W` previous view, `q` properties, `F3` command options, `F4` partial
+select, ...; see [Keyboard shortcuts](shortcuts.md)), floating option forms, a middle-click
+pop-up menu, gravity snapping and design-rule-driven feedback. In the Layout workspace the
+menu bar adds **Create** and **Options** menus, and **Edit**, **View** and **Verify** gain
+the layout commands; every item shows its bindkey, and the command palette lists them as
+"Layout <menu>: <item>".
 
 ![Layout editor](screenshots/06_layout.png)
 
@@ -16,8 +20,9 @@ gravity snapping and design-rule-driven feedback.
   **Polygon**, **Path**, **Label**, **Via**, **Instance**, **Chop**, **Ruler**), fit,
   **Zoom box**, **Prev view**, **Grid**, **Snap**, **Gravity**, **DRD**, **Flylines**, and
   **GDS** to export the cell.
-- **Status bar**: cursor position and, while a command is in progress, dx / dy from its
-  reference point.
+- **Status bar**: `X` / `Y` of the cursor; while a command is in progress `dX`, `dY` and
+  `Dist` from its reference point; `Sel: n` (`Sel(P): n` for a partial selection); `Cmd:`
+  the current tool; and a `mouse L: … M: … R: …` line telling what each button does now.
 - **Right panel**: cell statistics or the inspector, **Edit** operations, **Layer
   operations**, and the verification sections (see [Verification](verification.md)).
 
@@ -40,7 +45,7 @@ Keys act on the canvas only while the mouse is over it.
 | Tool | Key | How to use |
 |---|---|---|
 | Select | `Esc` | Click, `Shift`/`Ctrl`+click, or drag a box |
-| Stretch | `S` | Click an edge or vertex of a shape, then the destination (or drag it) |
+| Stretch | `S` | Click an edge or vertex of a shape, then the destination (or drag it). Or drag a box away from any edge: the vertices inside become the partial selection; then click a reference point and the destination |
 | Rectangle | `R` | Drag from corner to corner, or click two corners; the size is shown |
 | Polygon | `Shift+P` | Click each vertex; `Enter`, double-click or right-click closes it |
 | Path | `P` | Click points; `Enter`, double-click or right-click finishes it |
@@ -91,7 +96,7 @@ While drawing a polygon or path, `Backspace` removes the last point and `Esc` ca
 | Select all | `Ctrl+A` |
 | Move | Drag a selected item; or `M`, click a reference point, click the destination; or nudge with `Shift`+arrow keys (10 snap steps). Right-click while moving rotates 90°, `Shift`+right-click flips sideways |
 | Copy | `C`, click a reference point, then click destinations (each click places another copy, `Esc` ends); rotate / flip as for Move |
-| Stretch | `S`, click an edge or vertex, click the destination |
+| Stretch | `S`, click an edge or vertex, click the destination; with a partial selection, click a reference point, then the destination; or drag a box over several edges (see below) |
 | Yank / paste | `y` or `Ctrl+C` copies the selection (`Ctrl+X` cuts it); `Shift+Y` or `Ctrl+V` attaches it to the cursor, click to place. The clipboard also works between cells |
 | Merge / chop | `Shift+M` / `Shift+C` |
 | Reshape | With one shape selected, drag a vertex handle (square) or an edge handle (round); Manhattan shapes stay Manhattan |
@@ -101,6 +106,29 @@ While drawing a polygon or path, `Backspace` removes the last point and `Esc` ca
 | Undo / redo | `u` / `Shift+U`, or `Ctrl+Z` / `Ctrl+Shift+Z` or `Ctrl+Y` |
 | Edit in place | `Shift+X` over an instance (or with one selected) edits its cell, or the array element under the cursor, inside the parent: the surroundings stay visible, dimmed, in the parent's orientation, and DRD checks against them. `Shift+B` or **Return** in the toolbar goes back |
 | Open a placed cell | Double-click the instance, or **Open** in the inspector |
+| Pop-up menu | Middle-click, or right-click when no command point is pending: Move, Copy, Stretch, Delete, Properties, Rotate 90°, Merge, Yank, Paste, Descend Edit, Return, Fit All, Previous View. With nothing selected, the item under the cursor is selected first |
+
+### Partial selection
+
+`F4` (or **Edit > Toggle Partial Select**) toggles partial selection. In Select, a click
+near an edge selects that edge (both its vertices) or a vertex; `Shift`+click adds or
+removes; a drag box selects the vertices inside it (items entirely inside are taken whole).
+Selected edges and vertices are highlighted and the status bar shows `Sel(P): n`.
+
+Press `S`, click a reference point, then the destination: every selected vertex moves, and
+Manhattan shapes stay Manhattan (adjacent edges slide along). Dragging a partially selected
+shape in Select stretches it too. `Esc` clears the partial selection.
+
+### Forms
+
+Each key opens a floating form and closes it again:
+
+| Key | Form |
+|---|---|
+| `q` | **Edit Object Properties**: the inspector for the selection |
+| `F3` | Options of the current command (path width, label text, via, instance placement; snap and gravity for commands without options) |
+| `e` | **Display Options**: grid, display levels **From** 0 **To** N, flylines, clear rulers |
+| `Shift+E` | **Layout Editor Options**: snap spacing, gravity, DRD, instances selectable, partial selection, default path width |
 
 The **Edit** section of the right panel (shown when something is selected) also has:
 
@@ -116,10 +144,11 @@ The **Edit** section of the right panel (shown when something is selected) also 
 | Action | How |
 |---|---|
 | Zoom | Mouse wheel or pinch, `[` / `]` at the cursor, `Shift+Z` out |
-| Zoom box | `Z` (or **Zoom box**), then drag or click two corners |
+| Zoom box | Right drag, or `Z` (or **Zoom box**), then drag or click two corners |
 | Previous / next view | `W` / `Shift+W` (or **Prev view**) |
 | Fit | `F` |
-| Pan | Middle or right drag, `Shift`+wheel, or the arrow keys |
+| Pan | Middle drag, `Shift`+wheel, or the arrow keys |
+| Pop-up menu | Middle-click (or right-click when no command point is pending) |
 
 ## Layer operations
 

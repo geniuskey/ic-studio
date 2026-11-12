@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::canvas::View2D;
 use crate::home_view;
 use crate::icons::{self, Icon};
-use crate::layout_view::{EipContext, LayCtx, LayRequest, LayTool, LayoutEditor, Verify, fmt_count, um};
+use crate::layout_view::{EipContext, LayAction, LayCtx, LayRequest, LayTool, LayoutEditor, Verify, fmt_count, um};
 use crate::rule_designer::{DesignerAction, RuleDesigner};
 use crate::schematic_view::{SchTool, SchematicEditor, device_palette};
 use crate::sim_view::{self, SimEvent, SimState};
@@ -109,6 +109,8 @@ pub enum Command {
     UserGuide,
     About,
     CommandPalette,
+    /// A layout editor action (Virtuoso menus and bindkeys) on the active layout.
+    Lay(LayAction),
     Quit,
 }
 
@@ -246,13 +248,16 @@ const SHORTCUTS: &[ShortcutGroup] = &[
             ("Mod+J", "Toggle console"),
             ("Mod+,", "Settings"),
             ("F1", "Keyboard shortcuts"),
+            ("F2", "Save"),
         ],
     ),
     (
         "Canvas",
         &[
             ("Wheel / pinch", "Zoom at cursor"),
-            ("Middle or right drag", "Pan"),
+            ("Middle drag (schematic: or right drag)", "Pan"),
+            ("Right drag (layout)", "Zoom into the box"),
+            ("Middle click (layout)", "Pop-up menu"),
             ("Shift+wheel", "Pan horizontally"),
             ("F", "Fit view"),
             ("Esc", "Cancel, back to Select, clear selection"),
@@ -291,6 +296,11 @@ const SHORTCUTS: &[ShortcutGroup] = &[
             ("Mod+A / Mod+D", "Select all, deselect all"),
             ("Shift+X / Shift+B", "Edit an instance in place, return"),
             ("Shift+N", "Mark net mode"),
+            ("q", "Edit object properties"),
+            ("F3", "Options of the current command"),
+            ("e / Shift+E", "Display options, editor options"),
+            ("F4", "Toggle partial select (edges and vertices)"),
+            ("S + box", "Stretch every vertex inside the box"),
             ("Enter / Backspace", "Finish, remove last point while drawing"),
             ("Arrows / Shift+arrows", "Pan, nudge the selection 10 snap steps"),
             ("Z / Shift+Z", "Zoom box, zoom out"),
@@ -304,6 +314,23 @@ const SHORTCUTS: &[ShortcutGroup] = &[
         ],
     ),
 ];
+
+/// Items of one of the layout editor's menus ([`LayAction::MENUS`]).
+fn lay_menu_items(ui: &mut egui::Ui, menu: &str, q: &mut Vec<Command>) {
+    let items = LayAction::MENUS.iter().find(|m| m.0 == menu).map_or(&[][..], |m| m.1);
+    for item in items {
+        match item {
+            Some(a) => {
+                if ui.add(egui::Button::new(a.name()).shortcut_text(a.key())).clicked() {
+                    q.push(Command::Lay(*a));
+                }
+            }
+            None => {
+                ui.separator();
+            }
+        }
+    }
+}
 
 struct Descent {
     parent: CellRef,
@@ -659,6 +686,12 @@ impl IcStudio {
             Command::SetWorkspace(w) => self.workspace = w,
             Command::RunSimulation => self.run_simulation(ctx),
             Command::Undo | Command::Redo | Command::Delete | Command::FitView => self.editor_command(cmd),
+            Command::Lay(a) => {
+                if let Some(r) = self.active.clone() {
+                    self.workspace = Workspace::Layout;
+                    self.lay_eds.entry(r).or_default().actions.push(a);
+                }
+            }
             Command::RunDrc => self.verify(ctx, Verify::Drc),
             Command::ExtractNets => self.verify(ctx, Verify::Extract),
             Command::RunLvs => self.verify(ctx, Verify::Lvs),
@@ -1121,6 +1154,7 @@ impl IcStudio {
         fire(cmd, Key::Num4, Command::SetWorkspace(Workspace::Layout), q);
         fire(cmd, Key::Comma, Command::Settings, q);
         fire(Modifiers::NONE, Key::F1, Command::Shortcuts, q);
+        fire(Modifiers::NONE, Key::F2, Command::Save, q);
         if !ctx.egui_wants_keyboard_input() {
             fire(cs, Key::Z, Command::Redo, q);
             fire(cmd, Key::Z, Command::Undo, q);
@@ -1138,6 +1172,7 @@ impl IcStudio {
         let pal = theme::palette(ui.ctx());
         let q = &mut self.queue;
         let has_project = self.project.is_some();
+        let lay = self.workspace == Workspace::Layout && self.active.is_some();
         egui::MenuBar::new().ui(ui, |ui| {
             let (r, p) = ui.allocate_painter(Vec2::new(22.0, 22.0), Sense::hover());
             p.rect_filled(r.rect.shrink(1.0), 5.0, pal.accent);
@@ -1163,7 +1198,7 @@ impl IcStudio {
                     }
                 });
                 ui.separator();
-                if ui.add_enabled(has_project, egui::Button::new("Save").shortcut_text("⌘S")).clicked() {
+                if ui.add_enabled(has_project, egui::Button::new("Save").shortcut_text("⌘S / F2")).clicked() {
                     q.push(Command::Save);
                 }
                 if ui.add_enabled(has_project, egui::Button::new("Save As…").shortcut_text("⇧⌘S")).clicked() {
@@ -1213,15 +1248,19 @@ impl IcStudio {
                 }
             });
             ui.menu_button("Edit", |ui| {
-                if ui.add(egui::Button::new("Undo").shortcut_text("⌘Z")).clicked() {
+                if ui.add(egui::Button::new("Undo").shortcut_text(if lay { "u / ⌘Z" } else { "⌘Z" })).clicked() {
                     q.push(Command::Undo);
                 }
-                if ui.add(egui::Button::new("Redo").shortcut_text("⇧⌘Z")).clicked() {
+                if ui.add(egui::Button::new("Redo").shortcut_text(if lay { "Shift+U / ⇧⌘Z" } else { "⇧⌘Z" })).clicked() {
                     q.push(Command::Redo);
                 }
                 ui.separator();
                 if ui.add(egui::Button::new("Delete").shortcut_text("Del")).clicked() {
                     q.push(Command::Delete);
+                }
+                if lay {
+                    ui.separator();
+                    lay_menu_items(ui, "Edit", q);
                 }
             });
             ui.menu_button("View", |ui| {
@@ -1240,7 +1279,14 @@ impl IcStudio {
                 if ui.button(if self.settings.dark { "Light Theme" } else { "Dark Theme" }).clicked() {
                     q.push(Command::ToggleTheme);
                 }
+                if lay {
+                    ui.separator();
+                    lay_menu_items(ui, "View", q);
+                }
             });
+            if lay {
+                ui.menu_button("Create", |ui| lay_menu_items(ui, "Create", q));
+            }
             ui.menu_button("Simulation", |ui| {
                 if ui.add(egui::Button::new("Run").shortcut_text("F5")).clicked() {
                     q.push(Command::RunSimulation);
@@ -1259,6 +1305,9 @@ impl IcStudio {
                 if ui.button("Run LVS").clicked() {
                     q.push(Command::RunLvs);
                 }
+                if lay && ui.add(egui::Button::new("Mark Net").shortcut_text("Shift+N")).clicked() {
+                    q.push(Command::Lay(LayAction::MarkNet));
+                }
                 if ui.button("Run Sign-off Runset").clicked() {
                     q.push(Command::RunSignoff(None));
                 }
@@ -1273,6 +1322,9 @@ impl IcStudio {
                     q.push(Command::RouteFlylines);
                 }
             });
+            if lay {
+                ui.menu_button("Options", |ui| lay_menu_items(ui, "Options", q));
+            }
             ui.menu_button("Help", |ui| {
                 if ui.button("User Guide").clicked() {
                     q.push(Command::UserGuide);
@@ -1664,24 +1716,7 @@ impl IcStudio {
                             }
                             ui.separator();
                             ui.checkbox(&mut ed.show_grid, "Grid");
-                            ui.horizontal(|ui| {
-                                let sl = ui.label("Snap");
-                                let mut snap_um = ed.snap_step(&tech) as f64 / tech.dbu_per_um as f64;
-                                if ui
-                                    .add(
-                                        egui::DragValue::new(&mut snap_um)
-                                            .speed(0.005)
-                                            .range(0.0..=100.0)
-                                            .max_decimals(3)
-                                            .suffix(" µm"),
-                                    )
-                                    .labelled_by(sl.id)
-                                    .on_hover_text("Snap spacing, rounded to the technology grid")
-                                    .changed()
-                                {
-                                    ed.snap = (snap_um * tech.dbu_per_um as f64).round() as i64;
-                                }
-                            });
+                            ed.snap_control(ui, &tech);
                             ui.checkbox(&mut ed.gravity, "Gravity").on_hover_text("Snap the cursor to nearby vertices and edges");
                             ui.checkbox(&mut ed.drd, "DRD").on_hover_text(
                                 "Design-rule-driven editing: show spacing and width violations while drawing and moving",
@@ -1882,20 +1917,37 @@ impl IcStudio {
                         if let (Some(ed), Some(p)) = (self.lay_eds.get(r), &self.project) {
                             if let Some(c) = ed.cursor {
                                 ui.label(
-                                    RichText::new(format!("x {} µm  y {} µm", um(c.0, &p.tech), um(c.1, &p.tech)))
+                                    RichText::new(format!("X: {}  Y: {}", um(c.0, &p.tech), um(c.1, &p.tech)))
                                         .small()
                                         .monospace(),
                                 );
                                 if let Some(a) = ed.anchor() {
+                                    let (dx, dy) = (c.0 - a.0, c.1 - a.1);
+                                    let dist = ((dx as f64).hypot(dy as f64)).round() as i64;
                                     ui.label(
-                                        RichText::new(format!("dx {}  dy {}", um(c.0 - a.0, &p.tech), um(c.1 - a.1, &p.tech)))
-                                            .small()
-                                            .monospace()
-                                            .color(pal.text_weak),
+                                        RichText::new(format!(
+                                            "dX: {}  dY: {}  Dist: {}",
+                                            um(dx, &p.tech),
+                                            um(dy, &p.tech),
+                                            um(dist, &p.tech)
+                                        ))
+                                        .small()
+                                        .monospace()
+                                        .color(pal.text_weak),
                                     );
                                 }
                             }
-                            ui.label(RichText::new(format!("{} selected", ed.selection.len())).small().color(pal.text_weak));
+                            let sel = if ed.partial_mode || !ed.part.is_empty() {
+                                format!("Sel(P): {}", ed.part.len())
+                            } else {
+                                format!("Sel: {}", ed.selection.len())
+                            };
+                            ui.label(RichText::new(sel).small().monospace().color(pal.text_weak));
+                            ui.label(RichText::new(format!("Cmd: {}", ed.tool.name())).small().monospace().color(pal.layout));
+                            ui.separator();
+                            let [ml, mm, mr] = ed.mouse_hints();
+                            ui.label(RichText::new(format!("mouse L: {ml}   M: {mm}   R: {mr}")).small().color(pal.text_weak))
+                                .on_hover_text("What each mouse button does now");
                             let s = ed.stats;
                             let txt = format!(
                                 "{} shapes drawn{}",
@@ -2048,6 +2100,13 @@ impl IcStudio {
             ("Open user guide (web)".into(), "", Command::UserGuide),
             ("About IC Studio".into(), "", Command::About),
         ];
+        if self.workspace == Workspace::Layout && self.active.is_some() {
+            for (menu, items) in LayAction::MENUS {
+                for a in items.iter().flatten() {
+                    v.push((format!("Layout {menu}: {}", a.name()), a.key(), Command::Lay(*a)));
+                }
+            }
+        }
         for (i, w) in Workspace::ALL.iter().enumerate() {
             let sc: &'static str = ["⌘1", "⌘2", "⌘3", "⌘4"][i];
             v.push((format!("Go to {} workspace", w.name()), sc, Command::SetWorkspace(*w)));

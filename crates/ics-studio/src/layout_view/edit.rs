@@ -214,6 +214,68 @@ pub(super) fn drag_handle(g: &Geometry, h: Handle, d: (i64, i64)) -> Geometry {
     }
 }
 
+/// Outline vertices of a shape inside `r` (partial selection by box).
+pub(super) fn vertices_in(g: &Geometry, r: IRect) -> BTreeSet<usize> {
+    outline(g).map_or_else(BTreeSet::new, |(pts, _)| (0..pts.len()).filter(|&i| r.contains(pts[i].0, pts[i].1)).collect())
+}
+
+/// Outline vertices of a shape (rectangles as their four corners, from the bottom left).
+pub(super) fn vertices(g: &Geometry) -> Vec<(i64, i64)> {
+    outline(g).map_or_else(Vec::new, |(pts, _)| pts)
+}
+
+/// The vertices of a handle: a vertex, or both ends of an edge.
+pub(super) fn handle_vertices(g: &Geometry, h: Handle) -> BTreeSet<usize> {
+    let n = outline(g).map_or(0, |(p, _)| p.len());
+    match h {
+        Handle::Vertex(k) => [k].into(),
+        Handle::Edge(k) if n > 0 => [k, (k + 1) % n].into(),
+        Handle::Edge(_) => BTreeSet::new(),
+    }
+}
+
+/// Stretch: move the vertices `sel` of a shape by `d` (partial selection). Manhattan outlines stay
+/// Manhattan: an unselected neighbour slides along with the edge it shares with a moved vertex.
+pub(super) fn stretch_points(g: &Geometry, sel: &BTreeSet<usize>, d: (i64, i64)) -> Geometry {
+    let Some((orig, closed)) = outline(g) else { return g.clone() };
+    let n = orig.len();
+    let mut pts = orig.clone();
+    let manhattan = is_manhattan(&orig, closed);
+    for j in 0..n {
+        if sel.contains(&j) {
+            pts[j] = (orig[j].0 + d.0, orig[j].1 + d.1);
+            continue;
+        }
+        if !manhattan {
+            continue;
+        }
+        let mut nb = vec![];
+        if closed || j > 0 {
+            nb.push((j + n - 1) % n);
+        }
+        if closed || j + 1 < n {
+            nb.push((j + 1) % n);
+        }
+        let (mut mx, mut my) = (false, false);
+        for i in nb.into_iter().filter(|i| *i != j && sel.contains(i)) {
+            if orig[i].0 == orig[j].0 && orig[i].1 != orig[j].1 {
+                mx = true;
+            } else if orig[i].1 == orig[j].1 && orig[i].0 != orig[j].0 {
+                my = true;
+            }
+        }
+        pts[j] = (orig[j].0 + if mx { d.0 } else { 0 }, orig[j].1 + if my { d.1 } else { 0 });
+    }
+    match g {
+        Geometry::Rect(_) | Geometry::Polygon { .. } => polygon_geometry(pts).unwrap_or_else(|| g.clone()),
+        Geometry::Path { width, .. } => {
+            let pts = cleanup(pts, false);
+            if pts.len() < 2 { g.clone() } else { Geometry::Path { points: pts, width: *width } }
+        }
+        Geometry::Label { .. } => g.clone(),
+    }
+}
+
 fn seg_dist(p: (i64, i64), a: (i64, i64), b: (i64, i64)) -> f64 {
     let (px, py, ax, ay, bx, by) = (p.0 as f64, p.1 as f64, a.0 as f64, a.1 as f64, b.0 as f64, b.1 as f64);
     let (dx, dy) = (bx - ax, by - ay);
@@ -754,6 +816,24 @@ mod tests {
         let g = Geometry::Rect(IRect::new(0, 0, 100, 50));
         assert_eq!(drag_handle(&g, Handle::Edge(1), (30, 999)), Geometry::Rect(IRect::new(0, 0, 130, 50)));
         assert_eq!(drag_handle(&g, Handle::Vertex(2), (10, 10)), Geometry::Rect(IRect::new(0, 0, 110, 60)));
+    }
+
+    #[test]
+    fn partial_stretch_moves_selected_vertices_only() {
+        let g = Geometry::Rect(IRect::new(0, 0, 100, 50));
+        let right = vertices_in(&g, IRect::new(90, -10, 200, 60));
+        assert_eq!(right, [1, 2].into());
+        assert_eq!(stretch_points(&g, &right, (30, 0)), Geometry::Rect(IRect::new(0, 0, 130, 50)));
+        assert_eq!(stretch_points(&g, &[2].into(), (10, 10)), Geometry::Rect(IRect::new(0, 0, 110, 60)));
+        let l = Geometry::Polygon { points: vec![(0, 0), (100, 0), (100, 50), (50, 50), (50, 100), (0, 100)] };
+        let Geometry::Polygon { points } = stretch_points(&l, &[3, 4].into(), (20, 0)) else { panic!() };
+        assert!(is_manhattan(&points, true));
+        assert!(points.contains(&(70, 50)) && points.contains(&(70, 100)) && points.contains(&(0, 100)));
+        let p = Geometry::Path { points: vec![(0, 0), (100, 0), (100, 100)], width: 10 };
+        assert_eq!(
+            stretch_points(&p, &[2].into(), (0, 50)),
+            Geometry::Path { points: vec![(0, 0), (100, 0), (100, 150)], width: 10 }
+        );
     }
 
     #[test]

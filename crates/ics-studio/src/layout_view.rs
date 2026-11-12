@@ -14,9 +14,11 @@ use crate::history::History;
 use crate::theme::{self, Palette};
 
 mod assist;
+mod commands;
 mod edit;
 mod verify;
 pub use assist::Clip;
+pub use commands::{LayAction, Partial};
 pub use edit::LayRequest;
 use edit::{EditState, Handle};
 pub use verify::Verify;
@@ -73,17 +75,17 @@ impl LayTool {
     pub fn key(self) -> &'static str {
         match self {
             LayTool::Select => "Esc",
-            LayTool::Stretch => "S",
-            LayTool::Move => "M",
-            LayTool::Copy => "C",
-            LayTool::Rect => "R",
+            LayTool::Stretch => "s",
+            LayTool::Move => "m",
+            LayTool::Copy => "c",
+            LayTool::Rect => "r",
             LayTool::Polygon => "Shift+P",
-            LayTool::Path => "P",
-            LayTool::Label => "L",
-            LayTool::Via => "O",
-            LayTool::Instance => "I",
+            LayTool::Path => "p",
+            LayTool::Label => "l",
+            LayTool::Via => "o",
+            LayTool::Instance => "i",
             LayTool::Chop => "Shift+C",
-            LayTool::Ruler => "K",
+            LayTool::Ruler => "k",
         }
     }
 
@@ -106,6 +108,10 @@ enum LDrag {
     },
     /// Move / copy tool: press at the reference point, release at the destination.
     Xfer,
+    /// Partial selection dragged by its reference point (stretch).
+    Part {
+        start: (i64, i64),
+    },
     Handle {
         id: u64,
         handle: Handle,
@@ -229,6 +235,19 @@ pub struct LayoutEditor {
     view_fwd: Vec<(f64, f64, f64)>,
     /// Last plain click and the index picked among the items under it (repeat clicks cycle).
     cycle: Option<((i64, i64), usize)>,
+    /// F4: clicks and boxes pick edges and vertices instead of whole shapes.
+    pub partial_mode: bool,
+    pub part: Partial,
+    /// Reference point of a partial stretch.
+    part_ref: Option<(i64, i64)>,
+    /// Start of a right-button drag (zoom to area).
+    zoom_drag: Option<Pos2>,
+    /// Actions from menus, run on the next frame.
+    pub actions: Vec<LayAction>,
+    pub show_props: bool,
+    pub show_opts: bool,
+    pub show_display: bool,
+    pub show_editor: bool,
 }
 
 impl Default for LayoutEditor {
@@ -280,6 +299,15 @@ impl Default for LayoutEditor {
             view_back: vec![],
             view_fwd: vec![],
             cycle: None,
+            partial_mode: false,
+            part: Partial::default(),
+            part_ref: None,
+            zoom_drag: None,
+            actions: vec![],
+            show_props: false,
+            show_opts: false,
+            show_display: false,
+            show_editor: false,
         }
     }
 }
@@ -1008,6 +1036,10 @@ impl LayoutEditor {
         self.stretch = None;
         self.zoom_box = false;
         self.paste = None;
+        self.part_ref = None;
+        if !matches!(t, LayTool::Select | LayTool::Stretch) {
+            self.part = Partial::default();
+        }
     }
 
     /// Arm zoom box: the next box (drag or two clicks) becomes the view.
@@ -1060,8 +1092,11 @@ impl LayoutEditor {
         }
         let s = match self.tool {
             LayTool::Select => return None,
-            LayTool::Stretch if self.stretch.is_some() => "Stretch: click the destination · Esc cancels".into(),
-            LayTool::Stretch => "Stretch: click an edge or vertex of a shape".into(),
+            LayTool::Stretch if self.stretch.is_some() || self.part_ref.is_some() => {
+                "Stretch: click the destination · Esc cancels".into()
+            }
+            LayTool::Stretch if !self.part.is_empty() => "Stretch: click the reference point".into(),
+            LayTool::Stretch => "Stretch: click an edge or vertex, or drag a box around the vertices to stretch".into(),
             LayTool::Move | LayTool::Copy => {
                 let n = self.tool.name();
                 match self.xfer {
@@ -1094,7 +1129,11 @@ impl LayoutEditor {
         if let Some(LDrag::Create { start } | LDrag::Move { start, .. } | LDrag::Handle { start, .. }) = &self.drag {
             return Some(*start);
         }
+        if let Some(LDrag::Part { start }) = &self.drag {
+            return Some(*start);
+        }
         self.xfer
+            .or(self.part_ref)
             .or(self.stretch.as_ref().map(|s| s.2))
             .or(self.box_start)
             .or(self.path_pts.last().copied())
@@ -1103,12 +1142,14 @@ impl LayoutEditor {
 
     pub fn undo(&mut self, l: &mut Layout) -> bool {
         self.selection.clear();
+        self.part = Partial::default();
         self.layout_changed();
         self.history.undo(l)
     }
 
     pub fn redo(&mut self, l: &mut Layout) -> bool {
         self.selection.clear();
+        self.part = Partial::default();
         self.layout_changed();
         self.history.redo(l)
     }
@@ -1229,7 +1270,7 @@ impl LayoutEditor {
             return false;
         }
         let mut changed = false;
-        let (keys, clip_events, hover) = ui.input(|i| {
+        let (keys, clip_events) = ui.input(|i| {
             let mut keys = vec![];
             let mut clip = vec![];
             for e in &i.events {
@@ -1239,7 +1280,7 @@ impl LayoutEditor {
                     _ => {}
                 }
             }
-            (keys, clip, i.pointer.hover_pos())
+            (keys, clip)
         });
         let did_clip = !clip_events.is_empty();
         for e in clip_events {
@@ -1259,18 +1300,12 @@ impl LayoutEditor {
             }
         }
         let g = self.snap_step(tech) * 10;
-        let anchor = hover.filter(|p| rect.contains(*p)).unwrap_or(rect.center());
-        let at = hover.filter(|p| rect.contains(*p)).map(|p| {
-            let w = self.view.to_world(rect, p);
-            (w.0 as i64, w.1 as i64)
-        });
-        let tol = (5.0 / self.view.scale) as i64;
         for (k, m) in keys {
-            if m.command {
+            let action = if m.command {
                 match k {
-                    Key::A => self.select_all(l),
-                    Key::D => self.selection.clear(),
-                    Key::F => self.max_depth = 0,
+                    Key::A => Some(LayAction::SelectAll),
+                    Key::D => Some(LayAction::DeselectAll),
+                    Key::F => Some(LayAction::TopLevel),
                     Key::C | Key::X if !did_clip => {
                         if let Some(text) = self.yank(l, cx) {
                             ui.ctx().copy_text(text);
@@ -1278,147 +1313,147 @@ impl LayoutEditor {
                                 changed |= self.delete_selection(l);
                             }
                         }
+                        None
                     }
-                    Key::V if !did_clip => {
-                        self.begin_paste(None);
-                    }
-                    _ => {}
+                    Key::V if !did_clip => Some(LayAction::Paste),
+                    _ => None,
                 }
-                continue;
-            }
-            if m.shift {
+            } else if m.shift {
                 match k {
-                    Key::C => self.set_tool(LayTool::Chop),
-                    Key::P => self.set_tool(LayTool::Polygon),
-                    Key::M => changed |= self.merge_selection(l),
-                    Key::K => self.rulers.clear(),
-                    Key::Z => {
-                        self.push_view();
-                        self.view.zoom_at(rect, rect.center(), 0.5);
+                    Key::C => Some(LayAction::Tool(LayTool::Chop)),
+                    Key::P => Some(LayAction::Tool(LayTool::Polygon)),
+                    Key::M => Some(LayAction::Merge),
+                    Key::K => Some(LayAction::ClearRulers),
+                    Key::Z => Some(LayAction::ZoomOut),
+                    Key::W => Some(LayAction::NextView),
+                    Key::F => Some(LayAction::AllLevels),
+                    Key::U => Some(LayAction::Redo),
+                    Key::Y => Some(LayAction::Paste),
+                    Key::E => Some(LayAction::EditorOptions),
+                    Key::O if self.xfer.is_some() => {
+                        self.xfer_t = self.on_screen_linear(Trans::rotate_about((0, 0))).compose(&self.xfer_t);
+                        None
                     }
-                    Key::W => {
-                        self.step_view(false);
+                    Key::O => Some(LayAction::Rotate),
+                    Key::X => Some(LayAction::Descend),
+                    Key::B => Some(LayAction::Return),
+                    Key::N => Some(LayAction::MarkNet),
+                    Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp | Key::ArrowDown => {
+                        let (dx, dy) = match k {
+                            Key::ArrowLeft => (-g, 0),
+                            Key::ArrowRight => (g, 0),
+                            Key::ArrowUp => (0, g),
+                            _ => (0, -g),
+                        };
+                        changed |= self.nudge(l, dx, dy);
+                        None
                     }
-                    Key::F => self.max_depth = 32,
-                    Key::U => changed |= self.redo(l),
-                    Key::Y => {
-                        self.begin_paste(None);
-                    }
-                    Key::O => {
-                        if self.xfer.is_some() {
-                            self.xfer_t = self.on_screen_linear(Trans::rotate_about((0, 0))).compose(&self.xfer_t);
-                        } else {
-                            changed |= self.transform_selection(l, cx, 0);
-                        }
-                    }
-                    Key::X => self.descend(l, cx, at, tol),
-                    Key::B => self.requests.push(LayRequest::Return),
-                    Key::N => {
-                        self.verify.pick_nets = !self.verify.pick_nets;
-                        let m =
-                            if self.verify.pick_nets { "Mark net: click a shape to highlight its net" } else { "Mark net off" };
-                        self.note(true, m);
-                    }
-                    Key::ArrowLeft => changed |= self.nudge(l, -g, 0),
-                    Key::ArrowRight => changed |= self.nudge(l, g, 0),
-                    Key::ArrowUp => changed |= self.nudge(l, 0, g),
-                    Key::ArrowDown => changed |= self.nudge(l, 0, -g),
                     Key::Plus | Key::Equals if self.tool == LayTool::Path => {
                         changed |= self.switch_wire_layer(l, tech, true);
+                        None
                     }
-                    _ => {}
+                    _ => None,
                 }
-                continue;
-            }
-            match k {
-                Key::Escape => {
-                    if self.paste.is_some() || self.zoom_box {
-                        self.paste = None;
-                        self.zoom_box = false;
-                        self.box_start = None;
-                    } else if self.box_start.is_some() || self.xfer.is_some() || self.stretch.is_some() {
-                        self.box_start = None;
-                        self.xfer = None;
-                        self.xfer_t = Trans::IDENTITY;
-                        self.stretch = None;
-                    } else if !self.path_pts.is_empty() || !self.poly_pts.is_empty() {
-                        self.path_pts.clear();
-                        self.poly_pts.clear();
-                    } else if self.tool != LayTool::Select {
-                        self.set_tool(LayTool::Select);
-                    } else {
-                        self.selection.clear();
+            } else {
+                match k {
+                    Key::Escape => {
+                        self.cancel();
+                        None
                     }
-                }
-                Key::Enter => changed |= self.finish_path(l, tech) || self.finish_polygon(l),
-                Key::Delete | Key::Backspace => {
-                    if !self.path_pts.is_empty() {
-                        self.path_pts.pop();
-                    } else if !self.poly_pts.is_empty() {
-                        self.poly_pts.pop();
-                    } else {
-                        changed |= self.delete_selection(l);
+                    Key::Enter => {
+                        changed |= self.finish_path(l, tech) || self.finish_polygon(l);
+                        None
                     }
-                }
-                Key::S => self.set_tool(LayTool::Stretch),
-                Key::M => self.set_tool(LayTool::Move),
-                Key::C => self.set_tool(LayTool::Copy),
-                Key::R => self.set_tool(LayTool::Rect),
-                Key::P => self.set_tool(LayTool::Path),
-                Key::L => self.set_tool(LayTool::Label),
-                Key::O => self.set_tool(LayTool::Via),
-                Key::I => self.set_tool(LayTool::Instance),
-                Key::K => self.set_tool(LayTool::Ruler),
-                Key::U => changed |= self.undo(l),
-                Key::Y => {
-                    if let Some(text) = self.yank(l, cx) {
-                        ui.ctx().copy_text(text);
+                    Key::Delete | Key::Backspace => {
+                        if !self.path_pts.is_empty() {
+                            self.path_pts.pop();
+                        } else if !self.poly_pts.is_empty() {
+                            self.poly_pts.pop();
+                        } else {
+                            changed |= self.delete_selection(l);
+                        }
+                        None
                     }
+                    Key::S => Some(LayAction::Tool(LayTool::Stretch)),
+                    Key::M => Some(LayAction::Tool(LayTool::Move)),
+                    Key::C => Some(LayAction::Tool(LayTool::Copy)),
+                    Key::R => Some(LayAction::Tool(LayTool::Rect)),
+                    Key::P => Some(LayAction::Tool(LayTool::Path)),
+                    Key::L => Some(LayAction::Tool(LayTool::Label)),
+                    Key::O => Some(LayAction::Tool(LayTool::Via)),
+                    Key::I => Some(LayAction::Tool(LayTool::Instance)),
+                    Key::K => Some(LayAction::Tool(LayTool::Ruler)),
+                    Key::U => Some(LayAction::Undo),
+                    Key::Y => Some(LayAction::Yank),
+                    Key::T => Some(LayAction::LayerTap),
+                    Key::G => Some(LayAction::Gravity),
+                    Key::Q => Some(LayAction::Properties),
+                    Key::E => Some(LayAction::DisplayOptions),
+                    Key::F3 => Some(LayAction::Options),
+                    Key::F4 => Some(LayAction::PartialSelect),
+                    Key::Z => Some(LayAction::ZoomBox),
+                    Key::W => Some(LayAction::PrevView),
+                    Key::F => Some(LayAction::Fit),
+                    Key::CloseBracket => Some(LayAction::ZoomIn),
+                    Key::OpenBracket => Some(LayAction::ZoomOut),
+                    Key::Plus | Key::Equals | Key::PageUp if self.tool == LayTool::Path => {
+                        changed |= self.switch_wire_layer(l, tech, true);
+                        None
+                    }
+                    Key::Minus | Key::PageDown if self.tool == LayTool::Path => {
+                        changed |= self.switch_wire_layer(l, tech, false);
+                        None
+                    }
+                    Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp | Key::ArrowDown => {
+                        let (w, h) = (rect.width() / 4.0, rect.height() / 4.0);
+                        self.view.pan_pixels(match k {
+                            Key::ArrowLeft => Vec2::new(w, 0.0),
+                            Key::ArrowRight => Vec2::new(-w, 0.0),
+                            Key::ArrowUp => Vec2::new(0.0, h),
+                            _ => Vec2::new(0.0, -h),
+                        });
+                        None
+                    }
+                    Key::Num0 | Key::Num1 | Key::Num2 | Key::Num3 | Key::Num4 | Key::Num5 | Key::Num6 | Key::Num7 | Key::Num8 => {
+                        self.max_depth = k.name().parse().unwrap_or(32);
+                        None
+                    }
+                    Key::Num9 => {
+                        self.max_depth = 32;
+                        None
+                    }
+                    _ => None,
                 }
-                Key::T => self.layer_tap(l, cx, at, tol),
-                Key::G => {
-                    self.gravity = !self.gravity;
-                    self.note(true, if self.gravity { "Gravity on" } else { "Gravity off" });
-                }
-                Key::Z => self.arm_zoom_box(),
-                Key::W => {
-                    self.step_view(true);
-                }
-                Key::F => {
-                    self.push_view();
-                    self.needs_fit = true;
-                }
-                Key::CloseBracket => {
-                    self.push_view();
-                    self.view.zoom_at(rect, anchor, 2.0);
-                }
-                Key::OpenBracket => {
-                    self.push_view();
-                    self.view.zoom_at(rect, anchor, 0.5);
-                }
-                Key::Plus | Key::Equals | Key::PageUp if self.tool == LayTool::Path => {
-                    changed |= self.switch_wire_layer(l, tech, true);
-                }
-                Key::Minus | Key::PageDown if self.tool == LayTool::Path => {
-                    changed |= self.switch_wire_layer(l, tech, false);
-                }
-                Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp | Key::ArrowDown => {
-                    let (w, h) = (rect.width() / 4.0, rect.height() / 4.0);
-                    self.view.pan_pixels(match k {
-                        Key::ArrowLeft => Vec2::new(w, 0.0),
-                        Key::ArrowRight => Vec2::new(-w, 0.0),
-                        Key::ArrowUp => Vec2::new(0.0, h),
-                        _ => Vec2::new(0.0, -h),
-                    });
-                }
-                Key::Num0 | Key::Num1 | Key::Num2 | Key::Num3 | Key::Num4 | Key::Num5 | Key::Num6 | Key::Num7 | Key::Num8 => {
-                    self.max_depth = k.name().parse().unwrap_or(32);
-                }
-                Key::Num9 => self.max_depth = 32,
-                _ => {}
+            };
+            if let Some(a) = action {
+                changed |= self.act(a, ui, l, cx, rect, true);
             }
         }
         changed
+    }
+
+    /// Esc: cancel the innermost pending step, then the command, then the selection.
+    fn cancel(&mut self) {
+        if self.paste.is_some() || self.zoom_box {
+            self.paste = None;
+            self.zoom_box = false;
+            self.box_start = None;
+        } else if self.box_start.is_some() || self.xfer.is_some() || self.stretch.is_some() || self.part_ref.is_some() {
+            self.box_start = None;
+            self.xfer = None;
+            self.xfer_t = Trans::IDENTITY;
+            self.stretch = None;
+            self.part_ref = None;
+        } else if !self.path_pts.is_empty() || !self.poly_pts.is_empty() {
+            self.path_pts.clear();
+            self.poly_pts.clear();
+        } else if !self.part.is_empty() {
+            self.part = Partial::default();
+        } else if self.tool != LayTool::Select {
+            self.set_tool(LayTool::Select);
+        } else {
+            self.selection.clear();
+        }
     }
 
     /// Layer tap (T): make the layer of the shape under the cursor active.
@@ -1555,7 +1590,7 @@ impl LayoutEditor {
     }
 
     /// First click of stretch: grab the nearest edge or vertex of the shape under the point.
-    fn begin_stretch(&mut self, l: &Layout, cx: &mut LayCtx, p: (i64, i64), tol: i64) {
+    fn begin_stretch(&mut self, l: &Layout, cx: &mut LayCtx, p: (i64, i64), tol: i64, report: bool) {
         let idx = cx.index(l);
         let near = |s: &Shape| {
             let b = s.bbox();
@@ -1565,7 +1600,9 @@ impl LayoutEditor {
         let shape =
             sel.or_else(|| hits(l, &idx, &self.pickable(), false, p.0, p.1, 3 * tol).into_iter().find_map(|id| l.shape(id)));
         let Some((s, h)) = shape.and_then(|s| edit::nearest_handle(&s.geom, p, 3 * tol).map(|h| (s, h))) else {
-            self.note(false, "Stretch: no shape edge under the cursor");
+            if report {
+                self.note(false, "Stretch: no shape edge under the cursor");
+            }
             return;
         };
         self.selection = [s.id].into();
@@ -1667,10 +1704,31 @@ impl LayoutEditor {
             }
             self.needs_fit = false;
         }
-        self.view.handle_navigation(ui, &resp, rect);
+        self.view.handle_navigation(ui, &resp, rect, false);
         if resp.hovered() && self.handle_keys(ui, l, cx, rect) {
             out.changed = true;
             cx.touched();
+        }
+        for a in std::mem::take(&mut self.actions) {
+            if self.act(a, ui, l, cx, rect, false) {
+                out.changed = true;
+                cx.touched();
+            }
+        }
+        if self.forms(ui.ctx(), rect, l, cx) {
+            out.changed = true;
+            cx.touched();
+        }
+        // Virtuoso: dragging with the right button zooms into the box.
+        if resp.drag_started_by(egui::PointerButton::Secondary) {
+            self.zoom_drag = ui.input(|i| i.pointer.press_origin());
+        }
+        if resp.drag_stopped_by(egui::PointerButton::Secondary)
+            && let (Some(a), Some(b)) = (self.zoom_drag.take(), ui.input(|i| i.pointer.latest_pos()))
+            && let Some(r) = commands::zoom_drag_rect(a, b)
+        {
+            let (p, q) = (self.view.to_world(rect, r.left_top()), self.view.to_world(rect, r.right_bottom()));
+            self.zoom_box_to(rect, IRect::new(p.0 as i64, p.1 as i64, q.0 as i64, q.1 as i64));
         }
         let hover = resp.hover_pos();
         let world = hover.map(|p| self.view.to_world(rect, p));
@@ -1681,7 +1739,7 @@ impl LayoutEditor {
         let pick = self.pickable();
         // The single selected shape exposes vertex / edge handles.
         let handle_shape: Option<Shape> = match (self.tool, self.selection.len()) {
-            (LayTool::Select, 1) => l.shape(*self.selection.first().unwrap()).cloned(),
+            (LayTool::Select, 1) if !self.partial_mode => l.shape(*self.selection.first().unwrap()).cloned(),
             _ => None,
         };
         self.hot = match (&handle_shape, hover, &self.drag) {
@@ -1690,6 +1748,7 @@ impl LayoutEditor {
             _ => None,
         };
 
+        self.popup_menu(&resp, l, cx, self.cursor);
         let press = || ui.input(|i| i.pointer.press_origin()).unwrap_or(rect.center());
         if self.paste.is_some() {
             if resp.clicked()
@@ -1706,6 +1765,28 @@ impl LayoutEditor {
             }
         } else {
             match self.tool {
+                LayTool::Select if self.partial_mode => {
+                    if resp.drag_started_by(egui::PointerButton::Primary) {
+                        let press = press();
+                        let pw = self.view.to_world(rect, press);
+                        let p = (pw.0 as i64, pw.1 as i64);
+                        let on_part = self.part.verts.keys().filter_map(|id| l.shape(*id)).any(|s| {
+                            let b = s.bbox();
+                            IRect::new(b.x0 - 3 * tol, b.y0 - 3 * tol, b.x1 + 3 * tol, b.y1 + 3 * tol).contains(p.0, p.1)
+                        });
+                        self.drag = Some(if on_part {
+                            LDrag::Part { start: self.snap(pw, self.snap_step(tech)) }
+                        } else {
+                            LDrag::Rubber { start: press }
+                        });
+                    }
+                    if resp.clicked()
+                        && let Some(w) = world
+                    {
+                        self.selection.clear();
+                        self.partial_pick(l, cx, (w.0 as i64, w.1 as i64), tol, shift);
+                    }
+                }
                 LayTool::Select => {
                     if resp.drag_started_by(egui::PointerButton::Primary) {
                         let press = press();
@@ -1778,21 +1859,36 @@ impl LayoutEditor {
                         let snapped = self.snapped;
                         let p = self.pick_point(l, cx, self.view.to_world(rect, press()));
                         self.snapped = snapped;
-                        self.begin_stretch(l, cx, p, tol);
-                        if self.stretch.is_some() {
-                            self.drag = Some(LDrag::Xfer);
+                        if !self.part.is_empty() {
+                            self.part_ref = None;
+                            self.drag = Some(LDrag::Part { start: p });
+                        } else {
+                            self.begin_stretch(l, cx, p, tol, false);
+                            // Away from any edge, the drag is a box around the vertices to stretch.
+                            self.drag = Some(if self.stretch.is_some() { LDrag::Xfer } else { LDrag::Rubber { start: press() } });
                         }
                     }
                     if resp.clicked()
                         && let Some(c) = self.cursor
                     {
-                        if self.stretch.is_some() {
+                        if !self.part.is_empty() {
+                            match self.part_ref {
+                                None => self.part_ref = Some(c),
+                                Some(a) => {
+                                    if self.apply_stretch(l, (c.0 - a.0, c.1 - a.1)) {
+                                        out.changed = true;
+                                        cx.touched();
+                                    }
+                                    self.part_ref = None;
+                                }
+                            }
+                        } else if self.stretch.is_some() {
                             if self.finish_stretch(l, c) {
                                 out.changed = true;
                                 cx.touched();
                             }
                         } else {
-                            self.begin_stretch(l, cx, c, tol);
+                            self.begin_stretch(l, cx, c, tol, true);
                         }
                     }
                 }
@@ -1954,6 +2050,21 @@ impl LayoutEditor {
                     self.xfer_t = Trans::IDENTITY;
                     self.stretch = None;
                 }
+                Some(LDrag::Part { start }) => {
+                    if let Some(c) = self.cursor
+                        && self.apply_stretch(l, (c.0 - start.0, c.1 - start.1))
+                    {
+                        out.changed = true;
+                        cx.touched();
+                    }
+                }
+                Some(LDrag::Rubber { start }) if self.partial_mode || self.tool == LayTool::Stretch => {
+                    if let Some(end) = hover {
+                        let a = self.view.to_world(rect, start);
+                        let b = self.view.to_world(rect, end);
+                        self.partial_from_box(l, cx, IRect::new(a.0 as i64, a.1 as i64, b.0 as i64, b.1 as i64), shift);
+                    }
+                }
                 Some(LDrag::Rubber { start }) => {
                     if let Some(end) = hover {
                         let a = self.view.to_world(rect, start);
@@ -2097,6 +2208,12 @@ impl LayoutEditor {
             edit::draw_handles(&painter, cur, &self.view, rect, &pal, self.hot);
         } else if let Some(s) = &handle_shape {
             edit::draw_handles(&painter, &s.geom, &self.view, rect, &pal, self.hot);
+        }
+        self.draw_partial(&painter, rect, l, cx, &pal);
+        if let (Some(a), Some(b)) = (self.zoom_drag, hover)
+            && let Some(r) = commands::zoom_drag_rect(a, b)
+        {
+            assist::dashed_rect(&painter, r, Stroke::new(1.5, pal.accent));
         }
         if !self.poly_pts.is_empty() {
             let mut pts: Vec<Pos2> = self.poly_pts.iter().map(|p| self.view.to_screen(rect, p.0 as f64, p.1 as f64)).collect();
@@ -2253,7 +2370,7 @@ impl LayoutEditor {
             painter.text(
                 rect.center(),
                 Align2::CENTER_CENTER,
-                "Empty layout — choose a layer on the left, then press R and drag to draw a rectangle.\nP draws paths, L places labels, I places cells, K measures, scroll to zoom, right-drag to pan.",
+                "Empty layout — choose a layer on the left, then press R and drag to draw a rectangle.\nP draws paths, L places labels, I places cells, K measures. Scroll to zoom, middle-drag pans, right-drag zooms into a box.",
                 FontId::proportional(14.0),
                 pal.text_weak,
             );
@@ -2281,12 +2398,10 @@ impl LayoutEditor {
         out
     }
 
-    /// Left panel: tool options, cell placement, hierarchy tree and layers. Returns a cell to open.
-    pub fn layer_palette(&mut self, ui: &mut egui::Ui, l: &Layout, cx: &mut LayCtx) -> Option<CellRef> {
+    /// Options of the current command (left panel and F3). Returns false if it has none.
+    pub fn tool_options(&mut self, ui: &mut egui::Ui, cx: &mut LayCtx) -> bool {
         let tech = cx.tech;
-        self.sync_layers(tech);
         let pal = theme::palette(ui.ctx());
-        let mut open = None;
         if self.tool == LayTool::Path {
             theme::section(ui, "Path");
             ui.horizontal(|ui| {
@@ -2319,6 +2434,16 @@ impl LayoutEditor {
             self.pcell_panel(ui, tech);
             self.placement_panel(ui, cx);
         }
+        matches!(self.tool, LayTool::Path | LayTool::Label | LayTool::Polygon | LayTool::Via | LayTool::Instance)
+    }
+
+    /// Left panel: tool options, cell placement, hierarchy tree and layers. Returns a cell to open.
+    pub fn layer_palette(&mut self, ui: &mut egui::Ui, l: &Layout, cx: &mut LayCtx) -> Option<CellRef> {
+        let tech = cx.tech;
+        self.sync_layers(tech);
+        let pal = theme::palette(ui.ctx());
+        let mut open = None;
+        self.tool_options(ui, cx);
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             theme::section(ui, "Hierarchy");

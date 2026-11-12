@@ -557,7 +557,7 @@ impl SchematicEditor {
             self.view.scale = self.view.scale.min(40.0);
             self.needs_fit = false;
         }
-        self.view.handle_navigation(ui, &resp, rect);
+        self.view.handle_navigation(ui, &resp, rect, true);
         if resp.hovered() {
             changed |= self.handle_keys(ui, sch);
         }

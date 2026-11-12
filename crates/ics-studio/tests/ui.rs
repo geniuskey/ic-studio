@@ -925,3 +925,123 @@ fn layout_descend_and_return() {
     let after = h.state().layout_editor(&top).unwrap().view;
     assert_eq!((after.center, after.scale, after.orient), (before.center, before.scale, before.orient));
 }
+
+fn drag(h: &mut Harness<'_, IcStudio>, button: egui::PointerButton, a: egui::Pos2, b: egui::Pos2) {
+    h.hover_at(a);
+    h.step();
+    h.event(egui::Event::PointerButton { pos: a, button, pressed: true, modifiers: Default::default() });
+    h.step();
+    for i in 1..=6 {
+        h.hover_at(a + (b - a) * (i as f32 / 6.0));
+        h.step();
+    }
+    h.event(egui::Event::PointerButton { pos: b, button, pressed: false, modifiers: Default::default() });
+    h.run_steps(2);
+}
+
+/// Virtuoso habits: stretch by box, partial select (F4), right-drag zoom, the option forms
+/// (q, e, Shift+E, F3) and the layout menus.
+#[test]
+fn layout_virtuoso_stretch_and_forms() {
+    use ics_studio::layout_view::LayAction;
+    let dir = std::env::temp_dir().join(format!("ics-ui-virtuoso-forms-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut p = ics_core::examples::demo_project();
+    let mut cell = ics_core::Cell::new("scratch");
+    cell.layout = Some(ics_core::Layout::default());
+    let r = p.add_cell("work", cell).unwrap();
+    p.save_as(&dir).unwrap();
+    let mut h = open_layout(&dir, "scratch");
+    let key = |h: &mut Harness<'_, IcStudio>, m: egui::Modifiers, k: egui::Key| {
+        h.key_press_modifiers(m, k);
+        h.run_steps(2);
+    };
+    let none = egui::Modifiers::NONE;
+    let pos = egui::pos2;
+    h.hover_at(pos(700.0, 450.0));
+    h.run_steps(2);
+    key(&mut h, none, egui::Key::G);
+    key(&mut h, none, egui::Key::R);
+    click(&mut h, pos(600.0, 400.0));
+    click(&mut h, pos(700.0, 480.0));
+    click(&mut h, pos(600.0, 520.0));
+    click(&mut h, pos(700.0, 600.0));
+    let b0: Vec<_> = shapes_of(&h, "scratch").iter().map(|s| s.bbox()).collect();
+    assert_eq!(b0.len(), 2);
+
+    // S, box around the right edges of both rectangles, reference point, destination.
+    key(&mut h, none, egui::Key::S);
+    drag(&mut h, egui::PointerButton::Primary, pos(680.0, 370.0), pos(730.0, 630.0));
+    assert_eq!(h.state().layout_editor(&r).unwrap().part.len(), 2, "the box picks both right edges");
+    click(&mut h, pos(700.0, 500.0));
+    click(&mut h, pos(740.0, 500.0));
+    let b1: Vec<_> = shapes_of(&h, "scratch").iter().map(|s| s.bbox()).collect();
+    for (a, b) in b0.iter().zip(&b1) {
+        assert!((b.width() - a.width() - 500).abs() <= 10 && b.x0 == a.x0 && b.y0 == a.y0, "stretched: {a:?} -> {b:?}");
+    }
+
+    // F4: click the top edge of the upper rectangle, stretch it up.
+    key(&mut h, none, egui::Key::Escape);
+    key(&mut h, none, egui::Key::F4);
+    assert!(h.state().layout_editor(&r).unwrap().partial_mode);
+    click(&mut h, pos(650.0, 400.0));
+    assert_eq!(h.state().layout_editor(&r).unwrap().part.verts.values().map(|v| v.len()).sum::<usize>(), 2);
+    key(&mut h, none, egui::Key::S);
+    click(&mut h, pos(650.0, 400.0));
+    click(&mut h, pos(650.0, 360.0));
+    let top = b1.iter().max_by_key(|b| b.y1).unwrap();
+    let b2 = shapes_of(&h, "scratch").iter().map(|s| s.bbox()).max_by_key(|b| b.y1).unwrap();
+    assert!((b2.height() - top.height() - 500).abs() <= 10 && b2.y0 == top.y0, "top edge stretched: {top:?} -> {b2:?}");
+    key(&mut h, none, egui::Key::F4);
+    key(&mut h, none, egui::Key::Escape);
+
+    // Right drag zooms into the box, w goes back.
+    let before = h.state().layout_editor(&r).unwrap().view.scale;
+    drag(&mut h, egui::PointerButton::Secondary, pos(580.0, 340.0), pos(780.0, 620.0));
+    let zoomed = h.state().layout_editor(&r).unwrap().view.scale;
+    assert!(zoomed > before * 1.5, "right drag zooms in: {before} -> {zoomed}");
+    key(&mut h, none, egui::Key::W);
+    assert_eq!(h.state().layout_editor(&r).unwrap().view.scale, before);
+    h.state_mut().command(Command::Lay(LayAction::ZoomIn));
+    h.run_steps(2);
+    assert_eq!(h.state().layout_editor(&r).unwrap().view.scale, before * 2.0, "menu zoom in by 2");
+
+    // Option forms.
+    key(&mut h, none, egui::Key::F);
+    key(&mut h, egui::Modifiers::COMMAND, egui::Key::A);
+    // Keys reach the canvas while the pointer is over it, not over a form.
+    h.hover_at(pos(560.0, 690.0));
+    h.run_steps(2);
+    key(&mut h, none, egui::Key::Q);
+    key(&mut h, none, egui::Key::E);
+    key(&mut h, egui::Modifiers::SHIFT, egui::Key::E);
+    key(&mut h, none, egui::Key::P);
+    key(&mut h, none, egui::Key::F3);
+    let ed = h.state().layout_editor(&r).unwrap();
+    assert!(ed.show_props && ed.show_display && ed.show_editor && ed.show_opts, "q, e, Shift+E and F3 open their forms");
+    h.run_steps(3);
+    shot(&mut h, "17_layout_virtuoso_forms");
+
+    // Middle click: the pop-up menu; F4 then a box: the vertices it holds.
+    for k in [egui::Key::Q, egui::Key::E, egui::Key::F3] {
+        key(&mut h, none, k);
+    }
+    key(&mut h, egui::Modifiers::SHIFT, egui::Key::E);
+    key(&mut h, none, egui::Key::Escape);
+    key(&mut h, none, egui::Key::F4);
+    drag(&mut h, egui::PointerButton::Primary, pos(900.0, 180.0), pos(1100.0, 700.0));
+    assert!(!h.state().layout_editor(&r).unwrap().part.is_empty(), "a box picks vertices in partial select");
+    h.hover_at(pos(800.0, 300.0));
+    h.step();
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos: pos(800.0, 300.0),
+            button: egui::PointerButton::Middle,
+            pressed,
+            modifiers: Default::default(),
+        });
+        h.step();
+    }
+    h.run_steps(3);
+    shot(&mut h, "18_layout_virtuoso_popup");
+}

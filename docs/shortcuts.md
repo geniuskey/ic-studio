@@ -8,7 +8,7 @@ Canvas keys work while the mouse is over the canvas and no text field has focus.
 | Keys | Action |
 |---|---|
 | `Ctrl+K`, `Ctrl+Shift+P` | Command palette |
-| `Ctrl+S` / `Ctrl+Shift+S` | Save / save as |
+| `Ctrl+S`, `F2` / `Ctrl+Shift+S` | Save / save as |
 | `Ctrl+O` | Open project |
 | `Ctrl+N` | New cell |
 | `Ctrl+W` | Close tab |
@@ -25,7 +25,7 @@ Canvas keys work while the mouse is over the canvas and no text field has focus.
 | Keys | Action |
 |---|---|
 | Wheel, pinch | Zoom at the cursor |
-| Middle or right drag | Pan |
+| Middle drag | Pan (schematic: right drag too; layout: right drag zooms into the box) |
 | `Shift`+wheel | Pan horizontally |
 | `F` | Fit to window |
 | `Esc` | Cancel the current operation, then back to Select, then clear the selection |
@@ -54,10 +54,16 @@ Layout keys follow the Cadence Virtuoso (IC6) default bindkeys.
 
 | Keys | Action |
 |---|---|
-| `Esc` | Cancel the command and return to Select |
-| `S` | Stretch: click an edge or vertex, then the destination |
+| `Esc` | Cancel the pending point, clear a partial selection, then return to Select |
+| `S` | Stretch: click an edge or vertex, then the destination; or drag a box over edges (or use a partial selection), then click the reference point and the destination |
+| `F4` | Toggle partial selection (select edges and vertices) |
 | `M` / `C` | Move / copy: click the reference point, then the destination (copy repeats) |
 | Right-click / `Shift`+right-click | While moving or copying: rotate 90° / flip sideways |
+| Middle-click, right-click | Pop-up menu (right-click only when no command point is pending) |
+| Right drag | Zoom into the box |
+| `q` | Edit Object Properties form |
+| `F3` | Options form of the current command |
+| `e` / `Shift+E` | Display Options / Layout Editor Options form |
 | `R` | Rectangle (drag or two clicks) |
 | `Shift+P` / `P` | Polygon / path |
 | `L` / `O` / `I` / `K` | Label / via / instance / ruler |
