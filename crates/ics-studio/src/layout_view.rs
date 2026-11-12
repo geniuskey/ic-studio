@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use eframe::egui::{self, Align2, Color32, FontId, Key, Mesh, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use ics_core::geom::IRect;
-use ics_core::hier::{self, CellIndex, Hier, LayoutSource, ViewQuery};
+use ics_core::hier::{self, CellIndex, Hier, LayoutSource, PLANE_EDGE, PLANE_FILL, PLANE_SMALL, Sprite, ViewQuery};
 use ics_core::layout::{ArraySpec, Geometry, Layout, Shape, Trans};
 use ics_core::project::{CellRef, Project};
 use ics_core::tech::{FillStyle, LayerDef, Tech};
@@ -290,104 +290,244 @@ fn path_quads(points: &[(i64, i64)], width: i64) -> Vec<[(f64, f64); 4]> {
 const MAX_LABELS: usize = 400;
 const MAX_FRAMES: usize = 5_000;
 
-/// Coverage grid at 2 px resolution for shapes too small to draw individually. Marked cells are
-/// emitted as merged horizontal runs, so the vertex count is bounded by the screen size rather
-/// than the number of shapes.
+/// Coverage grid at 2 px resolution for shapes too small to draw individually, with a few
+/// planes drawn in different strengths. Marked cells are drawn as a texture (or merged runs),
+/// so the cost is bounded by the screen size rather than the number of shapes.
 struct Raster {
     origin: Pos2,
+    cell: f32,
     w: usize,
     h: usize,
-    bits: Vec<u64>,
-    any: bool,
+    planes: Vec<Vec<u64>>,
 }
 
 impl Raster {
+    /// Cell size (points) of the coverage grids for shapes.
     const CELL: f32 = 2.0;
 
-    fn new(rect: Rect) -> Self {
-        let w = (rect.width() / Self::CELL).ceil().max(1.0) as usize;
-        let h = (rect.height() / Self::CELL).ceil().max(1.0) as usize;
-        Self { origin: rect.min, w, h, bits: vec![], any: false }
+    fn new(rect: Rect, planes: usize, cell: f32) -> Self {
+        let w = (rect.width() / cell).ceil().max(1.0) as usize;
+        let h = (rect.height() / cell).ceil().max(1.0) as usize;
+        Self { origin: rect.min, cell, w, h, planes: vec![vec![]; planes] }
     }
 
     fn words(&self) -> usize {
         self.w.div_ceil(64)
     }
 
-    fn mark(&mut self, r: Rect) {
-        let to = |v: f32, o: f32, n: usize| (((v - o) / Self::CELL).floor().max(0.0) as usize).min(n);
-        let (x0, x1) = (to(r.min.x, self.origin.x, self.w), to(r.max.x, self.origin.x, self.w - 1) + 1);
-        let (y0, y1) = (to(r.min.y, self.origin.y, self.h), to(r.max.y, self.origin.y, self.h - 1) + 1);
-        if x0 >= self.w || y0 >= self.h || r.max.x < self.origin.x || r.max.y < self.origin.y {
+    fn plane_mut(&mut self, plane: usize) -> &mut [u64] {
+        let n = self.words() * self.h;
+        let bits = &mut self.planes[plane];
+        if bits.is_empty() {
+            *bits = vec![0; n];
+        }
+        bits
+    }
+
+    fn mark(&mut self, plane: usize, r: Rect) {
+        let to = |v: f32, o: f32| ((v - o) / self.cell).floor() as f64;
+        self.fill(
+            plane,
+            (to(r.min.x, self.origin.x), to(r.min.y, self.origin.y)),
+            (to(r.max.x, self.origin.x), to(r.max.y, self.origin.y)),
+        );
+    }
+
+    /// Mark the cells from `a` to `b` (cell coordinates, inclusive, clipped).
+    fn fill(&mut self, plane: usize, a: (f64, f64), b: (f64, f64)) {
+        let (w, h) = (self.w as f64, self.h as f64);
+        let (x0, x1) = (a.0.min(b.0).floor().max(0.0), a.0.max(b.0).floor().min(w - 1.0));
+        let (y0, y1) = (a.1.min(b.1).floor().max(0.0), a.1.max(b.1).floor().min(h - 1.0));
+        if x0 > x1 || y0 > y1 {
             return;
         }
-        if !self.any {
-            self.bits = vec![0; self.words() * self.h];
-            self.any = true;
-        }
         let words = self.words();
-        for y in y0..y1.min(self.h) {
-            for x in x0..x1.min(self.w) {
-                self.bits[y * words + x / 64] |= 1 << (x % 64);
-            }
+        let bits = self.plane_mut(plane);
+        for y in y0 as usize..=y1 as usize {
+            hier::set_bits(&mut bits[y * words..(y + 1) * words], x0 as usize, x1 as usize + 1);
         }
     }
 
-    fn emit(&self, mesh: &mut Mesh, color: Color32) {
-        if !self.any {
+    /// Mark the cells holding the centres of the set pixels of `bits` (one plane of `sp`)
+    /// placed by `t`.
+    #[allow(clippy::too_many_arguments)]
+    fn stamp(&mut self, plane: usize, sp: &Sprite, bits: &[u64], t: &Trans, view: &View2D, rect: Rect) {
+        let p = sp.pixel() as f64;
+        let k = view.scale / self.cell as f64;
+        let ys = if view.y_up { -1.0 } else { 1.0 };
+        let c0 = ((rect.center().x - self.origin.x) / self.cell, (rect.center().y - self.origin.y) / self.cell);
+        let cell = |i: f64, j: f64| {
+            let (x, y) = t.apply_f((sp.origin.0 as f64 + (i + 0.5) * p, sp.origin.1 as f64 + (j + 0.5) * p));
+            (c0.0 as f64 + (x - view.center.0) * k, c0.1 as f64 + ys * (y - view.center.1) * k)
+        };
+        let o = cell(0.0, 0.0);
+        let (di, dj) = {
+            let (a, b) = (cell(1.0, 0.0), cell(0.0, 1.0));
+            ((a.0 - o.0, a.1 - o.1), (b.0 - o.0, b.1 - o.1))
+        };
+        let (w, h) = (self.w as f64, self.h as f64);
+        let words = self.words();
+        if di.1 == 0.0 && dj.0 == 0.0 {
+            let cols: Vec<i64> = (0..sp.w).map(|i| (o.0 + i as f64 * di.0).floor() as i64).collect();
+            let (lo, hi) = cols.iter().enumerate().fold((sp.w, 0), |(lo, hi), (i, &x)| {
+                if (0..self.w as i64).contains(&x) { (lo.min(i), hi.max(i + 1)) } else { (lo, hi) }
+            });
+            if lo >= hi {
+                return;
+            }
+            let last = self.w as i64 - 1;
+            let out = self.plane_mut(plane);
+            for j in 0..sp.h {
+                let y = (o.1 + j as f64 * dj.1).floor();
+                if y < 0.0 || y >= h {
+                    continue;
+                }
+                let row = &mut out[y as usize * words..(y as usize + 1) * words];
+                hier::bit_runs(sp.row(bits, j), lo, hi, |a, b| {
+                    let (x0, x1) = (cols[a].min(cols[b - 1]).max(0), cols[a].max(cols[b - 1]).min(last));
+                    hier::set_bits(row, x0 as usize, x1 as usize + 1);
+                });
+            }
             return;
         }
-        let words = self.words();
-        let cell = Self::CELL;
-        let quad = |mesh: &mut Mesh, (x0, x1, y0): (usize, usize, usize), y1: usize| {
-            let min = self.origin + Vec2::new(x0 as f32 * cell, y0 as f32 * cell);
-            mesh.add_colored_rect(Rect::from_min_size(min, Vec2::new((x1 - x0) as f32 * cell, (y1 - y0) as f32 * cell)), color);
+        let span = |b: f64, d: f64, n: f64| {
+            if d.abs() < 1e-12 {
+                if (-1.0..n + 1.0).contains(&b) { (f64::NEG_INFINITY, f64::INFINITY) } else { (1.0, 0.0) }
+            } else {
+                let (u, v) = ((-1.0 - b) / d, (n + 1.0 - b) / d);
+                (u.min(v), u.max(v))
+            }
         };
-        // Runs identical to the row above extend the rectangle started there.
-        let mut open: Vec<(usize, usize, usize)> = vec![];
-        for y in 0..=self.h {
-            let mut runs: Vec<(usize, usize)> = vec![];
-            if y < self.h {
-                let row = &self.bits[y * words..(y + 1) * words];
-                let mut x = 0;
-                while x < self.w {
-                    if row[x / 64] >> (x % 64) & 1 == 0 {
-                        x += 1;
-                        continue;
-                    }
-                    let start = x;
-                    while x < self.w && row[x / 64] >> (x % 64) & 1 == 1 {
-                        x += 1;
-                    }
-                    runs.push((start, x));
+        for j in 0..sp.h {
+            let base = (o.0 + j as f64 * dj.0, o.1 + j as f64 * dj.1);
+            let (ax, bx) = span(base.0, di.0, w);
+            let (ay, by) = span(base.1, di.1, h);
+            let (lo, hi) = (ax.max(ay).max(0.0), bx.min(by).min(sp.w as f64));
+            if lo >= hi {
+                continue;
+            }
+            hier::bit_runs(sp.row(bits, j), lo.floor() as usize, hi.ceil() as usize, |a, b| {
+                let at = |i: usize| (base.0 + i as f64 * di.0, base.1 + i as f64 * di.1);
+                self.fill(plane, at(a), at(b - 1));
+            });
+        }
+    }
+
+    /// One-cell wide outline of the screen rectangle `r` (plane 0), covering the cells whose
+    /// centres a one-cell wide outline mesh would cover.
+    fn outline(&mut self, r: Rect) {
+        let to = |v: f32, o: f32, d: f32| ((v - o) / self.cell + d).floor() as f64;
+        let (x0, y0) = (to(r.min.x, self.origin.x, 0.5), to(r.min.y, self.origin.y, 0.5));
+        let (x1, y1) = (to(r.max.x, self.origin.x, -0.5).max(x0), to(r.max.y, self.origin.y, -0.5).max(y0));
+        self.fill(0, (x0, y0), (x1, y0));
+        self.fill(0, (x0, y1), (x1, y1));
+        self.fill(0, (x0, y0), (x0, y1));
+        self.fill(0, (x1, y0), (x1, y1));
+    }
+
+    fn runs(&self, plane: usize, y: usize, f: impl FnMut(usize, usize)) {
+        let words = self.words();
+        hier::bit_runs(&self.planes[plane][y * words..(y + 1) * words], 0, self.w, f);
+    }
+
+    /// Draw the marked cells as one nearest-filtered texture, `colors` lists (plane, colour)
+    /// with the strongest plane first. The texture is only re-uploaded when it changed.
+    fn paint(&self, painter: &egui::Painter, key: egui::Id, colors: &[(usize, Color32)]) {
+        if colors.iter().all(|&(p, _)| self.planes[p].is_empty()) {
+            return;
+        }
+        let hash = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (self.w, self.h, colors, &self.planes).hash(&mut h);
+            h.finish()
+        };
+        let image = || {
+            let mut pixels = vec![Color32::TRANSPARENT; self.w * self.h];
+            for &(plane, color) in colors.iter().rev().filter(|(p, _)| !self.planes[*p].is_empty()) {
+                for y in 0..self.h {
+                    let row = &mut pixels[y * self.w..(y + 1) * self.w];
+                    self.runs(plane, y, |a, b| row[a..b].fill(color));
                 }
             }
-            let mut next = Vec::with_capacity(runs.len());
-            let mut k = 0;
-            for (a, b) in runs {
-                while k < open.len() && open[k].0 < a {
-                    quad(mesh, open[k], y);
-                    k += 1;
+            egui::ColorImage::new([self.w, self.h], pixels)
+        };
+        let ctx = painter.ctx();
+        let tex = match ctx.data(|d| d.get_temp::<(egui::TextureHandle, u64)>(key)) {
+            Some((t, h)) if h == hash => t,
+            Some((mut t, _)) => {
+                t.set(image(), egui::TextureOptions::NEAREST);
+                ctx.data_mut(|d| d.insert_temp(key, (t.clone(), hash)));
+                t
+            }
+            None => {
+                let t = ctx.load_texture("layout-raster", image(), egui::TextureOptions::NEAREST);
+                ctx.data_mut(|d| d.insert_temp(key, (t.clone(), hash)));
+                t
+            }
+        };
+        let size = Vec2::new(self.w as f32, self.h as f32) * self.cell;
+        let mut mesh = Mesh::with_texture(tex.id());
+        mesh.add_rect_with_uv(
+            Rect::from_min_size(self.origin, size),
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+            Color32::WHITE,
+        );
+        painter.add(egui::Shape::mesh(mesh));
+    }
+
+    /// Add the marked cells to `mesh` as rectangles (runs identical to the row above extend
+    /// the rectangle started there), weakest plane first.
+    fn emit(&self, mesh: &mut Mesh, colors: &[(usize, Color32)]) {
+        let cell = self.cell;
+        for &(plane, color) in colors.iter().rev().filter(|(p, _)| !self.planes[*p].is_empty()) {
+            let quad = |mesh: &mut Mesh, (x0, x1, y0): (usize, usize, usize), y1: usize| {
+                let min = self.origin + Vec2::new(x0 as f32 * cell, y0 as f32 * cell);
+                mesh.add_colored_rect(
+                    Rect::from_min_size(min, Vec2::new((x1 - x0) as f32 * cell, (y1 - y0) as f32 * cell)),
+                    color,
+                );
+            };
+            let mut open: Vec<(usize, usize, usize)> = vec![];
+            for y in 0..=self.h {
+                let mut runs: Vec<(usize, usize)> = vec![];
+                if y < self.h {
+                    self.runs(plane, y, |a, b| runs.push((a, b)));
                 }
-                if k < open.len() && open[k].0 == a && open[k].1 == b {
-                    next.push(open[k]);
-                    k += 1;
-                } else {
-                    if k < open.len() && open[k].0 == a {
+                let mut next = Vec::with_capacity(runs.len());
+                let mut k = 0;
+                for (a, b) in runs {
+                    while k < open.len() && open[k].0 < a {
                         quad(mesh, open[k], y);
                         k += 1;
                     }
-                    next.push((a, b, y));
+                    if k < open.len() && open[k].0 == a && open[k].1 == b {
+                        next.push(open[k]);
+                        k += 1;
+                    } else {
+                        if k < open.len() && open[k].0 == a {
+                            quad(mesh, open[k], y);
+                            k += 1;
+                        }
+                        next.push((a, b, y));
+                    }
                 }
+                for &o in &open[k..] {
+                    quad(mesh, o, y);
+                }
+                open = next;
             }
-            for &o in &open[k..] {
-                quad(mesh, o, y);
-            }
-            open = next;
+        }
+    }
+
+    /// Draw as a texture on the canvas, or into `mesh` for thumbnails.
+    fn draw(&self, painter: &egui::Painter, mesh: &mut Mesh, key: Option<egui::Id>, colors: &[(usize, Color32)]) {
+        match key {
+            Some(key) => self.paint(painter, key, colors),
+            None => self.emit(mesh, colors),
         }
     }
 }
-
 pub struct LayoutDrawOpts<'a> {
     pub pal: Palette,
     pub visible: &'a [bool],
@@ -466,16 +606,19 @@ pub fn draw_layout(
         min_shape: (1.5 * px) as i64,
         visible: o.visible,
         limit: if o.thumbnail { 50_000 } else { 2_000_000 },
+        lod: hier::lod_level(Raster::CELL as f64 * px),
     };
     let vis = hier::query(hier, src, layout, &idx, &q);
     let selected = |id: u64| o.selection.is_some_and(|s| s.contains(&id));
     let has_sel = o.selection.is_some_and(|s| !s.is_empty());
     let to_s = |x: f64, y: f64| view.to_screen(rect, x, y);
-    let stipple = !o.thumbnail && vis.count < 20_000;
+    let drawn = vis.count as u64 + vis.stamped;
+    let stipple = !o.thumbnail && drawn < 20_000;
     let thin = |g: &Geometry, t: &Trans| {
         let b = t.apply_rect(g.bbox());
         (b.width().min(b.height()) as f64 * view.scale) < 3.0
     };
+    let raster_key = |slot: usize| (!o.thumbnail).then(|| egui::Id::unique(("layout-raster", painter.layer_id(), slot)));
     let mut labels = 0;
     for li in 0..tech.layers.len() {
         if !o.visible.get(li).copied().unwrap_or(true) {
@@ -486,9 +629,16 @@ pub fn draw_layout(
         let fa = fill_alpha(def);
         let mesh_slot = painter.add(egui::Shape::Noop);
         let mut mesh = Mesh::default();
-        let mut raster = Raster::new(rect);
+        let mut raster = Raster::new(rect, 3, Raster::CELL);
         for b in vis.tiny.get(li).into_iter().flatten() {
-            raster.mark(screen_rect(view, rect, *b));
+            raster.mark(PLANE_SMALL, screen_rect(view, rect, *b));
+        }
+        for s in &vis.stamps {
+            for plane in [PLANE_SMALL, PLANE_FILL, PLANE_EDGE] {
+                if let Some(bits) = s.sprite.plane(li, plane) {
+                    raster.stamp(plane, &s.sprite, bits, &s.trans, view, rect);
+                }
+            }
         }
         for p in vis.shapes.get(li).into_iter().flatten() {
             let emphasis = if has_sel && !(p.depth == 0 && selected(p.shape.id)) { 0.75 } else { 1.0 };
@@ -499,7 +649,7 @@ pub fn draw_layout(
                         continue;
                     }
                     if sr.width() < 3.0 || sr.height() < 3.0 {
-                        raster.mark(sr);
+                        raster.mark(PLANE_SMALL, sr);
                     } else if stipple {
                         pattern_rect(painter, sr, def, emphasis);
                     } else {
@@ -515,12 +665,12 @@ pub fn draw_layout(
                     }
                 }
                 Geometry::Polygon { .. } if thin(&p.shape.geom, &p.trans) => {
-                    raster.mark(screen_rect(view, rect, p.trans.apply_rect(p.shape.bbox())));
+                    raster.mark(PLANE_SMALL, screen_rect(view, rect, p.trans.apply_rect(p.shape.bbox())));
                 }
                 Geometry::Path { points, width } if (*width as f64 * view.scale) < 3.0 => {
                     for w in points.windows(2) {
                         let seg = Geometry::Path { points: w.to_vec(), width: *width }.bbox();
-                        raster.mark(screen_rect(view, rect, p.trans.apply_rect(seg)));
+                        raster.mark(PLANE_SMALL, screen_rect(view, rect, p.trans.apply_rect(seg)));
                     }
                 }
                 Geometry::Polygon { points } => {
@@ -573,23 +723,38 @@ pub fn draw_layout(
                 }
             }
         }
-        raster.emit(&mut mesh, c.gamma_multiply(0.7));
+        let mut colors = vec![(PLANE_EDGE, c.gamma_multiply(0.8)), (PLANE_SMALL, c.gamma_multiply(0.7))];
+        if fa > 0.0 {
+            colors.push((PLANE_FILL, c.gamma_multiply(fa.max(0.25))));
+        }
+        raster.draw(painter, &mut mesh, raster_key(li), &colors);
         painter.set(mesh_slot, egui::Shape::mesh(mesh));
     }
 
     // Instances shown as boxes (beyond the level limit, too small, or missing).
     let mut mesh = Mesh::default();
+    let mut frames = Raster::new(rect, 1, 1.0);
+    for s in &vis.stamps {
+        if let Some((grid, bits)) = s.sprite.frames() {
+            frames.stamp(0, grid, bits, &s.trans, view, rect);
+        }
+    }
     let mut names = 0;
     for b in &vis.boxes {
         let sr = screen_rect(view, rect, b.rect);
         let col = if b.missing { pal.danger } else { pal.text_weak.gamma_multiply(0.8) };
-        mesh_outline(&mut mesh, sr.intersect(rect.expand(2.0)), 1.0, col);
+        if b.missing {
+            mesh_outline(&mut mesh, sr.intersect(rect.expand(2.0)), 1.0, col);
+        } else {
+            frames.outline(sr);
+        }
         if !o.thumbnail && sr.width() > 70.0 && sr.height() > 18.0 && names < 400 {
             names += 1;
             let label = if b.missing { format!("{} (missing)", b.cell) } else { b.cell.cell.clone() };
             painter.text(sr.center(), Align2::CENTER_CENTER, label, FontId::proportional(11.0), col);
         }
     }
+    frames.draw(painter, &mut mesh, raster_key(usize::MAX), &[(0, pal.text_weak.gamma_multiply(0.8))]);
     painter.add(egui::Shape::mesh(mesh));
 
     // Frames of the top cell's own instances.
@@ -630,7 +795,7 @@ pub fn draw_layout(
             painter.rect_stroke(sr.expand(1.5), 0.0, Stroke::new(2.0, pal.selection), StrokeKind::Outside);
         }
     }
-    DrawStats { drawn: vis.count, truncated: vis.truncated }
+    DrawStats { drawn: drawn as usize, truncated: vis.truncated }
 }
 
 /// Topmost item (shape or instance) of the top cell under the cursor.
@@ -1854,15 +2019,44 @@ mod tests {
 
     #[test]
     fn raster_runs_cover_exactly_the_marked_cells() {
-        let mut r = Raster::new(Rect::from_min_size(Pos2::ZERO, Vec2::new(40.0, 40.0)));
-        r.mark(Rect::from_min_max(Pos2::new(2.0, 2.0), Pos2::new(3.0, 30.0)));
-        r.mark(Rect::from_min_max(Pos2::new(10.0, 4.0), Pos2::new(20.0, 6.0)));
-        r.mark(Rect::from_min_max(Pos2::new(10.0, 8.0), Pos2::new(14.0, 9.0)));
-        let marked: usize = r.bits.iter().map(|w| w.count_ones() as usize).sum();
+        let mut r = Raster::new(Rect::from_min_size(Pos2::ZERO, Vec2::new(40.0, 40.0)), 1, Raster::CELL);
+        r.mark(0, Rect::from_min_max(Pos2::new(2.0, 2.0), Pos2::new(3.0, 30.0)));
+        r.mark(0, Rect::from_min_max(Pos2::new(10.0, 4.0), Pos2::new(20.0, 6.0)));
+        r.mark(0, Rect::from_min_max(Pos2::new(10.0, 8.0), Pos2::new(14.0, 9.0)));
+        let marked: usize = r.planes[0].iter().map(|w| w.count_ones() as usize).sum();
         let mut mesh = Mesh::default();
-        r.emit(&mut mesh, Color32::WHITE);
+        r.emit(&mut mesh, &[(0, Color32::WHITE)]);
         let area: f32 = mesh.vertices.chunks(4).map(|q| (q[3].pos.x - q[0].pos.x) * (q[3].pos.y - q[0].pos.y)).sum();
         assert_eq!(area, marked as f32 * Raster::CELL * Raster::CELL);
         assert!(mesh.vertices.len() / 4 <= 4, "the vertical bar must merge into one quad: {}", mesh.vertices.len() / 4);
+    }
+
+    /// Every set sprite pixel lands on the raster cell holding its transformed centre, for all
+    /// orientations, with and without the axis-aligned fast path.
+    #[test]
+    fn stamped_sprites_land_on_their_pixel_centres() {
+        let mut sp = Sprite::new(IRect::new(0, 0, 160, 96), 4);
+        sp.mark(0, PLANE_SMALL, IRect::new(0, 0, 160, 16));
+        sp.mark(0, PLANE_SMALL, IRect::new(0, 0, 16, 96));
+        sp.mark(0, PLANE_SMALL, IRect::new(64, 48, 80, 64));
+        let rect = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(200.0, 160.0));
+        let mut view = View2D::new(Raster::CELL as f64 / 16.0, true, 1e-6, 1e6);
+        view.center = (3.0, -5.0);
+        let bits = sp.plane(0, PLANE_SMALL).unwrap();
+        for (rot, mirror) in (0..4).flat_map(|r| [(r, false), (r, true)]) {
+            let t = Trans::with(37, 21, rot, mirror);
+            let mut got = Raster::new(rect, 1, Raster::CELL);
+            got.stamp(0, &sp, bits, &t, &view, rect);
+            let mut want = Raster::new(rect, 1, Raster::CELL);
+            for j in 0..sp.h {
+                for i in (0..sp.w).filter(|&i| sp.get(0, PLANE_SMALL, i, j)) {
+                    let (x, y) = t.apply_f(((i as f64 + 0.5) * 16.0, (j as f64 + 0.5) * 16.0));
+                    let s = view.to_screen(rect, x, y);
+                    let c = (((s.x - rect.min.x) / Raster::CELL) as f64, ((s.y - rect.min.y) / Raster::CELL) as f64);
+                    want.fill(0, c, c);
+                }
+            }
+            assert_eq!(got.planes, want.planes, "rot {rot} mirror {mirror}");
+        }
     }
 }

@@ -1,26 +1,103 @@
 //! MCP tools over one in-memory IC Studio project.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use ics_core::drc::{parse_deck, run as run_drc_deck};
+use ics_core::drc::{DrcReport, parse_deck, run as run_drc_deck};
 use ics_core::extract::{Extraction, extract};
 use ics_core::hier::{Hier, LayoutSource, descendants, would_cycle};
 use ics_core::layout::{Geometry, Layout, Trans};
-use ics_core::lvs::{LvsOptions, compare};
+use ics_core::lvs::{LvsOptions, LvsReport, compare};
 use ics_core::pcell::{PCELL_LIB, PCell};
-use ics_core::project::MANIFEST;
+use ics_core::project::{Library, MANIFEST};
 use ics_core::{Backend, Cell, CellRef, IRect, Project, Tech, sdl};
 use ics_sim::{Dataset, SimOptions, SimResults};
 use serde_json::{Map, Value, json};
 
 const MAX_LISTED: usize = 500;
 
+/// Read-only tools that can take long on large designs. Live mode runs them on a worker
+/// thread against a [`snapshot`] so the window stays responsive.
+pub const BACKGROUND: [&str; 10] = [
+    "get_netlist",
+    "simulate",
+    "run_spice",
+    "layout_summary",
+    "flylines",
+    "run_drc",
+    "extract",
+    "run_lvs",
+    "post_layout_parasitics",
+    "export_gds",
+];
+
+/// Verification results behind a live-mode run_drc / extract / run_lvs call, for the app to show.
+pub enum Verified {
+    Drc(DrcReport),
+    Extract(Extraction),
+    Lvs(Extraction, LvsReport),
+}
+
+/// A copy of the part of `p` that `cell` depends on: the cell itself, every cell its layout
+/// places (recursively), the technology and the settings. `layout` stands in for the cell's
+/// own layout, e.g. while an editor holds it. Without a cell, the copy has no cells at all.
+pub fn snapshot(p: &Project, cell: Option<&CellRef>, layout: Option<&Layout>) -> Project {
+    let top_layout = cell.and_then(|c| layout.or_else(|| p.layout(c)));
+    let mut keep: HashSet<CellRef> = cell.into_iter().cloned().collect();
+    let mut todo: Vec<&Layout> = top_layout.into_iter().collect();
+    while let Some(l) = todo.pop() {
+        for i in &l.instances {
+            if keep.insert(i.cell.clone())
+                && let Some(child) = p.layout(&i.cell)
+            {
+                todo.push(child);
+            }
+        }
+    }
+    let libraries = p
+        .libraries
+        .iter()
+        .filter_map(|lib| {
+            let cells: Vec<Cell> = lib
+                .cells
+                .iter()
+                .filter_map(|c| {
+                    let r = CellRef::new(&lib.name, &c.name);
+                    if !keep.contains(&r) {
+                        return None;
+                    }
+                    Some(match layout.filter(|_| Some(&r) == cell) {
+                        Some(l) => Cell {
+                            name: c.name.clone(),
+                            description: c.description.clone(),
+                            schematic: c.schematic.clone(),
+                            layout: Some(l.clone()),
+                            sim: c.sim.clone(),
+                            pcell: c.pcell.clone(),
+                        },
+                        None => c.clone(),
+                    })
+                })
+                .collect();
+            (!cells.is_empty()).then(|| Library { name: lib.name.clone(), cells, storage: lib.storage })
+        })
+        .collect();
+    Project {
+        root: p.root.clone(),
+        name: p.name.clone(),
+        description: p.description.clone(),
+        tech: p.tech.clone(),
+        libraries,
+        settings: p.settings.clone(),
+    }
+}
+
 #[derive(Default)]
 pub struct State {
     project: Option<Project>,
     dirty: bool,
     in_gui: bool,
+    verified: Option<Verified>,
 }
 
 struct Args<'a>(&'a Map<String, Value>);
@@ -452,7 +529,18 @@ pub fn definitions() -> Vec<Value> {
 impl State {
     /// State around the project open in the desktop app (live mode).
     pub fn in_gui(project: Option<Project>, dirty: bool) -> Self {
-        Self { project, dirty, in_gui: true }
+        Self { project, dirty, in_gui: true, verified: None }
+    }
+
+    /// The reports behind the last run_drc / extract / run_lvs call (live mode only).
+    pub fn take_verified(&mut self) -> Option<Verified> {
+        self.verified.take()
+    }
+
+    fn keep(&mut self, v: Verified) {
+        if self.in_gui {
+            self.verified = Some(v);
+        }
     }
 
     /// The project and whether it has unsaved changes.
@@ -898,7 +986,7 @@ impl State {
         Ok(json!({"cell": r.to_string(), "count": fl.len(), "flylines": lines}))
     }
 
-    fn run_drc(&self, a: &Args) -> Result<Value, String> {
+    fn run_drc(&mut self, a: &Args) -> Result<Value, String> {
         let (p, r) = self.cell_arg(a)?;
         let t = &p.tech;
         let lay = layout_of(p, &r)?;
@@ -918,7 +1006,7 @@ impl State {
             let markers: Vec<Value> = vs.iter().take(max).map(|v| rect_um(t, v.marker)).collect();
             rules.push(json!({"rule": rule.name, "description": first.description, "count": count, "markers_um": markers}));
         }
-        Ok(json!({
+        let out = json!({
             "cell": r.to_string(),
             "clean": total == 0,
             "violations": total,
@@ -927,18 +1015,21 @@ impl State {
             "shapes_checked": rep.shapes,
             "non_manhattan_skipped": rep.skipped,
             "millis": sig(rep.millis),
-        }))
+        });
+        self.keep(Verified::Drc(rep));
+        Ok(out)
     }
 
-    fn extract(&self, a: &Args) -> Result<Value, String> {
+    fn extract(&mut self, a: &Args) -> Result<Value, String> {
         let (p, r) = self.cell_arg(a)?;
         let x = extract(layout_of(p, &r)?, p, &p.tech);
         let mut out = extraction_json(&x, &p.tech, &r.to_string());
         out["cell"] = json!(r.to_string());
+        self.keep(Verified::Extract(x));
         Ok(out)
     }
 
-    fn run_lvs(&self, a: &Args) -> Result<Value, String> {
+    fn run_lvs(&mut self, a: &Args) -> Result<Value, String> {
         let (p, r) = self.cell_arg(a)?;
         let t = &p.tech;
         let c = p.cell(&r).expect("resolved");
@@ -950,7 +1041,7 @@ impl State {
             .iter()
             .map(|e| json!({"kind": format!("{:?}", e.kind), "message": e.message, "marker_um": e.marker.map(|m| rect_um(t, m))}))
             .collect();
-        Ok(json!({
+        let out = json!({
             "cell": r.to_string(),
             "matched": rep.matched,
             "schematic_devices": rep.schematic_devices,
@@ -959,7 +1050,9 @@ impl State {
             "net_pairs": rep.nets,
             "differences": errors.len(),
             "errors": errors,
-        }))
+        });
+        self.keep(Verified::Lvs(x, rep));
+        Ok(out)
     }
 
     fn post_layout_parasitics(&self, a: &Args) -> Result<Value, String> {
@@ -1004,5 +1097,38 @@ impl State {
             "skipped_unknown_layer_shapes": skipped,
             "warnings": warnings,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cells(p: &Project) -> Vec<CellRef> {
+        let mut v: Vec<CellRef> = p.all_cells().map(|(r, _)| r).collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn snapshot_keeps_only_descendants() {
+        let p = ics_core::examples::demo_project();
+        let top = find(&p, "inv_tiles").unwrap();
+        let snap = snapshot(&p, Some(&top), None);
+        let mut want = descendants(&p, &top);
+        want.retain(|c| p.cell(c).is_some());
+        want.sort();
+        assert!(want.len() > 1, "{want:?}");
+        assert_eq!(cells(&snap), want);
+        assert!(find(&snap, "rc_lowpass").is_none());
+        assert_eq!(snap.layout(&top), p.layout(&top));
+        assert_eq!(snap.tech.name, p.tech.name);
+
+        let empty = Layout::default();
+        let alone = snapshot(&p, Some(&top), Some(&empty));
+        assert_eq!(cells(&alone), vec![top.clone()]);
+        assert_eq!(alone.layout(&top), Some(&empty));
+
+        assert!(snapshot(&p, None, None).libraries.is_empty());
     }
 }

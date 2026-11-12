@@ -1,17 +1,36 @@
 //! Verification panel: rule-deck DRC, connectivity extraction with net highlighting, and LVS.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::time::{Duration, Instant};
+
 use eframe::egui::{self, Color32, Rect, Stroke, StrokeKind};
-use ics_core::drc::{self, DrcReport};
+use ics_core::drc::{self, Deck, DrcReport};
 use ics_core::extract::{self, DevKind, Extraction};
 use ics_core::geom::IRect;
 use ics_core::layout::Layout;
 use ics_core::lvs::{self, LvsErrorKind, LvsReport};
+use ics_core::{Project, Schematic};
+use ics_mcp::tools::{self, Verified};
 
 use super::{LayCtx, LayRequest, LayoutEditor, screen_rect, um};
 use crate::canvas::View2D;
 use crate::theme::{self, Palette};
 
-#[derive(Default)]
+static GENERATION: AtomicU64 = AtomicU64::new(1);
+
+fn next_generation() -> u64 {
+    GENERATION.fetch_add(1, Ordering::Relaxed)
+}
+
+/// A verification step running on a worker thread against a snapshot of the design.
+struct Job {
+    what: Verify,
+    started: Instant,
+    generation: u64,
+    rx: Receiver<Verified>,
+}
+
 pub struct VerifyState {
     /// Deck being edited; `None` until the editor is opened (then it starts from the technology).
     pub deck: Option<String>,
@@ -24,6 +43,27 @@ pub struct VerifyState {
     pub highlight: Option<usize>,
     pub pick_nets: bool,
     marker: Option<IRect>,
+    /// Changes whenever the layout does; unique across editors.
+    generation: u64,
+    job: Option<Job>,
+}
+
+impl Default for VerifyState {
+    fn default() -> Self {
+        Self {
+            deck: None,
+            deck_errors: vec![],
+            drc: None,
+            extraction: None,
+            lvs: None,
+            stale: false,
+            highlight: None,
+            pick_nets: false,
+            marker: None,
+            generation: next_generation(),
+            job: None,
+        }
+    }
 }
 
 impl VerifyState {
@@ -32,6 +72,17 @@ impl VerifyState {
             self.stale = true;
         }
         self.highlight = None;
+        self.generation = next_generation();
+    }
+
+    /// Identifies the current layout state; results computed for another generation are stale.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// The step running in the background and for how long.
+    pub fn running(&self) -> Option<(Verify, Duration)> {
+        self.job.as_ref().map(|j| (j.what, j.started.elapsed()))
     }
 }
 
@@ -42,8 +93,42 @@ pub enum Verify {
     Lvs,
 }
 
+impl Verify {
+    pub fn name(self) -> &'static str {
+        match self {
+            Verify::Drc => "DRC",
+            Verify::Extract => "extraction",
+            Verify::Lvs => "LVS",
+        }
+    }
+}
+
+enum Task {
+    Drc(Deck),
+    Extract,
+    Lvs(Schematic),
+}
+
+impl Task {
+    fn run(self, top: &Layout, src: &Project) -> Verified {
+        match self {
+            Task::Drc(deck) => Verified::Drc(drc::run(&deck, top, src, &src.tech)),
+            Task::Extract => Verified::Extract(extract::extract(top, src, &src.tech)),
+            Task::Lvs(sch) => {
+                let x = extract::extract(top, src, &src.tech);
+                let r = lvs::compare(&sch, &x, &lvs::LvsOptions::default());
+                Verified::Lvs(x, r)
+            }
+        }
+    }
+}
+
 fn deck_source(cx: &LayCtx) -> String {
     cx.tech.drc_deck.clone().unwrap_or_else(|| drc::default_deck_text(cx.tech))
+}
+
+fn deck_errors(errs: &[drc::DeckError]) -> Vec<String> {
+    errs.iter().map(|e| format!("line {}: {}", e.line, e.message)).collect()
 }
 
 impl LayoutEditor {
@@ -54,59 +139,106 @@ impl LayoutEditor {
         self.verify.marker = Some(a);
     }
 
-    fn run_drc(&mut self, l: &Layout, cx: &mut LayCtx) {
-        let text = self.verify.deck.clone().unwrap_or_else(|| deck_source(cx));
-        match drc::parse_deck(&text, cx.tech) {
-            Ok(deck) => {
-                self.verify.deck_errors.clear();
-                self.verify.drc = Some(drc::run(&deck, l, cx.src, cx.tech));
-                self.verify.stale = false;
-            }
-            Err(errs) => {
-                self.verify.deck_errors = errs.iter().map(|e| format!("line {}: {}", e.line, e.message)).collect();
-            }
+    /// Start a verification step on a worker thread, on a copy of the cell and the cells it
+    /// places. Returns a one-line message for the console; [`Self::poll_verification`]
+    /// installs the result.
+    pub fn start_verification(&mut self, what: Verify, l: &Layout, cx: &LayCtx, ctx: &egui::Context) -> String {
+        if let Some((w, _)) = self.verify.running() {
+            return format!("{} is still running", w.name());
         }
-    }
-
-    fn run_extract(&mut self, l: &Layout, cx: &mut LayCtx) {
-        self.verify.extraction = Some(extract::extract(l, cx.src, cx.tech));
-        self.verify.highlight = None;
-        self.verify.stale = false;
-    }
-
-    fn run_lvs(&mut self, l: &Layout, cx: &mut LayCtx) {
-        let Some(sch) = cx.src.cell(cx.cell).and_then(|c| c.schematic.as_ref()) else { return };
-        self.run_extract(l, cx);
-        if let Some(x) = &self.verify.extraction {
-            self.verify.lvs = Some(lvs::compare(sch, x, &lvs::LvsOptions::default()));
-        }
-    }
-
-    /// Run a verification step; returns a one-line summary for the console.
-    pub fn run_verification(&mut self, what: Verify, l: &Layout, cx: &mut LayCtx) -> String {
-        match what {
+        let task = match what {
             Verify::Drc => {
-                self.run_drc(l, cx);
-                match (&self.verify.drc, self.verify.deck_errors.first()) {
-                    (_, Some(e)) => format!("DRC deck error: {e}"),
-                    (Some(r), None) => format!("DRC: {} violation(s) in {:.0} ms", r.violations.len(), r.millis),
-                    (None, None) => "DRC did not run".into(),
+                let text = self.verify.deck.clone().unwrap_or_else(|| deck_source(cx));
+                match drc::parse_deck(&text, cx.tech) {
+                    Ok(deck) => {
+                        self.verify.deck_errors.clear();
+                        Task::Drc(deck)
+                    }
+                    Err(errs) => {
+                        self.verify.deck_errors = deck_errors(&errs);
+                        return format!("DRC deck error: {}", self.verify.deck_errors[0]);
+                    }
                 }
             }
-            Verify::Extract => {
-                self.run_extract(l, cx);
-                let x = self.verify.extraction.as_ref().expect("just extracted");
-                format!("Extracted {} nets and {} transistors", x.nets.len(), x.devices.len())
+            Verify::Extract => Task::Extract,
+            Verify::Lvs => match cx.src.cell(cx.cell).and_then(|c| c.schematic.clone()) {
+                Some(sch) => Task::Lvs(sch),
+                None => return "LVS needs a schematic view of this cell".into(),
+            },
+        };
+        let mut snap = tools::snapshot(cx.src, Some(cx.cell), Some(l));
+        let top = snap.cell_mut(cx.cell).and_then(|c| c.layout.take()).unwrap_or_default();
+        let (tx, rx) = mpsc::channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(task.run(&top, &snap));
+            ctx.request_repaint();
+        });
+        self.verify.job = Some(Job { what, started: Instant::now(), generation: self.verify.generation, rx });
+        format!("Running {} on {}", what.name(), cx.cell)
+    }
+
+    pub fn is_verifying(&self) -> bool {
+        self.verify.job.is_some()
+    }
+
+    /// Install the result of a finished background step; returns its console summary.
+    pub fn poll_verification(&mut self) -> Option<String> {
+        let job = self.verify.job.as_ref()?;
+        let v = match job.rx.try_recv() {
+            Ok(v) => v,
+            Err(TryRecvError::Empty) => return None,
+            Err(TryRecvError::Disconnected) => {
+                let what = job.what;
+                self.verify.job = None;
+                return Some(format!("{} failed with an internal error", what.name()));
             }
-            Verify::Lvs => {
-                self.run_lvs(l, cx);
-                match &self.verify.lvs {
-                    Some(r) if r.matched => "LVS: layout matches schematic".into(),
-                    Some(r) => format!("LVS: {} difference(s)", r.errors.len()),
-                    None => "LVS needs a schematic view of this cell".into(),
-                }
+        };
+        let generation = self.verify.job.take()?.generation;
+        Some(self.install_verified(v, generation))
+    }
+
+    /// Show results computed for layout `generation`; returns a one-line summary.
+    pub fn install_verified(&mut self, v: Verified, generation: u64) -> String {
+        let msg = match v {
+            Verified::Drc(r) => {
+                self.verify.deck_errors.clear();
+                let msg = format!("DRC: {} violation(s) in {:.0} ms", r.violations.len(), r.millis);
+                self.verify.drc = Some(r);
+                msg
             }
-        }
+            Verified::Extract(x) => {
+                let msg = format!("Extracted {} nets and {} transistors", x.nets.len(), x.devices.len());
+                self.verify.extraction = Some(x);
+                msg
+            }
+            Verified::Lvs(x, r) => {
+                self.verify.extraction = Some(x);
+                let msg = if r.matched {
+                    "LVS: layout matches schematic".to_string()
+                } else {
+                    format!("LVS: {} difference(s)", r.errors.len())
+                };
+                self.verify.lvs = Some(r);
+                msg
+            }
+        };
+        self.verify.highlight = None;
+        self.verify.stale = generation != self.verify.generation;
+        if self.verify.stale { format!("{msg} (the layout changed while it ran)") } else { msg }
+    }
+
+    /// Progress row while `what` runs. Cancel discards the result; the worker finishes on its own.
+    fn job_row(&mut self, ui: &mut egui::Ui, what: Verify) {
+        let Some((w, t)) = self.verify.running().filter(|(w, _)| *w == what) else { return };
+        ui.horizontal(|ui| {
+            ui.add(egui::Spinner::new());
+            ui.label(egui::RichText::new(format!("Running {}… {:.1} s", w.name(), t.as_secs_f64())).small());
+            if ui.small_button("Cancel").clicked() {
+                self.verify.job = None;
+            }
+        });
+        ui.ctx().request_repaint_after(Duration::from_millis(100));
     }
 
     /// Click-to-highlight: returns true if the click was consumed.
@@ -125,12 +257,14 @@ impl LayoutEditor {
         let pal = theme::palette(ui.ctx());
         let tech = cx.tech;
         let mut zoom: Option<IRect> = None;
+        let idle = !self.is_verifying();
 
         ui.add_space(12.0);
         theme::section(ui, "Design Rule Check");
         ui.horizontal(|ui| {
-            if ui.button("▶ Run DRC").on_hover_text("Run the rule deck on the flattened cell").clicked() {
-                self.run_drc(l, cx);
+            let run = ui.add_enabled(idle, egui::Button::new("▶ Run DRC"));
+            if run.on_hover_text("Run the rule deck on the flattened cell").clicked() {
+                self.start_verification(Verify::Drc, l, cx, ui.ctx());
             }
             if self.verify.drc.is_some() && ui.button("Clear").clicked() {
                 self.verify.drc = None;
@@ -150,9 +284,7 @@ impl LayoutEditor {
                             self.verify.deck_errors.clear();
                             self.requests.push(LayRequest::SetDeck(deck.clone()));
                         }
-                        Err(errs) => {
-                            self.verify.deck_errors = errs.iter().map(|e| format!("line {}: {}", e.line, e.message)).collect();
-                        }
+                        Err(errs) => self.verify.deck_errors = deck_errors(&errs),
                     }
                 }
                 if ui.button("Reset").on_hover_text("Rules derived from the technology layers and vias").clicked() {
@@ -160,6 +292,7 @@ impl LayoutEditor {
                 }
             });
         });
+        self.job_row(ui, Verify::Drc);
         for e in &self.verify.deck_errors {
             ui.label(egui::RichText::new(e).small().color(pal.danger));
         }
@@ -206,12 +339,14 @@ impl LayoutEditor {
         ui.add_space(12.0);
         theme::section(ui, "Connectivity");
         ui.horizontal(|ui| {
-            if ui.button("Extract").on_hover_text("Find nets and transistors in the flattened cell").clicked() {
-                self.run_extract(l, cx);
+            let run = ui.add_enabled(idle, egui::Button::new("Extract"));
+            if run.on_hover_text("Find nets and transistors in the flattened cell").clicked() {
+                self.start_verification(Verify::Extract, l, cx, ui.ctx());
             }
             ui.add_enabled(self.verify.extraction.is_some(), egui::Checkbox::new(&mut self.verify.pick_nets, "Pick nets"))
                 .on_hover_text("Click shapes in the canvas to highlight their net");
         });
+        self.job_row(ui, Verify::Extract);
         if let Some(x) = &self.verify.extraction {
             let n = x.devices.iter().filter(|d| d.kind == DevKind::Nmos).count();
             let p = x.devices.len() - n;
@@ -266,11 +401,13 @@ impl LayoutEditor {
                 ui.label(egui::RichText::new("This cell has no schematic to compare against").small().color(pal.text_weak));
             }
             Some(_) => {
-                if ui.button("▶ Run LVS").on_hover_text("Extract the layout and compare it with the schematic").clicked() {
-                    self.run_lvs(l, cx);
+                let run = ui.add_enabled(idle, egui::Button::new("▶ Run LVS"));
+                if run.on_hover_text("Extract the layout and compare it with the schematic").clicked() {
+                    self.start_verification(Verify::Lvs, l, cx, ui.ctx());
                 }
             }
         }
+        self.job_row(ui, Verify::Lvs);
         if let Some(r) = &self.verify.lvs {
             ui.label(
                 egui::RichText::new(format!(

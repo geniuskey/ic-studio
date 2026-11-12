@@ -8,6 +8,18 @@ use egui_kittest::Harness;
 use ics_studio::LaunchArgs;
 use ics_studio::app::{Command, IcStudio, Workspace};
 
+/// Step until background work (simulation, verification, MCP calls) is done, then let the
+/// results render.
+fn settle(h: &mut Harness<'_, IcStudio>, name: &str) {
+    let t = std::time::Instant::now();
+    while h.state().is_busy() && t.elapsed() < Duration::from_secs(60) {
+        std::thread::sleep(Duration::from_millis(10));
+        h.step();
+    }
+    assert!(!h.state().is_busy(), "{name}: background work did not finish");
+    h.run_steps(2);
+}
+
 fn scenario(name: &str, demo: bool, cell: Option<&str>, workspace: &str, run: bool) {
     scenario_then(name, demo, cell, workspace, run, None);
 }
@@ -31,6 +43,7 @@ fn scenario_then(name: &str, demo: bool, cell: Option<&str>, workspace: &str, ru
         h.state_mut().command(c);
     }
     h.run_steps(6);
+    settle(&mut h, name);
     let img = h.render().expect("render");
     if let Ok(dir) = std::env::var("ICS_SHOT_DIR") {
         std::fs::create_dir_all(&dir).unwrap();
@@ -256,7 +269,8 @@ fn mcp_live_requests() {
         let arguments = args.as_object().unwrap().clone();
         tx.send(ics_mcp::bridge::Pending { tool: tool.into(), arguments, reply }).unwrap();
         h.run_steps(3);
-        answer.try_recv().expect("answered on the UI thread")
+        settle(h, tool);
+        answer.try_recv().expect("answered")
     };
     let status = call(&mut h, "gui_status", serde_json::json!({})).value().unwrap();
     assert_eq!(status["live"], true);
@@ -286,6 +300,109 @@ fn mcp_live_requests() {
         std::fs::create_dir_all(&dir).unwrap();
         img.save(std::path::Path::new(&dir).join("14_mcp_live.png")).unwrap();
     }
+}
+
+/// A saved demo project plus cell `work/big`: an array of `inv_tiles` large enough that
+/// DRC takes a noticeable time.
+fn big_project(test: &str) -> (std::path::PathBuf, ics_core::CellRef) {
+    let dir = std::env::temp_dir().join(format!("ics-ui-{test}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut p = ics_core::examples::demo_project();
+    let (tiles, _) = p.all_cells().find(|(_, c)| c.name == "inv_tiles").unwrap();
+    let mut lay = ics_core::Layout::default();
+    let step = 2_000_000;
+    let array = ics_core::ArraySpec { cols: 2, rows: 1, col: (step, 0), row: (0, step) };
+    lay.add_instance(tiles, ics_core::Trans::new(0, 0), Some(array));
+    let mut cell = ics_core::Cell::new("big");
+    cell.layout = Some(lay);
+    let r = p.add_cell("work", cell).unwrap();
+    p.save_as(&dir).unwrap();
+    (dir, r)
+}
+
+fn open_layout(dir: &std::path::Path, cell: &str) -> Harness<'static, IcStudio> {
+    let args = LaunchArgs {
+        project: Some(dir.to_path_buf()),
+        demo: false,
+        workspace: Some("layout".into()),
+        cell: Some(cell.into()),
+        run: false,
+    };
+    let mut h = Harness::builder().with_size(egui::vec2(1440.0, 900.0)).wgpu().build_eframe(|cc| IcStudio::new(cc, args));
+    h.run_steps(4);
+    h
+}
+
+/// Step while the app is busy; returns (frames, slowest frame).
+fn frames_while_busy(h: &mut Harness<'_, IcStudio>) -> (usize, Duration) {
+    let (mut frames, mut slowest, t) = (0, Duration::ZERO, std::time::Instant::now());
+    while h.state().is_busy() && t.elapsed() < Duration::from_secs(120) {
+        let f = std::time::Instant::now();
+        h.step();
+        slowest = slowest.max(f.elapsed());
+        frames += 1;
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!h.state().is_busy(), "background work did not finish");
+    (frames, slowest)
+}
+
+/// DRC on a large cell runs on a worker thread: frames keep coming and the report lands in
+/// the editor when it is done.
+#[test]
+fn verification_in_background() {
+    let (dir, big) = big_project("verify");
+    let mut h = open_layout(&dir, "big");
+    let t = std::time::Instant::now();
+    h.state_mut().command(Command::RunDrc);
+    h.step();
+    assert!(h.state().is_busy(), "DRC should still be running");
+    let (frames, slowest) = frames_while_busy(&mut h);
+    let total = t.elapsed();
+    assert!(frames >= 5, "only {frames} frame(s) while DRC ran for {total:?}");
+    assert!(slowest < total / 2, "a frame took {slowest:?} of {total:?}");
+    h.run_steps(2);
+    let ed = h.state().layout_editor(&big).expect("editor");
+    let drc = ed.verify.drc.as_ref().expect("DRC report installed");
+    assert!(drc.shapes > 100_000, "{} shapes", drc.shapes);
+    assert!(!ed.verify.stale);
+    drop(h);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Live mode: a slow read-only tool runs off the UI thread. Calls behind it are still served
+/// while it runs, and its reply arrives when it is done.
+#[test]
+fn mcp_heavy_tool_in_background() {
+    let (dir, big) = big_project("mcp");
+    let mut h = open_layout(&dir, "big");
+    let (tx, rx) = std::sync::mpsc::channel();
+    h.state_mut().attach_bridge(rx);
+    let send = |tool: &str, args: serde_json::Value| {
+        let (reply, answer) = std::sync::mpsc::channel();
+        let arguments = args.as_object().unwrap().clone();
+        tx.send(ics_mcp::bridge::Pending { tool: tool.into(), arguments, reply }).unwrap();
+        answer
+    };
+    let drc = send("run_drc", serde_json::json!({"cell": "big"}));
+    h.run_steps(2);
+    assert!(drc.try_recv().is_err(), "run_drc should still be running");
+    let status = send("gui_status", serde_json::json!({}));
+    h.run_steps(2);
+    let s = status.try_recv().expect("gui_status answered while run_drc runs").value().unwrap();
+    assert_eq!(s["live"], true);
+    assert!(drc.try_recv().is_err(), "run_drc should still be running");
+    let (frames, _) = frames_while_busy(&mut h);
+    assert!(frames >= 3, "only {frames} frame(s) while run_drc ran");
+    let v = drc.try_recv().expect("run_drc answered").value().unwrap();
+    assert_eq!(v["cell"], big.to_string());
+    assert!(v["shapes_checked"].as_u64().unwrap() > 100_000, "{v}");
+    h.run_steps(2);
+    assert_eq!(h.state().workspace(), Workspace::Layout);
+    let ed = h.state().layout_editor(&big).expect("editor");
+    assert_eq!(ed.verify.drc.as_ref().map(|r| r.shapes as u64), v["shapes_checked"].as_u64(), "the GUI shows the same report");
+    drop(h);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Frame times on a large real design. Run with

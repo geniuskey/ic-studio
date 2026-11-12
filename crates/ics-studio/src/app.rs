@@ -1,9 +1,9 @@
 //! Application shell: workspaces, project explorer, tabs, commands, dialogs and persistence.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::Receiver;
-use std::time::Instant;
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Align2, Color32, FontId, Key, KeyboardShortcut, Modifiers, RichText, Sense, Stroke, Vec2};
 use ics_core::{Cell, CellRef, Layout, Project, SchObj, Schematic, ViewKind, examples};
@@ -147,7 +147,24 @@ struct Bridge {
     rx: Receiver<Pending>,
     calls: u64,
     last: Option<(Instant, String)>,
+    /// Requests not started yet, served in arrival order.
+    waiting: VecDeque<Pending>,
+    job: Option<McpJob>,
 }
+
+/// A read-only tool call running on a worker thread against a snapshot of the project.
+struct McpJob {
+    tool: String,
+    cell: Option<CellRef>,
+    /// Layout editor generation of `cell` when the snapshot was taken.
+    generation: u64,
+    started: Instant,
+    rx: Receiver<(ToolResult, Option<tools::Verified>)>,
+    reply: Sender<ToolResult>,
+}
+
+type McpArgs = serde_json::Map<String, serde_json::Value>;
+type McpSnapshot = (Project, McpArgs, Option<CellRef>);
 
 /// MCP tools that change layouts or the project; their edits invalidate editor state.
 const MCP_EDITS: [&str; 10] = [
@@ -516,9 +533,9 @@ impl IcStudio {
             Command::SetWorkspace(w) => self.workspace = w,
             Command::RunSimulation => self.run_simulation(ctx),
             Command::Undo | Command::Redo | Command::Delete | Command::FitView => self.editor_command(cmd),
-            Command::RunDrc => self.verify(Verify::Drc),
-            Command::ExtractNets => self.verify(Verify::Extract),
-            Command::RunLvs => self.verify(Verify::Lvs),
+            Command::RunDrc => self.verify(ctx, Verify::Drc),
+            Command::ExtractNets => self.verify(ctx, Verify::Extract),
+            Command::RunLvs => self.verify(ctx, Verify::Lvs),
             Command::GenerateLayout => self.generate_layout(),
             Command::ExportGds => self.export_gds(false),
             Command::ExportLibraryGds => self.export_gds(true),
@@ -588,6 +605,7 @@ impl IcStudio {
                         _ => false,
                     };
                     if changed {
+                        ed.layout_changed();
                         self.hier.invalidate(&r);
                     }
                 }
@@ -672,7 +690,7 @@ impl IcStudio {
         }
     }
 
-    fn verify(&mut self, what: Verify) {
+    fn verify(&mut self, ctx: &egui::Context, what: Verify) {
         let (Some(r), Some(p)) = (self.active.clone(), self.project.as_mut()) else { return };
         let Some(lay) = p.cell_mut(&r).and_then(|c| c.layout.take()) else {
             self.warn(format!("{r} has no layout"));
@@ -681,8 +699,8 @@ impl IcStudio {
         let tech = p.tech.clone();
         let ed = self.lay_eds.entry(r.clone()).or_default();
         let msg = {
-            let mut cx = LayCtx { cell: &r, src: p, hier: &mut self.hier, tech: &tech, cells: &[] };
-            ed.run_verification(what, &lay, &mut cx)
+            let cx = LayCtx { cell: &r, src: p, hier: &mut self.hier, tech: &tech, cells: &[] };
+            ed.start_verification(what, &lay, &cx, ctx)
         };
         if let Some(c) = p.cell_mut(&r) {
             c.layout = Some(lay);
@@ -1423,6 +1441,7 @@ impl IcStudio {
                     }
                 }
                 if touched {
+                    ed.layout_changed();
                     self.hier.invalidate(&r);
                     changed = true;
                 }
@@ -1529,6 +1548,11 @@ impl IcStudio {
                                 if s.truncated { " (limit)" } else { "" }
                             );
                             ui.label(RichText::new(txt).small().color(if s.truncated { pal.warning } else { pal.text_weak }));
+                            if let Some((what, t)) = ed.verify.running() {
+                                ui.separator();
+                                ui.add(egui::Spinner::new().size(12.0));
+                                ui.label(RichText::new(format!("Running {}… {:.1} s", what.name(), t.as_secs_f64())).small());
+                            }
                         }
                     }
                     _ => {}
@@ -1546,6 +1570,13 @@ impl IcStudio {
                     };
                     ui.label(RichText::new("● MCP live").small().color(pal.ok)).on_hover_text(hover);
                     ui.separator();
+                    if let Some(j) = &b.job {
+                        let queued = if b.waiting.is_empty() { String::new() } else { format!(" ({} queued)", b.waiting.len()) };
+                        let txt = format!("MCP: {} running… {:.1} s{queued}", j.tool, j.started.elapsed().as_secs_f64());
+                        ui.label(RichText::new(txt).small());
+                        ui.add(egui::Spinner::new().size(12.0));
+                        ui.separator();
+                    }
                 }
                 let (txt, col) = match &self.ngspice {
                     Some(v) => (format!("● {v}"), pal.ok),
@@ -2044,19 +2075,93 @@ impl IcStudio {
 
     /// Serve MCP tool calls from `ics-mcp` (live mode) on this window's project.
     pub fn attach_bridge(&mut self, rx: Receiver<Pending>) {
-        self.bridge = Some(Bridge { rx, calls: 0, last: None });
+        self.bridge = Some(Bridge { rx, calls: 0, last: None, waiting: VecDeque::new(), job: None });
         self.info("MCP live mode: tool calls from ics-mcp run on the open project".into());
     }
 
-    fn serve_bridge(&mut self) {
-        let pending: Vec<Pending> = self.bridge.as_ref().map(|b| b.rx.try_iter().collect()).unwrap_or_default();
-        for p in pending {
-            let res = self.mcp_call(&p.tool, &p.arguments);
-            let _ = p.reply.send(res);
+    /// Answer bridge requests in arrival order. Tools in [`tools::BACKGROUND`] run one at a
+    /// time on a worker thread against a snapshot; a request behind a waiting one waits too, so
+    /// every call sees the effects of the calls before it.
+    fn serve_bridge(&mut self, ctx: &egui::Context) {
+        let Some(b) = &mut self.bridge else { return };
+        b.waiting.extend(b.rx.try_iter());
+        let done = match b.job.as_ref().map(|j| j.rx.try_recv()) {
+            Some(Ok(out)) => Some(out),
+            Some(Err(TryRecvError::Disconnected)) => Some((ToolResult::error("internal error in a background tool call"), None)),
+            _ => None,
+        };
+        if let Some((res, verified)) = done
+            && let Some(job) = b.job.take()
+        {
+            let _ = job.reply.send(res.clone());
+            let target = job.cell.filter(|r| self.project.as_ref().is_some_and(|p| p.cell(r).is_some()));
+            if let (Some(v), Some(r)) = (verified, &target)
+                && let Some(ed) = self.lay_eds.get_mut(r)
+            {
+                ed.install_verified(v, job.generation);
+            }
+            self.mcp_done(&job.tool, target, &res, Some(job.started.elapsed()));
+        }
+        loop {
+            let Some(b) = &mut self.bridge else { return };
+            let Some(next) = b.waiting.front() else { return };
+            let background = tools::BACKGROUND.contains(&next.tool.as_str());
+            if background && b.job.is_some() {
+                return;
+            }
+            let p = b.waiting.pop_front().expect("front exists");
+            match self.mcp_snapshot(&p.arguments).filter(|_| background) {
+                Some((snap, args, cell)) => self.start_mcp_job(ctx, p, snap, args, cell),
+                None => {
+                    let res = self.mcp_call(&p.tool, &p.arguments);
+                    let _ = p.reply.send(res);
+                }
+            }
         }
     }
 
-    fn mcp_call(&mut self, tool: &str, args: &serde_json::Map<String, serde_json::Value>) -> ToolResult {
+    /// The project part a background call needs, with `cell` rewritten to `lib/cell` so it
+    /// names the same cell in the snapshot. `None` (run inline) without a project or for an
+    /// unknown cell.
+    fn mcp_snapshot(&self, args: &McpArgs) -> Option<McpSnapshot> {
+        let p = self.project.as_ref()?;
+        let mut args = args.clone();
+        let cell = match args.get("cell").filter(|v| !v.is_null()) {
+            Some(v) => Some(tools::find(p, v.as_str()?)?),
+            None => None,
+        };
+        if let Some(r) = &cell {
+            args.insert("cell".into(), r.to_string().into());
+        }
+        Some((tools::snapshot(p, cell.as_ref(), None), args, cell))
+    }
+
+    fn start_mcp_job(&mut self, ctx: &egui::Context, p: Pending, snap: Project, args: McpArgs, cell: Option<CellRef>) {
+        let generation = match &cell {
+            Some(r) if matches!(p.tool.as_str(), "run_drc" | "extract" | "run_lvs") => {
+                self.lay_eds.entry(r.clone()).or_default().verify.generation()
+            }
+            _ => 0,
+        };
+        let (tx, rx) = mpsc::channel();
+        let (tool, dirty, ctx) = (p.tool.clone(), self.dirty, ctx.clone());
+        std::thread::spawn(move || {
+            let mut state = tools::State::in_gui(Some(snap), dirty);
+            let res = ics_mcp::call_tool(&mut state, &tool, &args);
+            let _ = tx.send((res, state.take_verified()));
+            ctx.request_repaint();
+        });
+        self.info(match &cell {
+            Some(r) => format!("MCP · {} {r} running in the background", p.tool),
+            None => format!("MCP · {} running in the background", p.tool),
+        });
+        if let Some(b) = &mut self.bridge {
+            b.job = Some(McpJob { tool: p.tool, cell, generation, started: Instant::now(), rx, reply: p.reply });
+        }
+    }
+
+    /// Run a tool on the UI thread, directly on the open project.
+    fn mcp_call(&mut self, tool: &str, args: &McpArgs) -> ToolResult {
         let cell = args.get("cell").and_then(|v| v.as_str()).map(str::to_string);
         let edits = MCP_EDITS.contains(&tool);
         let before = cell.as_deref().filter(|_| edits).and_then(|c| {
@@ -2097,10 +2202,17 @@ impl IcStudio {
             }
         }
         let target = cell.as_deref().and_then(|c| self.project.as_ref().and_then(|p| tools::find(p, c)));
-        let summary = mcp_summary(tool, &res);
+        self.mcp_done(tool, target, &res, None);
+        res
+    }
+
+    /// Log a finished call and show its cell in the matching workspace.
+    fn mcp_done(&mut self, tool: &str, target: Option<CellRef>, res: &ToolResult, took: Option<Duration>) {
+        let summary = mcp_summary(tool, res);
+        let took = took.map_or(String::new(), |d| format!(" ({:.1} s)", d.as_secs_f64()));
         let line = match &target {
-            Some(r) => format!("MCP · {tool} {r} -> {summary}"),
-            None => format!("MCP · {tool} -> {summary}"),
+            Some(r) => format!("MCP · {tool} {r} -> {summary}{took}"),
+            None => format!("MCP · {tool} -> {summary}{took}"),
         };
         if res.is_error {
             self.warn(line);
@@ -2119,9 +2231,6 @@ impl IcStudio {
             };
             self.queue.push(Command::OpenCell(r.clone(), Some(ws)));
             match tool {
-                "run_drc" => self.queue.push(Command::RunDrc),
-                "run_lvs" => self.queue.push(Command::RunLvs),
-                "extract" => self.queue.push(Command::ExtractNets),
                 "simulate" => self.queue.push(Command::RunSimulation),
                 "generate_layout" | "flylines" => {
                     let ed = self.lay_eds.entry(r).or_default();
@@ -2131,7 +2240,6 @@ impl IcStudio {
                 _ => {}
             }
         }
-        res
     }
 
     pub fn project(&self) -> Option<&Project> {
@@ -2145,6 +2253,18 @@ impl IcStudio {
     /// True while any background simulation is running (used by UI tests).
     pub fn is_simulating(&self) -> bool {
         self.sims.values().any(|s| s.is_running())
+    }
+
+    /// The layout editor of a cell, once it was opened (used by UI tests).
+    pub fn layout_editor(&self, r: &CellRef) -> Option<&LayoutEditor> {
+        self.lay_eds.get(r)
+    }
+
+    /// True while a simulation, a verification step or an MCP tool call is still running.
+    pub fn is_busy(&self) -> bool {
+        self.is_simulating()
+            || self.lay_eds.values().any(LayoutEditor::is_verifying)
+            || self.bridge.as_ref().is_some_and(|b| b.job.is_some() || !b.waiting.is_empty())
     }
 
     fn update_title(&mut self, ctx: &egui::Context) {
@@ -2183,7 +2303,19 @@ impl eframe::App for IcStudio {
                 self.error(format!("{r}: {message}"));
             }
         }
-        self.serve_bridge();
+        let mut verified = vec![];
+        for (r, ed) in self.lay_eds.iter_mut() {
+            if let Some(m) = ed.poll_verification() {
+                verified.push(format!("{r}: {m}"));
+            }
+        }
+        for m in verified {
+            self.info(m);
+        }
+        self.serve_bridge(ctx);
+        if self.is_busy() {
+            ctx.request_repaint_after(Duration::from_millis(250));
+        }
         if self.dialog.is_none() && self.palette.is_none() {
             self.shortcuts(ctx);
         }
