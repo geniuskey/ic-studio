@@ -360,14 +360,15 @@ impl LayoutEditor {
         Some((snap((b.x0 + b.x1) / 2), snap((b.y0 + b.y1) / 2)))
     }
 
-    /// Rotate (0) or flip about x (1) / y (2) the selection around its centre.
+    /// Rotate (0) or flip about x (1) / y (2), as seen on screen, the selection around its centre.
     pub(super) fn transform_selection(&mut self, l: &mut Layout, cx: &mut LayCtx, kind: u8) -> bool {
         let Some(p) = self.pivot(l, cx) else { return false };
-        let t = match kind {
+        let p = self.view.orient.apply(p);
+        let t = self.on_screen(match kind {
             0 => Trans::rotate_about(p),
             1 => Trans::flip_x_about(p),
             _ => Trans::flip_y_about(p),
-        };
+        });
         self.history.push(l);
         l.transform_items(&self.selection, &t);
         true

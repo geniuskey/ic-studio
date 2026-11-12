@@ -476,9 +476,10 @@ impl LayoutEditor {
         done > 0
     }
 
-    /// Align or distribute the selected items within their common extent.
+    /// Align or distribute the selected items within their common extent, as seen on screen.
     pub(super) fn align(&mut self, l: &mut Layout, cx: &mut LayCtx, op: AlignOp) -> bool {
-        let mut boxes = self.item_boxes(l, cx);
+        let o = self.view.orient;
+        let mut boxes: Vec<(u64, IRect)> = self.item_boxes(l, cx).into_iter().map(|(id, b)| (id, o.apply_rect(b))).collect();
         let min = if matches!(op, AlignOp::DistributeH | AlignOp::DistributeV) { 3 } else { 2 };
         if boxes.len() < min {
             self.note(false, format!("Select at least {min} items"));
@@ -524,6 +525,7 @@ impl LayoutEditor {
         }
         self.history.push(l);
         for (id, dx, dy) in moves {
+            let (dx, dy) = o.inverse().apply_vec((dx, dy));
             l.translate_item(id, dx, dy);
         }
         true

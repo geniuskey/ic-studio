@@ -1124,10 +1124,25 @@ impl LayoutEditor {
         true
     }
 
+    /// A rotation / flip given in display coordinates as the same operation in cell
+    /// coordinates (they differ while editing a rotated or mirrored placement in place).
+    fn on_screen(&self, k: Trans) -> Trans {
+        let o = self.view.orient;
+        o.inverse().compose(&k).compose(&o)
+    }
+
+    /// [`Self::on_screen`] for an operation about the origin, such as the move / copy turn.
+    fn on_screen_linear(&self, k: Trans) -> Trans {
+        let o = Trans { x: 0, y: 0, ..self.view.orient };
+        o.inverse().compose(&k).compose(&o)
+    }
+
+    /// Move the selection by a vector given in display coordinates.
     fn nudge(&mut self, l: &mut Layout, dx: i64, dy: i64) -> bool {
         if self.selection.is_empty() {
             return false;
         }
+        let (dx, dy) = self.view.orient.inverse().apply_vec((dx, dy));
         self.history.push(l);
         for id in &self.selection {
             l.translate_item(*id, dx, dy);
@@ -1291,7 +1306,7 @@ impl LayoutEditor {
                     }
                     Key::O => {
                         if self.xfer.is_some() {
-                            self.xfer_t = Trans::rotate_about((0, 0)).compose(&self.xfer_t);
+                            self.xfer_t = self.on_screen_linear(Trans::rotate_about((0, 0))).compose(&self.xfer_t);
                         } else {
                             changed |= self.transform_selection(l, cx, 0);
                         }
@@ -1785,7 +1800,7 @@ impl LayoutEditor {
                     // Virtuoso: right-click rotates what is being moved, Shift+right-click flips it sideways.
                     if resp.secondary_clicked() && self.xfer.is_some() {
                         let k = if shift { Trans::flip_x_about((0, 0)) } else { Trans::rotate_about((0, 0)) };
-                        self.xfer_t = k.compose(&self.xfer_t);
+                        self.xfer_t = self.on_screen_linear(k).compose(&self.xfer_t);
                     }
                     if resp.drag_started_by(egui::PointerButton::Primary) && self.xfer.is_none() {
                         let snapped = self.snapped;
@@ -2800,6 +2815,29 @@ pub(super) fn manhattan(from: (i64, i64), to: (i64, i64)) -> (i64, i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Editing a rotated or mirrored placement in place, nudges and turns follow the screen.
+    #[test]
+    fn edits_follow_the_screen_in_every_orientation() {
+        for (rot, mirror) in (0..4).flat_map(|r| [(r, false), (r, true)]) {
+            let o = Trans::with(700, -300, rot, mirror);
+            let mut ed = LayoutEditor::default();
+            ed.view.orient = o;
+            let mut l = Layout::default();
+            let id = l.add_rect(0, 0, 0, 100, 40);
+            let before = o.apply_rect(l.shape(id).unwrap().bbox());
+            ed.selection.insert(id);
+            assert!(ed.nudge(&mut l, 50, 0));
+            assert_eq!(o.apply_rect(l.shape(id).unwrap().bbox()), before.translate(50, 0), "rot {rot} mirror {mirror}");
+
+            let (p, q) = ((30, 20), (80, 20));
+            let k = Trans::rotate_about(o.apply(p));
+            assert_eq!(o.apply(ed.on_screen(k).apply(q)), k.apply(o.apply(q)), "rot {rot} mirror {mirror}");
+            let turn = ed.on_screen_linear(Trans::rotate_about((0, 0)));
+            let d = o.apply_vec((10, 0));
+            assert_eq!(o.apply_vec(turn.apply_vec((10, 0))), (-d.1, d.0), "turn is counter-clockwise on screen");
+        }
+    }
 
     /// DRD sees shapes inside placed cells, and while editing in place those of the
     /// surroundings, but not the edited placement's own stale copy.
