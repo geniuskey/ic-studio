@@ -29,6 +29,7 @@ use crate::netlist::spice_name;
 use crate::project::{CellRef, Project};
 use crate::region::{BoolOp, Region};
 use crate::schematic::{DeviceKind, Schematic};
+use crate::tech::LengthUnit;
 use crate::tech::Tech;
 
 /// Lateral coupling is extracted up to this many minimum spacings of the layer.
@@ -192,7 +193,7 @@ pub fn annotate(caps: &[NetCap], net_pairs: &[(String, String)], min_farads: f64
 
 /// `ad as pd ps` per schematic MOS instance (by SPICE name, upper case) from the matched layout
 /// devices. Merged parallel devices share their junctions in proportion to `m`.
-pub fn junction_params(sch: &Schematic, x: &Extraction, rep: &LvsReport) -> BTreeMap<String, String> {
+pub fn junction_params(sch: &Schematic, x: &Extraction, rep: &LvsReport, unit: LengthUnit) -> BTreeMap<String, String> {
     let conn = connectivity::extract(sch);
     let insts: HashMap<&str, _> = sch
         .instances
@@ -202,7 +203,8 @@ pub fn junction_params(sch: &Schematic, x: &Extraction, rep: &LvsReport) -> BTre
         .collect();
     let devs: HashMap<&str, _> = x.devices.iter().map(|d| (d.name.as_str(), d)).collect();
     let to_layout: HashMap<&str, &str> = rep.nets.iter().map(|(s, l)| (s.as_str(), l.as_str())).collect();
-    let (um, m2) = (x.dbu_per_um.max(1) as f64, 1e-12 / (x.dbu_per_um.max(1) as f64).powi(2));
+    let f = unit.per_metre();
+    let (um, m2) = (x.dbu_per_um.max(1) as f64, 1e-12 * f * f / (x.dbu_per_um.max(1) as f64).powi(2));
     let mut out = BTreeMap::new();
     for (sname, lname) in &rep.devices {
         let mut total: HashMap<&str, Junction> = HashMap::new();
@@ -233,8 +235,8 @@ pub fn junction_params(sch: &Schematic, x: &Extraction, rep: &LvsReport) -> BTre
                     "ad={:.4e} as={:.4e} pd={:.4e} ps={:.4e}",
                     jd.area * k * m2,
                     js.area * k * m2,
-                    jd.perimeter * k / um * 1e-6,
-                    js.perimeter * k / um * 1e-6
+                    jd.perimeter * k / um * 1e-6 * f,
+                    js.perimeter * k / um * 1e-6 * f
                 ),
             );
         }
@@ -449,7 +451,9 @@ impl PostLayout {
                 block(&mut out);
                 inserted = true;
             }
-            let first = line.split_whitespace().next().unwrap_or_default().to_ascii_uppercase();
+            let element = line.split_whitespace().next().unwrap_or_default().to_ascii_uppercase();
+            // PDK subcircuit models put an `X` in front of the schematic's `M` name.
+            let first = element.strip_prefix('X').filter(|k| k.starts_with('M')).unwrap_or(&element).to_string();
             let mos = first.starts_with('M');
             match self.terminals.get(&first).filter(|_| mos) {
                 Some(nodes) => {
@@ -484,7 +488,7 @@ pub fn post_layout(project: &Project, cell: &CellRef) -> Result<PostLayout, Stri
     let sch = c.schematic.as_ref().ok_or("cell has no schematic")?;
     let lay = c.layout.as_ref().ok_or("cell has no layout")?;
     let x = extract(lay, project, &project.tech);
-    let rep = compare(sch, &x, &LvsOptions::default());
+    let rep = compare(sch, &x, &LvsOptions::for_tech(&project.tech));
     let to_sch: HashMap<&str, &str> = rep.nets.iter().map(|(s, l)| (l.as_str(), s.as_str())).collect();
 
     let mut ground: BTreeMap<String, f64> = net_caps(&x, &project.tech).into_iter().map(|c| (c.net, c.farads)).collect();
@@ -566,7 +570,7 @@ pub fn post_layout(project: &Project, cell: &CellRef) -> Result<PostLayout, Stri
         n_cc += 1;
         cc_total += f;
     }
-    let junctions = junction_params(sch, &x, &rep);
+    let junctions = junction_params(sch, &x, &rep, project.tech.length_unit());
 
     let mut summary = format!(
         "post-layout: {n_ground} nets annotated, {:.3} fF to ground, {n_cc} coupling caps ({:.3} fF), junctions on {} devices, {n_res} resistors on {} nets",
@@ -821,7 +825,7 @@ mod tests {
         assert!(pl.caps.contains("Cc_"), "{}", pl.caps);
         assert_eq!(pl.junctions.len(), 10, "{:?}", pl.junctions);
         let c = p.cell(&r).unwrap();
-        let deck = crate::netlist::netlist(c.schematic.as_ref().unwrap()).deck("ring", &c.sim);
+        let deck = crate::netlist::netlist_for(c.schematic.as_ref().unwrap(), &p.tech, "").deck("ring", &c.sim);
         let post = pl.apply(&deck);
         assert_eq!(post.lines().filter(|l| l.contains(" ad=")).count(), 10, "{post}");
         assert!(pl.summary.contains(" resistors on "), "{}", pl.summary);

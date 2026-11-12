@@ -119,6 +119,9 @@ pub struct SimSetup {
     /// Include layout parasitics (`pex::post_layout_lines`) in the deck.
     #[serde(default)]
     pub parasitics: bool,
+    /// Model corner of the PDK model library (empty = its default).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub corner: String,
 }
 
 fn default_temp() -> f64 {
@@ -144,6 +147,7 @@ impl Default for SimSetup {
             extra: String::new(),
             temp: 27.0,
             parasitics: false,
+            corner: String::new(),
         }
     }
 }

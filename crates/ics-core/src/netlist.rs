@@ -3,6 +3,8 @@
 use crate::connectivity::{Connectivity, extract};
 use crate::schematic::{DeviceKind, Instance, Schematic};
 use crate::sim_setup::SimSetup;
+use crate::tech::{LengthUnit, Tech};
+use crate::units::parse_spice;
 
 /// Generic default device models (level-1 style) used when no PDK models are given.
 pub const DEFAULT_MODELS: &str = "\
@@ -43,6 +45,25 @@ pub(crate) fn spice_name(inst: &Instance) -> String {
     if name.chars().next().is_some_and(|c| c.eq_ignore_ascii_case(&prefix)) { name } else { format!("{prefix}{name}") }
 }
 
+/// `v` with up to 6 decimals and no trailing zeros.
+fn fmt_num(v: f64) -> String {
+    let s = format!("{v:.6}");
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+/// Element name of `inst` in a deck for `tech`: PDK subcircuit MOS models get an `X` prefix.
+pub fn element_name(inst: &Instance, tech: &Tech) -> String {
+    let name = spice_name(inst);
+    match inst.kind {
+        DeviceKind::Nmos | DeviceKind::Pmos
+            if tech.mos_device(inst.kind == DeviceKind::Pmos, inst.param("model")).is_some_and(|d| d.subckt) =>
+        {
+            format!("X{name}")
+        }
+        _ => name,
+    }
+}
+
 fn source_spec(inst: &Instance) -> String {
     let mut parts = vec![];
     let dc = inst.param("dc").trim();
@@ -58,11 +79,18 @@ fn source_spec(inst: &Instance) -> String {
     parts.join(" ")
 }
 
+/// Netlist with the generic technology and built-in models.
 pub fn netlist(sch: &Schematic) -> Netlist {
+    netlist_for(sch, &Tech::generic(), "")
+}
+
+/// Netlist for `tech`: MOS models map to the PDK devices ([`Tech::mos_device`]) and the PDK model
+/// library is loaded at `corner` (empty = its default corner).
+pub fn netlist_for(sch: &Schematic, tech: &Tech, corner: &str) -> Netlist {
     let conn = extract(sch);
     let mut warnings = conn.warnings.clone();
     let mut body = String::new();
-    let mut needs_models = false;
+    let (mut needs_mos, mut needs_diode) = (false, false);
 
     let mut instances: Vec<&Instance> = sch.instances.iter().collect();
     instances.sort_by(|a, b| a.name.cmp(&b.name));
@@ -73,7 +101,7 @@ pub fn netlist(sch: &Schematic) -> Netlist {
             continue;
         }
         let net = |pin: &str| conn.net_of(inst.id, pin).unwrap_or("?").to_string();
-        let name = spice_name(inst);
+        let name = element_name(inst, tech);
         if !seen_names.insert(name.to_ascii_lowercase()) {
             warnings.push(format!("Duplicate instance name '{name}'"));
         }
@@ -85,23 +113,29 @@ pub fn netlist(sch: &Schematic) -> Netlist {
                 format!("{name} {} {} {}", net("p"), net("n"), source_spec(inst))
             }
             DeviceKind::Diode => {
-                needs_models = true;
+                needs_diode = true;
                 format!("{name} {} {} {}", net("a"), net("k"), inst.param("model"))
             }
             DeviceKind::Nmos | DeviceKind::Pmos => {
-                needs_models = true;
+                needs_mos = true;
                 let bulk_pin = inst.pin_positions().into_iter().find(|(n, _)| *n == "b").map(|(_, p)| p);
                 let bulk_floating = bulk_pin.is_some_and(|p| conn.unconnected_pins.contains(&p));
                 let bulk = if bulk_floating { net("s") } else { net("b") };
-                let mut l = format!(
-                    "{name} {} {} {} {bulk} {} w={} l={}",
-                    net("d"),
-                    net("g"),
-                    net("s"),
-                    inst.param("model"),
-                    inst.param("w"),
-                    inst.param("l")
-                );
+                let model = match tech.mos_device(inst.kind == DeviceKind::Pmos, inst.param("model")) {
+                    Some(d) => d.name.clone(),
+                    None => {
+                        if !tech.devices.is_empty() {
+                            warnings.push(format!("{name}: model '{}' is not a device of the technology", inst.param("model")));
+                        }
+                        inst.param("model").to_string()
+                    }
+                };
+                let unit = tech.length_unit();
+                let len = |k: &str| match (unit, parse_spice(inst.param(k))) {
+                    (LengthUnit::Um, Some(v)) => fmt_num(v * unit.per_metre()),
+                    _ => inst.param(k).to_string(),
+                };
+                let mut l = format!("{name} {} {} {} {bulk} {model} w={} l={}", net("d"), net("g"), net("s"), len("w"), len("l"));
                 let m = inst.param("m").trim();
                 if !m.is_empty() && m != "1" {
                     l += &format!(" m={m}");
@@ -123,9 +157,22 @@ pub fn netlist(sch: &Schematic) -> Netlist {
         }
     }
 
-    if needs_models {
-        body += DEFAULT_MODELS;
-        body.push('\n');
+    match &tech.models {
+        Some(m) => {
+            if needs_mos {
+                body += &m.spice_line(corner);
+                body.push('\n');
+            }
+            if needs_diode && let Some(d) = DEFAULT_MODELS.lines().last() {
+                body += d;
+                body.push('\n');
+            }
+        }
+        None if needs_mos || needs_diode => {
+            body += DEFAULT_MODELS;
+            body.push('\n');
+        }
+        None => {}
     }
 
     // Supply nets get no implicit source: users must place a voltage source.

@@ -116,7 +116,7 @@ impl Task {
             Task::Extract => Verified::Extract(extract::extract(top, src, &src.tech)),
             Task::Lvs(sch) => {
                 let x = extract::extract(top, src, &src.tech);
-                let r = lvs::compare(&sch, &x, &lvs::LvsOptions::default());
+                let r = lvs::compare(&sch, &x, &lvs::LvsOptions::for_tech(&src.tech));
                 Verified::Lvs(x, r)
             }
         }

@@ -204,6 +204,7 @@ mod tests {
             "open_project",
             "new_project",
             "save_project",
+            "load_pdk",
             "project_info",
             "get_netlist",
             "simulate",

@@ -104,6 +104,147 @@ pub struct LayerCap {
     pub resistance: f64,
 }
 
+/// Which technology layers and vias play the fixed roles of device recognition and the PCells.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LayerRoles {
+    /// Diffusion layers (the first is drawn by the MOS PCell); extraction merges them all.
+    pub diffusion: Vec<String>,
+    /// Layer drawn for well / substrate taps (empty = the first diffusion layer).
+    pub tap: String,
+    pub poly: String,
+    pub nwell: String,
+    pub nimplant: String,
+    pub pimplant: String,
+    /// Via from diffusion to the first metal.
+    pub diff_contact: String,
+    /// Via from poly to the first metal.
+    pub poly_contact: String,
+    /// Layer for PCell pin labels.
+    pub label: String,
+}
+
+impl Default for LayerRoles {
+    fn default() -> Self {
+        LayerRoles {
+            diffusion: vec!["active".into()],
+            tap: String::new(),
+            poly: "poly".into(),
+            nwell: "nwell".into(),
+            nimplant: "nplus".into(),
+            pimplant: "pplus".into(),
+            diff_contact: "contact".into(),
+            poly_contact: "polycon".into(),
+            label: "text".into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MosType {
+    Nmos,
+    Pmos,
+}
+
+/// A MOS device of the PDK. A gate (poly over diffusion) of the right polarity is this device
+/// when every `layers` marker covers it and no `exclude` marker does; the first match wins.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MosDef {
+    /// Model (or subcircuit) name used in netlists and LVS.
+    pub name: String,
+    #[serde(rename = "type")]
+    pub kind: MosType,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub layers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude: Vec<String>,
+    /// The model is a subcircuit: instances are netlisted as `X` elements.
+    #[serde(default)]
+    pub subckt: bool,
+}
+
+/// SPICE model library of the PDK.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct ModelLib {
+    /// Model file path, read by the simulator.
+    pub path: String,
+    /// `.lib` sections; empty means the file is `.include`d.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub corners: Vec<String>,
+    /// Corner used when the simulation setup names none (empty = the first corner).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub default_corner: String,
+    /// Unit of MOS geometry parameters (`w`, `l`, `ad`, ...) the models expect.
+    #[serde(default)]
+    pub length_unit: LengthUnit,
+}
+
+/// Unit of device geometry in netlists: metres (`w=1u`) or microns (`w=1`, for model libraries
+/// that set `.option scale=1e-6`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LengthUnit {
+    #[default]
+    M,
+    Um,
+}
+
+impl LengthUnit {
+    /// Factor from metres to this unit.
+    pub fn per_metre(self) -> f64 {
+        match self {
+            LengthUnit::M => 1.0,
+            LengthUnit::Um => 1e6,
+        }
+    }
+}
+
+impl ModelLib {
+    /// The deck line loading the models at `corner` (empty = default corner).
+    pub fn spice_line(&self, corner: &str) -> String {
+        let corner = [corner.trim(), self.default_corner.as_str()]
+            .into_iter()
+            .find(|c| !c.is_empty())
+            .or(self.corners.first().map(String::as_str));
+        match corner {
+            Some(c) => format!(".lib \"{}\" {c}", self.path),
+            None => format!(".include \"{}\"", self.path),
+        }
+    }
+}
+
+/// [`Tech::mos_device`] over a device list.
+pub fn mos_device_in<'a>(devices: &'a [MosDef], pmos: bool, model: &str) -> Option<&'a MosDef> {
+    let model = model.trim();
+    if let Some(d) = devices.iter().find(|d| d.name.eq_ignore_ascii_case(model)) {
+        return Some(d);
+    }
+    let kind = if pmos { MosType::Pmos } else { MosType::Nmos };
+    let generic = model.is_empty() || model.eq_ignore_ascii_case("nmos") || model.eq_ignore_ascii_case("pmos");
+    generic.then(|| devices.iter().find(|d| d.kind == kind)).flatten()
+}
+
+/// Device layout rules used by the PCells that single-layer width / spacing cannot express (dbu).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DeviceRules {
+    /// Diffusion contact to gate spacing.
+    pub gate_contact_space: i64,
+    /// Poly extension past diffusion.
+    pub poly_endcap: i64,
+    /// Implant enclosure of diffusion.
+    pub implant_enc: i64,
+    /// Nwell enclosure of p diffusion.
+    pub nwell_enc: i64,
+}
+
+impl Default for DeviceRules {
+    fn default() -> Self {
+        DeviceRules { gate_contact_space: 160, poly_endcap: 220, implant_enc: 180, nwell_enc: 430 }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Tech {
     pub name: String,
@@ -120,6 +261,16 @@ pub struct Tech {
     /// Parasitic capacitance coefficients per conducting layer (layers without one are ignored).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub caps: Vec<LayerCap>,
+    #[serde(default)]
+    pub roles: LayerRoles,
+    #[serde(default)]
+    pub rules: DeviceRules,
+    /// PDK MOS devices; empty means generic `nmos` / `pmos`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub devices: Vec<MosDef>,
+    /// PDK model library; `None` uses the built-in generic models.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub models: Option<ModelLib>,
 }
 
 impl Tech {
@@ -142,6 +293,66 @@ impl Tech {
 
     pub fn layer_cap(&self, name: &str) -> Option<&LayerCap> {
         self.caps.iter().find(|c| c.layer.eq_ignore_ascii_case(name))
+    }
+
+    /// Diffusion layers of [`LayerRoles::diffusion`] present in the technology.
+    pub fn diffusion_layers(&self) -> Vec<usize> {
+        self.roles.diffusion.iter().filter_map(|n| self.layer_index(n)).collect()
+    }
+
+    pub fn diffusion(&self) -> Option<usize> {
+        self.diffusion_layers().first().copied()
+    }
+
+    pub fn poly(&self) -> Option<usize> {
+        self.layer_index(&self.roles.poly)
+    }
+
+    pub fn nwell(&self) -> Option<usize> {
+        self.layer_index(&self.roles.nwell)
+    }
+
+    pub fn implant(&self, pmos: bool) -> Option<usize> {
+        self.layer_index(if pmos { &self.roles.pimplant } else { &self.roles.nimplant })
+    }
+
+    pub fn tap_layer(&self) -> Option<usize> {
+        if self.roles.tap.is_empty() { self.diffusion() } else { self.layer_index(&self.roles.tap) }
+    }
+
+    pub fn label_layer(&self) -> Option<usize> {
+        self.layer_index(&self.roles.label)
+    }
+
+    pub fn diff_contact(&self) -> Option<&ViaDef> {
+        self.via(&self.roles.diff_contact)
+    }
+
+    pub fn poly_contact(&self) -> Option<&ViaDef> {
+        self.via(&self.roles.poly_contact)
+    }
+
+    /// The first metal: top layer of the diffusion contact.
+    pub fn metal1(&self) -> Option<usize> {
+        self.diff_contact().and_then(|v| self.layer_index(&v.top))
+    }
+
+    /// The metal above [`Tech::metal1`]: top of the via whose bottom is metal1.
+    pub fn metal2(&self) -> Option<usize> {
+        let m1 = self.metal1()?;
+        self.vias.iter().filter(|v| self.layer_index(&v.bottom) == Some(m1)).find_map(|v| self.layer_index(&v.top))
+    }
+
+    /// PDK device for a schematic MOS with model `model`: the device of that name, else (for the
+    /// generic names `nmos` / `pmos` or an empty model) the first PDK device of that polarity.
+    /// `None` when the technology defines no devices.
+    /// Unit of device geometry in netlists for this technology's models.
+    pub fn length_unit(&self) -> LengthUnit {
+        self.models.as_ref().map_or_else(LengthUnit::default, |m| m.length_unit)
+    }
+
+    pub fn mos_device(&self, pmos: bool, model: &str) -> Option<&MosDef> {
+        mos_device_in(&self.devices, pmos, model)
     }
 
     pub fn layer_by_gds(&self, layer: u16, datatype: u16) -> Option<usize> {
@@ -212,6 +423,10 @@ impl Tech {
                 resistance,
             })
             .into(),
+            roles: LayerRoles::default(),
+            rules: DeviceRules::default(),
+            devices: vec![],
+            models: None,
         }
     }
 }

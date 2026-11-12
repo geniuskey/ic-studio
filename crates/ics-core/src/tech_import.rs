@@ -320,7 +320,16 @@ pub fn from_lyp(xml: &str, name: &str) -> Result<Tech, String> {
     if layers.is_empty() {
         return Err("the layer properties file defines no layer with a concrete layer/datatype".into());
     }
-    Ok(Tech { name: name.into(), dbu_per_um: 1000, grid: 5, layers, vias: vec![], drc_deck: None, caps: vec![] })
+    Ok(Tech {
+        name: name.into(),
+        dbu_per_um: 1000,
+        grid: 5,
+        layers,
+        vias: vec![],
+        drc_deck: None,
+        caps: vec![],
+        ..Tech::generic()
+    })
 }
 
 /// Apply a KLayout technology file: `<name>`, `<dbu>` (µm per dbu; the grid keeps its physical

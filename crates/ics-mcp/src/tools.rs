@@ -346,6 +346,12 @@ pub fn definitions() -> Vec<Value> {
         ),
         tool("save_project", "Write the current project to its directory on disk.", json!({}), &[]),
         tool(
+            "load_pdk",
+            "Replace the current project's technology with a PDK file (TOML with layers, vias, layer roles, MOS devices and the SPICE model library, e.g. pdks/sky130A.toml). Layout shapes keep their GDS numbers, PCells are regenerated; extraction, LVS and netlists then use the PDK device names and models. ${VAR} in its paths come from the server's environment. Returns the new technology and warnings.",
+            json!({"path": {"type": "string", "description": "PDK file path."}}),
+            &["path"],
+        ),
+        tool(
             "project_info",
             "Overview of the current project: libraries and cells with their views (schematic, layout), technology name, database units per µm, grid, layer names and via names. Call this first to learn cell and layer names.",
             json!({}),
@@ -564,6 +570,7 @@ impl State {
             "open_project" => self.open_project(a),
             "new_project" => self.new_project(a),
             "save_project" => self.save_project(),
+            "load_pdk" => self.load_pdk(a),
             "project_info" => self.project_info(),
             "get_netlist" => self.get_netlist(a),
             "simulate" => self.simulate(a),
@@ -692,6 +699,16 @@ impl State {
         Ok(json!({"saved": root}))
     }
 
+    fn load_pdk(&mut self, a: &Args) -> Result<Value, String> {
+        let pdk = ics_core::pdk::load(std::path::Path::new(a.str("path")?))?;
+        let p = self.project_mut()?;
+        let warnings: Vec<String> = pdk.warnings.into_iter().chain(p.set_tech(pdk.tech)?).collect();
+        self.dirty = true;
+        let mut info = self.project_info()?;
+        info["warnings"] = json!(warnings);
+        Ok(info)
+    }
+
     fn project_info(&self) -> Result<Value, String> {
         let p = self.project()?;
         let t = &p.tech;
@@ -728,6 +745,8 @@ impl State {
                 "layers": t.layers.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(),
                 "routing_layers": t.layers.iter().filter(|l| l.routing).map(|l| l.name.as_str()).collect::<Vec<_>>(),
                 "vias": t.vias.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(),
+                "devices": t.devices.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(),
+                "model_corners": t.models.as_ref().map(|m| m.corners.clone()),
             },
             "libraries": libraries,
         }))
@@ -737,7 +756,7 @@ impl State {
         let (p, r) = self.cell_arg(a)?;
         let c = p.cell(&r).expect("resolved");
         let sch = c.schematic.as_ref().ok_or("cell has no schematic view")?;
-        let nl = ics_core::netlist::netlist(sch);
+        let nl = ics_core::netlist::netlist_for(sch, &p.tech, &c.sim.corner);
         Ok(json!({"cell": r.to_string(), "deck": nl.deck(&r.to_string(), &c.sim), "warnings": nl.warnings}))
     }
 
@@ -745,7 +764,7 @@ impl State {
         let (p, r) = self.cell_arg(a)?;
         let c = p.cell(&r).expect("resolved");
         let sch = c.schematic.as_ref().ok_or("cell has no schematic view")?;
-        let nl = ics_core::netlist::netlist(sch);
+        let nl = ics_core::netlist::netlist_for(sch, &p.tech, &c.sim.corner);
         let mut deck = nl.deck(&r.to_string(), &c.sim);
         let mut parasitics = None;
         if a.opt_bool("parasitics")?.unwrap_or(false) || c.sim.parasitics {
@@ -1075,7 +1094,7 @@ impl State {
         let c = p.cell(&r).expect("resolved");
         let sch = c.schematic.as_ref().ok_or("cell has no schematic view")?;
         let x = extract(layout_of(p, &r)?, p, t);
-        let rep = compare(sch, &x, &LvsOptions::default());
+        let rep = compare(sch, &x, &LvsOptions::for_tech(&p.tech));
         let errors: Vec<Value> = rep
             .errors
             .iter()

@@ -787,7 +787,7 @@ mod tests {
         assert!(v.is_empty(), "{name}: {:?}", v.iter().map(|v| (&v.rule, v.marker)).collect::<Vec<_>>());
         let x = extract(lay, &p, &p.tech);
         assert!(x.warnings.is_empty(), "{name}: {:?}", x.warnings);
-        let r = compare(sch, &x, &LvsOptions::default());
+        let r = compare(sch, &x, &LvsOptions::for_tech(&p.tech));
         assert!(r.matched, "{name}: {:#?}", r.errors);
         assert_eq!(
             r.layout_devices,
@@ -795,7 +795,7 @@ mod tests {
         );
         let fl = ratsnest(sch, lay, &p, &p.tech);
         assert!(fl.is_empty(), "{name}: {fl:?}");
-        let nl = crate::netlist::netlist(sch);
+        let nl = crate::netlist::netlist_for(sch, &p.tech, "");
         assert!(nl.warnings.is_empty(), "{name}: {:?}", nl.warnings);
     }
 

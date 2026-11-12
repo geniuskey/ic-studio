@@ -88,6 +88,8 @@ pub enum Command {
     RouteFlylines,
     ImportGds,
     ImportTech,
+    /// Replace the technology with a PDK file (see `ics_core::pdk`); `None` asks for the file.
+    LoadPdk(Option<PathBuf>),
     ExportNetlist,
     ToggleTheme,
     ToggleConsole,
@@ -171,8 +173,9 @@ type McpArgs = serde_json::Map<String, serde_json::Value>;
 type McpSnapshot = (Project, McpArgs, Option<CellRef>);
 
 /// MCP tools that change layouts or the project; their edits invalidate editor state.
-const MCP_EDITS: [&str; 10] = [
+const MCP_EDITS: [&str; 11] = [
     "add_rect",
+    "load_pdk",
     "add_path",
     "add_label",
     "place_instance",
@@ -484,7 +487,7 @@ impl IcStudio {
         let r = self.active.as_ref()?;
         let cell = self.active_cell()?;
         let sch = cell.schematic.as_ref()?;
-        let nl = ics_core::netlist::netlist(sch);
+        let nl = ics_core::netlist::netlist_for(sch, &self.project.as_ref()?.tech, &cell.sim.corner);
         Some((nl.deck(&r.to_string(), &cell.sim), nl.warnings))
     }
 
@@ -609,6 +612,11 @@ impl IcStudio {
             Command::ExportLibraryGds => self.export_gds(true),
             Command::ImportGds => self.import_gds(),
             Command::ImportTech => self.import_tech(),
+            Command::LoadPdk(path) => {
+                if let Some(path) = path.or_else(|| rfd::FileDialog::new().add_filter("IC Studio PDK", &["toml"]).pick_file()) {
+                    self.load_pdk(&path);
+                }
+            }
             Command::ExportNetlist => match self.netlist_active() {
                 Some((deck, _)) => {
                     let name = self.active.as_ref().map(|r| r.cell.clone()).unwrap_or_default();
@@ -942,6 +950,33 @@ impl IcStudio {
         }
     }
 
+    fn load_pdk(&mut self, path: &Path) {
+        let Some(p) = self.project.as_mut() else { return };
+        let loaded = ics_core::pdk::load(path).and_then(|pdk| {
+            let w = p.set_tech(pdk.tech)?;
+            let t = &p.tech;
+            let msg = format!(
+                "PDK '{}' loaded from {} ({} layers, {} devices)",
+                t.name,
+                path.display(),
+                t.layers.len(),
+                t.devices.len()
+            );
+            Ok((msg, pdk.warnings, w))
+        });
+        match loaded {
+            Ok((msg, pdk_warnings, warnings)) => {
+                self.hier.clear();
+                self.mark_dirty();
+                self.ok(msg);
+                for w in pdk_warnings.into_iter().chain(warnings) {
+                    self.warn(format!("PDK: {w}"));
+                }
+            }
+            Err(e) => self.error(format!("Cannot load PDK: {e}")),
+        }
+    }
+
     fn import_tech(&mut self) {
         let Some(p) = self.project.as_mut() else { return };
         let Some(path) = rfd::FileDialog::new().add_filter("KLayout layer properties", &["lyp"]).pick_file() else { return };
@@ -1046,6 +1081,9 @@ impl IcStudio {
                     }
                     if ui.add_enabled(has_project, egui::Button::new("KLayout layer properties…")).clicked() {
                         q.push(Command::ImportTech);
+                    }
+                    if ui.add_enabled(has_project, egui::Button::new("PDK…")).clicked() {
+                        q.push(Command::LoadPdk(None));
                     }
                 });
                 ui.menu_button("Export", |ui| {
@@ -1594,7 +1632,7 @@ impl IcStudio {
                 let mut run = false;
                 egui::Panel::left("sim_setup").resizable(true).default_size(270.0).show(ui, |ui| {
                     egui::ScrollArea::vertical().show(ui, |ui| {
-                        let (c, rr) = sim_view::setup_panel(ui, cell, st, &self.ngspice);
+                        let (c, rr) = sim_view::setup_panel(ui, cell, st, &self.ngspice, tech.models.as_ref());
                         changed |= c;
                         run = rr;
                     });
@@ -1603,7 +1641,7 @@ impl IcStudio {
                     self.queue.push(Command::RunSimulation);
                 }
                 let deck = st.show_netlist.then(|| {
-                    let nl = ics_core::netlist::netlist(cell.schematic.as_ref().unwrap());
+                    let nl = ics_core::netlist::netlist_for(cell.schematic.as_ref().unwrap(), &tech, &cell.sim.corner);
                     nl.deck(&r.to_string(), &cell.sim)
                 });
                 if let Some(deck) = deck {
@@ -1803,6 +1841,7 @@ impl IcStudio {
             ("Export library GDSII…".into(), "", Command::ExportLibraryGds),
             ("Import GDSII…".into(), "", Command::ImportGds),
             ("Import technology (KLayout .lyp)…".into(), "", Command::ImportTech),
+            ("Load PDK…".into(), "", Command::LoadPdk(None)),
             ("Export SPICE netlist…".into(), "", Command::ExportNetlist),
             ("Toggle light / dark theme".into(), "", Command::ToggleTheme),
             ("Toggle console".into(), "⌘J", Command::ToggleConsole),

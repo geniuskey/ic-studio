@@ -1,15 +1,18 @@
 //! Layout connectivity extraction and MOS device recognition.
 //!
 //! Works on the flattened top cell with Manhattan region operations:
-//! - Conducting layers are the bottom / top layers of the technology vias. Diffusion conducts as
-//!   `active NOT poly`, so gates split it into source / drain pieces.
+//! - Layers are found through the technology's [`LayerRoles`](crate::tech::LayerRoles).
+//! - Conducting layers are the bottom / top layers of the technology vias. The diffusion layers
+//!   merge into one conductor, `diffusion NOT poly`, so gates split it into source / drain pieces.
 //! - Each edge-connected piece of a conducting layer is a node; via cuts join the bottom and
 //!   top pieces they overlap. A cut shared by several vias (contact on active, polycon on poly)
 //!   joins whichever bottom it lands on; contacts on a gate connect nothing.
 //! - Well taps: `n+` diffusion inside nwell joins the well, `p+` diffusion outside it joins the
 //!   global substrate net "sub".
-//! - Gates are the pieces of `active AND poly`. PMOS when inside pplus (or, without an implant,
-//!   inside nwell). L is measured across the two diffusion pieces, W = area / L.
+//! - Gates are the pieces of `diffusion AND poly`. PMOS when inside the p implant (or, without an
+//!   implant, inside nwell). L is measured across the two diffusion pieces, W = area / L. The
+//!   model is the first PDK device ([`Tech::devices`]) of that polarity whose marker layers
+//!   cover the gate, else the generic `nmos` / `pmos`.
 //! - Junctions: each source / drain diffusion piece contributes its area and its perimeter
 //!   without the edges against the device gates; a piece shared by several terminals (fingers,
 //!   abutted devices) is split equally between them.
@@ -22,7 +25,7 @@ use crate::geom::IRect;
 use crate::hier::{LayoutSource, flatten};
 use crate::layout::{Geometry, Layout};
 use crate::region::{BoolOp, Region};
-use crate::tech::Tech;
+use crate::tech::{MosType, Tech};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DevKind {
@@ -72,6 +75,8 @@ pub struct Junction {
 #[derive(Debug, Clone)]
 pub struct Device {
     pub kind: DevKind,
+    /// Model name: the recognised PDK device, else `kind.model()`.
+    pub model: String,
     /// "M1", "M2", ... in a deterministic (position based) order.
     pub name: String,
     /// Gate width and length in dbu.
@@ -123,7 +128,7 @@ impl Extraction {
                 net(d.g),
                 net(d.s),
                 net(d.b),
-                d.kind.model(),
+                d.model,
                 um(d.w),
                 um(d.l)
             );
@@ -244,6 +249,7 @@ fn component_anchors(r: Region) -> Vec<(i64, i64)> {
 
 struct Gate {
     kind: DevKind,
+    model: String,
     rect: IRect,
     rects: Vec<IRect>,
     /// Diffusion components (plane-local) of the source and drain.
@@ -284,15 +290,24 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
     }
     let region = |l: Option<usize>| l.map(|l| Region::from_rects(rects[l].iter().copied())).unwrap_or_default();
     let lid = |n: &str| tech.layer_index(n);
-    let (active, poly, nwell, nplus, pplus) = (lid("active"), lid("poly"), lid("nwell"), lid("nplus"), lid("pplus"));
+    let diffusions = tech.diffusion_layers();
+    let active = diffusions.first().copied();
+    let (poly, nwell, nplus, pplus) = (tech.poly(), tech.nwell(), tech.implant(false), tech.implant(true));
+    // Every diffusion layer conducts as the first one.
+    let canon = |l: usize| if diffusions.contains(&l) { diffusions[0] } else { l };
 
     let mut conducting: Vec<usize> = Vec::new();
     let mut vias: Vec<(usize, usize, usize)> = Vec::new();
+    let mut diff_cuts: Vec<usize> = Vec::new();
     for v in &tech.vias {
         let (Some(b), Some(c), Some(t)) = (lid(&v.bottom), lid(&v.cut), lid(&v.top)) else {
             warnings.push(format!("via '{}' refers to missing layers", v.name));
             continue;
         };
+        if diffusions.contains(&b) && !diff_cuts.contains(&c) {
+            diff_cuts.push(c);
+        }
+        let (b, t) = (canon(b), canon(t));
         vias.push((b, c, t));
         for l in [b, t] {
             if !conducting.contains(&l) {
@@ -308,7 +323,7 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
     }
     conducting.sort_by_key(|&l| std::cmp::Reverse((level[l], l)));
 
-    let active_r = region(active);
+    let active_r = Region::from_rects(diffusions.iter().flat_map(|&l| rects[l].iter().copied()));
     let poly_r = region(poly);
     let gate_r = active_r.boolean(&poly_r, BoolOp::And);
     let diff_r = active_r.boolean(&poly_r, BoolOp::Not);
@@ -346,12 +361,24 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
             }
         }
     }
-    if let (Some(c), Some(_)) = (lid("contact"), active) {
+    for c in diff_cuts {
         let on_gate = cuts.entry(c).or_insert_with(|| region(Some(c))).boolean(&gate_r, BoolOp::And);
         if !on_gate.is_empty() {
             warnings.push(format!("{} contact cut(s) on a gate are ignored", component_anchors(on_gate).len()));
         }
     }
+    // PDK device markers, evaluated once per layer.
+    let markers: HashMap<usize, Plane> = tech
+        .devices
+        .iter()
+        .flat_map(|d| d.layers.iter().chain(&d.exclude))
+        .filter_map(|n| lid(n))
+        .collect::<BTreeSet<usize>>()
+        .into_iter()
+        .map(|l| (l, Plane::new(region(Some(l)))))
+        .collect();
+    let covers =
+        |name: &str, p: (i64, i64)| lid(name).and_then(|l| markers.get(&l)).is_some_and(|m| m.comp_at(p, false).is_some());
 
     let nplus_p = Plane::new(region(nplus));
     let pplus_p = Plane::new(region(pplus));
@@ -418,8 +445,28 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
                 }
             };
             let kind = if pmos { DevKind::Pmos } else { DevKind::Nmos };
+            let ty = if pmos { MosType::Pmos } else { MosType::Nmos };
+            let model = if tech.devices.is_empty() {
+                kind.model().to_string()
+            } else {
+                match tech.devices.iter().find(|d| {
+                    d.kind == ty && d.layers.iter().all(|n| covers(n, anchor)) && !d.exclude.iter().any(|n| covers(n, anchor))
+                }) {
+                    Some(d) => d.name.clone(),
+                    None => {
+                        warnings.push(format!(
+                            "{} gate at ({}, {}) matches no device of the technology",
+                            kind.model(),
+                            bb.x0,
+                            bb.y0
+                        ));
+                        kind.model().to_string()
+                    }
+                }
+            };
             gates.push(Gate {
                 kind,
+                model,
                 rect: bb,
                 rects: rs,
                 sd: (s, d),
@@ -556,6 +603,7 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
         .enumerate()
         .map(|(i, g)| Device {
             kind: g.kind,
+            model: g.model,
             name: format!("M{}", i + 1),
             w: g.w,
             l: g.l,

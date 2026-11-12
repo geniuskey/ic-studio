@@ -373,7 +373,8 @@ impl Project {
     /// Replace the technology, moving every layout shape to the new layer with the same
     /// (GDS layer, datatype), else the same name. Layers in use without a match are appended
     /// to the new technology so no shape is lost. When the database unit changes, all layout
-    /// coordinates are rescaled to keep their physical size. Returns warnings.
+    /// coordinates are rescaled to keep their physical size; otherwise PCell variants are
+    /// regenerated with the new technology. Returns warnings.
     pub fn set_tech(&mut self, mut tech: Tech) -> std::result::Result<Vec<String>, String> {
         if tech.dbu_per_um <= 0 {
             return Err(format!("invalid database unit: {} dbu per µm", tech.dbu_per_um));
@@ -436,6 +437,20 @@ impl Project {
             }
         }
         self.tech = tech;
+        // PCell parameters are in database units, so variants are only regenerated for the new
+        // technology when the unit is kept.
+        if let Some(lib) = self.libraries.iter_mut().find(|l| l.name == PCELL_LIB).filter(|_| scale.is_none()) {
+            for c in &mut lib.cells {
+                let Some(pc) = &c.pcell else { continue };
+                match pc.generate(&self.tech) {
+                    Ok(lay) => {
+                        c.layout = Some(lay);
+                        c.description = pc.summary(self.tech.dbu_per_um);
+                    }
+                    Err(e) => warnings.push(format!("PCell {} kept its old layout: {e}", c.name)),
+                }
+            }
+        }
         Ok(warnings)
     }
 

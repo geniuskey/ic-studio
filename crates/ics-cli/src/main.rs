@@ -128,6 +128,9 @@ enum Cmd {
         #[arg(long)]
         lyt: Option<PathBuf>,
     },
+    /// Replace the technology with a PDK file (TOML: layers, vias, devices, models; see
+    /// `pdks/sky130A.toml`). Variables like ${PDK_ROOT} in its paths come from the environment.
+    LoadPdk { project: PathBuf, pdk: PathBuf },
 }
 
 fn resolve(p: &Project, cell: &str) -> Result<CellRef, String> {
@@ -249,7 +252,7 @@ fn run(cli: Cli) -> Result<(), String> {
             let r = resolve(&p, &cell)?;
             let c = p.cell(&r).unwrap();
             let sch = c.schematic.as_ref().ok_or("cell has no schematic")?;
-            let nl = ics_core::netlist::netlist(sch);
+            let nl = ics_core::netlist::netlist_for(sch, &p.tech, &c.sim.corner);
             for w in &nl.warnings {
                 eprintln!("warning: {w}");
             }
@@ -260,7 +263,7 @@ fn run(cli: Cli) -> Result<(), String> {
             let r = resolve(&p, &cell)?;
             let c = p.cell(&r).unwrap();
             let sch = c.schematic.as_ref().ok_or("cell has no schematic")?;
-            let nl = ics_core::netlist::netlist(sch);
+            let nl = ics_core::netlist::netlist_for(sch, &p.tech, &c.sim.corner);
             let mut deck = nl.deck(&r.to_string(), &c.sim);
             if parasitics || c.sim.parasitics {
                 let pl = ics_core::pex::post_layout(&p, &r)?;
@@ -358,7 +361,7 @@ fn run(cli: Cli) -> Result<(), String> {
             let lay = c.layout.as_ref().ok_or("cell has no layout")?;
             let sch = c.schematic.as_ref().ok_or("cell has no schematic")?;
             let x = ics_core::extract::extract(lay, &p, &p.tech);
-            let rep = ics_core::lvs::compare(sch, &x, &ics_core::lvs::LvsOptions::default());
+            let rep = ics_core::lvs::compare(sch, &x, &ics_core::lvs::LvsOptions::for_tech(&p.tech));
             println!(
                 "{} schematic / {} layout devices, {} matched",
                 rep.schematic_devices,
@@ -454,6 +457,20 @@ fn run(cli: Cli) -> Result<(), String> {
             p.set_library_storage(&lib, storage)?;
             p.save().map_err(|e| e.to_string())?;
             println!("library {lib}: stored as {}", if storage == LibStorage::Gds { "GDS" } else { "JSON" });
+        }
+        Cmd::LoadPdk { project, pdk } => {
+            let mut p = Project::open(&project).map_err(|e| e.to_string())?;
+            let loaded = ics_core::pdk::load(&pdk)?;
+            let warnings = p.set_tech(loaded.tech)?;
+            p.save().map_err(|e| e.to_string())?;
+            let t = &p.tech;
+            println!("PDK {}: {} layers, {} vias, {} devices", t.name, t.layers.len(), t.vias.len(), t.devices.len());
+            if let Some(m) = &t.models {
+                println!("models: {}", m.spice_line(""));
+            }
+            for w in loaded.warnings.iter().chain(&warnings) {
+                eprintln!("warning: {w}");
+            }
         }
         Cmd::ImportTech { project, lyp, lyt } => {
             let mut p = Project::open(&project).map_err(|e| e.to_string())?;

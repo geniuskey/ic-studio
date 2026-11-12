@@ -97,6 +97,8 @@ Linux needs the usual windowing libraries:
   included.
 - Import KLayout layer properties (`.lyp`, plus `.lyt` for the database unit) to use a
   real PDK's layer set, such as SKY130 or GF180
+- PDK files (`pdks/sky130A.toml`): layers, vias, device recognition, SPICE model library
+  and corners in one TOML file; extraction, LVS, netlists and PCells follow the PDK
 
 ## Command line
 

@@ -77,7 +77,6 @@ use crate::tech::Tech;
 pub const MAX_VIOLATIONS_PER_RULE: usize = 10_000;
 
 const MAX_DEPTH: u32 = 64;
-const POLY_ENDCAP_UM: &str = "0.22";
 /// Metal to gate area ratio of the derived deck's antenna rules.
 const ANTENNA_RATIO: u32 = 400;
 
@@ -508,8 +507,8 @@ fn parse_line(line: &str, names: &[String], tech: &Tech) -> Result<NamedRule, Ve
 /// Antenna rule for metal `layer`: the technology vias up to its level.
 fn antenna_rule(layer: usize, ratio: f64, tech: &Tech) -> Result<Rule, String> {
     let lid = |n: &str| tech.layer_index(n);
-    let (Some(poly), Some(active)) = (lid("poly"), lid("active")) else {
-        return Err("antenna rules need 'poly' and 'active' layers".into());
+    let (Some(poly), Some(active)) = (tech.poly(), tech.diffusion()) else {
+        return Err("antenna rules need poly and diffusion layers".into());
     };
     let vias: Vec<(usize, usize, usize)> =
         tech.vias.iter().filter_map(|v| Some((lid(&v.bottom)?, lid(&v.cut)?, lid(&v.top)?))).collect();
@@ -558,8 +557,8 @@ pub fn default_deck_text(tech: &Tech) -> String {
         push(format!("enclosure {} {} {}", cut.name, top.name, um(v.enc_top)));
     }
     let def = |n: &str| tech.layer_index(n).and_then(|i| tech.layer(i));
-    if let (Some(poly), Some(active)) = (def("poly"), def("active")) {
-        push(format!("extension {} {} {POLY_ENDCAP_UM}", poly.name, active.name));
+    if let (Some(poly), Some(active)) = (tech.poly().and_then(|i| tech.layer(i)), tech.diffusion().and_then(|i| tech.layer(i))) {
+        push(format!("extension {} {} {}", poly.name, active.name, um(tech.rules.poly_endcap)));
         for v in &tech.vias {
             if let Some(top) = def(&v.top).filter(|t| t.routing && t.name != poly.name && t.name != active.name) {
                 push(format!("antenna {} {ANTENNA_RATIO}", top.name));

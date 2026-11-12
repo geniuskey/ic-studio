@@ -46,6 +46,16 @@ impl Default for SimOptions {
 /// Run `analyses` on `deck`. If `analyses` is empty the deck's own dot-analyses are used.
 pub fn simulate(deck: &str, analyses: &[Analysis], opts: &SimOptions) -> Result<SimResults, SimError> {
     let start = Instant::now();
+    if opts.backend == Backend::Builtin
+        && let Some(l) = deck.lines().map(str::trim).find(|l| {
+            let l = l.to_ascii_lowercase();
+            l.starts_with(".lib") || l.starts_with(".include") || l.starts_with(".inc ")
+        })
+    {
+        return Err(SimError::Engine(format!(
+            "the built-in engine cannot load model libraries ('{l}'); select ngspice for PDK models"
+        )));
+    }
     let mut circuit = circuit::parse_deck(deck)?;
     let analyses: Vec<Analysis> = if analyses.is_empty() { std::mem::take(&mut circuit.analyses) } else { analyses.to_vec() };
     if analyses.is_empty() {
@@ -78,4 +88,16 @@ pub fn simulate(deck: &str, analyses: &[Analysis], opts: &SimOptions) -> Result<
     }
     res.elapsed_ms = start.elapsed().as_secs_f64() * 1e3;
     Ok(res)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builtin_rejects_model_libraries() {
+        let deck = "* t\n.lib \"/pdk/models.lib\" tt\nV1 a 0 1\nR1 a 0 1k\n.op\n.end\n";
+        let e = simulate(deck, &[], &SimOptions::default()).unwrap_err().to_string();
+        assert!(e.contains("select ngspice"), "{e}");
+    }
 }

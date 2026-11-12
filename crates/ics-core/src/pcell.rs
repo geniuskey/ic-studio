@@ -9,12 +9,6 @@ use crate::tech::{Tech, ViaDef};
 
 pub const PCELL_LIB: &str = "pcells";
 
-/// Device rules not expressible as single-layer width / spacing (dbu).
-const GATE_CONTACT_SPACE: i64 = 160;
-const POLY_ENDCAP: i64 = 220;
-/// Implant enclosure of active (dbu).
-pub const IMPLANT_ENC: i64 = 180;
-const NWELL_ENC: i64 = 430;
 const CAP_INSET: i64 = 100;
 const CAP_TAB_LEN: i64 = 500;
 const CAP_TAB_W: i64 = 400;
@@ -143,8 +137,17 @@ fn layer(tech: &Tech, name: &str) -> Result<usize, String> {
     tech.layer_index(name).ok_or_else(|| format!("technology '{}' has no layer '{name}'", tech.name))
 }
 
-fn via_def<'a>(tech: &'a Tech, name: &str) -> Result<&'a ViaDef, String> {
-    tech.via(name).ok_or_else(|| format!("technology '{}' has no via '{name}'", tech.name))
+fn role(tech: &Tech, l: Option<usize>, what: &str) -> Result<usize, String> {
+    l.ok_or_else(|| format!("technology '{}' has no {what} layer", tech.name))
+}
+
+fn diff_contact(tech: &Tech) -> Result<&ViaDef, String> {
+    tech.diff_contact()
+        .ok_or_else(|| format!("technology '{}' has no diffusion contact '{}'", tech.name, tech.roles.diff_contact))
+}
+
+fn poly_contact(tech: &Tech) -> Result<&ViaDef, String> {
+    tech.poly_contact().ok_or_else(|| format!("technology '{}' has no poly contact '{}'", tech.name, tech.roles.poly_contact))
 }
 
 fn min_width(tech: &Tech, layer: usize) -> i64 {
@@ -217,7 +220,7 @@ fn add_all(lay: &mut Layout, items: Vec<(usize, Geometry)>, skip: Option<usize>)
 }
 
 fn label(lay: &mut Layout, tech: &Tech, text: &str, (cx, cy): (i64, i64)) {
-    if let Some(t) = tech.layer_index("text") {
+    if let Some(t) = tech.label_layer() {
         let w = text.len() as i64 * LABEL_SIZE * 6 / 10;
         lay.add(t, Geometry::Label { text: text.into(), at: (cx - w / 2, cy - LABEL_SIZE / 2), size: LABEL_SIZE });
     }
@@ -230,9 +233,9 @@ fn centre(r: IRect) -> (i64, i64) {
 /// Centres (x, cell coordinates) of the source / drain contact columns of a MOS PCell, left to
 /// right: source, drain, source, ...
 pub fn mos_columns(tech: &Tech, l: i64, fingers: u32) -> Result<Vec<i64>, String> {
-    let con = via_def(tech, "contact")?;
+    let con = diff_contact(tech)?;
     let g = tech.grid;
-    let (c, gcs) = (con.cut_size, snap_up(GATE_CONTACT_SPACE, g));
+    let (c, gcs) = (con.cut_size, snap_up(tech.rules.gate_contact_space, g));
     let sd_end = con.enc_bottom + c + gcs;
     let pitch = snap(l, g) + c + 2 * gcs;
     Ok((0..=fingers as i64).map(|k| sd_end - gcs - c / 2 + k * pitch).collect())
@@ -241,9 +244,10 @@ pub fn mos_columns(tech: &Tech, l: i64, fingers: u32) -> Result<Vec<i64>, String
 fn gen_tap(tech: &Tech, well: bool, w: i64) -> Result<Layout, String> {
     let g = tech.grid;
     let w = snap(w, g);
-    let active = layer(tech, "active")?;
-    let imp = layer(tech, if well { "nplus" } else { "pplus" })?;
-    let con = via_def(tech, "contact")?;
+    let active = role(tech, tech.tap_layer(), "tap")?;
+    let imp = role(tech, tech.implant(!well), "implant")?;
+    let con = diff_contact(tech)?;
+    let con_bottom = layer(tech, &con.bottom)?;
     let side = (con.cut_size + 2 * con.enc_bottom.max(con.enc_top)).max(min_width(tech, active));
     if w < side {
         return Err(format!("tap height {w} is below the minimum {side}"));
@@ -251,14 +255,14 @@ fn gen_tap(tech: &Tech, well: bool, w: i64) -> Result<Layout, String> {
     let act = IRect::new(0, 0, side, w);
     let mut lay = Layout::default();
     lay.add(active, Geometry::Rect(act));
-    add_all(&mut lay, via_array(tech, con, act)?, Some(active));
+    add_all(&mut lay, via_array(tech, con, act)?, Some(con_bottom));
     label(&mut lay, tech, "B", centre(act));
     let imp_min = min_width(tech, imp);
-    lay.add(imp, Geometry::Rect(grow_to(grow(act, snap_up(IMPLANT_ENC, g)), imp_min, imp_min, g)));
+    lay.add(imp, Geometry::Rect(grow_to(grow(act, snap_up(tech.rules.implant_enc, g)), imp_min, imp_min, g)));
     if well {
-        let nwell = layer(tech, "nwell")?;
+        let nwell = role(tech, tech.nwell(), "nwell")?;
         let nw_min = min_width(tech, nwell);
-        lay.add(nwell, Geometry::Rect(grow_to(grow(act, snap_up(NWELL_ENC, g)), nw_min, nw_min, g)));
+        lay.add(nwell, Geometry::Rect(grow_to(grow(act, snap_up(tech.rules.nwell_enc, g)), nw_min, nw_min, g)));
     }
     Ok(lay)
 }
@@ -266,12 +270,13 @@ fn gen_tap(tech: &Tech, well: bool, w: i64) -> Result<Layout, String> {
 fn gen_mos(tech: &Tech, pmos: bool, w: i64, l: i64, fingers: u32) -> Result<Layout, String> {
     let g = tech.grid;
     let (w, l) = (snap(w, g), snap(l, g));
-    let active = layer(tech, "active")?;
-    let poly = layer(tech, "poly")?;
-    let m1 = layer(tech, "metal1")?;
-    let imp = layer(tech, if pmos { "pplus" } else { "nplus" })?;
-    let con = via_def(tech, "contact")?;
-    let pcon = via_def(tech, "polycon")?;
+    let active = role(tech, tech.diffusion(), "diffusion")?;
+    let poly = role(tech, tech.poly(), "poly")?;
+    let m1 = role(tech, tech.metal1(), "first metal")?;
+    let imp = role(tech, tech.implant(pmos), "implant")?;
+    let con = diff_contact(tech)?;
+    let pcon = poly_contact(tech)?;
+    let con_bottom = layer(tech, &con.bottom)?;
     let con_enc = con.enc_bottom.max(con.enc_top);
     if fingers == 0 {
         return Err("a MOS device needs at least one finger".into());
@@ -285,7 +290,7 @@ fn gen_mos(tech: &Tech, pmos: bool, w: i64, l: i64, fingers: u32) -> Result<Layo
     }
 
     let c = con.cut_size;
-    let gcs = snap_up(GATE_CONTACT_SPACE, g);
+    let gcs = snap_up(tech.rules.gate_contact_space, g);
     let sd_in = c + 2 * gcs;
     let sd_end = con.enc_bottom + c + gcs;
     let pitch = l + sd_in;
@@ -298,12 +303,12 @@ fn gen_mos(tech: &Tech, pmos: bool, w: i64, l: i64, fingers: u32) -> Result<Layo
     for (k, cx) in mos_columns(tech, l, fingers)?.into_iter().enumerate() {
         let half = c / 2 + con_enc;
         let items = via_array(tech, con, IRect::new(cx - half, 0, cx + half, w))?;
-        add_all(&mut lay, items, Some(active));
+        add_all(&mut lay, items, Some(con_bottom));
         label(&mut lay, tech, if k % 2 == 0 { "S" } else { "D" }, (cx, w / 2));
     }
 
-    let ext_top = snap_up(POLY_ENDCAP.max(min_spacing(tech, m1)), g);
-    let endcap = snap_up(POLY_ENDCAP, g);
+    let ext_top = snap_up(tech.rules.poly_endcap.max(min_spacing(tech, m1)), g);
+    let endcap = snap_up(tech.rules.poly_endcap, g);
     let head_y = w + ext_top;
     for i in 0..n {
         let x0 = sd_end + i * pitch;
@@ -316,13 +321,13 @@ fn gen_mos(tech: &Tech, pmos: bool, w: i64, l: i64, fingers: u32) -> Result<Layo
     add_all(&mut lay, items, None);
     label(&mut lay, tech, "G", centre(pad));
 
-    let imp_r = grow(act, snap_up(IMPLANT_ENC, g));
+    let imp_r = grow(act, snap_up(tech.rules.implant_enc, g));
     let imp_min = min_width(tech, imp);
     lay.add(imp, Geometry::Rect(grow_to(imp_r, imp_min, imp_min, g)));
     if pmos {
-        let nwell = layer(tech, "nwell")?;
+        let nwell = role(tech, tech.nwell(), "nwell")?;
         let nw_min = min_width(tech, nwell);
-        lay.add(nwell, Geometry::Rect(grow_to(grow(act, snap_up(NWELL_ENC, g)), nw_min, nw_min, g)));
+        lay.add(nwell, Geometry::Rect(grow_to(grow(act, snap_up(tech.rules.nwell_enc, g)), nw_min, nw_min, g)));
     }
     Ok(lay)
 }
@@ -330,9 +335,9 @@ fn gen_mos(tech: &Tech, pmos: bool, w: i64, l: i64, fingers: u32) -> Result<Layo
 fn gen_poly_res(tech: &Tech, w: i64, l: i64) -> Result<Layout, String> {
     let g = tech.grid;
     let (w, l) = (snap(w, g), snap(l, g));
-    let poly = layer(tech, "poly")?;
-    let m1 = layer(tech, "metal1")?;
-    let pcon = via_def(tech, "polycon")?;
+    let poly = role(tech, tech.poly(), "poly")?;
+    let m1 = role(tech, tech.metal1(), "first metal")?;
+    let pcon = poly_contact(tech)?;
     if w < min_width(tech, poly) {
         return Err(format!("resistor width {w} is below the poly minimum width {}", min_width(tech, poly)));
     }
@@ -355,8 +360,8 @@ fn gen_poly_res(tech: &Tech, w: i64, l: i64) -> Result<Layout, String> {
 fn gen_mom_cap(tech: &Tech, w: i64, h: i64) -> Result<Layout, String> {
     let g = tech.grid;
     let (w, h) = (snap(w, g), snap(h, g));
-    let m1 = layer(tech, "metal1")?;
-    let m2 = layer(tech, "metal2")?;
+    let m1 = role(tech, tech.metal1(), "first metal")?;
+    let m2 = role(tech, tech.metal2(), "second metal")?;
     let inset = snap_up(CAP_INSET, g);
     let tab_w = snap_up(CAP_TAB_W.max(min_width(tech, m1)).max(min_width(tech, m2)), g);
     let w_min = 2 * inset + min_width(tech, m2).max(min_width(tech, m1));

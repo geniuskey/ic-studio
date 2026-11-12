@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use eframe::egui::{self, Color32, RichText};
 use egui_plot::{Legend, Line, Plot, PlotPoints};
+use ics_core::tech::ModelLib;
 use ics_core::units::{format_eng, parse_spice};
 use ics_core::{Analysis, Backend, Cell, DeviceKind, SimSetup};
 use ics_sim::{Dataset, SimOptions, SimResults, VecKind};
@@ -133,7 +134,13 @@ fn default_signals(d: &Dataset) -> Vec<String> {
 }
 
 /// Analysis setup panel. Returns (setup changed, run requested).
-pub fn setup_panel(ui: &mut egui::Ui, cell: &mut Cell, state: &mut SimState, ngspice: &Option<String>) -> (bool, bool) {
+pub fn setup_panel(
+    ui: &mut egui::Ui,
+    cell: &mut Cell,
+    state: &mut SimState,
+    ngspice: &Option<String>,
+    models: Option<&ModelLib>,
+) -> (bool, bool) {
     let pal = theme::palette(ui.ctx());
     let before = cell.sim.clone();
     let mut run = false;
@@ -180,9 +187,28 @@ pub fn setup_panel(ui: &mut egui::Ui, cell: &mut Cell, state: &mut SimState, ngs
         (Backend::Ngspice, None) => {
             ui.label(RichText::new("✖ ngspice not found — install it or set the path in Settings").small().color(pal.danger));
         }
+        _ if models.is_some() => {
+            ui.label(RichText::new("✖ PDK models need ngspice").small().color(pal.danger));
+        }
         _ => {
             ui.label(RichText::new("Fast MNA engine · R C L V I D MOS(L1)").small().color(pal.text_weak));
         }
+    }
+    if let Some(m) = models.filter(|m| !m.corners.is_empty()) {
+        let default = if m.default_corner.is_empty() { &m.corners[0] } else { &m.default_corner };
+        let shown = |c: &str| if c.is_empty() { format!("default ({default})") } else { c.to_string() };
+        let l = ui.label("Corner");
+        egui::ComboBox::from_id_salt("corner")
+            .width(ui.available_width() - 8.0)
+            .selected_text(shown(&setup.corner))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut setup.corner, String::new(), shown(""));
+                for c in &m.corners {
+                    ui.selectable_value(&mut setup.corner, c.clone(), c.as_str());
+                }
+            })
+            .response
+            .labelled_by(l.id);
     }
     ui.horizontal(|ui| {
         let l = ui.label("Temperature");

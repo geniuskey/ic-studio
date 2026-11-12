@@ -3,8 +3,8 @@
 //!
 //! - Layers: the chain of routing layers joined by vias, without poly (metal1, metal2, ... in the
 //!   generic technology).
-//! - One wire width for every layer (the largest via plate or minimum width) and one pitch
-//!   (width + the largest spacing). Grid lines run through the device terminals first (source /
+//! - A wire width per layer (its minimum width or the plates of the vias it carries) and one
+//!   pitch (the largest width + the largest spacing). Grid lines run through the device terminals first (source /
 //!   drain columns, gate rows), and the gaps are filled with lines at least one pitch apart, so
 //!   shapes on different nodes never come closer than the spacing.
 //! - A node or the wire between two neighbouring nodes is free, owned by one net (it touches only
@@ -16,7 +16,7 @@
 //!   at a penalty; the nets it crosses are ripped up, the connection is made, and the ripped nets
 //!   are queued to be routed again. A net is ripped up at most [`MAX_RIPS`] times, and the penalty
 //!   grows with its rip-ups, so the process ends. Incomplete nets get one more attempt at the end.
-//! - Wires are drawn as width x width squares on the nodes joined by bars, vias as single cuts.
+//! - Wires are drawn as squares of the layer's width on the nodes joined by bars, vias as single cuts.
 //!   A connection that still finds no path is reported and left as a flyline.
 
 use std::cmp::Reverse;
@@ -79,13 +79,13 @@ impl RouteReport {
     }
 }
 
-/// The routing layers, their via cuts and the common wire width / pitch (dbu).
+/// The routing layers, their via cuts, wire widths and the common pitch (dbu).
 struct Stack {
     layers: Vec<usize>,
     spacing: Vec<i64>,
     /// Cut layer and size between `layers[k]` and `layers[k + 1]`.
     cuts: Vec<(usize, i64)>,
-    width: i64,
+    widths: Vec<i64>,
     pitch: i64,
 }
 
@@ -99,7 +99,8 @@ fn snap_up(v: i64, g: i64) -> i64 {
 
 fn stack(tech: &Tech) -> Result<Stack, String> {
     let lid = |n: &str| tech.layer_index(n);
-    let usable = |l: usize| tech.layer(l).is_some_and(|d| d.routing && !d.name.eq_ignore_ascii_case("poly"));
+    let (poly, diffusion) = (tech.poly(), tech.diffusion_layers());
+    let usable = |l: usize| tech.layer(l).is_some_and(|d| d.routing) && Some(l) != poly && !diffusion.contains(&l);
     let mut up: BTreeMap<usize, (usize, usize, &crate::tech::ViaDef)> = BTreeMap::new();
     let mut tops = HashSet::new();
     for v in &tech.vias {
@@ -113,21 +114,24 @@ fn stack(tech: &Tech) -> Result<Stack, String> {
     let g = tech.grid.max(1);
     let min_w = |l: usize| tech.layer(l).map_or(0, |d| d.min_width);
     let (mut layers, mut cuts) = (vec![start], Vec::new());
-    let mut width = min_w(start);
+    let mut widths = vec![min_w(start)];
     let mut cut_pitch = 0;
     while let Some(&(t, c, v)) = up.get(layers.last().expect("start layer")) {
         if layers.contains(&t) {
             break;
         }
         cuts.push((c, v.cut_size));
-        width = width.max(min_w(t)).max(v.cut_size + 2 * v.enc_bottom.max(v.enc_top));
+        let below = widths.last_mut().expect("start layer");
+        *below = (*below).max(v.cut_size + 2 * v.enc_bottom);
+        widths.push(min_w(t).max(v.cut_size + 2 * v.enc_top));
         cut_pitch = cut_pitch.max(v.cut_size + v.cut_spacing);
         layers.push(t);
     }
     let spacing: Vec<i64> = layers.iter().map(|&l| tech.layer(l).map_or(0, |d| d.min_spacing)).collect();
-    let width = snap_up(width.max(g), 2 * g);
+    let widths: Vec<i64> = widths.into_iter().map(|w| snap_up(w.max(g), 2 * g)).collect();
+    let width = widths.iter().copied().max().unwrap_or(g);
     let pitch = snap_up((width + spacing.iter().copied().max().unwrap_or(0)).max(cut_pitch), g);
-    Ok(Stack { layers, spacing, cuts, width, pitch })
+    Ok(Stack { layers, spacing, cuts, widths, pitch })
 }
 
 /// Grid lines covering `lo..=hi`: every `pins` coordinate, plus filler lines at least `pitch`
@@ -387,7 +391,7 @@ impl Router<'_> {
                 self.occupant[i] = j as u32 + 1;
             }
             let (k, _, _) = self.g.pos(i);
-            for n in near(self.g, i, self.st.width + self.st.spacing[k]) {
+            for n in near(self.g, i, self.st.widths[k] + self.st.spacing[k]) {
                 self.blockers.entry(n).or_default().push(j as u32);
             }
         }
@@ -401,7 +405,7 @@ impl Router<'_> {
                     self.occupant[i] = 0;
                 }
                 let (k, _, _) = self.g.pos(i);
-                for n in near(self.g, i, self.st.width + self.st.spacing[k]) {
+                for n in near(self.g, i, self.st.widths[k] + self.st.spacing[k]) {
                     if let Some(b) = self.blockers.get_mut(&n) {
                         if let Some(p) = b.iter().position(|&x| x == v as u32) {
                             b.swap_remove(p);
@@ -484,7 +488,6 @@ impl Router<'_> {
     /// The report and the wire / via shapes per layer of the committed paths.
     fn finish(&self, g: i64) -> (RouteReport, Wires) {
         let (grid, st) = (self.g, self.st);
-        let half = st.width / 2;
         let mut report = RouteReport { ripups: self.ripups, ..Default::default() };
         let mut wires: Wires = HashMap::new();
         for (j, job) in self.jobs.iter().enumerate() {
@@ -501,6 +504,7 @@ impl Router<'_> {
                     let ((ka, ya, xa), (kb, yb, xb)) = (grid.pos(w[0]), grid.pos(w[1]));
                     let (pa, pb) = ((grid.xs[xa], grid.ys[ya]), (grid.xs[xb], grid.ys[yb]));
                     if ka == kb {
+                        let half = st.widths[ka] / 2;
                         let bar = IRect::new(
                             pa.0.min(pb.0) - half,
                             pa.1.min(pb.1) - half,
@@ -519,6 +523,7 @@ impl Router<'_> {
                 for &i in path {
                     let (k, iy, ix) = grid.pos(i);
                     let (x, y) = (grid.xs[ix], grid.ys[iy]);
+                    let half = st.widths[k] / 2;
                     wires.entry(st.layers[k]).or_default().push(IRect::new(x - half, y - half, x + half, y + half));
                 }
             }
@@ -569,8 +574,8 @@ pub fn route_with(
         return Err(format!("the routing grid would have {total} nodes (limit {MAX_NODES})"));
     }
     let mut grid = Grid { xs, ys, nl, node: vec![FREE; total], right: vec![BLOCKED; total], up: vec![BLOCKED; total] };
-    let half = st.width / 2;
     for (k, &l) in st.layers.iter().enumerate() {
+        let half = st.widths[k] / 2;
         let items: Vec<Item> = ex
             .nets
             .iter()
@@ -667,7 +672,7 @@ mod tests {
         let t = Tech::generic();
         let names: Vec<&str> = st.layers.iter().map(|&l| t.layers[l].name.as_str()).collect();
         assert_eq!(names, ["metal1", "metal2", "metal3"]);
-        assert_eq!((st.width, st.pitch), (380, 660));
+        assert_eq!((st.widths.as_slice(), st.pitch), ([380, 380, 380].as_slice(), 660));
         assert_eq!(st.cuts.len(), 2);
 
         let pins = [0, 720, 300, 2000, 355];

@@ -20,6 +20,7 @@ use crate::connectivity;
 use crate::extract::{DevKind, Extraction};
 use crate::geom::IRect;
 use crate::schematic::{DeviceKind, Schematic};
+use crate::tech::{MosDef, Tech, mos_device_in};
 use crate::units::parse_spice;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -33,6 +34,16 @@ pub struct LvsOptions {
     /// Drop MOS devices whose gate is on their bulk net (always off: dummies, tie-offs) from
     /// both sides.
     pub filter_off: bool,
+    /// PDK devices ([`Tech::devices`]): when given, device models must match too (schematic
+    /// models resolved as in [`Tech::mos_device`]).
+    pub devices: Vec<MosDef>,
+}
+
+impl LvsOptions {
+    /// The default options with the technology's devices.
+    pub fn for_tech(tech: &Tech) -> Self {
+        Self { devices: tech.devices.clone(), ..Self::default() }
+    }
 }
 
 impl Default for LvsOptions {
@@ -42,6 +53,7 @@ impl Default for LvsOptions {
             ignore_kinds: vec![DeviceKind::VSource, DeviceKind::ISource],
             tolerance: 0.01,
             filter_off: true,
+            devices: vec![],
         }
     }
 }
@@ -87,6 +99,8 @@ enum Role {
 
 struct Dev {
     kind: DevKind,
+    /// Model name, compared only when the technology defines devices.
+    model: Option<String>,
     /// W and L in µm.
     w: f64,
     l: f64,
@@ -126,7 +140,10 @@ impl Side {
 
     /// Merge parallel devices, then record every net's terminal connections.
     fn finish(&mut self) {
-        let key = |d: &Dev| (d.kind == DevKind::Pmos, d.g, d.s.min(d.d), d.s.max(d.d), d.b, (d.l * 1e6).round() as i64);
+        let key = |d: &Dev| {
+            let model = d.model.as_ref().map(|m| m.to_ascii_lowercase());
+            (d.kind == DevKind::Pmos, model, d.g, d.s.min(d.d), d.s.max(d.d), d.b, (d.l * 1e6).round() as i64)
+        };
         let mut groups: Vec<Dev> = Vec::new();
         let mut at: HashMap<_, usize> = HashMap::new();
         for d in std::mem::take(&mut self.devs) {
@@ -176,7 +193,7 @@ fn um(v: f64) -> String {
 }
 
 fn describe(d: &Dev) -> String {
-    format!("{} ({} W={} L={})", d.name, d.kind.model(), um(d.w), um(d.l))
+    format!("{} ({} W={} L={})", d.name, d.model.as_deref().unwrap_or(d.kind.model()), um(d.w), um(d.l))
 }
 
 fn hash<T: Hash>(t: T) -> u64 {
@@ -311,8 +328,13 @@ fn schematic_side(sch: &Schematic, opts: &LvsOptions, errors: &mut Vec<LvsError>
             });
         }
         let m = parse_spice(inst.param("m")).map_or(1.0, |m| m.round().max(1.0));
+        let model = (!opts.devices.is_empty()).then(|| {
+            mos_device_in(&opts.devices, kind == DevKind::Pmos, inst.param("model"))
+                .map_or_else(|| inst.param("model").trim().to_string(), |d| d.name.clone())
+        });
         side.devs.push(Dev {
             kind,
+            model,
             w: w.unwrap_or(f64::NAN) * m,
             l: l.unwrap_or(f64::NAN),
             g,
@@ -345,6 +367,7 @@ fn layout_side(lay: &Extraction, opts: &LvsOptions) -> Side {
         let b = (!opts.ignore_bulk).then(|| net(&mut side, d.b));
         side.devs.push(Dev {
             kind: d.kind,
+            model: (!opts.devices.is_empty()).then(|| d.model.clone()),
             w: d.w as f64 / dbu,
             l: d.l as f64 / dbu,
             g,
@@ -535,6 +558,11 @@ pub fn compare(sch: &Schematic, lay: &Extraction, opts: &LvsOptions) -> LvsRepor
         {
             let msg = format!("{who}: bulk on {} in the schematic but {} in the layout", net_name(&sa, x), net_name(&sb, y));
             errors.push(err(LvsErrorKind::Net, msg, e.gate));
+        }
+        if let (Some(s), Some(l)) = (&d.model, &e.model)
+            && !s.eq_ignore_ascii_case(l)
+        {
+            errors.push(err(LvsErrorKind::Parameter, format!("{who}: model {s} (schematic) vs {l} (layout)"), e.gate));
         }
         for (what, s, l) in [("W", d.w, e.w), ("L", d.l, e.l)] {
             if s.is_finite() && (s - l).abs() > opts.tolerance * s.abs() {

@@ -36,6 +36,10 @@ Top level:
 | `vias` | Array of via definitions |
 | `drc_deck` | DRC deck text (optional; derived from the layer rules when absent) |
 | `caps` | Per-layer parasitic coefficients (optional) |
+| `roles` | Which layers and vias are the diffusion, poly, well, implants and contacts (optional; generic180 names by default) |
+| `rules` | Device rules used by the PCells, in dbu (optional) |
+| `devices` | PDK MOS devices (optional; generic `nmos` / `pmos` when absent) |
+| `models` | PDK SPICE model library (optional; built-in level-1 models when absent) |
 
 Layer:
 
@@ -122,6 +126,54 @@ When a technology has no `drc_deck`, IC Studio derives one from the layers' `min
 and `min_spacing`, the via enclosures, a poly-over-active extension and antenna rules.
 Open **Rule deck** in the Layout workspace to see it, edit it, and **Save to technology**.
 The command line can use a separate file: `ics drc <project> <cell> --deck rules.drc`.
+
+## PDK files
+
+A PDK file is one TOML file that describes a whole process: layers with their rules, vias,
+the layer roles, the MOS devices and the SPICE model library. `pdks/sky130A.toml` in the
+repository describes SkyWater SKY130.
+
+- GUI: **File > Import > PDK...** (or **Load PDK...** in the command palette)
+- CLI: `ics load-pdk myproj pdks/sky130A.toml`
+- MCP: the `load_pdk` tool
+
+Lengths in the file are in µm. Relative paths are relative to the PDK file, and `${VAR}`
+expands an environment variable, so the model library can point into an installed PDK:
+
+```toml
+[models]
+path = "${PDK_ROOT}/sky130A/libs.tech/ngspice/sky130.lib.spice"
+corners = ["tt", "ff", "ss", "sf", "fs"]
+default = "tt"
+length_unit = "um"   # the models take W / L in µm
+```
+
+The main sections:
+
+| Section | Content |
+|---|---|
+| `name`, `dbu_per_um`, `grid` | Technology name, database unit, snap grid (µm) |
+| `lyp`, `lyt` | Optional KLayout files supplying layers and colours |
+| `[[layer]]` | `name`, `gds`, `datatype`, `width`, `space`, `routing`, `color` (`#rrggbb`), `fill`. Adds a layer, or sets rules on a layer from the `.lyp` |
+| `[roles]` | `diffusion` (list), `tap`, `poly`, `nwell`, `nimplant`, `pimplant`, `diff_contact`, `poly_contact` (via names), `label` |
+| `[rules]` | `gate_contact_space`, `poly_endcap`, `implant_enc`, `nwell_enc` |
+| `[[via]]` | `name`, `bottom`, `cut`, `top`, `size`, `space`, `enc_bottom`, `enc_top`, `resistance` |
+| `[[device]]` | `name`, `type` (`nmos` / `pmos`), `layers`, `exclude`, `subckt` |
+| `[models]` | `path`, `corners`, `default`, `length_unit` (`m` or `um`) |
+| `drc_deck` | Optional DRC deck file |
+| `[[cap]]` | Parasitic coefficients, as in `tech.json` |
+
+What changes with a PDK:
+
+- **Extraction** finds gates on the role layers and names each transistor after the first
+  `[[device]]` of its polarity whose `layers` all cover the gate and whose `exclude` layers
+  do not (for example `lvtn` for low-Vt devices).
+- **Netlists** map the schematic models `nmos` / `pmos` to the first device of each polarity,
+  write `X` elements for `subckt` devices, and load the model library with `.lib` at the
+  corner chosen in the Simulation workspace. PDK models need ngspice.
+- **LVS** also compares device models.
+- **PCells, schematic-driven layout and routing** use the role layers, vias and rules. PCell
+  variants already in the project are regenerated.
 
 ## Importing a real PDK layer set
 

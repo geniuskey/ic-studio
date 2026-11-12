@@ -26,7 +26,7 @@ use crate::extract;
 use crate::geom::IRect;
 use crate::hier::{LayoutSource, flatten};
 use crate::layout::{Geometry, Layout, Trans};
-use crate::pcell::{IMPLANT_ENC, PCell, mos_columns};
+use crate::pcell::{PCell, mos_columns};
 use crate::project::Project;
 use crate::schematic::{DeviceKind, Instance, Schematic};
 use crate::tech::Tech;
@@ -51,8 +51,6 @@ pub const AUTO_2D_UNITS: usize = 8;
 /// terminals (`g`, `s`, `d`) tied to `net` (the row's bulk net, so the dummy is off). The
 /// other source / drain column is shared with the matched unit it abuts.
 pub const DUMMY: &str = "dummy:";
-/// Layers merged across a row instead of being spaced.
-const SOFT_LAYERS: [&str; 3] = ["nwell", "nplus", "pplus"];
 
 /// A schematic device (or row tap) to be placed as a PCell instance named after it.
 #[derive(Debug, Clone, PartialEq)]
@@ -116,8 +114,9 @@ fn layer_space(tech: &Tech, layer: usize) -> i64 {
     tech.layer(layer).map_or(0, |l| l.min_spacing)
 }
 
+/// Layers merged across a row instead of being spaced: the well and the implants.
 fn soft_layers(tech: &Tech) -> Vec<usize> {
-    SOFT_LAYERS.iter().filter_map(|n| tech.layer_index(n)).collect()
+    [tech.nwell(), tech.implant(false), tech.implant(true)].into_iter().flatten().collect()
 }
 
 /// PCell for a schematic MOS instance: `w` is per device and `m` its multiplier. Each of the
@@ -457,7 +456,7 @@ impl RowBuilder<'_> {
         }
         (self.pmos, self.min_w) = (c.pmos, self.min_w.min(c.w));
         if self.active_y0.is_none() {
-            let active = self.tech.layer_index("active");
+            let active = self.tech.diffusion();
             self.active_y0 = c.lay.shapes.iter().filter(|s| Some(s.layer) == active).map(|s| trans.apply_rect(s.bbox()).y0).min();
         }
         self.row.devices.push(PlannedDevice { name: c.name, pcell: c.pcell, trans });
@@ -507,7 +506,7 @@ fn place_row(blocks: Vec<Vec<Vec<Candidate>>>, row: Vec<Candidate>, tech: &Tech)
     if let (Some(net), Some((x1, sp)), Some(ay)) = (net, last, b.active_y0) {
         let tap = PCell::Tap { well: b.pmos, w: b.min_w };
         if let Ok(lay) = tap.generate(tech) {
-            let x = x1 + snap_up(sp.max(2 * snap_up(IMPLANT_ENC, g)), g);
+            let x = x1 + snap_up(sp.max(2 * snap_up(tech.rules.implant_enc, g)), g);
             let name = format!("{}{net}", if b.pmos { NTAP } else { PTAP });
             b.row.devices.push(PlannedDevice { name, pcell: tap, trans: Trans::new(x, ay) });
             b.row.layouts.push(lay);
@@ -715,7 +714,7 @@ pub fn terminal_pins(sch: &Schematic, layout: &Layout, src: &dyn LayoutSource) -
 /// Extracted net of a device terminal at `p`: the contact metal there (terminal labels sit on a
 /// text layer, and wires of other nets may pass above), else the topmost conductor.
 pub fn pin_net(ex: &extract::Extraction, tech: &Tech, p: (i64, i64)) -> Option<usize> {
-    tech.via("contact").and_then(|v| tech.layer_index(&v.top)).and_then(|l| ex.net_at(l, p)).or_else(|| ex.net_at_any(p))
+    tech.metal1().and_then(|l| ex.net_at(l, p)).or_else(|| ex.net_at_any(p))
 }
 
 type Pt2 = (i64, i64);
