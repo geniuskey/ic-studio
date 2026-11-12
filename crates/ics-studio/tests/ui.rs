@@ -341,6 +341,56 @@ fn mcp_live_requests() {
     }
 }
 
+/// Live mode: write_schematic draws a schematic from a netlist, overwriting is undoable, and
+/// set_simulation switches to the Simulation workspace.
+#[test]
+fn mcp_live_write_schematic() {
+    let args = LaunchArgs { project: None, demo: true, workspace: Some("home".into()), cell: None, run: false };
+    let mut h = Harness::builder().with_size(egui::vec2(1440.0, 900.0)).wgpu().build_eframe(|cc| IcStudio::new(cc, args));
+    let (tx, rx) = std::sync::mpsc::channel();
+    h.state_mut().attach_bridge(rx);
+    h.run_steps(2);
+    let call = |h: &mut Harness<'_, IcStudio>, tool: &str, args: serde_json::Value| {
+        let (reply, answer) = std::sync::mpsc::channel();
+        let arguments = args.as_object().unwrap().clone();
+        tx.send(ics_mcp::bridge::Pending { tool: tool.into(), arguments, reply }).unwrap();
+        h.run_steps(3);
+        settle(h, tool);
+        answer.try_recv().expect("answered")
+    };
+    let sch = |h: &Harness<'_, IcStudio>, cell: &str| {
+        let p = h.state().project().unwrap();
+        p.all_cells().find(|(_, c)| c.name == cell).and_then(|(_, c)| c.schematic.clone())
+    };
+    let ota = "M1 x inp tail 0 nmos w=4u l=500n\nM2 out inn tail 0 nmos w=4u l=500n\nM3 x x vdd vdd pmos w=4u l=500n\n\
+               M4 out x vdd vdd pmos w=4u l=500n\nM5 tail vb 0 0 nmos w=2u l=1u\nC1 out 0 100f\nV1 vdd 0 1.8\n\
+               V2 inp 0 DC 0.9 AC 1\nV3 inn 0 0.9\nV4 vb 0 0.65\n.op\n.ac dec 20 1 10g\n";
+    let r = call(&mut h, "write_schematic", serde_json::json!({"cell": "ota_net", "netlist": ota}));
+    assert!(!r.is_error, "{r:?}");
+    assert_eq!(h.state().workspace(), Workspace::Schematic);
+    assert_eq!(sch(&h, "ota_net").unwrap().instances.iter().filter(|i| i.kind.spice_prefix().is_some()).count(), 10);
+    h.run_steps(4);
+    let img = h.render().expect("render");
+    if let Ok(dir) = std::env::var("ICS_SHOT_DIR") {
+        std::fs::create_dir_all(&dir).unwrap();
+        img.save(std::path::Path::new(&dir).join("15_mcp_write_schematic.png")).unwrap();
+    }
+
+    let original = sch(&h, "cmos_inverter").unwrap();
+    let inv = "M1 out in vdd vdd pmos w=4u l=180n\nM2 out in 0 0 nmos w=2u l=180n\nV1 vdd 0 1.8\nV2 in 0 0\n";
+    assert!(call(&mut h, "write_schematic", serde_json::json!({"cell": "cmos_inverter", "netlist": inv})).is_error);
+    let r = call(&mut h, "write_schematic", serde_json::json!({"cell": "cmos_inverter", "netlist": inv, "overwrite": true}));
+    assert!(!r.is_error, "{r:?}");
+    assert_ne!(sch(&h, "cmos_inverter").unwrap(), original);
+    h.state_mut().command(Command::Undo);
+    h.run_steps(2);
+    assert_eq!(sch(&h, "cmos_inverter").unwrap(), original, "overwriting a schematic is undoable");
+
+    let r = call(&mut h, "set_simulation", serde_json::json!({"cell": "ota_net", "analyses": [{"type": "op"}]}));
+    assert!(!r.is_error, "{r:?}");
+    assert_eq!(h.state().workspace(), Workspace::Simulation);
+}
+
 /// A saved demo project plus cell `work/big`: an array of `inv_tiles` large enough that
 /// DRC takes a noticeable time.
 fn big_project(test: &str) -> (std::path::PathBuf, ics_core::CellRef) {

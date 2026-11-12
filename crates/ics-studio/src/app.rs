@@ -213,6 +213,7 @@ fn mcp_summary(tool: &str, res: &ToolResult) -> String {
         "flylines" => format!("{} flyline(s)", n("count")),
         "route" => format!("{} connection(s), {} flyline(s) left", n("connections"), n("unrouted_flylines")),
         "delete_items" => format!("deleted {}", len("deleted")),
+        "write_schematic" => format!("{} device(s), {} net(s)", n("devices"), len("nets")),
         "add_rect" | "add_path" | "add_label" | "place_instance" | "place_pcell" => format!("id {}", v["id"]),
         "open_project" | "new_project" | "project_info" => format!("project '{}'", v["name"].as_str().unwrap_or("?")),
         "import_gds" => format!("library '{}'", v["library"].as_str().unwrap_or("?")),
@@ -2430,6 +2431,11 @@ impl IcStudio {
             let r = tools::find(p, c)?;
             Some((p.cell(&r)?.layout.clone()?, r))
         });
+        let sch_before = cell.as_deref().filter(|_| tool == "write_schematic").and_then(|c| {
+            let p = self.project.as_ref()?;
+            let r = tools::find(p, c)?;
+            Some((p.cell(&r)?.schematic.clone().unwrap_or_default(), r))
+        });
         let mut state = tools::State::in_gui(self.project.take(), self.dirty);
         let res = ics_mcp::call_tool(&mut state, tool, args);
         let (project, dirty) = state.into_parts();
@@ -2462,6 +2468,12 @@ impl IcStudio {
                 }
             }
         }
+        if let Some((sch, r)) = sch_before.filter(|_| !res.is_error) {
+            let ed = self.sch_eds.entry(r).or_default();
+            ed.history.push(&sch);
+            ed.selection.clear();
+            ed.request_fit();
+        }
         let target = cell.as_deref().and_then(|c| self.project.as_ref().and_then(|p| tools::find(p, c)));
         self.mcp_done(tool, target, &res, None);
         res
@@ -2486,8 +2498,8 @@ impl IcStudio {
         }
         if let Some(r) = target.filter(|_| !res.is_error) {
             let ws = match tool {
-                "simulate" => Workspace::Simulation,
-                "get_netlist" => Workspace::Schematic,
+                "simulate" | "set_simulation" => Workspace::Simulation,
+                "get_netlist" | "write_schematic" => Workspace::Schematic,
                 _ => Workspace::Layout,
             };
             self.queue.push(Command::OpenCell(r.clone(), Some(ws)));

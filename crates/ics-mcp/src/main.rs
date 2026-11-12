@@ -13,7 +13,7 @@ use serde_json::{Map, Value, json};
 
 const PROTOCOL_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
 
-const INSTRUCTIONS: &str = "IC Studio: full-custom IC design (schematic, SPICE simulation, layout, DRC/LVS). Start with open_project or new_project, then project_info. Layout coordinates are in µm with y pointing up, snapped to the technology grid. Edits stay in memory until save_project. Live mode: while the IC Studio desktop app is running, every tool runs on the project open in its window and the user sees edits, DRC/LVS markers and waveforms there immediately; otherwise tools run on this server's own project. Call gui_status to check; in live mode a project is usually open already, so call project_info before opening another one.";
+const INSTRUCTIONS: &str = "IC Studio: full-custom IC design (schematic, SPICE simulation, layout, DRC/LVS). Start with open_project or new_project, then project_info. write_schematic creates a schematic from a SPICE netlist. Layout coordinates are in µm with y pointing up, snapped to the technology grid. Edits stay in memory until save_project. Live mode: while the IC Studio desktop app is running, every tool runs on the project open in its window and the user sees edits, DRC/LVS markers and waveforms there immediately; otherwise tools run on this server's own project. Call gui_status to check; in live mode a project is usually open already, so call project_info before opening another one.";
 
 struct Rpc {
     state: tools::State,
@@ -207,6 +207,8 @@ mod tests {
             "load_pdk",
             "project_info",
             "get_netlist",
+            "write_schematic",
+            "set_simulation",
             "simulate",
             "run_spice",
             "layout_summary",
@@ -343,6 +345,45 @@ mod tests {
         let reopened = call(&mut s, "open_project", json!({"path": proj})).unwrap();
         assert_eq!(reopened["unsaved_changes"], false);
         assert!(reopened["libraries"].to_string().contains("\"amp\""));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn schematic_from_netlist() {
+        let dir = std::env::temp_dir().join(format!("ics-mcp-sch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut s = standalone();
+        call(&mut s, "new_project", json!({"path": dir.join("p"), "template": "empty"})).unwrap();
+        let netlist =
+            "M1 out in vdd vdd pmos w=2u l=180n\nM2 out in 0 0 nmos w=1u l=180n\nV1 vdd 0 1.8\nV2 in 0 0\n.dc V2 0 1.8 10m\n";
+        let w = call(&mut s, "write_schematic", json!({"cell": "inv", "netlist": netlist})).unwrap();
+        assert_eq!(w["created"], true);
+        assert_eq!(w["devices"], 4);
+        assert_eq!(w["nets"], json!(["0", "in", "out", "vdd"]));
+        assert_eq!(w["analyses"], json!(["dc"]));
+        assert!(w["deck"].as_str().unwrap().contains("M2 out in 0 0 nmos w=1u l=180n"));
+        let again = call(&mut s, "write_schematic", json!({"cell": "inv", "netlist": netlist})).unwrap_err();
+        assert!(again.contains("overwrite"), "{again}");
+        let bad = call(&mut s, "write_schematic", json!({"cell": "inv2", "netlist": "Q1 c b e npn"})).unwrap_err();
+        assert!(bad.contains("line 1"), "{bad}");
+        let info = call(&mut s, "project_info", json!({})).unwrap();
+        assert!(!info.to_string().contains("inv2"), "a failed write creates no cell");
+
+        let sim = call(&mut s, "simulate", json!({"cell": "inv"})).unwrap();
+        assert_eq!(sim["datasets"].as_array().unwrap().len(), 1);
+        let set = call(
+            &mut s,
+            "set_simulation",
+            json!({"cell": "inv", "analyses": [{"type": "op"}, {"type": "tran", "tstep": 1e-11, "tstop": "5n"}], "temp": 85}),
+        )
+        .unwrap();
+        assert_eq!(set["setup"]["temp"], 85.0);
+        let deck = call(&mut s, "get_netlist", json!({"cell": "inv"})).unwrap()["deck"].as_str().unwrap().to_string();
+        assert!(deck.contains(".op\n.tran 1e-11 5n\n"), "{deck}");
+        assert!(!deck.contains(".dc"), "{deck}");
+        let e =
+            call(&mut s, "set_simulation", json!({"cell": "inv", "analyses": [{"type": "tran", "tstep": "0", "tstop": "1n"}]}));
+        assert!(e.is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

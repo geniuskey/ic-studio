@@ -1,5 +1,9 @@
 # Writing a schematic by hand
 
+Prefer `write_schematic` (MCP) or `ics schematic` (CLI) with a SPICE netlist. Edit the
+files directly only when you need to change an existing drawing, or need control the
+netlist path does not give, such as wires, symbol positions or rotations.
+
 A cell is a folder `<project>/<lib>/<cell>/` that holds:
 
 - `cell.json`, for example `{"description": "..."}`

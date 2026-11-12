@@ -23,8 +23,8 @@ Then ask, for example: "create a demo project in ./demo and run LVS on cmos_inve
 
 The tools tell an agent what it can do; the `ic-studio` skill in `skills/ic-studio` tells
 it how to design with them: the schematic → simulation → layout → DRC → LVS → post-layout
-flow, units, how to read LVS / DRC results, the `schematic.json` format (MCP has no
-schematic editing tools) and the `ics` CLI as a fallback. Install it with:
+flow, units, how to read LVS / DRC results, the `schematic.json` format and the `ics` CLI
+as a fallback. Install it with:
 
 ```sh
 npx skills add geniuskey/ic-studio
@@ -45,6 +45,8 @@ or copy `skills/ic-studio` into `~/.claude/skills/`.
 |---|---|
 | `open_project`, `new_project`, `save_project`, `project_info` | Project management; `project_info` lists the technology layers, vias and all cells |
 | `get_netlist` | SPICE deck of a cell |
+| `write_schematic` | Create or replace a cell's schematic from a SPICE netlist; its analysis lines set the simulation setup |
+| `set_simulation` | Change a cell's analyses, backend, temperature, extra lines, parasitics or corner |
 | `simulate` | Run the cell's saved analyses (optional `backend`, `parasitics`); returns a compact summary |
 | `run_spice` | Simulate a raw SPICE deck |
 | `layout_summary` | Bounding box, shapes per layer, labels and instances |

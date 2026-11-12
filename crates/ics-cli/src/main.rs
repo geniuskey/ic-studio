@@ -46,6 +46,16 @@ enum Cmd {
     Info { project: PathBuf },
     /// Print the SPICE deck of a cell (`lib/cell` or just `cell`).
     Netlist { project: PathBuf, cell: String },
+    /// Create or replace a cell's schematic from a SPICE netlist file; its analysis lines set the
+    /// cell's simulation setup. Saves the project.
+    Schematic {
+        project: PathBuf,
+        cell: String,
+        netlist: PathBuf,
+        /// Replace an existing schematic.
+        #[arg(long)]
+        overwrite: bool,
+    },
     /// Simulate a cell with its saved simulation setup.
     Sim {
         project: PathBuf,
@@ -266,6 +276,37 @@ fn run(cli: Cli) -> Result<(), String> {
                 eprintln!("warning: {w}");
             }
             print!("{}", nl.deck(&r.to_string(), &c.sim));
+        }
+        Cmd::Schematic { project, cell, netlist, overwrite } => {
+            let mut p = Project::open(&project).map_err(|e| e.to_string())?;
+            let text = std::fs::read_to_string(&netlist).map_err(|e| format!("{}: {e}", netlist.display()))?;
+            let imp = ics_core::spice_import::import(&text, &p.tech)?;
+            let r = match resolve(&p, &cell) {
+                Ok(r) => r,
+                Err(_) => {
+                    let (lib, name) = cell.split_once('/').unwrap_or(("work", cell.as_str()));
+                    if p.library_mut(lib).is_none() {
+                        p.add_library(lib)?;
+                    }
+                    p.add_cell(lib, ics_core::Cell::new(name))?
+                }
+            };
+            let c = p.cell_mut(&r).unwrap();
+            if c.schematic.is_some() && !overwrite {
+                return Err(format!("{r} already has a schematic; pass --overwrite to replace it"));
+            }
+            imp.apply_to(&mut c.sim);
+            c.schematic = Some(imp.schematic);
+            for w in &imp.warnings {
+                eprintln!("warning: {w}");
+            }
+            let c = p.cell(&r).unwrap();
+            let nl = ics_core::netlist::netlist_for(c.schematic.as_ref().unwrap(), &p.tech, &c.sim.corner);
+            for w in &nl.warnings {
+                eprintln!("warning: {w}");
+            }
+            print!("{}", nl.deck(&r.to_string(), &c.sim));
+            p.save().map_err(|e| e.to_string())?;
         }
         Cmd::Sim { project, cell, backend: b, json, parasitics } => {
             let p = Project::open(&project).map_err(|e| e.to_string())?;

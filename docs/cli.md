@@ -15,6 +15,7 @@ runs and CI. Build it with `cargo build --release -p ics-cli` (binary
 | `ics new <DIR> [--template empty\|demo]` | Create a project (default template `demo`) |
 | `ics info <PROJECT>` | List libraries, cells and views |
 | `ics netlist <PROJECT> <CELL>` | Print the cell's SPICE deck |
+| `ics schematic <PROJECT> <CELL> <NETLIST> [--overwrite]` | Create or replace a cell's schematic from a SPICE netlist file and save |
 | `ics sim <PROJECT> <CELL> [--backend builtin\|ngspice] [--json] [--parasitics]` | Simulate with the cell's saved setup |
 | `ics spice <FILE> [--backend builtin\|ngspice] [--json]` | Simulate a SPICE file with its own analyses |
 | `ics gds <PROJECT> <CELL> -o <FILE>` | Export the cell and every cell it places to GDSII |
@@ -30,6 +31,21 @@ runs and CI. Build it with `cargo build --release -p ics-cli` (binary
 | `ics route <PROJECT> <CELL> [--place]` | Route flylines and save; exit 1 if nets stay unrouted |
 
 ## Details
+
+### Schematic from a netlist
+
+`ics schematic` reads a flat SPICE netlist (R, C, L, V, I, D and M lines, and X lines for
+PDK MOS subcircuits) and draws it as the cell's schematic: every pin gets a net label
+(node `0` or `gnd` gets a ground symbol) and devices are laid out in rows (PMOS, NMOS,
+passives, sources). Analysis lines (`.op`, `.dc`, `.ac dec`, `.tran`) and `.temp` set the
+cell's simulation setup; other dot lines (`.model`, `.include`, `.param`, `.ic`, `.meas`)
+become its extra lines. Lengths are SPICE metres (`w=2u`); a bare `w=2` is read as µm with
+a warning. The cell is created in library `work` unless `lib/cell` is given. It prints the
+generated deck and saves the project.
+
+```sh
+ics schematic myproj ota ota.cir && ics route myproj ota --place && ics lvs myproj ota
+```
 
 ### Simulation
 

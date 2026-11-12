@@ -45,13 +45,25 @@ Layout coordinates snap to the technology grid (10 nm in generic180, 5 nm in sky
 
 Follow these steps in order and check each one before moving on.
 
-1. **Schematic.** MCP has no tool to edit schematics. Use an existing cell, ask the user to
-   draw it in the app, or write `schematic.json` yourself. See
-   [references/schematic-json.md](references/schematic-json.md). Net labels placed on pin
-   positions are enough; you do not need wires.
+1. **Schematic.** Write the circuit as a flat SPICE netlist and pass it to
+   `write_schematic` (CLI: `ics schematic <proj> <cell> <file.cir>`). The tool draws the
+   schematic with a net label on every pin. Analysis lines in the netlist (`.op`, `.dc`,
+   `.ac dec`, `.tran`) become the cell's simulation setup. Use `overwrite: true` only to
+   replace a schematic on purpose. The user can undo it in the app.
+   - Supported elements: R, C, L, V, I, D and M (`M1 d g s b model w=2u l=180n m=1`).
+     PDK MOS subcircuits use X lines. E, F, G, H, B, Q and `.subckt` are rejected.
+   - Node `0` or `gnd` becomes a ground symbol. Every other name becomes a net label.
+   - Lengths are in metres: write `w=2u`, not `w=2`.
+   - Optional MOS `match=<group>` groups devices for common-centroid layout. Put it on
+     diff-pair and mirror devices.
+   - To edit an existing hand-drawn schematic or control the drawing, edit
+     `schematic.json` directly. See [references/schematic-json.md](references/schematic-json.md).
 2. **Check the netlist.** `get_netlist`. Read it to confirm that every device connects to
    the nets you intended. This is the cheapest check and catches most schematic mistakes.
-3. **Simulate.** `simulate` runs the analyses saved in the cell's `sim.json`. Check:
+3. **Simulate.** `simulate` runs the cell's saved analyses. To change them without
+   rewriting the schematic, use `set_simulation`. It sets analyses, backend, temp, extra
+   lines (`.meas`, `.ic`, `.include`), parasitics and corner; the analyses you list replace
+   the enabled ones. Check:
    - **OP**: every transistor is in the intended region (`saturation` for analog bias,
      `triode`/`cutoff` at logic levels), and node voltages are plausible.
    - **Sweeps**: the summary gives min/max/first/final per vector. For full waveforms use
@@ -72,13 +84,14 @@ Follow these steps in order and check each one before moving on.
    gain, bandwidth) and report the difference.
 9. `save_project`, and `export_gds` if the user wants a GDS or OASIS file.
 
-If the CLI is available, steps 4 to 7 collapse to:
+If the CLI is available, steps 1 and 4 to 7 collapse to:
 
 ```sh
-ics route <proj> <cell> --place && ics drc <proj> <cell> && ics lvs <proj> <cell>
+ics schematic <proj> <cell> <cell>.cir && ics route <proj> <cell> --place \
+  && ics drc <proj> <cell> && ics lvs <proj> <cell>
 ```
 
-`ics route` **saves the project**. Each command exits with 1 on unrouted nets, violations
+`ics schematic` and `ics route` **save the project**. Each command exits with 1 on unrouted nets, violations
 or differences.
 
 ## Reading LVS results
@@ -128,7 +141,9 @@ or differences.
 
 ## Live mode and files on disk
 
-The app does not watch files. If you edit `schematic.json` or `sim.json` on disk while the
+Prefer `write_schematic` and `set_simulation` in live mode: their changes show in the
+window immediately. The app does not watch files. If you edit `schematic.json` or
+`sim.json` on disk, or run `ics schematic` or `ics route`, while the
 app has the project open, call `save_project` first if there are unsaved changes, then
 `open_project` on the same folder to reload. When you write files, do it before the app
 saves again, or the app overwrites them.

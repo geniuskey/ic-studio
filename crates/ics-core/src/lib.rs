@@ -24,6 +24,7 @@ pub mod schematic;
 pub mod sdl;
 pub mod signoff;
 pub mod sim_setup;
+pub mod spice_import;
 pub mod svrf;
 pub mod tech;
 pub mod tech_import;

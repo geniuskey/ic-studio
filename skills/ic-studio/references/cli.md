@@ -12,6 +12,7 @@ commands can be chained with `&&`.
 | `ics new <DIR> [--template empty\|demo]` | Create a project. The default is `demo` |
 | `ics info <PROJECT>` | Libraries, cells and views |
 | `ics netlist <PROJECT> <CELL>` | SPICE deck of the schematic, with its analyses |
+| `ics schematic <PROJECT> <CELL> <NETLIST> [--overwrite]` | Schematic (and analyses) from a SPICE netlist file. **Saves** |
 | `ics sim <PROJECT> <CELL> [--backend builtin\|ngspice] [--json] [--parasitics]` | Simulate with the saved setup |
 | `ics spice <FILE> [--backend ...] [--json]` | Simulate a raw SPICE file |
 | `ics route <PROJECT> <CELL> [--place]` | Place missing devices (with `--place`), route, **save** |
@@ -47,6 +48,7 @@ arrays with a short script instead of reading values by eye.
 ```sh
 ics new demo --template demo
 ics sim demo cmos_inverter
+ics schematic demo ota ota.cir && ics sim demo ota
 ics route demo nand2 --place && ics drc demo nand2 && ics lvs demo nand2
 ics sim demo ring_osc5 --parasitics
 ics gds demo nand2 -o nand2.gds

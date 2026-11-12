@@ -314,6 +314,26 @@ fn pcell_from(kind: &str, params: &Args, tech: &Tech) -> Result<PCell, String> {
     })
 }
 
+/// An analysis from tool arguments; numbers are accepted where the setup stores SPICE strings.
+fn parse_analysis(v: &Value) -> Result<ics_core::sim_setup::Analysis, String> {
+    let mut obj = v.as_object().ok_or("each analysis must be an object with a 'type'")?.clone();
+    for (k, val) in obj.iter_mut() {
+        match (k.as_str(), &*val) {
+            ("points_per_decade", Value::String(s)) => {
+                let n: u32 = s.trim().parse().map_err(|_| format!("points_per_decade '{s}' is not an integer"))?;
+                *val = json!(n);
+            }
+            ("points_per_decade" | "type", _) => {}
+            (_, Value::Number(n)) => *val = json!(n.to_string()),
+            _ => {}
+        }
+    }
+    let a: ics_core::sim_setup::Analysis =
+        serde_json::from_value(Value::Object(obj)).map_err(|e| format!("invalid analysis {v}: {e}"))?;
+    a.validate()?;
+    Ok(a)
+}
+
 fn tool(name: &str, description: &str, properties: Value, required: &[&str]) -> Value {
     json!({
         "name": name,
@@ -369,6 +389,31 @@ pub fn definitions() -> Vec<Value> {
             "get_netlist",
             "SPICE deck generated from a cell's schematic, including the analyses of its saved simulation setup.",
             json!({"cell": cell()}),
+            &["cell"],
+        ),
+        tool(
+            "write_schematic",
+            "Create or replace a cell's schematic from a flat SPICE netlist (R, C, L, V, I, D, M lines; X lines for PDK MOS subcircuits). Node 0 or gnd is ground. Every pin gets a net label and devices are laid out in rows (PMOS, NMOS, passives, sources). Analysis lines (.op, .dc, .ac dec, .tran) and .temp set the cell's simulation setup; other dot lines (.model, .include, .param, .ic, .meas) become its extra lines. Lengths are SPICE metres (w=2u). Returns the generated deck to check. Changes stay in memory until save_project is called.",
+            json!({
+                "cell": {"type": "string", "description": "Cell name or 'lib/cell'. Created (in library 'work' unless a lib is given) if it does not exist."},
+                "netlist": {"type": "string", "description": "SPICE netlist, one element per line, e.g. 'M1 out in vdd vdd pmos w=2u l=180n', 'M2 out in 0 0 nmos w=1u l=180n', 'V1 vdd 0 1.8', 'V2 in 0 PULSE(0 1.8 1n 50p 50p 2n 4n)', '.tran 10p 10n'. MOS: d g s b model w= l= [m=] [match=]."},
+                "overwrite": {"type": "boolean", "description": "Replace an existing schematic (default false: refuse)."},
+                "description": {"type": "string", "description": "Cell description."},
+            }),
+            &["cell", "netlist"],
+        ),
+        tool(
+            "set_simulation",
+            "Change a cell's simulation setup; only the given fields change. 'analyses' lists the analyses to run (the others are disabled). Returns the resulting setup. Changes stay in memory until save_project is called.",
+            json!({
+                "cell": cell(),
+                "analyses": {"type": "array", "items": {"type": "object"}, "description": "E.g. [{\"type\":\"op\"}, {\"type\":\"dc\",\"source\":\"V2\",\"start\":\"0\",\"stop\":\"1.8\",\"step\":\"10m\"}, {\"type\":\"ac\",\"points_per_decade\":20,\"fstart\":\"1\",\"fstop\":\"10g\"}, {\"type\":\"tran\",\"tstep\":\"10p\",\"tstop\":\"20n\"}]. Values are SPICE numbers."},
+                "backend": backend.clone(),
+                "temp": num_prop("Temperature in °C."),
+                "extra": {"type": "string", "description": "Raw SPICE lines appended to the deck (.model, .include, .ic, .meas, ...); replaces the current ones."},
+                "parasitics": {"type": "boolean", "description": "Include layout parasitics in every simulation of the cell."},
+                "corner": {"type": "string", "description": "PDK model corner (e.g. tt, ff, ss); empty for the PDK default."},
+            }),
             &["cell"],
         ),
         tool(
@@ -591,6 +636,8 @@ impl State {
             "load_pdk" => self.load_pdk(a),
             "project_info" => self.project_info(),
             "get_netlist" => self.get_netlist(a),
+            "write_schematic" => self.write_schematic(a),
+            "set_simulation" => self.set_simulation(a),
             "simulate" => self.simulate(a),
             "run_spice" => self.run_spice(a),
             "layout_summary" => self.layout_summary(a),
@@ -630,6 +677,13 @@ impl State {
 
     /// The cell to edit, created with an empty layout if needed. Returns whether it was created.
     fn target(&mut self, cell: &str) -> Result<(CellRef, bool), String> {
+        let (r, created) = self.target_cell(cell)?;
+        self.project_mut()?.cell_mut(&r).expect("resolved").layout.get_or_insert_default();
+        Ok((r, created))
+    }
+
+    /// The cell to edit, created (without views) if needed. Returns whether it was created.
+    fn target_cell(&mut self, cell: &str) -> Result<(CellRef, bool), String> {
         let p = self.project_mut()?;
         let (r, created) = match find(p, cell) {
             Some(r) => (r, false),
@@ -656,7 +710,6 @@ impl State {
         if r.lib == PCELL_LIB {
             return Err(format!("'{r}' is a generated PCell variant; edit a cell in another library"));
         }
-        p.cell_mut(&r).expect("resolved").layout.get_or_insert_default();
         self.dirty = true;
         Ok((r, created))
     }
@@ -777,6 +830,73 @@ impl State {
         let sch = c.schematic.as_ref().ok_or("cell has no schematic view")?;
         let nl = ics_core::netlist::netlist_for(sch, &p.tech, &c.sim.corner);
         Ok(json!({"cell": r.to_string(), "deck": nl.deck(&r.to_string(), &c.sim), "warnings": nl.warnings}))
+    }
+
+    fn write_schematic(&mut self, a: &Args) -> Result<Value, String> {
+        let cell = a.str("cell")?;
+        let imp = ics_core::spice_import::import(a.str("netlist")?, &self.project()?.tech)?;
+        if let Some(r) = find(self.project()?, cell)
+            && self.project()?.cell(&r).is_some_and(|c| c.schematic.is_some())
+            && !a.opt_bool("overwrite")?.unwrap_or(false)
+        {
+            return Err(format!("'{r}' already has a schematic; pass overwrite: true to replace it"));
+        }
+        let (r, created) = self.target_cell(cell)?;
+        let p = self.project_mut()?;
+        let tech = p.tech.clone();
+        let c = p.cell_mut(&r).expect("resolved");
+        if let Some(d) = a.opt_str("description")? {
+            c.description = d.to_string();
+        }
+        imp.apply_to(&mut c.sim);
+        let nl = ics_core::netlist::netlist_for(&imp.schematic, &tech, &c.sim.corner);
+        let nets = nl.conn.nets();
+        let devices = imp.schematic.instances.iter().filter(|i| i.kind.spice_prefix().is_some()).count();
+        let deck = nl.deck(&r.to_string(), &c.sim);
+        let warnings: Vec<String> = imp.warnings.iter().chain(&nl.warnings).cloned().collect();
+        let analyses: Vec<&str> = c.sim.enabled().map(|a| a.kind_name()).collect();
+        let out = json!({
+            "cell": r.to_string(), "created": created, "devices": devices, "nets": nets,
+            "analyses": analyses, "warnings": warnings, "deck": deck,
+        });
+        c.schematic = Some(imp.schematic);
+        Ok(out)
+    }
+
+    fn set_simulation(&mut self, a: &Args) -> Result<Value, String> {
+        let r = resolve(self.project()?, a.str("cell")?)?;
+        let analyses = match a.get("analyses") {
+            Some(v) => {
+                let items = v.as_array().ok_or("argument 'analyses' must be an array")?;
+                Some(items.iter().map(parse_analysis).collect::<Result<Vec<_>, _>>()?)
+            }
+            None => None,
+        };
+        let backend = backend(a)?;
+        let (temp, parasitics) = (a.opt_num("temp")?, a.opt_bool("parasitics")?);
+        let (extra, corner) = (a.opt_str("extra")?.map(str::to_string), a.opt_str("corner")?.map(str::to_string));
+        let sim = &mut self.project_mut()?.cell_mut(&r).expect("resolved").sim;
+        if let Some(list) = &analyses {
+            ics_core::spice_import::set_analyses(sim, list);
+        }
+        if let Some(b) = backend {
+            sim.backend = b;
+        }
+        if let Some(t) = temp {
+            sim.temp = t;
+        }
+        if let Some(on) = parasitics {
+            sim.parasitics = on;
+        }
+        if let Some(e) = extra {
+            sim.extra = e;
+        }
+        if let Some(k) = corner {
+            sim.corner = k;
+        }
+        let setup = serde_json::to_value(&*sim).map_err(|e| e.to_string())?;
+        self.dirty = true;
+        Ok(json!({"cell": r.to_string(), "setup": setup}))
     }
 
     fn simulate(&self, a: &Args) -> Result<Value, String> {
