@@ -10,6 +10,7 @@ use ics_core::extract::{self, DevKind, Extraction};
 use ics_core::geom::IRect;
 use ics_core::layout::Layout;
 use ics_core::lvs::{self, LvsErrorKind, LvsReport};
+use ics_core::signoff::{self, Runset, SignoffReport};
 use ics_core::{Project, Schematic};
 use ics_mcp::tools::{self, Verified};
 
@@ -38,6 +39,10 @@ pub struct VerifyState {
     pub drc: Option<DrcReport>,
     pub extraction: Option<Extraction>,
     pub lvs: Option<LvsReport>,
+    /// Last external sign-off run, or why it could not run.
+    pub signoff: Option<Result<SignoffReport, String>>,
+    /// Selected runset of the technology.
+    pub runset: usize,
     /// Results no longer reflect the layout.
     pub stale: bool,
     pub highlight: Option<usize>,
@@ -56,6 +61,8 @@ impl Default for VerifyState {
             drc: None,
             extraction: None,
             lvs: None,
+            signoff: None,
+            runset: 0,
             stale: false,
             highlight: None,
             pick_nets: false,
@@ -68,7 +75,7 @@ impl Default for VerifyState {
 
 impl VerifyState {
     pub fn layout_changed(&mut self) {
-        if self.drc.is_some() || self.extraction.is_some() || self.lvs.is_some() {
+        if self.drc.is_some() || self.extraction.is_some() || self.lvs.is_some() || self.signoff.is_some() {
             self.stale = true;
         }
         self.highlight = None;
@@ -91,6 +98,8 @@ pub enum Verify {
     Drc,
     Extract,
     Lvs,
+    /// An external runset of the technology ([`VerifyState::runset`]).
+    Signoff,
 }
 
 impl Verify {
@@ -99,6 +108,7 @@ impl Verify {
             Verify::Drc => "DRC",
             Verify::Extract => "extraction",
             Verify::Lvs => "LVS",
+            Verify::Signoff => "sign-off",
         }
     }
 }
@@ -107,6 +117,7 @@ enum Task {
     Drc(Deck),
     Extract,
     Lvs(Schematic),
+    Signoff(Runset, ics_core::CellRef),
 }
 
 impl Task {
@@ -118,6 +129,13 @@ impl Task {
                 let x = extract::extract(top, src, &src.tech);
                 let r = lvs::compare(&sch, &x, &lvs::LvsOptions::for_tech(&src.tech));
                 Verified::Lvs(x, r)
+            }
+            Task::Signoff(rs, cell) => {
+                let mut p = src.clone();
+                if let Some(c) = p.cell_mut(&cell) {
+                    c.layout = Some(top.clone());
+                }
+                Verified::Signoff(signoff::run(&p, &cell, &rs, &signoff::Tools::default()))
             }
         }
     }
@@ -164,6 +182,10 @@ impl LayoutEditor {
             Verify::Lvs => match cx.src.cell(cx.cell).and_then(|c| c.schematic.clone()) {
                 Some(sch) => Task::Lvs(sch),
                 None => return "LVS needs a schematic view of this cell".into(),
+            },
+            Verify::Signoff => match cx.tech.signoff.get(self.verify.runset) {
+                Some(rs) => Task::Signoff(rs.clone(), cx.cell.clone()),
+                None => return "The technology has no sign-off runsets".into(),
             },
         };
         let mut snap = tools::snapshot(cx.src, Some(cx.cell), Some(l));
@@ -220,6 +242,19 @@ impl LayoutEditor {
                     format!("LVS: {} difference(s)", r.errors.len())
                 };
                 self.verify.lvs = Some(r);
+                msg
+            }
+            Verified::Signoff(r) => {
+                let msg = match &r {
+                    Ok(rep) => {
+                        if let Some(d) = &rep.drc {
+                            self.verify.drc = Some(d.clone());
+                        }
+                        rep.summary()
+                    }
+                    Err(e) => format!("Sign-off failed: {}", e.lines().next().unwrap_or_default()),
+                };
+                self.verify.signoff = Some(r);
                 msg
             }
         };
@@ -444,6 +479,49 @@ impl LayoutEditor {
                         }
                     }
                 });
+            }
+        }
+        if !tech.signoff.is_empty() {
+            ui.add_space(12.0);
+            theme::section(ui, "Sign-off");
+            self.verify.runset = self.verify.runset.min(tech.signoff.len() - 1);
+            let label = ui.label(egui::RichText::new("Runset").small());
+            egui::ComboBox::from_id_salt("runset")
+                .width(ui.available_width() - 8.0)
+                .selected_text(tech.signoff[self.verify.runset].name.as_str())
+                .show_ui(ui, |ui| {
+                    for (i, rs) in tech.signoff.iter().enumerate() {
+                        ui.selectable_value(&mut self.verify.runset, i, format!("{} · {}", rs.name, rs.tool.label()));
+                    }
+                })
+                .response
+                .labelled_by(label.id);
+            let rs = &tech.signoff[self.verify.runset];
+            let run = ui.add_enabled(idle, egui::Button::new(format!("▶ Run {}", rs.tool.label())));
+            if run.on_hover_text(format!("Write the cell to GDS and run {}", rs.deck)).clicked() {
+                self.start_verification(Verify::Signoff, l, cx, ui.ctx());
+            }
+            self.job_row(ui, Verify::Signoff);
+            match &self.verify.signoff {
+                Some(Ok(rep)) => {
+                    let good = rep
+                        .drc
+                        .as_ref()
+                        .map_or(rep.lvs.as_ref().and_then(|l| l.matched) == Some(true), |d| d.violations.is_empty());
+                    ui.colored_label(if good { pal.ok } else { pal.danger }, rep.summary());
+                    if let Some(lv) = &rep.lvs {
+                        egui::ScrollArea::vertical().id_salt("signoff_lvs").max_height(160.0).show(ui, |ui| {
+                            for m in &lv.messages {
+                                ui.label(egui::RichText::new(m).small());
+                            }
+                        });
+                    }
+                    ui.label(egui::RichText::new(format!("Reports: {}", rep.dir.display())).small().color(pal.text_weak));
+                }
+                Some(Err(e)) => {
+                    ui.label(egui::RichText::new(e).small().color(pal.danger));
+                }
+                None => {}
             }
         }
         if self.verify.stale {

@@ -99,6 +99,8 @@ Linux needs the usual windowing libraries:
   real PDK's layer set, such as SKY130 or GF180
 - PDK files (`pdks/sky130A.toml`): layers, vias, device recognition, SPICE model library
   and corners in one TOML file; extraction, LVS, netlists and PCells follow the PDK
+- Sign-off DRC / LVS with external tools: KLayout decks, Calibre SVRF rule files and
+  netgen, with results as markers in the layout
 
 ## Command line
 

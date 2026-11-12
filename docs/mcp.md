@@ -44,6 +44,7 @@ Then ask, for example: "create a demo project in ./demo and run LVS on cmos_inve
 | `run_drc` | DRC with the technology deck |
 | `extract` | Extracted nets and devices, plus SPICE |
 | `run_lvs` | Compare layout and schematic |
+| `run_signoff` | Run an external KLayout / Calibre / netgen runset of the technology |
 | `post_layout_parasitics` | Extracted parasitics and the largest net and coupling capacitances |
 | `load_pdk` | Replace the technology with a PDK file |
 | `export_gds`, `import_gds` | GDSII export and import (import skips layers the technology lacks) |

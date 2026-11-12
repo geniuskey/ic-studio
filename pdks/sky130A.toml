@@ -324,3 +324,16 @@ path = "${PDK_ROOT}/sky130A/libs.tech/ngspice/sky130.lib.spice"
 corners = ["tt", "ff", "ss", "sf", "fs"]
 default = "tt"
 length_unit = "um"
+
+# Sign-off checks with the tools' own decks from the installed PDK.
+[[signoff]]
+name = "KLayout DRC (sky130A_mr)"
+tool = "klayout"
+check = "drc"
+deck = "${PDK_ROOT}/sky130A/libs.tech/klayout/drc/sky130A_mr.drc"
+
+[[signoff]]
+name = "netgen LVS"
+tool = "netgen"
+check = "lvs"
+deck = "${PDK_ROOT}/sky130A/libs.tech/netgen/sky130A_setup.tcl"

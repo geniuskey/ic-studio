@@ -60,6 +60,13 @@
 //!
 //! drc_deck = "rules.deck"      # optional IC Studio DRC deck (see `drc`)
 //!
+//! [[signoff]]                  # external DRC / LVS (see `signoff::Runset`)
+//! name = "KLayout DRC"
+//! tool = "klayout"             # klayout, calibre or netgen
+//! check = "drc"                # drc or lvs
+//! deck = "${PDK_ROOT}/sky130A/libs.tech/klayout/drc/sky130A_mr.drc"
+//! vars = { feol = "true" }     # extra KLayout -rd variables / Calibre #DEFINEs
+//!
 //! [[cap]]                      # optional parasitic coefficients (see LayerCap)
 //! layer = "met1"
 //! area = 25.8
@@ -74,6 +81,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::signoff::Runset;
 use crate::tech::{DeviceRules, FillStyle, LayerCap, LayerDef, LayerRoles, LengthUnit, ModelLib, MosDef, Tech, ViaDef};
 use crate::tech_import::{apply_lyt, from_lyp};
 
@@ -99,6 +107,8 @@ struct PdkFile {
     drc_deck: Option<String>,
     #[serde(default)]
     cap: Vec<LayerCap>,
+    #[serde(default)]
+    signoff: Vec<Runset>,
 }
 
 fn default_dbu() -> i64 {
@@ -292,6 +302,22 @@ pub fn parse(text: &str, base: &Path, env: &dyn Fn(&str) -> Option<String>) -> R
         }
         ModelLib { path, corners: m.corners, default_corner: m.default, length_unit: m.length_unit }
     });
+    tech.signoff = f
+        .signoff
+        .into_iter()
+        .map(|mut r| {
+            match resolve(&r.deck, base, env) {
+                Ok(p) => {
+                    if !p.exists() {
+                        warnings.push(format!("sign-off runset '{}': deck {} does not exist", r.name, p.display()));
+                    }
+                    r.deck = p.to_string_lossy().into_owned();
+                }
+                Err(e) => warnings.push(format!("sign-off runset '{}': {e}", r.name)),
+            }
+            r
+        })
+        .collect();
     warnings.extend(check(&tech));
     Ok(Pdk { tech, warnings })
 }
@@ -409,8 +435,8 @@ mod tests {
     #[test]
     fn sky130_loads_consistently() {
         let p = sky130(None);
-        assert_eq!(p.warnings.len(), 1, "only the unresolved model path: {:?}", p.warnings);
-        assert!(p.warnings[0].contains("PDK_ROOT is not set"), "{:?}", p.warnings);
+        assert!(p.warnings.iter().all(|w| w.contains("PDK_ROOT is not set")), "only unresolved PDK paths: {:?}", p.warnings);
+        assert_eq!(p.tech.signoff.len(), 2);
         let t = &p.tech;
         assert_eq!((t.name.as_str(), t.dbu_per_um, t.grid), ("sky130A", 1000, 5));
         let diff = t.layer_index("diff").unwrap();

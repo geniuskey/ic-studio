@@ -95,6 +95,14 @@ enum Cmd {
     Extract { project: PathBuf, cell: String },
     /// Compare a cell's layout with its schematic (non-zero exit on differences).
     Lvs { project: PathBuf, cell: String },
+    /// Run an external sign-off DRC / LVS runset of the technology (KLayout, Calibre or netgen)
+    /// on a cell; without a runset, list them. Non-zero exit on violations or a mismatch.
+    Signoff {
+        project: PathBuf,
+        cell: String,
+        /// Runset name (or a unique part of it).
+        runset: Option<String>,
+    },
     /// Read a GDSII file and print hierarchy statistics and timings (nothing is written).
     GdsInfo { file: PathBuf },
     /// Import a GDSII file as a new library stored as one GDS file. Layers the technology
@@ -381,6 +389,44 @@ fn run(cli: Cli) -> Result<(), String> {
                 return Err(format!("LVS: {} difference(s)", rep.errors.len()));
             }
             println!("LVS: layout matches schematic");
+        }
+        Cmd::Signoff { project, cell, runset } => {
+            let p = Project::open(&project).map_err(|e| e.to_string())?;
+            let r = resolve(&p, &cell)?;
+            let Some(name) = runset else {
+                if p.tech.signoff.is_empty() {
+                    println!("technology {} has no sign-off runsets", p.tech.name);
+                }
+                for rs in &p.tech.signoff {
+                    println!("{}: {} {} ({})", rs.name, rs.tool.label(), rs.check.label(), rs.deck);
+                }
+                return Ok(());
+            };
+            let rs = ics_core::signoff::find(&p.tech, &name)?;
+            let rep = ics_core::signoff::run(&p, &r, rs, &ics_core::signoff::Tools::default())?;
+            let um = |v: i64| v as f64 / p.tech.dbu_per_um.max(1) as f64;
+            let mut failed = false;
+            if let Some(d) = &rep.drc {
+                for v in d.violations.iter().take(200) {
+                    let m = v.marker;
+                    println!("{}: {} at ({}, {})-({}, {}) µm", v.rule, v.description, um(m.x0), um(m.y0), um(m.x1), um(m.y1));
+                }
+                if d.violations.len() > 200 {
+                    println!("... {} more", d.violations.len() - 200);
+                }
+                failed = !d.violations.is_empty();
+            }
+            if let Some(l) = &rep.lvs {
+                for m in &l.messages {
+                    println!("{m}");
+                }
+                failed = l.matched != Some(true);
+            }
+            println!("reports in {}", rep.dir.display());
+            if failed {
+                return Err(rep.summary());
+            }
+            println!("{}", rep.summary());
         }
         Cmd::GdsInfo { file } => {
             let t0 = std::time::Instant::now();

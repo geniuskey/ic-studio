@@ -84,6 +84,9 @@ pub enum Command {
     RunDrc,
     ExtractNets,
     RunLvs,
+    /// Run an external sign-off runset of the technology on the active cell: the one named
+    /// (or uniquely matched), else the one selected in the Sign-off section.
+    RunSignoff(Option<String>),
     GenerateLayout,
     RouteFlylines,
     ImportGds,
@@ -606,6 +609,7 @@ impl IcStudio {
             Command::RunDrc => self.verify(ctx, Verify::Drc),
             Command::ExtractNets => self.verify(ctx, Verify::Extract),
             Command::RunLvs => self.verify(ctx, Verify::Lvs),
+            Command::RunSignoff(name) => self.run_signoff(ctx, name.as_deref()),
             Command::GenerateLayout => self.generate_layout(),
             Command::RouteFlylines => self.route_flylines(),
             Command::ExportGds => self.export_gds(false),
@@ -829,6 +833,27 @@ impl IcStudio {
         }
         self.workspace = Workspace::Layout;
         self.info(msg);
+    }
+
+    fn run_signoff(&mut self, ctx: &egui::Context, name: Option<&str>) {
+        let (Some(r), Some(p)) = (self.active.clone(), self.project.as_ref()) else { return };
+        if p.tech.signoff.is_empty() {
+            self.warn(format!("Technology {} has no sign-off runsets", p.tech.name));
+            return;
+        }
+        if let Some(n) = name {
+            match ics_core::signoff::find(&p.tech, n) {
+                Ok(rs) => {
+                    let i = p.tech.signoff.iter().position(|x| x == rs).unwrap_or(0);
+                    self.lay_eds.entry(r).or_default().verify.runset = i;
+                }
+                Err(e) => {
+                    self.warn(e);
+                    return;
+                }
+            }
+        }
+        self.verify(ctx, Verify::Signoff);
     }
 
     fn run_simulation(&mut self, ctx: &egui::Context) {
@@ -1154,6 +1179,9 @@ impl IcStudio {
                 }
                 if ui.button("Run LVS").clicked() {
                     q.push(Command::RunLvs);
+                }
+                if ui.button("Run Sign-off Runset").clicked() {
+                    q.push(Command::RunSignoff(None));
                 }
                 ui.separator();
                 if ui.button("Generate Layout from Schematic").clicked() {
@@ -1835,6 +1863,7 @@ impl IcStudio {
             ("Run DRC".into(), "", Command::RunDrc),
             ("Extract nets".into(), "", Command::ExtractNets),
             ("Run LVS".into(), "", Command::RunLvs),
+            ("Run sign-off runset (KLayout / Calibre / netgen)".into(), "", Command::RunSignoff(None)),
             ("Generate layout from schematic".into(), "", Command::GenerateLayout),
             ("Route flylines".into(), "", Command::RouteFlylines),
             ("Export cell GDSII…".into(), "", Command::ExportGds),

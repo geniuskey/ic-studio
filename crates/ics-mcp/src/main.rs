@@ -222,6 +222,7 @@ mod tests {
             "run_drc",
             "extract",
             "run_lvs",
+            "run_signoff",
             "post_layout_parasitics",
             "export_gds",
             "import_gds",

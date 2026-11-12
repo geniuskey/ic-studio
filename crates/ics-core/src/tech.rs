@@ -271,6 +271,9 @@ pub struct Tech {
     /// PDK model library; `None` uses the built-in generic models.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub models: Option<ModelLib>,
+    /// External sign-off DRC / LVS runsets.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signoff: Vec<crate::signoff::Runset>,
 }
 
 impl Tech {
@@ -427,6 +430,7 @@ impl Tech {
             rules: DeviceRules::default(),
             devices: vec![],
             models: None,
+            signoff: vec![],
         }
     }
 }

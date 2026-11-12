@@ -74,12 +74,63 @@ Comparison rules:
 The demo cell `cmos_inverter` deliberately has LVS findings (a PMOS width and the load
 capacitor); `nand2`, `nor2`, `ring_osc5`, `current_mirror` and `ota5t` are clean.
 
+## Sign-off with external tools
+
+The built-in checks are fast and good for iterating. For sign-off, a technology can list
+**runsets** that run a foundry or PDK deck in an external tool:
+
+| Tool | Checks | Deck |
+|---|---|---|
+| KLayout | DRC, LVS | KLayout `.drc` / `.lvs` script |
+| Siemens Calibre | DRC, LVS | SVRF rule file |
+| netgen | LVS | netgen setup file (compares IC Studio's extraction with the schematic) |
+
+In the Layout workspace, the **Sign-off** section appears when the technology has
+runsets. Pick a runset and press **Run** (or **Verify > Run Sign-off Runset**). IC Studio
+writes the cell and every cell it places to `<cell>.gds` in a new temporary folder, plus
+the schematic as a `.subckt` for LVS, runs the tool there and reads its report:
+
+- DRC violations appear as markers on the canvas, like the built-in DRC. Violations the
+  tool reports inside sub-cells keep sub-cell coordinates and name the cell.
+- LVS shows whether the layout matches and the tool's messages.
+- The folder (shown under the result) keeps the inputs, reports and the tool's log.
+
+How each tool is called:
+
+- KLayout: `klayout -b -r DECK -rd input=CELL.gds -rd topcell=CELL -rd report=FILE`, plus
+  `-rd schematic=CELL_sch.cir` for LVS and the runset's `vars`. The variable names can be
+  changed with `klayout = { input = "...", topcell = "...", report = "...", schematic = "..." }`.
+- Calibre: a control file sets `LAYOUT PATH`, `LAYOUT PRIMARY`, `LAYOUT SYSTEM`, the ASCII
+  results database (DRC) or `SOURCE PATH` / `LVS REPORT` (LVS), adds `#DEFINE` for each var
+  and `INCLUDE`s the deck. The deck itself must not set these statements. Then
+  `calibre -drc -hier` or `calibre -lvs -hier -spice`.
+- netgen: `netgen -batch lvs "CELL_lay.cir CELL" "CELL_sch.cir CELL" SETUP REPORT`.
+
+The schematic netlist leaves out the element letters in the runset's `skip` (default
+`V` and `I`) and names the ground net `ground` (default `gnd`). Executables are found on
+the usual install paths and `PATH`; set `ICS_KLAYOUT`, `ICS_CALIBRE` or `ICS_NETGEN` to
+override them.
+
+Runsets come from a [PDK file](technology.md#pdk-files) (`[[signoff]]`) or the `signoff`
+array in `tech.json`:
+
+```json
+"signoff": [
+  {"name": "KLayout DRC", "tool": "klayout", "check": "drc", "deck": "/pdk/rules.drc",
+   "vars": {"feol": "true"}},
+  {"name": "Calibre LVS", "tool": "calibre", "check": "lvs", "deck": "/pdk/calibre.lvs",
+   "skip": ["V", "I", "C"]}
+]
+```
+
 ## From the command line
 
 ```sh
 ics drc myproj nand2 [--deck rules.drc]   # exit code 1 on violations
 ics extract myproj nand2                  # extracted SPICE netlist
 ics lvs myproj nand2                      # exit code 1 on differences
+ics signoff myproj nand2                  # list the sign-off runsets
+ics signoff myproj nand2 "KLayout DRC"    # run one; exit code 1 on violations / mismatch
 ```
 
 These exit codes make the checks usable in CI. See [Command line](cli.md).

@@ -161,6 +161,7 @@ The main sections:
 | `[[device]]` | `name`, `type` (`nmos` / `pmos`), `layers`, `exclude`, `subckt` |
 | `[models]` | `path`, `corners`, `default`, `length_unit` (`m` or `um`) |
 | `drc_deck` | Optional DRC deck file |
+| `[[signoff]]` | External DRC / LVS runsets: `name`, `tool` (`klayout`, `calibre`, `netgen`), `check` (`drc`, `lvs`), `deck`, `vars`, `skip`, `ground` (see [Verification](verification.md#sign-off-with-external-tools)) |
 | `[[cap]]` | Parasitic coefficients, as in `tech.json` |
 
 What changes with a PDK:

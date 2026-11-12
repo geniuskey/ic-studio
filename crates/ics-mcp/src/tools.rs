@@ -18,7 +18,7 @@ const MAX_LISTED: usize = 500;
 
 /// Read-only tools that can take long on large designs. Live mode runs them on a worker
 /// thread against a [`snapshot`] so the window stays responsive.
-pub const BACKGROUND: [&str; 10] = [
+pub const BACKGROUND: [&str; 11] = [
     "get_netlist",
     "simulate",
     "run_spice",
@@ -27,6 +27,7 @@ pub const BACKGROUND: [&str; 10] = [
     "run_drc",
     "extract",
     "run_lvs",
+    "run_signoff",
     "post_layout_parasitics",
     "export_gds",
 ];
@@ -36,6 +37,7 @@ pub enum Verified {
     Drc(DrcReport),
     Extract(Extraction),
     Lvs(Extraction, LvsReport),
+    Signoff(Result<ics_core::signoff::SignoffReport, String>),
 }
 
 /// A copy of the part of `p` that `cell` depends on: the cell itself, every cell its layout
@@ -510,6 +512,16 @@ pub fn definitions() -> Vec<Value> {
             &["cell"],
         ),
         tool(
+            "run_signoff",
+            "Run an external sign-off DRC or LVS runset of the technology (KLayout .drc/.lvs deck, Calibre SVRF rule file or netgen) on a cell. Without 'runset', lists the runsets. DRC violations are grouped by rule with marker boxes (µm); LVS returns matched (true / false / null when unreadable) and the tool's messages. Also returns the work directory with the inputs and reports.",
+            json!({
+                "cell": cell(),
+                "runset": {"type": "string", "description": "Runset name, or a unique part of it."},
+                "max_markers": {"type": "integer", "minimum": 0, "description": "Markers listed per rule (default 20)."},
+            }),
+            &["cell"],
+        ),
+        tool(
             "post_layout_parasitics",
             "Layout parasitics mapped to schematic nets and devices via LVS: capacitor lines (wire capacitance to ground, coupling between nets) and MOS junction parameters (ad/as/pd/ps) that simulate adds with parasitics=true, a summary, and the largest net and coupling capacitances.",
             json!({"cell": cell()}),
@@ -588,6 +600,7 @@ impl State {
             "run_drc" => self.run_drc(a),
             "extract" => self.extract(a),
             "run_lvs" => self.run_lvs(a),
+            "run_signoff" => self.run_signoff(a),
             "post_layout_parasitics" => self.post_layout_parasitics(a),
             "export_gds" => self.export_gds(a),
             "import_gds" => self.import_gds(a),
@@ -1076,6 +1089,50 @@ impl State {
             "millis": sig(rep.millis),
         });
         self.keep(Verified::Drc(rep));
+        Ok(out)
+    }
+
+    fn run_signoff(&mut self, a: &Args) -> Result<Value, String> {
+        let (p, r) = self.cell_arg(a)?;
+        let t = &p.tech;
+        let runsets: Vec<Value> = t
+            .signoff
+            .iter()
+            .map(|rs| json!({"name": rs.name, "tool": rs.tool.label(), "check": rs.check.label(), "deck": rs.deck}))
+            .collect();
+        let Some(name) = a.opt_str("runset")? else {
+            return Ok(json!({"runsets": runsets}));
+        };
+        let rs = ics_core::signoff::find(t, name)?;
+        let max = a.opt_num("max_markers")?.map_or(20, |n| n.max(0.0) as usize);
+        let rep = ics_core::signoff::run(p, &r, rs, &ics_core::signoff::Tools::default())?;
+        let mut out = json!({
+            "cell": r.to_string(),
+            "runset": rep.runset,
+            "tool": rep.tool.label(),
+            "summary": rep.summary(),
+            "work_dir": rep.dir.display().to_string(),
+            "millis": sig(rep.millis),
+        });
+        if let Some(d) = &rep.drc {
+            let mut rules: Vec<Value> = vec![];
+            let mut names: Vec<&str> = d.violations.iter().map(|v| v.rule.as_str()).collect();
+            names.sort_unstable();
+            names.dedup();
+            for name in names {
+                let vs: Vec<_> = d.violations.iter().filter(|v| v.rule == name).collect();
+                let markers: Vec<Value> = vs.iter().take(max).map(|v| rect_um(t, v.marker)).collect();
+                rules.push(json!({"rule": name, "description": vs[0].description, "count": vs.len(), "markers_um": markers}));
+            }
+            out["clean"] = json!(d.violations.is_empty());
+            out["violations"] = json!(d.violations.len());
+            out["by_rule"] = json!(rules);
+        }
+        if let Some(l) = &rep.lvs {
+            out["matched"] = json!(l.matched);
+            out["messages"] = json!(l.messages.iter().take(MAX_LISTED).collect::<Vec<_>>());
+        }
+        self.keep(Verified::Signoff(Ok(rep)));
         Ok(out)
     }
 

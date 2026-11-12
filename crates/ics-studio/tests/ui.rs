@@ -509,3 +509,48 @@ fn perf_large_layout() {
         }
     }
 }
+
+/// Sign-off section: a KLayout DRC runset on the demo inverter, run through the command. The
+/// result lands in the editor (as DRC markers when KLayout is installed, else as an error).
+#[test]
+fn layout_signoff() {
+    let dir = std::env::temp_dir().join(format!("ics-ui-signoff-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let deck = dir.join("m1.drc");
+    std::fs::write(
+        &deck,
+        "source($input, $topcell)\nreport(\"m1\", $report)\ninput(7, 0).width(0.5).output(\"M1.W\", \"metal1 width < 0.5 um\")\n",
+    )
+    .unwrap();
+    let mut p = ics_core::examples::demo_project();
+    p.tech.signoff.push(ics_core::signoff::Runset {
+        name: "KLayout metal1 width".into(),
+        tool: ics_core::signoff::Tool::Klayout,
+        check: ics_core::signoff::Check::Drc,
+        deck: deck.to_string_lossy().into_owned(),
+        vars: Default::default(),
+        klayout: Default::default(),
+        skip: vec!["V".into(), "I".into()],
+        ground: "gnd".into(),
+    });
+    let proj = dir.join("proj");
+    p.save_as(&proj).unwrap();
+    let mut h = open_layout(&proj, "cmos_inverter");
+    h.state_mut().command(Command::RunSignoff(Some("metal1".into())));
+    h.step();
+    settle(&mut h, "layout_signoff");
+    let r = ics_core::CellRef::new("work", "cmos_inverter");
+    let ed = h.state().layout_editor(&r).expect("editor");
+    match ed.verify.signoff.as_ref().expect("sign-off result installed") {
+        Ok(rep) => assert!(ed.verify.drc.as_ref().is_some_and(|d| !d.violations.is_empty()), "{}", rep.summary()),
+        Err(e) => assert!(e.contains("KLayout"), "{e}"),
+    }
+    let img = h.render().expect("render");
+    if let Ok(shots) = std::env::var("ICS_SHOT_DIR") {
+        std::fs::create_dir_all(&shots).unwrap();
+        img.save(std::path::Path::new(&shots).join("15_layout_signoff.png")).unwrap();
+    }
+    drop(h);
+    let _ = std::fs::remove_dir_all(&dir);
+}

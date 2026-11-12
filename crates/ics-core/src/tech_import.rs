@@ -23,18 +23,18 @@ use crate::tech::{FillStyle, LayerDef, Tech, auto_color};
 pub const ALPHA: u8 = 160;
 
 #[derive(Debug, Default)]
-struct Node {
-    name: String,
-    text: String,
-    children: Vec<Node>,
+pub(crate) struct Node {
+    pub(crate) name: String,
+    pub(crate) text: String,
+    pub(crate) children: Vec<Node>,
 }
 
 impl Node {
-    fn child(&self, name: &str) -> Option<&Node> {
+    pub(crate) fn child(&self, name: &str) -> Option<&Node> {
         self.children.iter().find(|c| c.name == name)
     }
 
-    fn child_text(&self, name: &str) -> Option<&str> {
+    pub(crate) fn child_text(&self, name: &str) -> Option<&str> {
         self.child(name).map(|c| c.text.trim())
     }
 }
@@ -77,7 +77,7 @@ fn decode_entities(s: &str) -> String {
 
 /// A small, tolerant XML reader: elements and their text (attributes are skipped), comments,
 /// CDATA, processing instructions, DOCTYPE and the predefined / numeric entities.
-fn parse_xml(src: &str) -> Result<Node, String> {
+pub(crate) fn parse_xml(src: &str) -> Result<Node, String> {
     let line = |rest: &str| src[..src.len() - rest.len()].matches('\n').count() + 1;
     let mut stack = vec![Node::default()];
     let mut rest = src.strip_prefix('\u{feff}').unwrap_or(src);

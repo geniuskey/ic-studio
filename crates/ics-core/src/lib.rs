@@ -21,6 +21,7 @@ pub mod region;
 pub mod route;
 pub mod schematic;
 pub mod sdl;
+pub mod signoff;
 pub mod sim_setup;
 pub mod tech;
 pub mod tech_import;

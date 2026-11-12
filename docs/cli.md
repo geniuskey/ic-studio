@@ -26,6 +26,7 @@ runs and CI. Build it with `cargo build --release -p ics-cli` (binary
 | `ics drc <PROJECT> <CELL> [--deck FILE]` | Run DRC; exit 1 on violations |
 | `ics extract <PROJECT> <CELL>` | Print the extracted netlist as SPICE |
 | `ics lvs <PROJECT> <CELL>` | Compare layout and schematic; exit 1 on differences |
+| `ics signoff <PROJECT> <CELL> [RUNSET]` | Run an external KLayout / Calibre / netgen runset (list them without RUNSET); exit 1 on violations or a mismatch |
 | `ics route <PROJECT> <CELL> [--place]` | Route flylines and save; exit 1 if nets stay unrouted |
 
 ## Details
