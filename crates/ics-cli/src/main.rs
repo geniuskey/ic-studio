@@ -74,6 +74,15 @@ enum Cmd {
         #[arg(short, long)]
         out: PathBuf,
     },
+    /// Route a cell's flylines on the metal stack and save the project (non-zero exit when some
+    /// nets stay unrouted).
+    Route {
+        project: PathBuf,
+        cell: String,
+        /// First place the schematic devices missing from the layout (schematic-driven layout).
+        #[arg(long)]
+        place: bool,
+    },
     /// Run DRC on a cell layout with the technology deck (or `--deck FILE`).
     Drc {
         project: PathBuf,
@@ -290,6 +299,29 @@ fn run(cli: Cli) -> Result<(), String> {
                 layouts.len(),
                 bytes.len()
             );
+        }
+        Cmd::Route { project, cell, place } => {
+            let mut p = Project::open(&project).map_err(|e| e.to_string())?;
+            let r = resolve(&p, &cell)?;
+            let sch = p.cell(&r).unwrap().schematic.clone().ok_or("cell has no schematic")?;
+            let mut lay = p.cell_mut(&r).unwrap().layout.take().unwrap_or_default();
+            if place {
+                let plan = ics_core::sdl::plan(&sch, &p.tech);
+                for s in &plan.skipped {
+                    eprintln!("not placed: {s}");
+                }
+                let placed = ics_core::sdl::apply(&mut p, &mut lay, &plan)?;
+                println!("placed {} device(s)", placed.len());
+            }
+            let rep = ics_core::route::route(&sch, &mut lay, &p, &p.tech)?;
+            p.cell_mut(&r).unwrap().layout = Some(lay);
+            p.save().map_err(|e| e.to_string())?;
+            println!("{}", rep.summary());
+            let left = ics_core::sdl::ratsnest(&sch, p.layout(&r).unwrap(), &p, &p.tech).len();
+            println!("{left} flyline(s) left");
+            if !rep.failed.is_empty() {
+                return Err("some nets could not be routed".into());
+            }
         }
         Cmd::Drc { project, cell, deck } => {
             let p = Project::open(&project).map_err(|e| e.to_string())?;

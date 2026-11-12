@@ -173,8 +173,16 @@ pub fn apply(project: &mut Project, layout: &mut Layout, plan: &SdlPlan) -> Resu
 /// Device terminals per schematic net: the transformed centres of the "D", "G" and "S" labels
 /// of each named layout instance matching a schematic MOS instance (bulk is not a terminal).
 pub fn terminals(sch: &Schematic, layout: &Layout, src: &dyn LayoutSource) -> BTreeMap<String, Vec<(i64, i64)>> {
+    terminal_pins(sch, layout, src).into_iter().map(|(net, pins)| (net, pins.into_iter().map(|(_, p)| p).collect())).collect()
+}
+
+/// A device terminal: its pin ("d", "g" or "s") and position.
+pub type Pin = (&'static str, (i64, i64));
+
+/// [`terminals`] with the pin of each point.
+pub fn terminal_pins(sch: &Schematic, layout: &Layout, src: &dyn LayoutSource) -> BTreeMap<String, Vec<Pin>> {
     let conn = connectivity::extract(sch);
-    let mut out: BTreeMap<String, Vec<(i64, i64)>> = BTreeMap::new();
+    let mut out: BTreeMap<String, Vec<Pin>> = BTreeMap::new();
     for inst in sch.instances.iter().filter(|i| matches!(i.kind, DeviceKind::Nmos | DeviceKind::Pmos)) {
         let Some(placed) = layout.instances.iter().find(|i| i.name.as_deref() == Some(inst.name.as_str())) else { continue };
         let Some(child) = src.layout(&placed.cell) else { continue };
@@ -193,12 +201,18 @@ pub fn terminals(sch: &Schematic, layout: &Layout, src: &dyn LayoutSource) -> BT
             let pts = out.entry(net.to_string()).or_default();
             for j in 0..rows {
                 for i in 0..cols {
-                    pts.push(placed.element_trans(i, j).apply(c));
+                    pts.push((pin, placed.element_trans(i, j).apply(c)));
                 }
             }
         }
     }
     out
+}
+
+/// Extracted net of a device terminal at `p`: the contact metal there (terminal labels sit on a
+/// text layer, and wires of other nets may pass above), else the topmost conductor.
+pub fn pin_net(ex: &extract::Extraction, tech: &Tech, p: (i64, i64)) -> Option<usize> {
+    tech.via("contact").and_then(|v| tech.layer_index(&v.top)).and_then(|l| ex.net_at(l, p)).or_else(|| ex.net_at_any(p))
 }
 
 type Pt2 = (i64, i64);
@@ -224,7 +238,7 @@ pub fn ratsnest(sch: &Schematic, layout: &Layout, src: &dyn LayoutSource, tech: 
         let mut groups: Vec<Vec<(i64, i64)>> = Vec::new();
         let mut by_net: HashMap<usize, usize> = HashMap::new();
         for p in pts {
-            match ex.net_at_any(p) {
+            match pin_net(&ex, tech, p) {
                 Some(n) if by_net.contains_key(&n) => groups[by_net[&n]].push(p),
                 found => {
                     if let Some(n) = found {

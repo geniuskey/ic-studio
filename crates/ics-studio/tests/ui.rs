@@ -107,6 +107,40 @@ fn layout_from_schematic() {
 }
 
 #[test]
+fn layout_routed() {
+    let args = LaunchArgs {
+        project: None,
+        demo: true,
+        workspace: Some("schematic".into()),
+        cell: Some("cmos_inverter".into()),
+        run: false,
+    };
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1440.0, 900.0))
+        .with_pixels_per_point(1.0)
+        .wgpu()
+        .build_eframe(|cc| IcStudio::new(cc, args));
+    h.run_steps(4);
+    h.state_mut().command(Command::GenerateLayout);
+    h.run_steps(2);
+    let before = shape_count(&h, "cmos_inverter");
+    h.state_mut().command(Command::RouteFlylines);
+    h.run_steps(6);
+    let p = h.state().project().unwrap();
+    let r = ics_core::project::CellRef::new("work", "cmos_inverter");
+    let c = p.cell(&r).unwrap();
+    let left = ics_core::sdl::ratsnest(c.schematic.as_ref().unwrap(), c.layout.as_ref().unwrap(), p, &p.tech);
+    assert!(left.is_empty(), "{left:?}");
+    assert!(shape_count(&h, "cmos_inverter") > before);
+    settle(&mut h, "14_layout_routed");
+    let img = h.render().expect("render");
+    if let Ok(dir) = std::env::var("ICS_SHOT_DIR") {
+        std::fs::create_dir_all(&dir).unwrap();
+        img.save(std::path::Path::new(&dir).join("14_layout_routed.png")).unwrap();
+    }
+}
+
+#[test]
 fn layout_pcells() {
     scenario("10_layout_pcells", true, Some("devices"), "layout", false);
 }

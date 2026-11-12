@@ -217,6 +217,7 @@ mod tests {
             "delete_items",
             "generate_layout",
             "flylines",
+            "route",
             "run_drc",
             "extract",
             "run_lvs",
@@ -314,6 +315,10 @@ mod tests {
         let generated = call(&mut s, "generate_layout", json!({"cell": "cmos_inverter"})).unwrap();
         assert_eq!(generated["placed"].as_array().unwrap().len(), 2, "{generated}");
         assert!(call(&mut s, "flylines", json!({"cell": "cmos_inverter"})).unwrap()["count"].as_u64().unwrap() > 0);
+        let routed = call(&mut s, "route", json!({"cell": "cmos_inverter"})).unwrap();
+        assert_eq!(routed["unrouted_flylines"], 0, "{routed}");
+        assert!(routed["failed"].as_array().unwrap().is_empty() && routed["vias"].as_u64().unwrap() > 0, "{routed}");
+        assert!(call(&mut s, "route", json!({"cell": "amp"})).unwrap_err().contains("no schematic"));
         assert!(call(&mut s, "generate_layout", json!({"cell": "amp"})).unwrap_err().contains("no schematic"));
 
         let top = call(&mut s, "place_instance", json!({"cell": "top", "child": "amp", "x": 20, "y": 0, "rot": 90})).unwrap();

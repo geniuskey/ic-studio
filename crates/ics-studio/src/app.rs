@@ -85,6 +85,7 @@ pub enum Command {
     ExtractNets,
     RunLvs,
     GenerateLayout,
+    RouteFlylines,
     ImportGds,
     ImportTech,
     ExportNetlist,
@@ -197,6 +198,7 @@ fn mcp_summary(tool: &str, res: &ToolResult) -> String {
         "simulate" | "run_spice" => format!("{} dataset(s)", len("datasets")),
         "generate_layout" => format!("placed {}, {} flyline(s)", len("placed"), n("unrouted_flylines")),
         "flylines" => format!("{} flyline(s)", n("count")),
+        "route" => format!("{} connection(s), {} flyline(s) left", n("connections"), n("unrouted_flylines")),
         "delete_items" => format!("deleted {}", len("deleted")),
         "add_rect" | "add_path" | "add_label" | "place_instance" | "place_pcell" => format!("id {}", v["id"]),
         "open_project" | "new_project" | "project_info" => format!("project '{}'", v["name"].as_str().unwrap_or("?")),
@@ -537,6 +539,7 @@ impl IcStudio {
             Command::ExtractNets => self.verify(ctx, Verify::Extract),
             Command::RunLvs => self.verify(ctx, Verify::Lvs),
             Command::GenerateLayout => self.generate_layout(),
+            Command::RouteFlylines => self.route_flylines(),
             Command::ExportGds => self.export_gds(false),
             Command::ExportLibraryGds => self.export_gds(true),
             Command::ImportGds => self.import_gds(),
@@ -645,6 +648,39 @@ impl IcStudio {
                 self.ok(format!("Placed {} device(s): {}", names.len(), names.join(", ")));
             }
             Err(e) => self.error(format!("Generate layout: {e}")),
+        }
+        self.workspace = Workspace::Layout;
+    }
+
+    fn route_flylines(&mut self) {
+        let (Some(r), Some(p)) = (self.active.clone(), self.project.as_mut()) else { return };
+        let Some(sch) = p.cell(&r).and_then(|c| c.schematic.clone()) else {
+            self.warn(format!("{r} has no schematic"));
+            return;
+        };
+        let Some(mut lay) = p.cell_mut(&r).and_then(|c| c.layout.take()) else {
+            self.warn(format!("{r} has no layout; generate it from the schematic first"));
+            return;
+        };
+        let ed = self.lay_eds.entry(r.clone()).or_default();
+        ed.history.push(&lay);
+        let res = ics_core::route::route(&sch, &mut lay, &*p, &p.tech);
+        ed.layout_changed();
+        ed.show_flylines = true;
+        if let Some(c) = p.cell_mut(&r) {
+            c.layout = Some(lay);
+        }
+        self.hier.invalidate(&r);
+        match res {
+            Ok(rep) if rep.connections == 0 && rep.failed.is_empty() => self.info("Nothing to route: no flylines".into()),
+            Ok(rep) => {
+                if rep.connections > 0 {
+                    self.mark_dirty();
+                }
+                let msg = format!("Route: {}", rep.summary());
+                if rep.failed.is_empty() { self.ok(msg) } else { self.warn(msg) }
+            }
+            Err(e) => self.error(format!("Route: {e}")),
         }
         self.workspace = Workspace::Layout;
     }
@@ -1005,6 +1041,9 @@ impl IcStudio {
                 ui.separator();
                 if ui.button("Generate Layout from Schematic").clicked() {
                     q.push(Command::GenerateLayout);
+                }
+                if ui.button("Route Flylines").clicked() {
+                    q.push(Command::RouteFlylines);
                 }
             });
             ui.menu_button("Help", |ui| {
@@ -1673,6 +1712,7 @@ impl IcStudio {
             ("Extract nets".into(), "", Command::ExtractNets),
             ("Run LVS".into(), "", Command::RunLvs),
             ("Generate layout from schematic".into(), "", Command::GenerateLayout),
+            ("Route flylines".into(), "", Command::RouteFlylines),
             ("Export cell GDSII…".into(), "", Command::ExportGds),
             ("Export library GDSII…".into(), "", Command::ExportLibraryGds),
             ("Import GDSII…".into(), "", Command::ImportGds),

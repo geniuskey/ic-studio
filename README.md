@@ -77,7 +77,8 @@ Linux needs the usual windowing libraries:
 
 **Schematic ↔ layout**
 - Schematic-driven layout: place the schematic's transistors as named PCell instances
-- Flylines show schematic connections that are not yet routed
+- Flylines show schematic connections that are not yet routed; a maze router (A* on a
+  terminal-aligned grid over metal1 and up) wires them DRC-clean around existing geometry
 - Cross-probing: selecting a device in one view selects it in the other
 
 **Technology**
@@ -100,6 +101,7 @@ ics gds myproj inv_tiles -o tiles.gds                   # cell and everything it
 ics import-gds myproj chip.gds                           # new library, unknown layers kept
 ics import-tech myproj sky130A.lyp --lyt sky130A.lyt
 ics drc myproj cmos_inverter [--deck rules.drc]         # non-zero exit on violations
+ics route myproj nand2 --place                          # place devices, route flylines, save
 ics extract myproj inv_chain                            # extracted SPICE netlist
 ics lvs myproj cmos_inverter                            # non-zero exit on differences
 ```
@@ -214,5 +216,5 @@ mouse input, and check accessibility labels and glyph coverage.
 - OASIS and LEF / DEF
 - Python API (PyO3)
 - Euclidean DRC metrics, antenna and density rules; resistor / capacitor recognition in LVS
-- Routing assistance from flylines; non-Manhattan Boolean operations
+- Rip-up and reroute, wire resistance; non-Manhattan Boolean operations
 - Parametric sweeps, corners and optimisation loops

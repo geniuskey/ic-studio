@@ -17,6 +17,7 @@ pub mod pcell;
 pub mod pex;
 pub mod project;
 pub mod region;
+pub mod route;
 pub mod schematic;
 pub mod sdl;
 pub mod sim_setup;

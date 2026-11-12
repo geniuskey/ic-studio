@@ -465,7 +465,7 @@ pub fn definitions() -> Vec<Value> {
         tool(
             "generate_layout",
             &format!(
-                "Schematic-driven layout: place every schematic MOS device that is not yet in the layout as a PCell instance named after it (PMOS row above NMOS row, DRC-clean spacing). Sources, R and C are skipped. Wiring is not done; use flylines to see what to connect. {NOT_SAVED}"
+                "Schematic-driven layout: place every schematic MOS device that is not yet in the layout as a PCell instance named after it (PMOS row above NMOS row, DRC-clean spacing). Sources, R and C are skipped. Wiring is not done: call route, or use flylines to see what to connect. {NOT_SAVED}"
             ),
             json!({"cell": cell()}),
             &["cell"],
@@ -473,6 +473,14 @@ pub fn definitions() -> Vec<Value> {
         tool(
             "flylines",
             "Unrouted connections: for each schematic net, segments between device terminals (D/G/S of named MOS instances) that are not yet connected in the layout. Empty when the layout is fully wired.",
+            json!({"cell": cell()}),
+            &["cell"],
+        ),
+        tool(
+            "route",
+            &format!(
+                "Maze-route the flylines of a cell: connect the device terminals of every schematic net that are not yet connected, with DRC-clean wires and vias on the metal stack (metal1 and up) added to the cell's top level. Existing geometry is avoided; nothing is ripped up. Returns routed and failed nets and the flylines left. Place the devices first with generate_layout. {NOT_SAVED}"
+            ),
             json!({"cell": cell()}),
             &["cell"],
         ),
@@ -568,6 +576,7 @@ impl State {
             "delete_items" => self.delete_items(a),
             "generate_layout" => self.generate_layout(a),
             "flylines" => self.flylines(a),
+            "route" => self.route(a),
             "run_drc" => self.run_drc(a),
             "extract" => self.extract(a),
             "run_lvs" => self.run_lvs(a),
@@ -974,6 +983,30 @@ impl State {
         let flylines = sdl::ratsnest(&sch, layout_of(p, &r)?, p, &p.tech).len();
         self.dirty = true;
         Ok(json!({"cell": r.to_string(), "placed": placed, "skipped": plan.skipped, "unrouted_flylines": flylines}))
+    }
+
+    fn route(&mut self, a: &Args) -> Result<Value, String> {
+        let (_, r) = self.cell_arg(a)?;
+        let p = self.project_mut()?;
+        let sch = p.cell(&r).and_then(|c| c.schematic.clone()).ok_or("cell has no schematic view")?;
+        let mut layout = p.cell_mut(&r).expect("resolved").layout.take().ok_or("cell has no layout view")?;
+        let res = ics_core::route::route(&sch, &mut layout, p, &p.tech);
+        p.cell_mut(&r).expect("resolved").layout = Some(layout);
+        let rep = res?;
+        let left = sdl::ratsnest(&sch, layout_of(p, &r)?, p, &p.tech).len();
+        let um = p.tech.dbu_per_um.max(1) as f64;
+        if rep.connections > 0 {
+            self.dirty = true;
+        }
+        Ok(json!({
+            "cell": r.to_string(),
+            "routed": rep.routed,
+            "failed": rep.failed,
+            "connections": rep.connections,
+            "vias": rep.vias,
+            "wire_length_um": sig(rep.wire_length as f64 / um),
+            "unrouted_flylines": left,
+        }))
     }
 
     fn flylines(&self, a: &Args) -> Result<Value, String> {
