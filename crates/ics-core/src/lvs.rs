@@ -30,11 +30,19 @@ pub struct LvsOptions {
     pub ignore_kinds: Vec<DeviceKind>,
     /// Relative tolerance for W / L comparison.
     pub tolerance: f64,
+    /// Drop MOS devices whose gate is on their bulk net (always off: dummies, tie-offs) from
+    /// both sides.
+    pub filter_off: bool,
 }
 
 impl Default for LvsOptions {
     fn default() -> Self {
-        Self { ignore_bulk: true, ignore_kinds: vec![DeviceKind::VSource, DeviceKind::ISource], tolerance: 0.01 }
+        Self {
+            ignore_bulk: true,
+            ignore_kinds: vec![DeviceKind::VSource, DeviceKind::ISource],
+            tolerance: 0.01,
+            filter_off: true,
+        }
     }
 }
 
@@ -257,6 +265,13 @@ fn schematic_side(sch: &Schematic, opts: &LvsOptions, errors: &mut Vec<LvsError>
         if matches!(inst.kind, DeviceKind::Ground | DeviceKind::Supply) || opts.ignore_kinds.contains(&inst.kind) {
             continue;
         }
+        if opts.filter_off && matches!(inst.kind, DeviceKind::Nmos | DeviceKind::Pmos) {
+            let floating = inst.pin_positions().iter().any(|(n, p)| *n == "b" && conn.unconnected_pins.contains(p));
+            let bulk = conn.net_of(inst.id, if floating { "s" } else { "b" });
+            if bulk.is_some() && conn.net_of(inst.id, "g") == bulk {
+                continue;
+            }
+        }
         *count += 1;
         let kind = match inst.kind {
             DeviceKind::Nmos => DevKind::Nmos,
@@ -325,7 +340,7 @@ fn layout_side(lay: &Extraction, opts: &LvsOptions) -> Side {
             k
         })
     };
-    for d in &lay.devices {
+    for d in lay.devices.iter().filter(|d| !(opts.filter_off && d.g == d.b)) {
         let (g, s, dd) = (net(&mut side, d.g), net(&mut side, d.s), net(&mut side, d.d));
         let b = (!opts.ignore_bulk).then(|| net(&mut side, d.b));
         side.devs.push(Dev {
@@ -559,7 +574,8 @@ pub fn compare(sch: &Schematic, lay: &Extraction, opts: &LvsOptions) -> LvsRepor
     }
     devices.sort();
     nets.sort();
-    LvsReport { matched: errors.is_empty(), devices, nets, errors, schematic_devices, layout_devices: lay.devices.len() }
+    let layout_devices = lay.devices.iter().filter(|d| !(opts.filter_off && d.g == d.b)).count();
+    LvsReport { matched: errors.is_empty(), devices, nets, errors, schematic_devices, layout_devices }
 }
 
 #[cfg(test)]

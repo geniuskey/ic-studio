@@ -84,7 +84,8 @@ Linux needs the usual windowing libraries:
   PMOS / NMOS rows, abutting devices that share a source / drain net (shared diffusion),
   with merged wells and implants and a bulk tap per row; differential pairs, current mirrors
   and devices sharing a `match` parameter are split into unit fingers in common-centroid
-  order (ABBA)
+  order (ABBA, or two cross-coupled rows ABBA / BAAB for larger groups or `match_rows=2`),
+  closed by off dummy fingers that LVS filters
 - Flylines show schematic connections that are not yet routed; a maze router (A* on a
   terminal-aligned grid over metal1 and up) wires them DRC-clean around existing geometry,
   ripping up and rerouting nets that block each other
@@ -225,5 +226,5 @@ mouse input, and check accessibility labels and glyph coverage.
 - OASIS and LEF / DEF
 - Python API (PyO3)
 - Resistor / capacitor recognition in LVS; incremental and hierarchical DRC
-- Non-Manhattan Boolean operations; two-dimensional common-centroid arrays and dummies
+- Non-Manhattan Boolean operations; guard rings around matched groups
 - Parametric sweeps, corners and optimisation loops
