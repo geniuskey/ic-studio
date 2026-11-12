@@ -14,7 +14,20 @@ use ics_sim::{Dataset, SimOptions, SimResults, VecKind};
 use crate::schematic_view::OpAnnotation;
 use crate::theme;
 
-pub const TRACE_COLORS: [Color32; 10] = [
+const TRACE_COLORS_LIGHT: [Color32; 10] = [
+    Color32::from_rgb(0x1f, 0x6f, 0xeb),
+    Color32::from_rgb(0xc7, 0x6a, 0x00),
+    Color32::from_rgb(0x1a, 0x8a, 0x4f),
+    Color32::from_rgb(0xd0, 0x2f, 0x2f),
+    Color32::from_rgb(0x7c, 0x3a, 0xd8),
+    Color32::from_rgb(0x00, 0x8b, 0x8b),
+    Color32::from_rgb(0xc2, 0x2a, 0x84),
+    Color32::from_rgb(0x6b, 0x7a, 0x00),
+    Color32::from_rgb(0xa0, 0x52, 0x2d),
+    Color32::from_rgb(0x55, 0x60, 0x70),
+];
+
+const TRACE_COLORS_DARK: [Color32; 10] = [
     Color32::from_rgb(0x4c, 0x9b, 0xff),
     Color32::from_rgb(0xf2, 0xa9, 0x3b),
     Color32::from_rgb(0x4c, 0xc3, 0x8a),
@@ -160,7 +173,11 @@ pub fn setup_panel(
     ui.add_space(4.0);
     let running = state.is_running();
     let btn = egui::Button::new(
-        RichText::new(if running { "⏳  Running…" } else { "▶  Run Simulation" }).size(15.0).strong().color(Color32::WHITE),
+        RichText::new(if running { "⏳  Running…" } else { "▶  Run Simulation" }).size(15.0).strong().color(if running {
+            pal.text_weak
+        } else {
+            Color32::WHITE
+        }),
     )
     .fill(if running { pal.bg_hover } else { pal.simulation.gamma_multiply(0.9) })
     .min_size(egui::vec2(ui.available_width(), 34.0));
@@ -581,8 +598,9 @@ pub fn results_panel(ui: &mut egui::Ui, state: &mut SimState) -> Option<String> 
     }
     let sel = state.selected.entry(d.analysis.clone()).or_default();
     let mut colors = BTreeMap::new();
+    let trace = if pal.dark { &TRACE_COLORS_DARK } else { &TRACE_COLORS_LIGHT };
     for (i, v) in d.signals().enumerate() {
-        colors.insert(v.name.clone(), TRACE_COLORS[i % TRACE_COLORS.len()]);
+        colors.insert(v.name.clone(), trace[i % trace.len()]);
     }
     egui::Panel::right("signals").resizable(true).default_size(190.0).show(ui, |ui| {
         theme::section(ui, "Signals");

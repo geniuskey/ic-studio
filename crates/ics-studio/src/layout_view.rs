@@ -176,8 +176,17 @@ impl Default for LayoutEditor {
     }
 }
 
-fn layer_color(def: &LayerDef) -> Color32 {
-    Color32::from_rgb(def.color[0], def.color[1], def.color[2])
+/// Tech layer colors are tuned for a dark canvas; on a light one, pale colors (white
+/// contact / text, light gray boundary, yellows) are darkened to keep contrast.
+fn layer_color(def: &LayerDef, dark: bool) -> Color32 {
+    let [r, g, b, _] = def.color;
+    if dark {
+        return Color32::from_rgb(r, g, b);
+    }
+    let luma = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
+    let k = (130.0 / luma.max(1.0)).min(1.0);
+    let f = |c: u8| (c as f32 * k).round() as u8;
+    Color32::from_rgb(f(r), f(g), f(b))
 }
 
 pub fn um(dbu: i64, tech: &Tech) -> String {
@@ -198,7 +207,7 @@ fn fill_alpha(def: &LayerDef) -> f32 {
 
 /// Fill a screen-space rect with the layer's stipple pattern (screen anchored so adjacent shapes line up).
 fn pattern_rect(painter: &egui::Painter, r: Rect, def: &LayerDef, emphasis: f32) {
-    let c = layer_color(def);
+    let c = layer_color(def, painter.ctx().global_style().visuals.dark_mode);
     let a = def.color[3] as f32 / 255.0;
     let base_alpha = fill_alpha(def);
     if base_alpha > 0.0 {
@@ -625,7 +634,7 @@ pub fn draw_layout(
             continue;
         }
         let def = &tech.layers[li];
-        let c = layer_color(def);
+        let c = layer_color(def, pal.dark);
         let fa = fill_alpha(def);
         let mesh_slot = painter.add(egui::Shape::Noop);
         let mut mesh = Mesh::default();
@@ -1427,7 +1436,7 @@ impl LayoutEditor {
                 let p = edit::constrain(self.poly_pts.last().copied(), c, shift);
                 pts.push(self.view.to_screen(rect, p.0 as f64, p.1 as f64));
             }
-            edit::draw_polygon_preview(&painter, &pts, layer_color(&tech.layers[self.active_layer]));
+            edit::draw_polygon_preview(&painter, &pts, layer_color(&tech.layers[self.active_layer], pal.dark));
         }
         // Tool previews
         let def = &tech.layers[self.active_layer];
@@ -1497,8 +1506,8 @@ impl LayoutEditor {
                 let sp: Vec<Pos2> = q.iter().map(|p| self.view.to_screen(rect, p.0, p.1)).collect();
                 painter.add(egui::Shape::convex_polygon(
                     sp,
-                    layer_color(def).gamma_multiply(0.3),
-                    Stroke::new(1.0, layer_color(def)),
+                    layer_color(def, pal.dark).gamma_multiply(0.3),
+                    Stroke::new(1.0, layer_color(def, pal.dark)),
                 ));
             }
         }

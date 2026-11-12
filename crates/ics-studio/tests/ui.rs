@@ -91,6 +91,16 @@ fn simulation_workspace() {
 }
 
 #[test]
+fn light_theme_layout() {
+    scenario_then("light_layout", true, Some("cmos_inverter"), "layout", false, Some(Command::ToggleTheme));
+}
+
+#[test]
+fn light_theme_simulation() {
+    scenario_then("light_simulation", true, Some("cmos_inverter"), "simulation", true, Some(Command::ToggleTheme));
+}
+
+#[test]
 fn simulation_ac() {
     scenario("05_simulation_rc", true, Some("rc_lowpass"), "simulation", true);
 }

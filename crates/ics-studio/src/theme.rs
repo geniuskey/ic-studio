@@ -13,6 +13,7 @@ pub struct Palette {
     pub border: Color32,
     pub text: Color32,
     pub text_weak: Color32,
+    pub text_strong: Color32,
     pub accent: Color32,
     pub schematic: Color32,
     pub simulation: Color32,
@@ -41,6 +42,7 @@ pub const DARK: Palette = Palette {
     border: Color32::from_rgb(0x2b, 0x30, 0x39),
     text: Color32::from_rgb(0xd8, 0xdd, 0xe6),
     text_weak: Color32::from_rgb(0x87, 0x90, 0x9f),
+    text_strong: Color32::from_rgb(0xf5, 0xf7, 0xfa),
     accent: Color32::from_rgb(0x4c, 0x9b, 0xff),
     schematic: Color32::from_rgb(0x4c, 0xc3, 0x8a),
     simulation: Color32::from_rgb(0xf2, 0xa9, 0x3b),
@@ -68,6 +70,7 @@ pub const LIGHT: Palette = Palette {
     border: Color32::from_rgb(0xd3, 0xd7, 0xde),
     text: Color32::from_rgb(0x1d, 0x22, 0x2b),
     text_weak: Color32::from_rgb(0x6a, 0x72, 0x80),
+    text_strong: Color32::from_rgb(0x0b, 0x0e, 0x13),
     accent: Color32::from_rgb(0x1f, 0x6f, 0xeb),
     schematic: Color32::from_rgb(0x1a, 0x9a, 0x5c),
     simulation: Color32::from_rgb(0xc7, 0x7c, 0x0a),
@@ -115,6 +118,7 @@ pub fn apply(ctx: &egui::Context, dark: bool) {
     v.window_corner_radius = CornerRadius::same(10);
     v.menu_corner_radius = CornerRadius::same(8);
     v.hyperlink_color = p.accent;
+    v.weak_text_color = Some(p.text_weak);
     v.selection.bg_fill = p.accent.gamma_multiply(if dark { 0.55 } else { 0.35 });
     v.selection.stroke = Stroke::new(1.0, p.text);
     let r = CornerRadius::same(5);
@@ -136,10 +140,12 @@ pub fn apply(ctx: &egui::Context, dark: bool) {
     w.hovered.corner_radius = r;
     w.active.bg_fill = p.accent.gamma_multiply(0.6);
     w.active.weak_bg_fill = p.accent.gamma_multiply(0.6);
-    w.active.fg_stroke = Stroke::new(1.0, Color32::WHITE);
+    // egui derives `strong_text_color()` (RichText::strong) from the active widget's fg.
+    w.active.fg_stroke = Stroke::new(1.0, p.text_strong);
     w.active.corner_radius = r;
     w.open.bg_fill = p.bg_hover;
     w.open.weak_bg_fill = p.bg_hover;
+    w.open.fg_stroke = Stroke::new(1.0, p.text);
     w.open.corner_radius = r;
 
     ctx.set_visuals(v);
