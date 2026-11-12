@@ -102,6 +102,11 @@ fn layout_lvs() {
 }
 
 #[test]
+fn shortcuts_dialog() {
+    scenario_then("14_shortcuts", true, Some("cmos_inverter"), "schematic", false, Some(Command::Shortcuts));
+}
+
+#[test]
 fn layout_from_schematic() {
     scenario_then("13_layout_sdl", true, Some("cmos_inverter"), "schematic", false, Some(Command::GenerateLayout));
 }

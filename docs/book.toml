@@ -1,0 +1,15 @@
+[book]
+title = "IC Studio User Guide"
+description = "User guide for IC Studio, a full-custom IC design environment: schematic, simulation, layout and verification."
+authors = ["geniuskey"]
+language = "en"
+src = "."
+
+[build]
+build-dir = "../target/guide"
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/geniuskey/ic-studio"
+edit-url-template = "https://github.com/geniuskey/ic-studio/edit/main/docs/{path}"
+site-url = "/ic-studio/"

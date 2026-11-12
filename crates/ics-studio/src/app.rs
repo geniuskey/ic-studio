@@ -92,6 +92,8 @@ pub enum Command {
     ToggleTheme,
     ToggleConsole,
     Settings,
+    Shortcuts,
+    UserGuide,
     About,
     CommandPalette,
     Quit,
@@ -119,6 +121,7 @@ enum Dialog {
     ConfirmDelete(CellRef),
     Unsaved { then: Box<Command> },
     Settings,
+    Shortcuts,
     About,
 }
 
@@ -206,6 +209,68 @@ fn mcp_summary(tool: &str, res: &ToolResult) -> String {
         _ => "ok".into(),
     }
 }
+
+const GUIDE_URL: &str = "https://geniuskey.github.io/ic-studio/";
+
+const MOD: &str = if cfg!(target_os = "macos") { "⌘" } else { "Ctrl+" };
+
+type ShortcutGroup = (&'static str, &'static [(&'static str, &'static str)]);
+
+const SHORTCUTS: &[ShortcutGroup] = &[
+    (
+        "General",
+        &[
+            ("Mod+K / Mod+Shift+P", "Command palette"),
+            ("Mod+S / Mod+Shift+S", "Save / save as"),
+            ("Mod+O", "Open project"),
+            ("Mod+N", "New cell"),
+            ("Mod+W", "Close tab"),
+            ("Mod+Z / Mod+Y", "Undo / redo"),
+            ("Mod+1 … Mod+4", "Home, Schematic, Simulation, Layout"),
+            ("F5 / Mod+Enter", "Run simulation"),
+            ("Mod+J", "Toggle console"),
+            ("Mod+,", "Settings"),
+            ("F1", "Keyboard shortcuts"),
+        ],
+    ),
+    (
+        "Canvas",
+        &[
+            ("Wheel / pinch", "Zoom at cursor"),
+            ("Middle or right drag", "Pan"),
+            ("Shift+wheel", "Pan horizontally"),
+            ("F", "Fit view"),
+            ("Esc", "Cancel, back to Select, clear selection"),
+            ("Del / Backspace", "Delete selection"),
+            ("Mod+A / Mod+D", "Select all / duplicate"),
+        ],
+    ),
+    (
+        "Schematic",
+        &[
+            ("W", "Wire"),
+            ("T", "Net label"),
+            ("R C L V I D", "Resistor, capacitor, inductor, V and I source, diode"),
+            ("N P", "NMOS, PMOS"),
+            ("G S", "Ground, supply"),
+            ("Space / X", "Rotate / mirror (placement or selection)"),
+            ("/", "Swap wire bend direction"),
+        ],
+    ),
+    (
+        "Layout",
+        &[
+            ("S", "Select"),
+            ("R G P", "Rectangle, polygon, path"),
+            ("L V I K", "Label, via, instance, ruler"),
+            ("Enter", "Finish path or polygon"),
+            ("Backspace", "Remove last point while drawing"),
+            ("Arrows (+Shift)", "Nudge 10 (100) grid steps"),
+            ("Shift+R / X / Y", "Rotate, flip X, flip Y"),
+            ("0 … 8, 9", "Drawn hierarchy depth, 9 = all"),
+        ],
+    ),
+];
 
 struct PaletteState {
     query: String,
@@ -562,6 +627,8 @@ impl IcStudio {
             }
             Command::ToggleConsole => self.show_console = !self.show_console,
             Command::Settings => self.dialog = Some(Dialog::Settings),
+            Command::Shortcuts => self.dialog = Some(Dialog::Shortcuts),
+            Command::UserGuide => ctx.open_url(egui::OpenUrl::new_tab(GUIDE_URL)),
             Command::About => self.dialog = Some(Dialog::About),
             Command::CommandPalette => self.palette = Some(PaletteState { query: String::new(), sel: 0 }),
             Command::Quit => {
@@ -920,6 +987,7 @@ impl IcStudio {
         fire(cmd, Key::Num3, Command::SetWorkspace(Workspace::Simulation), q);
         fire(cmd, Key::Num4, Command::SetWorkspace(Workspace::Layout), q);
         fire(cmd, Key::Comma, Command::Settings, q);
+        fire(Modifiers::NONE, Key::F1, Command::Shortcuts, q);
         if !ctx.egui_wants_keyboard_input() {
             fire(cs, Key::Z, Command::Redo, q);
             fire(cmd, Key::Z, Command::Undo, q);
@@ -1058,9 +1126,16 @@ impl IcStudio {
                 }
             });
             ui.menu_button("Help", |ui| {
+                if ui.button("User Guide").clicked() {
+                    q.push(Command::UserGuide);
+                }
+                if ui.add(egui::Button::new("Keyboard Shortcuts").shortcut_text("F1")).clicked() {
+                    q.push(Command::Shortcuts);
+                }
                 if ui.add(egui::Button::new("Command Palette").shortcut_text("⌘K")).clicked() {
                     q.push(Command::CommandPalette);
                 }
+                ui.separator();
                 if ui.button("About IC Studio").clicked() {
                     q.push(Command::About);
                 }
@@ -1733,6 +1808,8 @@ impl IcStudio {
             ("Toggle console".into(), "⌘J", Command::ToggleConsole),
             ("Fit view".into(), "F", Command::FitView),
             ("Settings".into(), "⌘,", Command::Settings),
+            ("Keyboard shortcuts".into(), "F1", Command::Shortcuts),
+            ("Open user guide (web)".into(), "", Command::UserGuide),
             ("About IC Studio".into(), "", Command::About),
         ];
         for (i, w) in Workspace::ALL.iter().enumerate() {
@@ -2094,6 +2171,42 @@ impl IcStudio {
                         close = true;
                     }
                 }
+                Dialog::Shortcuts => {
+                    ui.heading("Keyboard shortcuts");
+                    ui.add_space(6.0);
+                    egui::ScrollArea::vertical().max_height(ctx.content_rect().height() * 0.75).show(ui, |ui| {
+                        ui.horizontal_top(|ui| {
+                            for half in SHORTCUTS.chunks(2) {
+                                ui.vertical(|ui| {
+                                    ui.set_width(400.0);
+                                    for (title, rows) in half {
+                                        ui.add_space(6.0);
+                                        ui.label(RichText::new(*title).strong().color(pal.accent));
+                                        egui::Grid::new(title).num_columns(2).min_col_width(170.0).spacing([12.0, 4.0]).show(
+                                            ui,
+                                            |ui| {
+                                                for (keys, what) in *rows {
+                                                    ui.label(RichText::new(keys.replace("Mod+", MOD)).monospace());
+                                                    ui.label(*what);
+                                                    ui.end_row();
+                                                }
+                                            },
+                                        );
+                                    }
+                                });
+                            }
+                        });
+                    });
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Open user guide").clicked() {
+                            self.queue.push(Command::UserGuide);
+                        }
+                        if ui.button("Close").clicked() {
+                            close = true;
+                        }
+                    });
+                }
                 Dialog::About => {
                     ui.vertical_centered(|ui| {
                         ui.label(RichText::new("IC Studio").size(26.0).strong());
@@ -2101,6 +2214,8 @@ impl IcStudio {
                         ui.add_space(6.0);
                         ui.label("A modern, open full-custom IC design environment.");
                         ui.label(RichText::new("Rust · egui/wgpu · ics-core · ics-sim · ngspice").small().color(pal.text_weak));
+                        ui.add_space(6.0);
+                        ui.hyperlink_to("User guide", GUIDE_URL);
                         ui.add_space(10.0);
                         if ui.button("Close").clicked() {
                             close = true;
