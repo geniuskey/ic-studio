@@ -81,6 +81,8 @@ enum Cmd {
     /// Compare a cell's layout with its schematic (non-zero exit on differences).
     Lvs { project: PathBuf, cell: String },
     /// Import a GDSII file as a new library. Layers the technology lacks are added to it.
+    /// Read a GDSII file and print hierarchy statistics and timings (nothing is written).
+    GdsInfo { file: PathBuf },
     ImportGds {
         project: PathBuf,
         file: PathBuf,
@@ -333,6 +335,39 @@ fn run(cli: Cli) -> Result<(), String> {
                 return Err(format!("LVS: {} difference(s)", rep.errors.len()));
             }
             println!("LVS: layout matches schematic");
+        }
+        Cmd::GdsInfo { file } => {
+            let t0 = std::time::Instant::now();
+            let data = std::fs::read(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+            let t_io = t0.elapsed();
+            let tech = ics_core::Tech::generic();
+            let opts = ics_core::gds::ReadOptions { add_unknown_layers: true };
+            let imp = ics_core::gds::read_gds_with(&data, &tech, "gds", opts)?;
+            drop(data);
+            let t_parse = t0.elapsed() - t_io;
+            let shapes: usize = imp.cells.iter().map(|(_, l)| l.shapes.len()).sum();
+            let insts: usize = imp.cells.iter().map(|(_, l)| l.instances.len()).sum();
+            let tops = imp.top_cells();
+            let src: std::collections::HashMap<ics_core::CellRef, ics_core::Layout> =
+                imp.cells.into_iter().map(|(n, l)| (ics_core::CellRef::new("gds", n), l)).collect();
+            let t1 = std::time::Instant::now();
+            let mut hier = ics_core::hier::Hier::default();
+            let mut flat = 0u64;
+            for t in &tops {
+                if let Some(i) = hier.get(&ics_core::CellRef::new("gds", t), &src) {
+                    flat += i.flat_shapes;
+                    if let Some(b) = i.bbox {
+                        println!("top {t}: {:.1} x {:.1} µm", b.width() as f64 / 1000.0, b.height() as f64 / 1000.0);
+                    }
+                }
+            }
+            println!("{} cells, {shapes} shapes, {insts} instances, {flat} flattened shapes", src.len());
+            println!(
+                "read {:.2} s, parse {:.2} s, index {:.2} s",
+                t_io.as_secs_f64(),
+                t_parse.as_secs_f64(),
+                t1.elapsed().as_secs_f64()
+            );
         }
         Cmd::ImportGds { project, file, lib, skip_unknown_layers } => {
             let mut p = Project::open(&project).map_err(|e| e.to_string())?;

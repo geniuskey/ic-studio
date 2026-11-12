@@ -287,3 +287,68 @@ fn mcp_live_requests() {
         img.save(std::path::Path::new(&dir).join("14_mcp_live.png")).unwrap();
     }
 }
+
+/// Frame times on a large real design. Run with
+/// `ICS_PERF_PROJECT=<project dir> ICS_PERF_CELL=<cell> cargo test --release -p ics-studio --test ui perf_ -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn perf_large_layout() {
+    let (Ok(project), Ok(cell)) = (std::env::var("ICS_PERF_PROJECT"), std::env::var("ICS_PERF_CELL")) else {
+        eprintln!("set ICS_PERF_PROJECT and ICS_PERF_CELL");
+        return;
+    };
+    let t = std::time::Instant::now();
+    let args =
+        LaunchArgs { project: Some(project.into()), demo: false, workspace: Some("layout".into()), cell: Some(cell), run: false };
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1440.0, 900.0))
+        .with_pixels_per_point(1.0)
+        .wgpu()
+        .build_eframe(|cc| IcStudio::new(cc, args));
+    println!("open project: {:.2} s", t.elapsed().as_secs_f64());
+    let frame = |h: &mut Harness<'_, IcStudio>| {
+        let t = std::time::Instant::now();
+        h.step();
+        let ui = t.elapsed().as_secs_f64() * 1000.0;
+        if std::env::var("ICS_PROFILE").is_ok() {
+            let shapes = h.output().shapes.clone();
+            let n = shapes.len();
+            let t2 = std::time::Instant::now();
+            let prims = h.ctx.tessellate(shapes, 1.0);
+            let verts: usize = prims
+                .iter()
+                .map(|p| if let egui::epaint::Primitive::Mesh(m) = &p.primitive { m.vertices.len() } else { 0 })
+                .sum();
+            let tess = t2.elapsed().as_secs_f64() * 1000.0;
+            let t3 = std::time::Instant::now();
+            let _ = h.render();
+            eprintln!(
+                "PROFILE frame: app {ui:.0} ms, tessellate {tess:.0} ms ({n} shapes, {verts} vertices), render+readback {:.0} ms",
+                t3.elapsed().as_secs_f64() * 1000.0
+            );
+        } else {
+            let _ = h.render();
+        }
+        t.elapsed().as_secs_f64() * 1000.0
+    };
+    let first = frame(&mut h);
+    println!("first frame (index build): {first:.0} ms");
+    for _ in 0..3 {
+        frame(&mut h);
+    }
+    let center = egui::pos2(880.0, 420.0);
+    for (label, zooms) in [("full view", 0), ("zoom x8", 3), ("zoom x64", 3), ("zoom x512", 3)] {
+        for _ in 0..zooms {
+            h.hover_at(center);
+            h.event(egui::Event::Zoom(2.0));
+            frame(&mut h);
+        }
+        let ms: Vec<f64> = (0..5).map(|_| frame(&mut h)).collect();
+        let avg = ms.iter().sum::<f64>() / ms.len() as f64;
+        println!("{label}: {avg:.1} ms/frame");
+    }
+    if let Ok(dir) = std::env::var("ICS_SHOT_DIR") {
+        std::fs::create_dir_all(&dir).unwrap();
+        h.render().unwrap().save(std::path::Path::new(&dir).join("perf_zoomed.png")).unwrap();
+    }
+}

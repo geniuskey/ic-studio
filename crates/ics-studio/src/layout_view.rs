@@ -253,10 +253,6 @@ fn pattern_rect(painter: &egui::Painter, r: Rect, def: &LayerDef, emphasis: f32)
     painter.rect_stroke(r, 0.0, Stroke::new(1.0, c.gamma_multiply(emphasis)), StrokeKind::Inside);
 }
 
-fn at_least_px(r: Rect, px: f32) -> Rect {
-    Rect::from_center_size(r.center(), Vec2::new(r.width().max(px), r.height().max(px)))
-}
-
 /// Outline as four thin quads in a mesh (much cheaper than individual stroke shapes).
 fn mesh_outline(mesh: &mut Mesh, r: Rect, w: f32, c: Color32) {
     if r.width() <= 2.0 * w || r.height() <= 2.0 * w {
@@ -288,6 +284,77 @@ fn path_quads(points: &[(i64, i64)], width: i64) -> Vec<[(f64, f64); 4]> {
             Some([(ax + nx, ay + ny), (bx + nx, by + ny), (bx - nx, by - ny), (ax - nx, ay - ny)])
         })
         .collect()
+}
+
+/// Most labels and instance frames drawn per frame; beyond this they are skipped.
+const MAX_LABELS: usize = 400;
+const MAX_FRAMES: usize = 5_000;
+
+/// Coverage grid at 2 px resolution for shapes too small to draw individually. Marked cells are
+/// emitted as merged horizontal runs, so the vertex count is bounded by the screen size rather
+/// than the number of shapes.
+struct Raster {
+    origin: Pos2,
+    w: usize,
+    h: usize,
+    bits: Vec<u64>,
+    any: bool,
+}
+
+impl Raster {
+    const CELL: f32 = 2.0;
+
+    fn new(rect: Rect) -> Self {
+        let w = (rect.width() / Self::CELL).ceil().max(1.0) as usize;
+        let h = (rect.height() / Self::CELL).ceil().max(1.0) as usize;
+        Self { origin: rect.min, w, h, bits: vec![], any: false }
+    }
+
+    fn words(&self) -> usize {
+        self.w.div_ceil(64)
+    }
+
+    fn mark(&mut self, r: Rect) {
+        let to = |v: f32, o: f32, n: usize| (((v - o) / Self::CELL).floor().max(0.0) as usize).min(n);
+        let (x0, x1) = (to(r.min.x, self.origin.x, self.w), to(r.max.x, self.origin.x, self.w - 1) + 1);
+        let (y0, y1) = (to(r.min.y, self.origin.y, self.h), to(r.max.y, self.origin.y, self.h - 1) + 1);
+        if x0 >= self.w || y0 >= self.h || r.max.x < self.origin.x || r.max.y < self.origin.y {
+            return;
+        }
+        if !self.any {
+            self.bits = vec![0; self.words() * self.h];
+            self.any = true;
+        }
+        let words = self.words();
+        for y in y0..y1.min(self.h) {
+            for x in x0..x1.min(self.w) {
+                self.bits[y * words + x / 64] |= 1 << (x % 64);
+            }
+        }
+    }
+
+    fn emit(&self, mesh: &mut Mesh, color: Color32) {
+        if !self.any {
+            return;
+        }
+        let words = self.words();
+        for y in 0..self.h {
+            let row = &self.bits[y * words..(y + 1) * words];
+            let mut x = 0;
+            while x < self.w {
+                if row[x / 64] >> (x % 64) & 1 == 0 {
+                    x += 1;
+                    continue;
+                }
+                let start = x;
+                while x < self.w && row[x / 64] >> (x % 64) & 1 == 1 {
+                    x += 1;
+                }
+                let min = self.origin + Vec2::new(start as f32 * Self::CELL, y as f32 * Self::CELL);
+                mesh.add_colored_rect(Rect::from_min_size(min, Vec2::new((x - start) as f32 * Self::CELL, Self::CELL)), color);
+            }
+        }
+    }
 }
 
 pub struct LayoutDrawOpts<'a> {
@@ -374,6 +441,11 @@ pub fn draw_layout(
     let has_sel = o.selection.is_some_and(|s| !s.is_empty());
     let to_s = |x: f64, y: f64| view.to_screen(rect, x, y);
     let stipple = !o.thumbnail && vis.count < 20_000;
+    let small = |g: &Geometry, t: &Trans| {
+        let b = t.apply_rect(g.bbox());
+        (b.width().max(b.height()) as f64 * view.scale) < 3.0
+    };
+    let mut labels = 0;
     for li in 0..tech.layers.len() {
         if !o.visible.get(li).copied().unwrap_or(true) {
             continue;
@@ -383,8 +455,9 @@ pub fn draw_layout(
         let fa = fill_alpha(def);
         let mesh_slot = painter.add(egui::Shape::Noop);
         let mut mesh = Mesh::default();
+        let mut raster = Raster::new(rect);
         for b in vis.tiny.get(li).into_iter().flatten() {
-            mesh.add_colored_rect(at_least_px(screen_rect(view, rect, *b), 1.0), c.gamma_multiply(0.7));
+            raster.mark(screen_rect(view, rect, *b));
         }
         for p in vis.shapes.get(li).into_iter().flatten() {
             let emphasis = if has_sel && !(p.depth == 0 && selected(p.shape.id)) { 0.75 } else { 1.0 };
@@ -395,7 +468,7 @@ pub fn draw_layout(
                         continue;
                     }
                     if sr.width() < 3.0 || sr.height() < 3.0 {
-                        mesh.add_colored_rect(at_least_px(sr, 1.0), c.gamma_multiply(0.6 * emphasis));
+                        raster.mark(sr);
                     } else if stipple {
                         pattern_rect(painter, sr, def, emphasis);
                     } else {
@@ -403,8 +476,19 @@ pub fn draw_layout(
                         if fa > 0.0 {
                             mesh.add_colored_rect(clipped, c.gamma_multiply(fa.max(0.25) * emphasis));
                         }
-                        mesh_outline(&mut mesh, clipped, 1.0, c.gamma_multiply(emphasis));
+                        if sr.width() >= 6.0 && sr.height() >= 6.0 {
+                            mesh_outline(&mut mesh, clipped, 1.0, c.gamma_multiply(emphasis));
+                        } else if fa == 0.0 {
+                            mesh.add_colored_rect(clipped, c.gamma_multiply(0.6 * emphasis));
+                        }
                     }
+                }
+                Geometry::Polygon { points } if small(&p.shape.geom, &p.trans) => {
+                    let _ = points;
+                    raster.mark(screen_rect(view, rect, p.trans.apply_rect(p.shape.bbox())));
+                }
+                Geometry::Path { .. } if small(&p.shape.geom, &p.trans) => {
+                    raster.mark(screen_rect(view, rect, p.trans.apply_rect(p.shape.bbox())));
                 }
                 Geometry::Polygon { points } => {
                     let pts: Vec<Pos2> = points
@@ -438,9 +522,10 @@ pub fn draw_layout(
                 }
                 Geometry::Label { text, at, size } => {
                     let fs = (*size as f64 * view.scale) as f32;
-                    if o.thumbnail || (p.depth > 0 && fs < 6.0) {
+                    if o.thumbnail || (p.depth > 0 && fs < 6.0) || labels >= MAX_LABELS {
                         continue;
                     }
+                    labels += 1;
                     let (x, y) = p.trans.apply_f((at.0 as f64, at.1 as f64));
                     let sp = to_s(x, y);
                     painter.text(
@@ -455,6 +540,7 @@ pub fn draw_layout(
                 }
             }
         }
+        raster.emit(&mut mesh, c.gamma_multiply(0.7));
         painter.set(mesh_slot, egui::Shape::mesh(mesh));
     }
 
@@ -475,13 +561,20 @@ pub fn draw_layout(
 
     // Frames of the top cell's own instances.
     if !o.thumbnail {
+        let mut frames = Mesh::default();
+        let (mut n_frames, mut n_names) = (0, 0);
         for i in idx.instances_in(world) {
             let (Some(b), Some(inst)) = (idx.instance_bbox(layout, i), layout.instances.get(i)) else { continue };
             let sr = screen_rect(view, rect, b);
             let sel = selected(inst.id);
-            let st = if sel { Stroke::new(2.0, pal.selection) } else { Stroke::new(1.0, pal.text_weak.gamma_multiply(0.9)) };
-            painter.rect_stroke(sr, 0.0, st, if sel { StrokeKind::Outside } else { StrokeKind::Inside });
-            if sr.width() > 50.0 && sr.height() > 16.0 {
+            if sel {
+                painter.rect_stroke(sr, 0.0, Stroke::new(2.0, pal.selection), StrokeKind::Outside);
+            } else if sr.width().min(sr.height()) >= 6.0 && n_frames < MAX_FRAMES {
+                n_frames += 1;
+                mesh_outline(&mut frames, sr.intersect(rect.expand(2.0)), 1.0, pal.text_weak.gamma_multiply(0.9));
+            }
+            if sr.width() > 50.0 && sr.height() > 16.0 && n_names < MAX_LABELS {
+                n_names += 1;
                 let (c, r) = inst.dims();
                 let name = if c * r > 1 { format!("{} [{c}×{r}]", inst.cell.cell) } else { inst.cell.cell.clone() };
                 let at = Pos2::new(sr.min.x.max(rect.min.x) + 4.0, sr.min.y.max(rect.min.y) + 3.0);
@@ -494,6 +587,7 @@ pub fn draw_layout(
                 );
             }
         }
+        painter.add(egui::Shape::mesh(frames));
     }
 
     // Selected top-level shapes.
@@ -1671,16 +1765,20 @@ fn hier_node(
     depth: u32,
     open: &mut Option<CellRef>,
 ) {
-    let mut kids: Vec<(CellRef, u64)> = vec![];
     let layout = layout.or_else(|| src.layout(cell));
-    if let Some(l) = layout {
+    // Children are grouped only when the node is expanded: cells can hold many thousands of instances.
+    let kids = |l: &Layout| -> Vec<(CellRef, u64)> {
+        let mut order: Vec<&CellRef> = vec![];
+        let mut counts: std::collections::HashMap<&CellRef, u64> = std::collections::HashMap::new();
         for inst in &l.instances {
-            match kids.iter_mut().find(|(c, _)| c == &inst.cell) {
-                Some(k) => k.1 += inst.count(),
-                None => kids.push((inst.cell.clone(), inst.count())),
-            }
+            let n = counts.entry(&inst.cell).or_insert_with(|| {
+                order.push(&inst.cell);
+                0
+            });
+            *n += inst.count();
         }
-    }
+        order.into_iter().map(|c| (c.clone(), counts[c])).collect()
+    };
     let header = |ui: &mut egui::Ui, open: &mut Option<CellRef>| {
         let missing = layout.is_none();
         let text = egui::RichText::new(&cell.cell);
@@ -1696,19 +1794,19 @@ fn hier_node(
             ui.label(egui::RichText::new(format!("×{}", fmt_count(n))).small().weak());
         }
     };
-    if kids.is_empty() || depth >= 12 {
+    let Some(l) = layout.filter(|l| !l.instances.is_empty() && depth < 12) else {
         ui.horizontal(|ui| {
             ui.add_space(18.0);
             header(ui, open);
         });
         return;
-    }
+    };
     let id = ui.make_persistent_id(("hier", cell, depth));
     egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, depth == 0)
         .show_header(ui, |ui| header(ui, open))
         .body(|ui| {
-            for (c, n) in &kids {
-                hier_node(ui, src, c, None, Some(*n), depth + 1, open);
+            for (c, n) in kids(l).into_iter().take(500) {
+                hier_node(ui, src, &c, None, Some(n), depth + 1, open);
             }
         });
 }
