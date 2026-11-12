@@ -331,6 +331,12 @@ mod tests {
         let imp = call(&mut s, "import_gds", json!({"path": gds, "lib": "imported"})).unwrap();
         assert_eq!(imp["library"], "imported");
         assert_eq!(imp["top_cells"], json!(["imported/top"]));
+        let oas = dir.join("top.oas");
+        let ex = call(&mut s, "export_gds", json!({"cell": "top", "path": oas})).unwrap();
+        assert_eq!(ex["cells"], 4, "{ex}");
+        assert!(std::fs::read(&oas).unwrap().starts_with(ics_core::oasis::MAGIC));
+        let imp = call(&mut s, "import_gds", json!({"path": oas, "lib": "from_oasis"})).unwrap();
+        assert_eq!(imp["top_cells"], json!(["from_oasis/top"]));
 
         assert_eq!(call(&mut s, "project_info", json!({})).unwrap()["unsaved_changes"], true);
         call(&mut s, "save_project", json!({})).unwrap();

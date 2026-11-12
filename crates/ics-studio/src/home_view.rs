@@ -84,7 +84,12 @@ pub fn welcome(ui: &mut egui::Ui, recent: &[PathBuf], q: &mut Vec<Command>) {
                             "OP, DC, AC and transient on the built-in engine or ngspice.",
                             pal.simulation,
                         ),
-                        (Icon::Layout, "Layout", "Polygon editing on PDK layers, DRC and GDSII import/export.", pal.layout),
+                        (
+                            Icon::Layout,
+                            "Layout",
+                            "Polygon editing on PDK layers, DRC and GDSII / OASIS import/export.",
+                            pal.layout,
+                        ),
                     ] {
                         egui::Frame::new().fill(pal.bg_widget).corner_radius(10).inner_margin(14).show(ui, |ui| {
                             ui.set_width(230.0);
@@ -122,7 +127,7 @@ pub fn project_overview(ui: &mut egui::Ui, project: &Project, hier: &mut Hier, q
                     if ui.button("+ New cell").clicked() {
                         q.push(Command::NewCellDialog);
                     }
-                    if ui.button("⬆ Import GDS…").clicked() {
+                    if ui.button("⬆ Import GDS / OASIS…").clicked() {
                         q.push(Command::ImportGds);
                     }
                     if ui.button("⬇ Export library GDS…").clicked() {

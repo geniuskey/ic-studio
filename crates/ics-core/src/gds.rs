@@ -1,5 +1,5 @@
 //! GDSII stream writer and reader: BOUNDARY, BOX, PATH and TEXT elements plus SREF / AREF
-//! cell references.
+//! cell references. [`StreamFormat`] dispatches between GDSII and [OASIS](crate::oasis).
 
 use std::collections::{HashMap, HashSet};
 
@@ -108,22 +108,48 @@ impl W {
     }
 }
 
-fn gds_names(cells: &[(&CellRef, &Layout)]) -> HashMap<CellRef, String> {
-    let mut count: HashMap<&str, usize> = HashMap::new();
-    for (r, _) in cells {
-        *count.entry(r.cell.as_str()).or_default() += 1;
+/// Stream file (GDSII or OASIS) cell names of a set of written cells.
+///
+/// Structures are named after their cell, or `lib__cell` when the same cell name occurs in
+/// more than one library among the cells. References to cells not among them use the plain
+/// cell name, or `lib__cell` when a structure already has that name.
+pub(crate) struct StreamNames {
+    names: HashMap<CellRef, String>,
+    structures: HashSet<String>,
+}
+
+impl StreamNames {
+    pub(crate) fn new(cells: &[(&CellRef, &Layout)]) -> Self {
+        let mut count: HashMap<&str, usize> = HashMap::new();
+        for (r, _) in cells {
+            *count.entry(r.cell.as_str()).or_default() += 1;
+        }
+        let names: HashMap<CellRef, String> = cells
+            .iter()
+            .map(|(r, _)| {
+                let name = if count[r.cell.as_str()] > 1 { format!("{}__{}", r.lib, r.cell) } else { r.cell.clone() };
+                ((*r).clone(), name)
+            })
+            .collect();
+        let structures = names.values().cloned().collect();
+        Self { names, structures }
     }
-    cells
-        .iter()
-        .map(|(r, _)| {
-            let name = if count[r.cell.as_str()] > 1 { format!("{}__{}", r.lib, r.cell) } else { r.cell.clone() };
-            ((*r).clone(), name)
-        })
-        .collect()
+
+    pub(crate) fn structure(&self, r: &CellRef) -> &str {
+        &self.names[r]
+    }
+
+    pub(crate) fn reference(&self, r: &CellRef) -> String {
+        match self.names.get(r) {
+            Some(n) => n.clone(),
+            None if self.structures.contains(&r.cell) => format!("{}__{}", r.lib, r.cell),
+            None => r.cell.clone(),
+        }
+    }
 }
 
 /// Indices of `cells` ordered so that every cell comes after the cells it places.
-fn child_first_order(cells: &[(&CellRef, &Layout)]) -> Vec<usize> {
+pub(crate) fn child_first_order(cells: &[(&CellRef, &Layout)]) -> Vec<usize> {
     let index: HashMap<&CellRef, usize> = cells.iter().enumerate().map(|(i, (r, _))| (*r, i)).collect();
     let mut seen = vec![false; cells.len()];
     let mut order = Vec::with_capacity(cells.len());
@@ -152,11 +178,8 @@ fn child_first_order(cells: &[(&CellRef, &Layout)]) -> Vec<usize> {
     order
 }
 
-/// Serialize the given cells to a GDSII byte stream, children before their parents.
-///
-/// Structures are named after their cell, or `lib__cell` when the same cell name occurs in
-/// more than one library among `cells`. References to cells not among `cells` use the plain
-/// cell name, or `lib__cell` when a structure in the file already has that name.
+/// Serialize the given cells to a GDSII byte stream, children before their parents, with
+/// structure names as described at [`StreamNames`].
 pub fn write_gds(lib_name: &str, cells: &[(&CellRef, &Layout)], tech: &Tech) -> Vec<u8> {
     let est: usize = cells.iter().map(|(_, l)| 64 + l.shapes.len() * 64 + l.instances.len() * 80).sum();
     let mut w = W(Vec::with_capacity(est + 256));
@@ -169,17 +192,11 @@ pub fn write_gds(lib_name: &str, cells: &[(&CellRef, &Layout)], tech: &Tech) -> 
     let mut units = real8(user_per_dbu).to_vec();
     units.extend_from_slice(&real8(meters_per_dbu));
     w.rec(UNITS, &units);
-    let names = gds_names(cells);
-    let structures: HashSet<&str> = names.values().map(String::as_str).collect();
-    let sname = |r: &CellRef| match names.get(r) {
-        Some(n) => n.clone(),
-        None if structures.contains(r.cell.as_str()) => format!("{}__{}", r.lib, r.cell),
-        None => r.cell.clone(),
-    };
+    let names = StreamNames::new(cells);
     for k in child_first_order(cells) {
         let (r, layout) = cells[k];
         w.i16s(BGNSTR, &date);
-        w.str(STRNAME, &names[r]);
+        w.str(STRNAME, names.structure(r));
         for s in &layout.shapes {
             let Some(l) = tech.layer(s.layer) else { continue };
             let (layer, dt) = (l.gds_layer as i16, l.gds_datatype as i16);
@@ -225,7 +242,7 @@ pub fn write_gds(lib_name: &str, cells: &[(&CellRef, &Layout)], tech: &Tech) -> 
             let (cols, rows) = inst.dims();
             let array = inst.array.filter(|_| cols * rows > 1);
             w.rec(if array.is_some() { AREF } else { SREF }, &[]);
-            w.str(SNAME, &sname(&inst.cell));
+            w.str(SNAME, &names.reference(&inst.cell));
             let t = inst.trans;
             if t.mirror || t.rot % 4 != 0 {
                 w.rec(STRANS, &(if t.mirror { 0x8000u16 } else { 0 }).to_be_bytes());
@@ -256,6 +273,13 @@ pub fn write_gds(lib_name: &str, cells: &[(&CellRef, &Layout)], tech: &Tech) -> 
 
 /// Serialize `tops` and every cell they place (directly or indirectly) that `src` resolves.
 pub fn write_gds_hier(lib_name: &str, src: &dyn LayoutSource, tops: &[CellRef], tech: &Tech) -> Vec<u8> {
+    let refs = hier_refs(src, tops);
+    let cells: Vec<(&CellRef, &Layout)> = refs.iter().filter_map(|r| Some((r, src.layout(r)?))).collect();
+    write_gds(lib_name, &cells, tech)
+}
+
+/// `tops` and every cell they place, directly or indirectly, each once.
+pub(crate) fn hier_refs(src: &dyn LayoutSource, tops: &[CellRef]) -> Vec<CellRef> {
     let mut seen: HashSet<CellRef> = HashSet::new();
     let mut refs: Vec<CellRef> = vec![];
     for t in tops {
@@ -265,8 +289,59 @@ pub fn write_gds_hier(lib_name: &str, src: &dyn LayoutSource, tops: &[CellRef], 
             }
         }
     }
-    let cells: Vec<(&CellRef, &Layout)> = refs.iter().filter_map(|r| Some((r, src.layout(r)?))).collect();
-    write_gds(lib_name, &cells, tech)
+    refs
+}
+
+/// Layout stream file format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamFormat {
+    Gds,
+    Oasis,
+}
+
+impl StreamFormat {
+    /// OASIS for `.oas` / `.oasis` files, GDSII otherwise.
+    pub fn from_path(path: &std::path::Path) -> Self {
+        match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
+            Some("oas" | "oasis") => Self::Oasis,
+            _ => Self::Gds,
+        }
+    }
+
+    /// The format of a stream file's contents (OASIS files start with a magic string).
+    pub fn detect(data: &[u8]) -> Self {
+        if data.starts_with(crate::oasis::MAGIC) { Self::Oasis } else { Self::Gds }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Gds => "GDSII",
+            Self::Oasis => "OASIS",
+        }
+    }
+
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Gds => "gds",
+            Self::Oasis => "oas",
+        }
+    }
+}
+
+/// [`write_gds_hier`] or [`crate::oasis::write_oasis_hier`].
+pub fn write_stream_hier(format: StreamFormat, lib_name: &str, src: &dyn LayoutSource, tops: &[CellRef], tech: &Tech) -> Vec<u8> {
+    match format {
+        StreamFormat::Gds => write_gds_hier(lib_name, src, tops, tech),
+        StreamFormat::Oasis => crate::oasis::write_oasis_hier(src, tops, tech),
+    }
+}
+
+/// Read a GDSII or OASIS file, whichever `data` is.
+pub fn read_stream_with(data: &[u8], tech: &Tech, lib: &str, opts: ReadOptions) -> Result<GdsImport, String> {
+    match StreamFormat::detect(data) {
+        StreamFormat::Gds => read_gds_with(data, tech, lib, opts),
+        StreamFormat::Oasis => crate::oasis::read_oasis_with(data, tech, lib, opts),
+    }
 }
 
 #[derive(Debug, Default)]
@@ -378,11 +453,7 @@ pub fn read_gds(data: &[u8], tech: &Tech, lib: &str) -> Result<GdsImport, String
 /// on new layers. Instances refer to cells of library `lib` by their structure name.
 pub fn read_gds_with(data: &[u8], tech: &Tech, lib: &str, opts: ReadOptions) -> Result<GdsImport, String> {
     let mut out = GdsImport { new_layer_base: tech.layers.len(), ..GdsImport::default() };
-    let mut by_gds: HashMap<(u16, u16), usize> = HashMap::with_capacity(tech.layers.len());
-    for (k, l) in tech.layers.iter().enumerate() {
-        by_gds.entry((l.gds_layer, l.gds_datatype)).or_insert(k);
-    }
-    let mut new_index: HashMap<(u16, u16), usize> = HashMap::new();
+    let mut layers = LayerMap::new(tech, opts);
     let mut i = 0usize;
     let mut cur: Option<(String, Layout)> = None;
     let mut el = El::default();
@@ -492,21 +563,7 @@ pub fn read_gds_with(data: &[u8], tech: &Tech, lib: &str, opts: ReadOptions) -> 
                 if el.kind == NODE {
                     continue;
                 }
-                let layer = if opts.add_unknown_layers {
-                    by_gds.get(&(el.layer, el.dt)).copied().unwrap_or_else(|| {
-                        *new_index.entry((el.layer, el.dt)).or_insert_with(|| {
-                            let k = out.new_layers.len();
-                            out.new_layers.push(LayerDef::generated(el.layer, el.dt, tech.layers.len() + k));
-                            tech.layers.len() + k
-                        })
-                    })
-                } else {
-                    let Some(&l) = by_gds.get(&(el.layer, el.dt)).or_else(|| by_gds.get(&(el.layer, 0))) else {
-                        out.skipped_unknown_layers += 1;
-                        continue;
-                    };
-                    l
-                };
+                let Some(layer) = layers.get(el.layer, el.dt, &mut out) else { continue };
                 let geom = match el.kind {
                     BOUNDARY | BOX => {
                         let mut p: Vec<(i64, i64)> = pts().collect();
@@ -536,7 +593,44 @@ pub fn read_gds_with(data: &[u8], tech: &Tech, lib: &str, opts: ReadOptions) -> 
     Ok(out)
 }
 
-fn as_rect(pts: &[(i64, i64)]) -> Option<IRect> {
+/// Maps stream (layer, datatype) pairs to technology layer indices as described at
+/// [`read_gds_with`].
+pub(crate) struct LayerMap {
+    by_gds: HashMap<(u16, u16), usize>,
+    new_index: HashMap<(u16, u16), usize>,
+    base: usize,
+    add_unknown: bool,
+}
+
+impl LayerMap {
+    pub(crate) fn new(tech: &Tech, opts: ReadOptions) -> Self {
+        let mut by_gds: HashMap<(u16, u16), usize> = HashMap::with_capacity(tech.layers.len());
+        for (k, l) in tech.layers.iter().enumerate() {
+            by_gds.entry((l.gds_layer, l.gds_datatype)).or_insert(k);
+        }
+        Self { by_gds, new_index: HashMap::new(), base: tech.layers.len(), add_unknown: opts.add_unknown_layers }
+    }
+
+    /// The layer of a shape on `(layer, dt)`, or `None` (counted in `out`) when it is skipped.
+    pub(crate) fn get(&mut self, layer: u16, dt: u16, out: &mut GdsImport) -> Option<usize> {
+        if self.add_unknown {
+            return Some(self.by_gds.get(&(layer, dt)).copied().unwrap_or_else(|| {
+                *self.new_index.entry((layer, dt)).or_insert_with(|| {
+                    let k = self.base + out.new_layers.len();
+                    out.new_layers.push(LayerDef::generated(layer, dt, k));
+                    k
+                })
+            }));
+        }
+        let l = self.by_gds.get(&(layer, dt)).or_else(|| self.by_gds.get(&(layer, 0))).copied();
+        if l.is_none() {
+            out.skipped_unknown_layers += 1;
+        }
+        l
+    }
+}
+
+pub(crate) fn as_rect(pts: &[(i64, i64)]) -> Option<IRect> {
     if pts.len() != 4 {
         return None;
     }
@@ -558,7 +652,7 @@ fn as_rect(pts: &[(i64, i64)]) -> Option<IRect> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::hier::flatten;
     use crate::tech::FillStyle;
@@ -631,7 +725,7 @@ mod tests {
         assert_eq!(again, bytes, "round trip through the new layers is lossless");
     }
 
-    fn hier_lib() -> (HashMap<CellRef, Layout>, CellRef) {
+    pub(crate) fn hier_lib() -> (HashMap<CellRef, Layout>, CellRef) {
         let (leaf, mid, top) = (CellRef::new("a", "leaf"), CellRef::new("a", "mid"), CellRef::new("a", "top"));
         let mut m = HashMap::new();
         let mut l = Layout::default();

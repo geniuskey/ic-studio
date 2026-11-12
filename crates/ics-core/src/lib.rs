@@ -13,6 +13,7 @@ pub mod hier;
 pub mod layout;
 pub mod lvs;
 pub mod netlist;
+pub mod oasis;
 pub mod pcell;
 pub mod pdk;
 pub mod pex;

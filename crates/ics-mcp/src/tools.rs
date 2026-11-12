@@ -535,17 +535,17 @@ pub fn definitions() -> Vec<Value> {
         ),
         tool(
             "export_gds",
-            "Write a cell layout and every cell it places to a GDSII file.",
-            json!({"cell": cell(), "path": {"type": "string", "description": "Output .gds file path."}}),
+            "Write a cell layout and every cell it places to a GDSII file, or to OASIS when the path ends in .oas / .oasis.",
+            json!({"cell": cell(), "path": {"type": "string", "description": "Output .gds or .oas file path."}}),
             &["cell", "path"],
         ),
         tool(
             "import_gds",
             &format!(
-                "Import a GDSII file as a new library (cells mapped to technology layers by GDS layer/datatype; unknown layers are skipped). {NOT_SAVED}"
+                "Import a GDSII or OASIS file (detected from its contents) as a new library (cells mapped to technology layers by GDS layer/datatype; unknown layers are skipped). {NOT_SAVED}"
             ),
             json!({
-                "path": {"type": "string", "description": "GDSII file to read."},
+                "path": {"type": "string", "description": "GDSII or OASIS file to read."},
                 "lib": {"type": "string", "description": "Library name (defaults to the file name; made unique)."},
             }),
             &["path"],
@@ -1210,7 +1210,8 @@ impl State {
         let (p, r) = self.cell_arg(a)?;
         layout_of(p, &r)?;
         let path = PathBuf::from(a.str("path")?);
-        let bytes = ics_core::gds::write_gds_hier(&r.lib, p, std::slice::from_ref(&r), &p.tech);
+        let format = ics_core::gds::StreamFormat::from_path(&path);
+        let bytes = ics_core::gds::write_stream_hier(format, &r.lib, p, std::slice::from_ref(&r), &p.tech);
         std::fs::write(&path, &bytes).map_err(|e| format!("{}: {e}", path.display()))?;
         let cells = descendants(p, &r).iter().filter(|c| p.layout(c).is_some()).count();
         Ok(json!({"path": path.display().to_string(), "bytes": bytes.len(), "cells": cells}))
@@ -1224,7 +1225,7 @@ impl State {
         };
         let p = self.project_mut()?;
         let data = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let imp = ics_core::gds::read_gds(&data, &p.tech, "gds")?;
+        let imp = ics_core::gds::read_stream_with(&data, &p.tech, "gds", Default::default())?;
         let (skipped, warnings) = (imp.skipped_unknown_layers, imp.warnings.clone());
         let (lib, tops) = p.add_gds_library(&hint, imp)?;
         let cells = p.libraries.iter().find(|l| l.name == lib).map_or(0, |l| l.cells.len());

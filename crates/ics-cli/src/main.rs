@@ -67,7 +67,8 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Export a cell layout and every cell it places to GDSII.
+    /// Export a cell layout and every cell it places to GDSII, or to OASIS when the output
+    /// file ends in `.oas` / `.oasis`.
     Gds {
         project: PathBuf,
         cell: String,
@@ -103,9 +104,9 @@ enum Cmd {
         /// Runset name (or a unique part of it).
         runset: Option<String>,
     },
-    /// Read a GDSII file and print hierarchy statistics and timings (nothing is written).
+    /// Read a GDSII or OASIS file and print hierarchy statistics and timings (nothing is written).
     GdsInfo { file: PathBuf },
-    /// Import a GDSII file as a new library stored as one GDS file. Layers the technology
+    /// Import a GDSII or OASIS file as a new library stored as one GDS file. Layers the technology
     /// lacks are added to it.
     ImportGds {
         project: PathBuf,
@@ -299,7 +300,8 @@ fn run(cli: Cli) -> Result<(), String> {
             let p = Project::open(&project).map_err(|e| e.to_string())?;
             let r = resolve(&p, &cell)?;
             p.cell(&r).unwrap().layout.as_ref().ok_or("cell has no layout")?;
-            let bytes = ics_core::gds::write_gds_hier(&r.lib, &p, std::slice::from_ref(&r), &p.tech);
+            let format = ics_core::gds::StreamFormat::from_path(&out);
+            let bytes = ics_core::gds::write_stream_hier(format, &r.lib, &p, std::slice::from_ref(&r), &p.tech);
             std::fs::write(&out, &bytes).map_err(|e| e.to_string())?;
             let layouts: Vec<_> = descendants(&p, &r).iter().filter_map(|c| p.layout(c)).collect();
             let shapes: usize = layouts.iter().map(|l| l.shapes.len()).sum();
@@ -440,7 +442,7 @@ fn run(cli: Cli) -> Result<(), String> {
             let t_io = t0.elapsed();
             let tech = ics_core::Tech::generic();
             let opts = ics_core::gds::ReadOptions { add_unknown_layers: true };
-            let imp = ics_core::gds::read_gds_with(&data, &tech, "gds", opts)?;
+            let imp = ics_core::gds::read_stream_with(&data, &tech, "gds", opts)?;
             drop(data);
             let t_parse = t0.elapsed() - t_io;
             let shapes: usize = imp.cells.iter().map(|(_, l)| l.shapes.len()).sum();
@@ -476,7 +478,7 @@ fn run(cli: Cli) -> Result<(), String> {
             let mut p = Project::open(&project).map_err(|e| e.to_string())?;
             let data = std::fs::read(&file).map_err(|e| format!("{}: {e}", file.display()))?;
             let opts = ics_core::gds::ReadOptions { add_unknown_layers: !skip_unknown_layers };
-            let imp = ics_core::gds::read_gds_with(&data, &p.tech, "gds", opts)?;
+            let imp = ics_core::gds::read_stream_with(&data, &p.tech, "gds", opts)?;
             let (skipped, warnings) = (imp.skipped_unknown_layers, imp.warnings.clone());
             let layers_before = p.tech.layers.len();
             let hint = lib.unwrap_or_else(|| file.file_stem().map_or("gds".into(), |s| s.to_string_lossy().to_string()));

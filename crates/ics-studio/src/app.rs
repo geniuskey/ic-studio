@@ -18,6 +18,7 @@ use crate::layout_view::{LayCtx, LayRequest, LayTool, LayoutEditor, Verify, fmt_
 use crate::schematic_view::{SchTool, SchematicEditor, device_palette};
 use crate::sim_view::{self, SimEvent, SimState};
 use crate::theme::{self, Palette};
+use ics_core::gds::StreamFormat;
 use ics_core::hier::Hier;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, Hash)]
@@ -81,6 +82,8 @@ pub enum Command {
     FitView,
     ExportGds,
     ExportLibraryGds,
+    ExportOasis,
+    ExportLibraryOasis,
     RunDrc,
     ExtractNets,
     RunLvs,
@@ -89,6 +92,7 @@ pub enum Command {
     RunSignoff(Option<String>),
     GenerateLayout,
     RouteFlylines,
+    /// Import a GDSII or OASIS file (detected from its contents).
     ImportGds,
     ImportTech,
     /// Replace the technology with a PDK file (see `ics_core::pdk`); `None` asks for the file.
@@ -612,8 +616,10 @@ impl IcStudio {
             Command::RunSignoff(name) => self.run_signoff(ctx, name.as_deref()),
             Command::GenerateLayout => self.generate_layout(),
             Command::RouteFlylines => self.route_flylines(),
-            Command::ExportGds => self.export_gds(false),
-            Command::ExportLibraryGds => self.export_gds(true),
+            Command::ExportGds => self.export_stream(false, StreamFormat::Gds),
+            Command::ExportLibraryGds => self.export_stream(true, StreamFormat::Gds),
+            Command::ExportOasis => self.export_stream(false, StreamFormat::Oasis),
+            Command::ExportLibraryOasis => self.export_stream(true, StreamFormat::Oasis),
             Command::ImportGds => self.import_gds(),
             Command::ImportTech => self.import_tech(),
             Command::LoadPdk(path) => {
@@ -896,7 +902,7 @@ impl IcStudio {
         self.workspace = Workspace::Simulation;
     }
 
-    fn export_gds(&mut self, library: bool) {
+    fn export_stream(&mut self, library: bool, format: StreamFormat) {
         let Some(p) = &self.project else { return };
         let tops: Vec<CellRef> = if library {
             p.all_cells().filter(|(_, c)| c.layout.is_some()).map(|(r, _)| r).collect()
@@ -913,21 +919,33 @@ impl IcStudio {
             self.warn("No layouts to export".into());
             return;
         }
-        let default = if library { format!("{}.gds", p.name) } else { format!("{}.gds", tops[0].cell) };
-        let Some(path) = rfd::FileDialog::new().set_file_name(default).add_filter("GDSII", &["gds", "gds2"]).save_file() else {
+        let stem = if library { &p.name } else { &tops[0].cell };
+        let filter: &[&str] = if format == StreamFormat::Oasis { &["oas", "oasis"] } else { &["gds", "gds2"] };
+        let Some(path) = rfd::FileDialog::new()
+            .set_file_name(format!("{stem}.{}", format.extension()))
+            .add_filter(format.label(), filter)
+            .save_file()
+        else {
             return;
         };
         let n = tops.iter().flat_map(|t| ics_core::hier::descendants(p, t)).collect::<std::collections::HashSet<_>>().len();
-        let bytes = ics_core::gds::write_gds_hier(&p.name, p, &tops, &p.tech);
+        let bytes = ics_core::gds::write_stream_hier(format, &p.name, p, &tops, &p.tech);
         match std::fs::write(&path, &bytes) {
             Ok(()) => self.ok(format!("Exported {n} cell(s) to {} ({} bytes)", path.display(), bytes.len())),
-            Err(e) => self.error(format!("GDS export failed: {e}")),
+            Err(e) => self.error(format!("{} export failed: {e}", format.label())),
         }
     }
 
     fn import_gds(&mut self) {
         let Some(p) = self.project.as_mut() else { return };
-        let Some(path) = rfd::FileDialog::new().add_filter("GDSII", &["gds", "gds2", "gdsii"]).pick_file() else { return };
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("GDSII / OASIS", &["gds", "gds2", "gdsii", "oas", "oasis"])
+            .add_filter("GDSII", &["gds", "gds2", "gdsii"])
+            .add_filter("OASIS", &["oas", "oasis"])
+            .pick_file()
+        else {
+            return;
+        };
         let data = match std::fs::read(&path) {
             Ok(d) => d,
             Err(e) => {
@@ -937,10 +955,11 @@ impl IcStudio {
         };
         let t0 = Instant::now();
         let opts = ics_core::gds::ReadOptions { add_unknown_layers: true };
-        let imp = match ics_core::gds::read_gds_with(&data, &p.tech, "gds", opts) {
+        let label = StreamFormat::detect(&data).label();
+        let imp = match ics_core::gds::read_stream_with(&data, &p.tech, "gds", opts) {
             Ok(imp) => imp,
             Err(e) => {
-                self.error(format!("GDS import failed: {e}"));
+                self.error(format!("{label} import failed: {e}"));
                 return;
             }
         };
@@ -959,7 +978,7 @@ impl IcStudio {
                     t0.elapsed().as_secs_f64()
                 ));
                 for w in warnings {
-                    self.warn(format!("GDS: {w}"));
+                    self.warn(format!("{label}: {w}"));
                 }
                 if skipped > 0 {
                     self.warn(format!("{skipped} shape(s) on layers not in the technology were skipped"));
@@ -971,7 +990,7 @@ impl IcStudio {
                     self.queue.push(Command::OpenCell(r, Some(Workspace::Layout)));
                 }
             }
-            Err(e) => self.error(format!("GDS import failed: {e}")),
+            Err(e) => self.error(format!("{label} import failed: {e}")),
         }
     }
 
@@ -1101,7 +1120,7 @@ impl IcStudio {
                     q.push(Command::NewCellDialog);
                 }
                 ui.menu_button("Import", |ui| {
-                    if ui.add_enabled(has_project, egui::Button::new("GDSII…")).clicked() {
+                    if ui.add_enabled(has_project, egui::Button::new("GDSII / OASIS…")).clicked() {
                         q.push(Command::ImportGds);
                     }
                     if ui.add_enabled(has_project, egui::Button::new("KLayout layer properties…")).clicked() {
@@ -1118,8 +1137,14 @@ impl IcStudio {
                     if ui.add_enabled(has_project, egui::Button::new("Cell GDSII…")).clicked() {
                         q.push(Command::ExportGds);
                     }
+                    if ui.add_enabled(has_project, egui::Button::new("Cell OASIS…")).clicked() {
+                        q.push(Command::ExportOasis);
+                    }
                     if ui.add_enabled(has_project, egui::Button::new("Library GDSII…")).clicked() {
                         q.push(Command::ExportLibraryGds);
+                    }
+                    if ui.add_enabled(has_project, egui::Button::new("Library OASIS…")).clicked() {
+                        q.push(Command::ExportLibraryOasis);
                     }
                 });
                 ui.separator();
@@ -1868,7 +1893,9 @@ impl IcStudio {
             ("Route flylines".into(), "", Command::RouteFlylines),
             ("Export cell GDSII…".into(), "", Command::ExportGds),
             ("Export library GDSII…".into(), "", Command::ExportLibraryGds),
-            ("Import GDSII…".into(), "", Command::ImportGds),
+            ("Export cell OASIS…".into(), "", Command::ExportOasis),
+            ("Export library OASIS…".into(), "", Command::ExportLibraryOasis),
+            ("Import GDSII / OASIS…".into(), "", Command::ImportGds),
             ("Import technology (KLayout .lyp)…".into(), "", Command::ImportTech),
             ("Load PDK…".into(), "", Command::LoadPdk(None)),
             ("Export SPICE netlist…".into(), "", Command::ExportNetlist),

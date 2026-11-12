@@ -67,7 +67,7 @@ Linux needs the usual windowing libraries:
 - Via generator (single cut or area fill) and PCells: NMOS / PMOS (W, L, fingers),
   poly resistor, MOM capacitor and well / substrate taps, stored as ordinary cells of a
   `pcells` library
-- GDSII import and export with full hierarchy; unknown GDS layers are kept
+- GDSII and OASIS import and export with full hierarchy; unknown GDS layers are kept
 
 **Verification**
 - DRC with a text rule deck (`width`, `space`, `separation`, `enclosure`, `extension`,
