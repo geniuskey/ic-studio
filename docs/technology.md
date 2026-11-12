@@ -81,6 +81,7 @@ generated.
 | `area LAYER MIN` | Minimum area |
 | `antenna METAL RATIO` | Maximum ratio of metal area to connected gate area (needs `poly` and `active` layers) |
 | `density LAYER MIN MAX WINDOW [STEP]` | Density between MIN and MAX percent (plain numbers, 0 to 100) in a sliding WINDOW x WINDOW µm window (STEP defaults to WINDOW/2) |
+| `flag LAYER` | Every piece of LAYER is a violation (use it with a derived layer) |
 
 ### Derived layers
 
@@ -91,10 +92,57 @@ NAME = A not B        # A minus B
 NAME = A xor B
 NAME = A size DIST    # grow (negative DIST shrinks)
 NAME = A wide MIN     # the parts of A at least MIN wide
+NAME = A interact B   # pieces of A that overlap or touch B
+NAME = A inside B     # pieces of A entirely inside B
+NAME = A outside B    # pieces of A that do not overlap B
+NAME = A enclose B    # pieces of A that contain a whole piece of B
+NAME = A touch B      # pieces of A that touch B without overlapping it
+NAME = A not interact B   # (also not inside, not outside, not enclose, not touch)
+NAME = A area MIN MAX # pieces with MIN <= area < MAX (µm²; MAX may be inf)
+NAME = holes A        # the enclosed empty areas of each piece of A
+NAME = extents A      # the bounding box of each piece of A
 ```
 
-Derived layers can use technology layers and derived layers defined earlier, and can be
-used in any rule.
+A piece is an edge-connected part of a layer. Derived layers can use technology layers and
+derived layers defined earlier, and can be used in any rule. With `flag`, any derived layer
+becomes a check, for example floating poly:
+
+```text
+floating = poly not interact active
+PO.FLOAT: flag floating
+```
+
+### SVRF decks
+
+A deck written in SVRF (the Calibre rule language) is recognised and translated to these
+rules, so a foundry-style deck runs on the built-in engine. It works everywhere a deck is
+used: the **Rule deck** editor, `drc_deck` in `tech.json` or a PDK file,
+`ics drc --deck rules.svrf`, and runsets with `tool = "builtin"`. From a file, `INCLUDE`s are
+resolved relative to it.
+
+Translated:
+
+- Comments, `#DEFINE` / `#UNDEFINE` / `#IFDEF` / `#IFNDEF` / `#ELSE` / `#ENDIF`, numeric
+  `VARIABLE`s.
+- `LAYER MAP g DATATYPE d n` and `LAYER name n ...`. A layer number maps to the technology
+  layers with that GDS layer and datatype (any datatype without a `LAYER MAP`).
+- Layer operations `AND`, `OR`, `NOT`, `XOR`, `[NOT] INTERACT / INSIDE / OUTSIDE / ENCLOSE /
+  TOUCH`, `SIZE a BY d [OVERUNDER | UNDEROVER]`, `HOLES`, `EXTENTS`, `COPY`, `AREA`, and
+  parentheses.
+- Rule checks `NAME { @ comment ... }` with `INT a < d` (width), `EXT a < d` (space),
+  `EXT a b < d` (separation), `ENC a b < d` (enclosure), `AREA a < x`,
+  `DENSITY a < x | > x WINDOW w STEP s`, or any layer expression (all of its geometry is
+  reported). The `@` comment becomes the violation's description.
+
+Specification and LVS statements (`LAYOUT`, `DRC`, `PRECISION`, `CONNECT`, `DEVICE`, ...)
+are skipped. Check modifiers that change the measurement (`OPPOSITE`, `PROJECTING`,
+`PARALLEL`, ...) are ignored with a note; those that only shape the output (`REGION`,
+`SINGULAR`, `ABUT`) silently. Anything else, such as edge operations, `WITH WIDTH` or
+two-layer `INT`, leaves its rule check out. Every such case is listed with its line number:
+in the **SVRF notes** under the rule deck, as `note:` lines from `ics drc`, and as
+`deck_notes` from MCP. The built-in measurements are Manhattan and Euclidean at corners, so
+for sign-off run the same deck in Calibre (see
+[Verification](verification.md#sign-off-with-external-tools)).
 
 ### Example
 

@@ -283,7 +283,16 @@ pub fn parse(text: &str, base: &Path, env: &dyn Fn(&str) -> Option<String>) -> R
     };
     tech.devices = f.device;
     tech.caps = f.cap;
-    tech.drc_deck = f.drc_deck.as_deref().map(read).transpose()?;
+    tech.drc_deck = match f.drc_deck.as_deref() {
+        Some(p) => {
+            let path = resolve(p, base, env)?;
+            let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            let (text, failed) = crate::drc::deck_file_text(&text, &path)?;
+            warnings.extend(failed);
+            Some(text)
+        }
+        None => None,
+    };
     tech.models = f.models.map(|m| {
         let path = match resolve(&m.path, base, env) {
             Ok(p) => {

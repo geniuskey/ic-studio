@@ -36,6 +36,8 @@ pub struct VerifyState {
     /// Deck being edited; `None` until the editor is opened (then it starts from the technology).
     pub deck: Option<String>,
     pub deck_errors: Vec<String>,
+    /// SVRF translation notes of the deck last run.
+    pub deck_notes: Vec<String>,
     pub drc: Option<DrcReport>,
     pub extraction: Option<Extraction>,
     pub lvs: Option<LvsReport>,
@@ -58,6 +60,7 @@ impl Default for VerifyState {
         Self {
             deck: None,
             deck_errors: vec![],
+            deck_notes: vec![],
             drc: None,
             extraction: None,
             lvs: None,
@@ -167,10 +170,11 @@ impl LayoutEditor {
         let task = match what {
             Verify::Drc => {
                 let text = self.verify.deck.clone().unwrap_or_else(|| deck_source(cx));
-                match drc::parse_deck(&text, cx.tech) {
-                    Ok(deck) => {
+                match drc::parse_any(&text, cx.tech) {
+                    Ok(parsed) => {
                         self.verify.deck_errors.clear();
-                        Task::Drc(deck)
+                        self.verify.deck_notes = parsed.notes;
+                        Task::Drc(parsed.deck)
                     }
                     Err(errs) => {
                         self.verify.deck_errors = deck_errors(&errs);
@@ -314,7 +318,7 @@ impl LayoutEditor {
                 .labelled_by(lb.id);
             ui.horizontal(|ui| {
                 if ui.button("Save to technology").on_hover_text("Store this deck in the project's tech.json").clicked() {
-                    match drc::parse_deck(deck, tech) {
+                    match drc::parse_any(deck, tech) {
                         Ok(_) => {
                             self.verify.deck_errors.clear();
                             self.requests.push(LayRequest::SetDeck(deck.clone()));
@@ -328,6 +332,17 @@ impl LayoutEditor {
             });
         });
         self.job_row(ui, Verify::Drc);
+        if !self.verify.deck_notes.is_empty() {
+            egui::CollapsingHeader::new(format!("SVRF notes ({})", self.verify.deck_notes.len().saturating_sub(1)))
+                .id_salt("deck_notes")
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical().id_salt("deck_notes_scroll").max_height(160.0).show(ui, |ui| {
+                        for n in &self.verify.deck_notes {
+                            ui.label(egui::RichText::new(n).small().color(pal.text_weak));
+                        }
+                    });
+                });
+        }
         for e in &self.verify.deck_errors {
             ui.label(egui::RichText::new(e).small().color(pal.danger));
         }
@@ -515,6 +530,18 @@ impl LayoutEditor {
                                 ui.label(egui::RichText::new(m).small());
                             }
                         });
+                    }
+                    if !rep.notes.is_empty() {
+                        egui::CollapsingHeader::new(format!("Deck notes ({})", rep.notes.len())).id_salt("signoff_notes").show(
+                            ui,
+                            |ui| {
+                                egui::ScrollArea::vertical().id_salt("signoff_notes_scroll").max_height(160.0).show(ui, |ui| {
+                                    for n in &rep.notes {
+                                        ui.label(egui::RichText::new(n).small().color(pal.text_weak));
+                                    }
+                                });
+                            },
+                        );
                     }
                     ui.label(egui::RichText::new(format!("Reports: {}", rep.dir.display())).small().color(pal.text_weak));
                 }

@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use ics_core::drc::{DrcReport, parse_deck, run as run_drc_deck};
+use ics_core::drc::{DrcReport, parse_any, run as run_drc_deck};
 use ics_core::extract::{Extraction, extract};
 use ics_core::hier::{Hier, LayoutSource, descendants, would_cycle};
 use ics_core::layout::{Geometry, Layout, Trans};
@@ -1063,10 +1063,11 @@ impl State {
         let t = &p.tech;
         let lay = layout_of(p, &r)?;
         let max = a.opt_num("max_markers")?.map_or(20, |n| n.max(0.0) as usize);
-        let deck = parse_deck(&t.deck_text(), t).map_err(|errs| {
+        let parsed = parse_any(&t.deck_text(), t).map_err(|errs| {
             let msgs: Vec<String> = errs.iter().map(|e| e.to_string()).collect();
             format!("technology rule deck has errors: {}", msgs.join("; "))
         })?;
+        let (deck, deck_notes) = (parsed.deck, parsed.notes);
         let rep = run_drc_deck(&deck, lay, p, t);
         let mut total = 0;
         let mut rules = vec![];
@@ -1078,7 +1079,7 @@ impl State {
             let markers: Vec<Value> = vs.iter().take(max).map(|v| rect_um(t, v.marker)).collect();
             rules.push(json!({"rule": rule.name, "description": first.description, "count": count, "markers_um": markers}));
         }
-        let out = json!({
+        let mut out = json!({
             "cell": r.to_string(),
             "clean": total == 0,
             "violations": total,
@@ -1088,6 +1089,9 @@ impl State {
             "non_manhattan_skipped": rep.skipped,
             "millis": sig(rep.millis),
         });
+        if !deck_notes.is_empty() {
+            out["deck_notes"] = json!(deck_notes.iter().take(MAX_LISTED).collect::<Vec<_>>());
+        }
         self.keep(Verified::Drc(rep));
         Ok(out)
     }
@@ -1112,6 +1116,7 @@ impl State {
             "tool": rep.tool.label(),
             "summary": rep.summary(),
             "work_dir": rep.dir.display().to_string(),
+            "deck_notes": rep.notes.iter().take(MAX_LISTED).collect::<Vec<_>>(),
             "millis": sig(rep.millis),
         });
         if let Some(d) = &rep.drc {

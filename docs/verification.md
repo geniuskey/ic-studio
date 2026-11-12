@@ -84,6 +84,7 @@ The built-in checks are fast and good for iterating. For sign-off, a technology 
 | KLayout | DRC, LVS | KLayout `.drc` / `.lvs` script |
 | Siemens Calibre | DRC, LVS | SVRF rule file |
 | netgen | LVS | netgen setup file (compares IC Studio's extraction with the schematic) |
+| built-in | DRC | IC Studio or SVRF deck file, run on the built-in engine |
 
 In the Layout workspace, the **Sign-off** section appears when the technology has
 runsets. Pick a runset and press **Run** (or **Verify > Run Sign-off Runset**). IC Studio

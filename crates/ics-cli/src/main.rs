@@ -338,13 +338,16 @@ fn run(cli: Cli) -> Result<(), String> {
             let p = Project::open(&project).map_err(|e| e.to_string())?;
             let r = resolve(&p, &cell)?;
             let lay = p.cell(&r).unwrap().layout.as_ref().ok_or("cell has no layout")?;
-            let (text, origin) = match &deck {
-                Some(f) => (std::fs::read_to_string(f).map_err(|e| format!("{}: {e}", f.display()))?, f.display().to_string()),
-                None => (p.tech.deck_text(), "technology deck".to_string()),
+            let parsed = match &deck {
+                Some(f) => ics_core::drc::load_deck(f, &p.tech)?,
+                None => ics_core::drc::parse_any(&p.tech.deck_text(), &p.tech).map_err(|errs| {
+                    errs.iter().map(|e| format!("technology deck:{}: {}", e.line, e.message)).collect::<Vec<_>>().join("\n")
+                })?,
             };
-            let d = ics_core::drc::parse_deck(&text, &p.tech).map_err(|errs| {
-                errs.iter().map(|e| format!("{origin}:{}: {}", e.line, e.message)).collect::<Vec<_>>().join("\n")
-            })?;
+            for n in &parsed.notes {
+                eprintln!("note: {n}");
+            }
+            let d = parsed.deck;
             let rep = ics_core::drc::run(&d, lay, &p, &p.tech);
             print_drc(&rep, &d, p.tech.dbu_per_um);
             if !rep.violations.is_empty() {
@@ -404,6 +407,9 @@ fn run(cli: Cli) -> Result<(), String> {
             };
             let rs = ics_core::signoff::find(&p.tech, &name)?;
             let rep = ics_core::signoff::run(&p, &r, rs, &ics_core::signoff::Tools::default())?;
+            for n in &rep.notes {
+                eprintln!("note: {n}");
+            }
             let um = |v: i64| v as f64 / p.tech.dbu_per_um.max(1) as f64;
             let mut failed = false;
             if let Some(d) = &rep.drc {

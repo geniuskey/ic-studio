@@ -23,7 +23,7 @@ runs and CI. Build it with `cargo build --release -p ics-cli` (binary
 | `ics lib-storage <PROJECT> <LIB> gds\|json` | Change how a library is stored on disk |
 | `ics import-tech <PROJECT> <LYP> [--lyt FILE]` | Replace the technology's layers from a KLayout `.lyp` |
 | `ics load-pdk <PROJECT> <PDK>` | Replace the technology with a PDK file (see Technology) |
-| `ics drc <PROJECT> <CELL> [--deck FILE]` | Run DRC; exit 1 on violations |
+| `ics drc <PROJECT> <CELL> [--deck FILE]` | Run DRC (the deck may be SVRF); exit 1 on violations |
 | `ics extract <PROJECT> <CELL>` | Print the extracted netlist as SPICE |
 | `ics lvs <PROJECT> <CELL>` | Compare layout and schematic; exit 1 on differences |
 | `ics signoff <PROJECT> <CELL> [RUNSET]` | Run an external KLayout / Calibre / netgen runset (list them without RUNSET); exit 1 on violations or a mismatch |

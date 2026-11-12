@@ -1,5 +1,6 @@
 //! Sign-off DRC / LVS with external tools: KLayout (`.drc` / `.lvs` decks), Siemens Calibre
-//! (SVRF rule files) and netgen (netlist comparison).
+//! (SVRF rule files) and netgen (netlist comparison); and DRC deck files (IC Studio or SVRF,
+//! see [`crate::svrf`]) on the built-in engine (`builtin`).
 //!
 //! A [`Runset`] of the technology names the tool, the check and the deck. [`run`] writes the
 //! cell and everything it places to `<cell>.gds` in a fresh work directory, plus for LVS the
@@ -40,6 +41,8 @@ pub enum Tool {
     Klayout,
     Calibre,
     Netgen,
+    /// The built-in DRC engine on an IC Studio or SVRF deck file.
+    Builtin,
 }
 
 impl Tool {
@@ -48,6 +51,7 @@ impl Tool {
             Tool::Klayout => "KLayout",
             Tool::Calibre => "Calibre",
             Tool::Netgen => "netgen",
+            Tool::Builtin => "built-in",
         }
     }
 }
@@ -140,6 +144,7 @@ impl Tools {
             Tool::Klayout => &self.klayout,
             Tool::Calibre => &self.calibre,
             Tool::Netgen => &self.netgen,
+            Tool::Builtin => "",
         }
     }
 }
@@ -151,6 +156,7 @@ pub fn default_exe(t: Tool) -> String {
         Tool::Klayout => ("ICS_KLAYOUT", "klayout"),
         Tool::Calibre => ("ICS_CALIBRE", "calibre"),
         Tool::Netgen => ("ICS_NETGEN", "netgen"),
+        Tool::Builtin => return String::new(),
     };
     if let Ok(v) = std::env::var(var)
         && !v.trim().is_empty()
@@ -181,6 +187,7 @@ pub fn default_exe(t: Tool) -> String {
             }
         }
         Tool::Netgen => candidates.extend(["/usr/local/bin/netgen", "/usr/bin/netgen"].map(PathBuf::from)),
+        Tool::Builtin => {}
     }
     candidates.into_iter().find(|c| c.exists()).map_or_else(|| name.to_string(), |c| c.to_string_lossy().into_owned())
 }
@@ -205,6 +212,8 @@ pub struct SignoffReport {
     pub log: String,
     /// Work directory holding the inputs and reports.
     pub dir: PathBuf,
+    /// Deck translation notes (built-in runsets on SVRF decks).
+    pub notes: Vec<String>,
     pub millis: f64,
 }
 
@@ -275,6 +284,25 @@ pub fn run(project: &Project, cell: &CellRef, runset: &Runset, tools: &Tools) ->
     }
     let deck = std::path::absolute(&deck).unwrap_or(deck);
     let tech = &project.tech;
+    if runset.tool == Tool::Builtin {
+        if runset.check != Check::Drc {
+            return Err("the built-in runset only runs DRC decks".into());
+        }
+        let parsed = crate::drc::load_deck(&deck, tech)?;
+        let mut d = crate::drc::run(&parsed.deck, c.layout.as_ref().expect("checked"), project, tech);
+        d.millis = start.elapsed().as_secs_f64() * 1e3;
+        return Ok(SignoffReport {
+            runset: runset.name.clone(),
+            tool: Tool::Builtin,
+            check: Check::Drc,
+            drc: Some(d),
+            lvs: None,
+            log: String::new(),
+            dir: deck.parent().map(Path::to_path_buf).unwrap_or_default(),
+            notes: parsed.notes,
+            millis: start.elapsed().as_secs_f64() * 1e3,
+        });
+    }
     let dir = work_dir(&cell.cell)?;
     let top = top_name(project, cell);
     let gds = dir.join(format!("{}.gds", cell.cell));
@@ -343,6 +371,7 @@ pub fn run(project: &Project, cell: &CellRef, runset: &Runset, tools: &Tools) ->
             report
         }
         (Tool::Netgen, Check::Drc) => return Err("netgen only compares netlists (LVS)".into()),
+        (Tool::Builtin, _) => unreachable!("handled above"),
         (Tool::Netgen, Check::Lvs) => {
             let lay = c.layout.as_ref().expect("checked");
             let x = extract(lay, project, tech);
@@ -371,6 +400,7 @@ pub fn run(project: &Project, cell: &CellRef, runset: &Runset, tools: &Tools) ->
         lvs: None,
         log,
         dir,
+        notes: vec![],
         millis: 0.0,
     };
     match runset.check {
@@ -389,6 +419,7 @@ pub fn run(project: &Project, cell: &CellRef, runset: &Runset, tools: &Tools) ->
                 Tool::Klayout => text.as_deref().map(|t| parse_lvsdb(t, &top)),
                 Tool::Calibre => text.as_deref().map(parse_calibre_lvs),
                 Tool::Netgen => Some(parse_netgen(&(text.unwrap_or_default() + &rep.log))),
+                Tool::Builtin => unreachable!("handled above"),
             };
             rep.lvs = Some(outcome.ok_or_else(|| fail(&rep.log))?);
         }
@@ -761,6 +792,46 @@ mod tests {
         let l = layout_netlist(&x, &p.tech, "cmos_inverter");
         assert!(l.contains(".subckt cmos_inverter gnd in out vdd\n"), "{l}");
         assert!(l.contains("M1 out in gnd sub nmos w=1u l=0.18u\n"), "{l}");
+    }
+
+    #[test]
+    fn builtin_runset_on_svrf_file() {
+        let dir = work_dir("svrf").unwrap();
+        std::fs::write(
+            dir.join("m1.inc"),
+            "M1.W { @ metal1 too narrow
+ INT M1 < 0.5 }
+",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("rules.svrf"),
+            "LAYER M1 7
+INCLUDE \"m1.inc\"
+E.X { LENGTH M1 < 1 }
+",
+        )
+        .unwrap();
+        let p = crate::examples::demo_project();
+        let rs = Runset {
+            name: "svrf".into(),
+            tool: Tool::Builtin,
+            check: Check::Drc,
+            deck: dir.join("rules.svrf").to_string_lossy().into_owned(),
+            vars: BTreeMap::new(),
+            klayout: KlayoutVars::default(),
+            skip: default_skip(),
+            ground: default_ground(),
+        };
+        let rep = run(&p, &CellRef::new("work", "cmos_inverter"), &rs, &Tools::default()).unwrap();
+        let d = rep.drc.as_ref().unwrap();
+        assert!(
+            !d.violations.is_empty() && d.violations.iter().all(|v| v.rule == "M1.W" && v.description == "metal1 too narrow")
+        );
+        assert!(rep.notes[0].contains("1 of 2 rule check(s)"), "{:?}", rep.notes);
+        assert!(rep.notes.iter().any(|n| n.contains("LENGTH")), "{:?}", rep.notes);
+        assert!(run(&p, &CellRef::new("work", "cmos_inverter"), &Runset { check: Check::Lvs, ..rs }, &Tools::default()).is_err());
+        std::fs::remove_dir_all(dir).ok();
     }
 
     /// Runs only where KLayout is installed: a small KLayout DRC and LVS deck for generic180 on

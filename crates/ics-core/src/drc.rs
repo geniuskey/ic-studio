@@ -10,19 +10,27 @@
 //! [NAME:] area       LAYER MIN
 //! [NAME:] antenna    METAL RATIO
 //! [NAME:] density    LAYER MIN% MAX% WINDOW [STEP]
+//! [NAME:] flag       LAYER
 //! NAME = LAYER and|or|not|xor LAYER
+//! NAME = LAYER [not] interact|inside|outside|enclose|touch LAYER
 //! NAME = LAYER size DIST
 //! NAME = LAYER wide MIN
+//! NAME = LAYER area MIN MAX      (µm², MAX may be inf)
+//! NAME = holes|extents LAYER
 //! ```
 //! A `NAME = ...` line defines a derived layer (e.g. `gate = poly and active`) from technology
 //! layers or earlier derived layers; later lines use it like any layer. `not` is `A` minus `B`,
 //! `size` grows (DIST > 0) or shrinks (DIST < 0) with square corners, `wide` keeps the parts of
 //! the layer at least MIN wide (covered by a MIN x MIN square inside it). Wide-metal spacing is
 //! `m1w = metal1 wide 10` with `separation m1w metal1 0.6`. Derived layers are only computed
-//! when a rule needs them; violations on them carry no technology layer.
+//! when a rule needs them; violations on them carry no technology layer. The selections keep
+//! whole edge-connected pieces of the first layer (see [`Select`]); `area` keeps the pieces with
+//! MIN <= area < MAX; `holes` gives the enclosed empty areas of each piece and `extents` its
+//! bounding box. `flag` reports every piece of a layer, so any derived layer is a check.
+//! Decks written in SVRF are translated by [`crate::svrf`] (see [`parse_any`]).
 //! Rule kinds, operators and layer names are case-insensitive. Unnamed rules are called
 //! `<layer>.W`, `<layer>.S`, `<a>.SEP.<b>`, `<inner>.EN.<outer>`, `<a>.EX.<b>`, `<layer>.A`,
-//! `<layer>.ANT` and `<layer>.DEN`.
+//! `<layer>.ANT`, `<layer>.DEN` and `<layer>.FLAG`.
 //!
 //! Every check works on the merged geometry of each layer (all Manhattan shapes of the
 //! flattened top cell; labels are ignored and non-Manhattan shapes are skipped and counted).
@@ -99,26 +107,107 @@ pub enum LayerExpr {
         a: usize,
         min: i64,
     },
+    /// The pieces of `a` that relate to `b` as `how` says (or do not, when `not`).
+    Select {
+        a: usize,
+        how: Select,
+        not: bool,
+        b: usize,
+    },
+    /// Holes of the pieces of `a`.
+    Holes {
+        a: usize,
+    },
+    /// Bounding box of each piece of `a`.
+    Extents {
+        a: usize,
+    },
+    /// Pieces of `a` with `min <= area < max` (dbu²).
+    AreaRange {
+        a: usize,
+        min: Option<i128>,
+        max: Option<i128>,
+    },
+    /// Union of any number of layers (none: empty).
+    Union(Vec<usize>),
+    /// The violation region of a rule.
+    Check(Box<Rule>),
+}
+
+/// Piece selection of [`LayerExpr::Select`]; pieces are edge-connected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Select {
+    /// Overlaps or touches `b`.
+    Interact,
+    /// Lies entirely inside `b`.
+    Inside,
+    /// Does not overlap `b` (touching allowed).
+    Outside,
+    /// Contains a whole piece of `b`.
+    Enclose,
+    /// Touches `b` without overlapping it.
+    Touch,
+}
+
+impl Select {
+    pub fn keyword(self) -> &'static str {
+        match self {
+            Select::Interact => "interact",
+            Select::Inside => "inside",
+            Select::Outside => "outside",
+            Select::Enclose => "enclose",
+            Select::Touch => "touch",
+        }
+    }
+
+    fn parse(s: &str) -> Option<Select> {
+        Some(match s.to_ascii_lowercase().as_str() {
+            "interact" => Select::Interact,
+            "inside" => Select::Inside,
+            "outside" => Select::Outside,
+            "enclose" => Select::Enclose,
+            "touch" => Select::Touch,
+            _ => return None,
+        })
+    }
 }
 
 impl LayerExpr {
     pub fn inputs(&self) -> Vec<usize> {
-        match *self {
-            LayerExpr::Bool { a, b, .. } => vec![a, b],
-            LayerExpr::Size { a, .. } | LayerExpr::Wide { a, .. } => vec![a],
+        match self {
+            LayerExpr::Bool { a, b, .. } | LayerExpr::Select { a, b, .. } => vec![*a, *b],
+            LayerExpr::Size { a, .. }
+            | LayerExpr::Wide { a, .. }
+            | LayerExpr::Holes { a }
+            | LayerExpr::Extents { a }
+            | LayerExpr::AreaRange { a, .. } => vec![*a],
+            LayerExpr::Union(v) => v.clone(),
+            LayerExpr::Check(r) => r.layers(),
         }
     }
 
-    fn eval(&self, layers: &[Region]) -> Region {
+    fn eval(&self, layers: &[Region], extent: Option<IRect>) -> Region {
         let empty = Region::default();
         let get = |l: usize| layers.get(l).unwrap_or(&empty);
-        match *self {
-            LayerExpr::Bool { a, op, b } => get(a).boolean(get(b), op),
-            LayerExpr::Size { a, by } => get(a).sized(by),
+        match self {
+            LayerExpr::Bool { a, op, b } => get(*a).boolean(get(*b), *op),
+            LayerExpr::Size { a, by } => get(*a).sized(*by),
             LayerExpr::Wide { a, min } => {
                 let k = (min - 1).max(0);
-                get(a).eroded(0, 0, k, k).dilated(0, 0, k, k)
+                get(*a).eroded(0, 0, k, k).dilated(0, 0, k, k)
             }
+            LayerExpr::Select { a, how, not, b } => select(get(*a), get(*b), *how, *not),
+            LayerExpr::Holes { a } => holes(get(*a)),
+            LayerExpr::Extents { a } => Region::from_rects(get(*a).parts().iter().filter_map(Region::bbox)),
+            LayerExpr::AreaRange { a, min, max } => Region::from_rects(
+                get(*a)
+                    .parts()
+                    .into_iter()
+                    .filter(|p| min.is_none_or(|m| p.area() >= m) && max.is_none_or(|m| p.area() < m))
+                    .flat_map(|p| p.rects().to_vec()),
+            ),
+            LayerExpr::Union(v) => Region::from_rects(v.iter().flat_map(|&l| get(l).rects().iter().copied())),
+            LayerExpr::Check(r) => check(r, &get, extent),
         }
     }
 }
@@ -145,6 +234,21 @@ impl DerivedLayer {
             }
             LayerExpr::Size { a, by } => format!("{} = {} size {}", self.name, n(a), fmt_um(by, tech)),
             LayerExpr::Wide { a, min } => format!("{} = {} wide {}", self.name, n(a), fmt_um(min, tech)),
+            LayerExpr::Select { a, how, not, b } => {
+                format!("{} = {} {}{} {}", self.name, n(a), if not { "not " } else { "" }, how.keyword(), n(b))
+            }
+            LayerExpr::Holes { a } => format!("{} = holes {}", self.name, n(a)),
+            LayerExpr::Extents { a } => format!("{} = extents {}", self.name, n(a)),
+            LayerExpr::AreaRange { a, min, max } => {
+                let d = tech.dbu_per_um.max(1) as f64;
+                let um2 = |v: i128| format!("{}", v as f64 / (d * d));
+                format!("{} = {} area {} {}", self.name, n(a), min.map_or("0".into(), um2), max.map_or("inf".into(), um2))
+            }
+            LayerExpr::Union(ref v) => {
+                let parts: Vec<String> = v.iter().map(|&l| n(l)).collect();
+                format!("# {} = union of {}", self.name, if parts.is_empty() { "nothing".into() } else { parts.join(", ") })
+            }
+            LayerExpr::Check(ref r) => format!("# {} = violations of: {}", self.name, r.deck_line(tech, names)),
         }
     }
 }
@@ -196,15 +300,21 @@ pub enum Rule {
         window: i64,
         step: i64,
     },
+    /// Every piece of the layer is a violation.
+    Flag {
+        layer: usize,
+    },
 }
 
 impl Rule {
     /// Layers the rule reads.
     pub fn layers(&self) -> Vec<usize> {
         match *self {
-            Rule::Width { layer, .. } | Rule::Space { layer, .. } | Rule::Area { layer, .. } | Rule::Density { layer, .. } => {
-                vec![layer]
-            }
+            Rule::Width { layer, .. }
+            | Rule::Space { layer, .. }
+            | Rule::Area { layer, .. }
+            | Rule::Density { layer, .. }
+            | Rule::Flag { layer } => vec![layer],
             Rule::Separation { a, b, .. } | Rule::Extension { a, b, .. } => vec![a, b],
             Rule::Enclosure { inner, outer, .. } => vec![inner, outer],
             Rule::Antenna { layer, poly, active, ref vias, .. } => {
@@ -222,7 +332,8 @@ impl Rule {
             | Rule::Space { layer, .. }
             | Rule::Area { layer, .. }
             | Rule::Antenna { layer, .. }
-            | Rule::Density { layer, .. } => layer,
+            | Rule::Density { layer, .. }
+            | Rule::Flag { layer } => layer,
             Rule::Separation { b, .. } => b,
             Rule::Enclosure { inner, .. } => inner,
             Rule::Extension { a, .. } => a,
@@ -241,6 +352,7 @@ impl Rule {
             Rule::Area { layer, .. } => format!("{}.A", n(layer)),
             Rule::Antenna { layer, .. } => format!("{}.ANT", n(layer)),
             Rule::Density { layer, .. } => format!("{}.DEN", n(layer)),
+            Rule::Flag { layer } => format!("{}.FLAG", n(layer)),
         }
     }
 
@@ -262,6 +374,7 @@ impl Rule {
             Rule::Density { layer, min, max, window, .. } => {
                 format!("{} density outside {min}-{max} % ({} µm windows)", n(layer), um(window))
             }
+            Rule::Flag { layer } => format!("{} present", n(layer)),
         }
     }
 
@@ -283,6 +396,7 @@ impl Rule {
             Rule::Density { layer, min, max, window, step } => {
                 format!("density {} {min} {max} {} {}", n(layer), um(window), um(step))
             }
+            Rule::Flag { layer } => format!("flag {}", n(layer)),
         }
     }
 }
@@ -291,6 +405,8 @@ impl Rule {
 pub struct NamedRule {
     pub name: String,
     pub rule: Rule,
+    /// Description reported instead of [`Rule::description`] (e.g. an SVRF `@` comment).
+    pub comment: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -358,6 +474,48 @@ fn fmt_um(v: i64, tech: &Tech) -> String {
     format!("{}", v as f64 / tech.dbu_per_um.max(1) as f64)
 }
 
+/// A deck from [`parse_any`], with the notes of an SVRF translation.
+#[derive(Debug, Clone, Default)]
+pub struct ParsedDeck {
+    pub deck: Deck,
+    pub notes: Vec<String>,
+}
+
+/// Parse an IC Studio deck, or translate an SVRF one ([`crate::svrf::looks_like_svrf`]). SVRF
+/// statements that are not translated become notes, not errors.
+pub fn parse_any(text: &str, tech: &Tech) -> Result<ParsedDeck, Vec<DeckError>> {
+    if crate::svrf::looks_like_svrf(text) {
+        let t = crate::svrf::translate(text, tech, &[]);
+        let mut notes: Vec<String> = t.notes.iter().map(|n| format!("SVRF {n}")).collect();
+        notes.insert(0, format!("SVRF: {} of {} rule check(s) translated", t.translated, t.checks));
+        return Ok(ParsedDeck { deck: t.deck, notes });
+    }
+    parse_deck(text, tech).map(|deck| ParsedDeck { deck, notes: vec![] })
+}
+
+/// Read a deck file: an IC Studio deck, or SVRF with its `INCLUDE`s resolved relative to the
+/// file. Errors are prefixed with the file name.
+pub fn load_deck(path: &std::path::Path, tech: &Tech) -> Result<ParsedDeck, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let text = deck_file_text(&text, path)?;
+    parse_any(&text.0, tech)
+        .map(|mut d| {
+            d.notes.extend(text.1);
+            d
+        })
+        .map_err(|errs| {
+            errs.iter().map(|e| format!("{}:{}: {}", path.display(), e.line, e.message)).collect::<Vec<_>>().join("\n")
+        })
+}
+
+/// The text of deck file `path` with SVRF `INCLUDE`s inlined, and the includes that failed.
+pub fn deck_file_text(text: &str, path: &std::path::Path) -> Result<(String, Vec<String>), String> {
+    if !crate::svrf::looks_like_svrf(text) {
+        return Ok((text.to_string(), vec![]));
+    }
+    Ok(crate::svrf::inline_includes(text, path.parent().unwrap_or(std::path::Path::new("."))))
+}
+
 /// Parse a deck. All errors are reported, not just the first.
 pub fn parse_deck(text: &str, tech: &Tech) -> Result<Deck, Vec<DeckError>> {
     let mut deck = Deck::default();
@@ -392,11 +550,57 @@ fn parse_derived(lhs: &str, rhs: &str, names: &[String], tech: &Tech) -> Result<
         errs.push(format!("layer '{name}' is already defined"));
     }
     let toks: Vec<&str> = rhs.split_whitespace().collect();
-    if toks.len() != 3 {
-        errs.push(format!("expected '{name} = LAYER and|or|not|xor LAYER' or '{name} = LAYER size|wide DIST'"));
-        return Err(errs);
+    let um2 = |t: &str, errs: &mut Vec<String>| -> Option<Option<i128>> {
+        if t.eq_ignore_ascii_case("inf") {
+            return Some(None);
+        }
+        let d = tech.dbu_per_um as f64;
+        match t.parse::<f64>().ok().filter(|v| v.is_finite() && *v >= 0.0) {
+            Some(v) => Some(Some((v * d * d).round() as i128)),
+            None => {
+                errs.push(format!("bad area '{t}' (expected µm² or inf)"));
+                None
+            }
+        }
+    };
+    let expr = match toks.as_slice() {
+        [op, a] if op.eq_ignore_ascii_case("holes") || op.eq_ignore_ascii_case("extents") => {
+            let a = lookup(names, a, &mut errs);
+            a.map(|a| if op.eq_ignore_ascii_case("holes") { LayerExpr::Holes { a } } else { LayerExpr::Extents { a } })
+        }
+        [a, not, how, b] if not.eq_ignore_ascii_case("not") && Select::parse(how).is_some() => {
+            let (a, b) = (lookup(names, a, &mut errs), lookup(names, b, &mut errs));
+            a.zip(b).map(|(a, b)| LayerExpr::Select { a, how: Select::parse(how).expect("checked"), not: true, b })
+        }
+        [a, how, b] if Select::parse(how).is_some() => {
+            let (a, b) = (lookup(names, a, &mut errs), lookup(names, b, &mut errs));
+            a.zip(b).map(|(a, b)| LayerExpr::Select { a, how: Select::parse(how).expect("checked"), not: false, b })
+        }
+        [a, kw, lo, hi] if kw.eq_ignore_ascii_case("area") => {
+            let a = lookup(names, a, &mut errs);
+            let (min, max) = (um2(lo, &mut errs), um2(hi, &mut errs));
+            match (a, min, max) {
+                (Some(a), Some(min), Some(max)) => Some(LayerExpr::AreaRange { a, min, max }),
+                _ => None,
+            }
+        }
+        [_, _, _] => parse_simple(&toks, names, tech, &mut errs),
+        _ => {
+            errs.push(format!(
+                "expected '{name} = LAYER and|or|not|xor LAYER', '{name} = LAYER [not] interact|inside|outside|enclose|touch LAYER', '{name} = LAYER size|wide DIST', '{name} = LAYER area MIN MAX' or '{name} = holes|extents LAYER'"
+            ));
+            None
+        }
+    };
+    match expr {
+        Some(expr) if errs.is_empty() => Ok(DerivedLayer { name: name.to_string(), expr }),
+        _ => Err(errs),
     }
-    let a = lookup(names, toks[0], &mut errs);
+}
+
+/// `A and|or|not|xor B` or `A size|wide DIST`.
+fn parse_simple(toks: &[&str], names: &[String], tech: &Tech, errs: &mut Vec<String>) -> Option<LayerExpr> {
+    let a = lookup(names, toks[0], errs);
     let kind = toks[1].to_ascii_lowercase();
     let op = match kind.as_str() {
         "and" => Some(BoolOp::And),
@@ -405,8 +609,8 @@ fn parse_derived(lhs: &str, rhs: &str, names: &[String], tech: &Tech) -> Result<
         "xor" => Some(BoolOp::Xor),
         _ => None,
     };
-    let expr = if let Some(op) = op {
-        let b = lookup(names, toks[2], &mut errs);
+    if let Some(op) = op {
+        let b = lookup(names, toks[2], errs);
         a.zip(b).map(|(a, b)| LayerExpr::Bool { a, op, b })
     } else if kind == "size" || kind == "wide" {
         let wide = kind == "wide";
@@ -421,12 +625,11 @@ fn parse_derived(lhs: &str, rhs: &str, names: &[String], tech: &Tech) -> Result<
         }
         a.zip(by).map(|(a, by)| if wide { LayerExpr::Wide { a, min: by } } else { LayerExpr::Size { a, by } })
     } else {
-        errs.push(format!("unknown operator '{}' (expected and, or, not, xor, size or wide)", toks[1]));
+        errs.push(format!(
+            "unknown operator '{}' (expected and, or, not, xor, interact, inside, outside, enclose, touch, size or wide)",
+            toks[1]
+        ));
         None
-    };
-    match expr {
-        Some(expr) if errs.is_empty() => Ok(DerivedLayer { name: name.to_string(), expr }),
-        _ => Err(errs),
     }
 }
 
@@ -450,9 +653,10 @@ fn parse_line(line: &str, names: &[String], tech: &Tech) -> Result<NamedRule, Ve
         "separation" | "enclosure" | "extension" => (2, 1, 0, "LAYER LAYER MIN"),
         "antenna" => (1, 1, 0, "METAL RATIO"),
         "density" => (1, 3, 1, "LAYER MIN% MAX% WINDOW [STEP]"),
+        "flag" => (1, 0, 0, "LAYER"),
         _ => {
             return Err(vec![format!(
-                "unknown rule kind '{kind}' (expected width, space, separation, enclosure, extension, area, antenna or density)"
+                "unknown rule kind '{kind}' (expected width, space, separation, enclosure, extension, area, antenna, density or flag)"
             )]);
         }
     };
@@ -479,6 +683,13 @@ fn parse_line(line: &str, names: &[String], tech: &Tech) -> Result<NamedRule, Ve
     }
     let d = tech.dbu_per_um as f64;
     let dbu = |v: f64| (v * d).round() as i64;
+    if kind == "flag" {
+        return Ok(NamedRule {
+            name: name.unwrap_or_else(|| Rule::Flag { layer: layers[0] }.auto_name(names)),
+            rule: Rule::Flag { layer: layers[0] },
+            comment: None,
+        });
+    }
     let (l0, v) = (layers[0], nums[0]);
     let rule = match kind.as_str() {
         "width" => Rule::Width { layer: l0, min: dbu(v) },
@@ -501,7 +712,7 @@ fn parse_line(line: &str, names: &[String], tech: &Tech) -> Result<NamedRule, Ve
         }
     };
     let name = name.unwrap_or_else(|| rule.auto_name(names));
-    Ok(NamedRule { name, rule })
+    Ok(NamedRule { name, rule, comment: None })
 }
 
 /// Antenna rule for metal `layer`: the technology vias up to its level.
@@ -575,7 +786,7 @@ pub fn default_deck_text(tech: &Tech) -> String {
 
 /// Run the technology's deck ([`Tech::deck_text`]).
 pub fn run_tech_deck(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Result<DrcReport, Vec<DeckError>> {
-    Ok(run(&parse_deck(&tech.deck_text(), tech)?, top, src, tech))
+    Ok(run(&parse_any(&tech.deck_text(), tech)?.deck, top, src, tech))
 }
 
 pub fn run(deck: &Deck, top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> DrcReport {
@@ -617,7 +828,7 @@ pub fn run(deck: &Deck, top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Dr
     }
     let mut regions = par_map(&rects, |r| Region::from_rects(r.iter().copied()));
     for (k, d) in deck.derived.iter().enumerate() {
-        let r = if used[n + k] { d.expr.eval(&regions) } else { Region::default() };
+        let r = if used[n + k] { d.expr.eval(&regions, extent) } else { Region::default() };
         regions.push(r);
     }
     let empty = Region::default();
@@ -630,7 +841,7 @@ pub fn run(deck: &Deck, top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Dr
         if parts.len() > MAX_VIOLATIONS_PER_RULE {
             report.capped.push((nr.name.clone(), parts.len()));
         }
-        let description = nr.rule.description(tech, &names);
+        let description = nr.comment.clone().unwrap_or_else(|| nr.rule.description(tech, &names));
         let checked = nr.rule.checked_layer();
         for p in parts.iter().take(MAX_VIOLATIONS_PER_RULE) {
             if let Some(marker) = p.bbox() {
@@ -699,7 +910,53 @@ fn check<'a>(rule: &Rule, layer: &impl Fn(usize) -> &'a Region, extent: Option<I
         Rule::Density { layer: l, min, max, window, step } => {
             extent.map_or_else(Region::default, |e| density(layer(l), e, (min, max), window, step))
         }
+        Rule::Flag { layer: l } => layer(l).clone(),
     }
+}
+
+/// Pieces of `a` selected by `how` against `b` (the others when `not`).
+fn select(a: &Region, b: &Region, how: Select, not: bool) -> Region {
+    let tree = RTree::bulk_load(b.rects().iter().map(|&r| Boxed(r)).collect());
+    let overlaps =
+        |p: &Region| p.rects().iter().any(|r| tree.locate_in_envelope_intersecting(aabb(*r)).any(|q| q.0.intersects(r)));
+    let touches = |p: &Region| {
+        p.rects().iter().any(|r| {
+            let g = IRect::new(r.x0 - 1, r.y0 - 1, r.x1 + 1, r.y1 + 1);
+            tree.locate_in_envelope_intersecting(aabb(g)).any(|q| q.0.intersects(&g))
+        })
+    };
+    let b_parts = if how == Select::Enclose { b.parts() } else { Vec::new() };
+    let keep = |p: &Region| match how {
+        Select::Interact => overlaps(p) || touches(p),
+        Select::Inside => !p.is_empty() && p.boolean(b, BoolOp::Not).is_empty(),
+        Select::Outside => !overlaps(p),
+        Select::Touch => !overlaps(p) && touches(p),
+        Select::Enclose => {
+            let bb = p.bbox();
+            b_parts.iter().any(|q| match (bb, q.bbox()) {
+                (Some(o), Some(i)) if o.x0 <= i.x0 && o.y0 <= i.y0 && o.x1 >= i.x1 && o.y1 >= i.y1 => {
+                    q.boolean(p, BoolOp::Not).is_empty()
+                }
+                _ => false,
+            })
+        }
+    };
+    Region::from_rects(a.parts().into_iter().filter(|p| keep(p) != not).flat_map(|p| p.rects().to_vec()))
+}
+
+/// The holes of every piece of `a`: enclosed empty areas.
+fn holes(a: &Region) -> Region {
+    let mut out = Vec::new();
+    for p in a.parts() {
+        let Some(bb) = p.bbox() else { continue };
+        let frame = Region::from_rects([IRect::new(bb.x0 - 1, bb.y0 - 1, bb.x1 + 1, bb.y1 + 1)]).boolean(&p, BoolOp::Not);
+        for gap in frame.parts() {
+            if gap.bbox().is_some_and(|g| g.x0 >= bb.x0 && g.y0 >= bb.y0 && g.x1 <= bb.x1 && g.y1 <= bb.y1) {
+                out.extend_from_slice(gap.rects());
+            }
+        }
+    }
+    Region::from_rects(out)
 }
 
 fn dist2(a: &IRect, b: &IRect) -> i128 {
@@ -1146,9 +1403,15 @@ mod tests {
             [
                 (1, "unknown layer 'g'"),
                 (3, "layer 'poly' is already defined"),
-                (4, "unknown operator 'nand' (expected and, or, not, xor, size or wide)"),
+                (
+                    4,
+                    "unknown operator 'nand' (expected and, or, not, xor, interact, inside, outside, enclose, touch, size or wide)"
+                ),
                 (5, "bad distance 'abc' (expected a value in µm)"),
-                (6, "expected 'z = LAYER and|or|not|xor LAYER' or 'z = LAYER size|wide DIST'"),
+                (
+                    6,
+                    "expected 'z = LAYER and|or|not|xor LAYER', 'z = LAYER [not] interact|inside|outside|enclose|touch LAYER', 'z = LAYER size|wide DIST', 'z = LAYER area MIN MAX' or 'z = holes|extents LAYER'"
+                ),
                 (7, "invalid layer name 'a b'"),
                 (8, "unknown layer 'nope'"),
                 (9, "layer 'G' is already defined"),
@@ -1266,7 +1529,10 @@ mod tests {
             parse_deck("M1.W: width metal1 0.23\n  # comment\nSPACE Metal1 0.25 # trailing\nenclosure contact active 0.1", &t)
                 .unwrap();
         assert_eq!(d.rules.len(), 3);
-        assert_eq!(d.rules[0], NamedRule { name: "M1.W".into(), rule: Rule::Width { layer: li("metal1"), min: 230 } });
+        assert_eq!(
+            d.rules[0],
+            NamedRule { name: "M1.W".into(), rule: Rule::Width { layer: li("metal1"), min: 230 }, comment: None }
+        );
         assert_eq!(d.rules[1].name, "metal1.S");
         assert_eq!(d.rules[2].name, "contact.EN.active");
         let bad = "width metal1 0.23\nwidth metal9 x\nfoo metal1 1\nspace metal1\n\nseparation poly 1\nbad name: width metal1 1\narea metal1 -1";
@@ -1296,7 +1562,8 @@ mod tests {
         }
         assert!(deck.rules.contains(&NamedRule {
             name: "poly.EX.active".into(),
-            rule: Rule::Extension { a: li("poly"), b: li("active"), min: 220 }
+            rule: Rule::Extension { a: li("poly"), b: li("active"), min: 220 },
+            comment: None
         }));
         let names = deck.layer_names(&t);
         let lines: String = deck.rules.iter().map(|r| r.rule.deck_line(&t, &names) + "\n").collect();
@@ -1353,5 +1620,103 @@ mod tests {
             rep.violations.len(),
             rep.millis
         );
+    }
+
+    #[test]
+    fn selections_holes_extents_area_and_flag() {
+        // metal1: A overlaps poly, B touches it, C is inside poly, D is far away; poly has a
+        // ring with a hole around E (on metal2).
+        let lay = layout(&[
+            ("poly", (0, 0, 1000, 1000)),
+            ("metal1", (900, 100, 1500, 300)),
+            ("metal1", (1000, 500, 1500, 700)),
+            ("metal1", (200, 200, 400, 400)),
+            ("metal1", (5000, 0, 5100, 100)),
+            ("poly", (3000, 0, 4000, 200)),
+            ("poly", (3000, 800, 4000, 1000)),
+            ("poly", (3000, 200, 3200, 800)),
+            ("poly", (3800, 200, 4000, 800)),
+            ("metal2", (3400, 400, 3600, 600)),
+        ]);
+        let sel = |how: &str| {
+            let mut m = markers(
+                &format!(
+                    "x = metal1 {how} poly
+flag x"
+                ),
+                &lay,
+            );
+            m.sort_by_key(|r| (r.x0, r.y0));
+            m
+        };
+        assert_eq!(sel("interact"), [r(200, 200, 400, 400), r(900, 100, 1500, 300), r(1000, 500, 1500, 700)]);
+        assert_eq!(sel("not interact"), [r(5000, 0, 5100, 100)]);
+        assert_eq!(sel("inside"), [r(200, 200, 400, 400)]);
+        assert_eq!(sel("outside"), [r(1000, 500, 1500, 700), r(5000, 0, 5100, 100)]);
+        assert_eq!(sel("touch"), [r(1000, 500, 1500, 700)]);
+        assert_eq!(
+            markers(
+                "x = poly enclose metal1
+flag x",
+                &lay
+            ),
+            [r(0, 0, 1000, 1000)]
+        );
+        assert_eq!(
+            markers(
+                "h = holes poly
+flag h",
+                &lay
+            ),
+            [r(3200, 200, 3800, 800)]
+        );
+        assert_eq!(
+            markers(
+                "h = holes poly
+x = h enclose metal2
+flag x",
+                &lay
+            ),
+            [r(3200, 200, 3800, 800)]
+        );
+        assert_eq!(
+            markers(
+                "e = extents metal1
+flag e",
+                &lay
+            )
+            .len(),
+            4
+        );
+        assert_eq!(
+            markers(
+                "s = metal1 area 0 0.02
+flag s",
+                &lay
+            ),
+            [r(5000, 0, 5100, 100)]
+        );
+        assert_eq!(
+            markers(
+                "s = metal1 area 0.1 inf
+flag s",
+                &lay
+            )
+            .len(),
+            2
+        );
+        let t = tech();
+        let d = parse_deck(
+            "x = metal1 not inside poly
+h = holes poly
+flag x",
+            &t,
+        )
+        .unwrap();
+        let names = d.layer_names(&t);
+        assert_eq!(d.derived[0].deck_line(&t, &names), "x = metal1 not inside poly");
+        assert_eq!(d.derived[1].deck_line(&t, &names), "h = holes poly");
+        assert_eq!(d.rules[0].rule.deck_line(&t, &names), "flag x");
+        assert_eq!(d.rules[0].name, "x.FLAG");
     }
 }

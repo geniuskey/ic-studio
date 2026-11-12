@@ -23,6 +23,7 @@ pub mod schematic;
 pub mod sdl;
 pub mod signoff;
 pub mod sim_setup;
+pub mod svrf;
 pub mod tech;
 pub mod tech_import;
 pub mod units;

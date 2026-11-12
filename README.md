@@ -101,6 +101,8 @@ Linux needs the usual windowing libraries:
   and corners in one TOML file; extraction, LVS, netlists and PCells follow the PDK
 - Sign-off DRC / LVS with external tools: KLayout decks, Calibre SVRF rule files and
   netgen, with results as markers in the layout
+- SVRF decks translated to the built-in DRC (layer maps, boolean / selection operations,
+  INT / EXT / ENC / AREA / DENSITY checks), with notes for what is not translated
 
 ## Command line
 
