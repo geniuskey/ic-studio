@@ -380,7 +380,12 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
     let covers =
         |name: &str, p: (i64, i64)| lid(name).and_then(|l| markers.get(&l)).is_some_and(|m| m.comp_at(p, false).is_some());
 
-    let nplus_p = Plane::new(region(nplus));
+    // Without an n implant layer, n+ is the diffusion outside the p implant.
+    let nplus_p = Plane::new(match nplus {
+        Some(_) => region(nplus),
+        None if tech.roles.nimplant.is_empty() => active_r.boolean(&region(pplus), BoolOp::Not),
+        None => Region::default(),
+    });
     let pplus_p = Plane::new(region(pplus));
     if let Some(dp) = diff_pi {
         let diff = &planes[dp].region;

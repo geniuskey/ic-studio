@@ -52,7 +52,8 @@ Layer:
 ```
 
 - `fill`: `solid`, `hatch`, `backhatch`, `cross`, `dots` or `outline`.
-- `min_width`, `min_spacing`: in dbu; 0 means not checked.
+- `min_width`, `min_spacing`: in dbu; 0 means not checked. `min_area` (optional): in dbu²; PCell
+  contact plates and router via pads grow to reach it.
 - `routing`: a routing layer carries net labels and is used by extraction and the router.
 
 Via: `name`, `bottom`, `cut`, `top` (layer names), `cut_size`, `cut_spacing`,
@@ -178,8 +179,10 @@ The command line can use a separate file: `ics drc <project> <cell> --deck rules
 ## PDK files
 
 A PDK file is one TOML file that describes a whole process: layers with their rules, vias,
-the layer roles, the MOS devices and the SPICE model library. `pdks/sky130A.toml` in the
-repository describes SkyWater SKY130.
+the layer roles, the MOS devices and the SPICE model library. The repository includes
+`pdks/sky130A.toml` (SkyWater SKY130) and `pdks/ihp-sg13g2.toml` (IHP SG13G2, 1.2 V and
+3.3 V MOS devices, Metal1 to TopMetal2). Both read the models and sign-off decks from an
+installed PDK through `$PDK_ROOT`.
 
 - GUI: **File > Import > PDK...** (or **Load PDK...** in the command palette)
 - CLI: `ics load-pdk myproj pdks/sky130A.toml`
@@ -202,14 +205,14 @@ The main sections:
 |---|---|
 | `name`, `dbu_per_um`, `grid` | Technology name, database unit, snap grid (µm) |
 | `lyp`, `lyt` | Optional KLayout files supplying layers and colours |
-| `[[layer]]` | `name`, `gds`, `datatype`, `width`, `space`, `routing`, `color` (`#rrggbb`), `fill`. Adds a layer, or sets rules on a layer from the `.lyp` |
-| `[roles]` | `diffusion` (list), `tap`, `poly`, `nwell`, `nimplant`, `pimplant`, `diff_contact`, `poly_contact` (via names), `label` |
+| `[[layer]]` | `name`, `gds`, `datatype`, `width`, `space`, `area` (µm²), `routing`, `color` (`#rrggbb`), `fill`. Adds a layer, or sets rules on a layer from the `.lyp` |
+| `[roles]` | `diffusion` (list), `tap`, `poly`, `nwell`, `nimplant` (empty when the process draws no n+ implant: n+ is diffusion outside `pimplant`), `pimplant`, `diff_contact`, `poly_contact` (via names), `label` |
 | `[rules]` | `gate_contact_space`, `poly_endcap`, `implant_enc`, `nwell_enc`, `marker_enc` (device marker layers around the diffusion) |
 | `[[pcell_layer]]` | Extra layer the PCells draw: `layer`, `around` (`poly_contact`, `diff_contact`, `gate`, `diffusion`, `poly` or a layer name), `enc`, optional `kinds` (`nmos`, `pmos`, `poly_res`, `mom_cap`, `ntap`, `ptap`) |
 | `drc_extra` | Deck lines appended to the deck derived from the layer rules (top-level key, before the tables) |
 | `[[via]]` | `name`, `bottom`, `cut`, `top`, `size`, `space`, `enc_bottom`, `enc_top`, `resistance` |
 | `[[device]]` | `name`, `type` (`nmos` / `pmos`), `layers`, `exclude`, `subckt` |
-| `[models]` | `path`, `corners`, `default`, `length_unit` (`m` or `um`) |
+| `[models]` | `path`, `extra` (more model files loaded at the same corner), `corners`, `default`, `length_unit` (`m` or `um`) |
 | `drc_deck` | Optional DRC deck file |
 | `[[signoff]]` | External DRC / LVS runsets: `name`, `tool` (`klayout`, `calibre`, `netgen`), `check` (`drc`, `lvs`), `deck`, `vars`, `skip`, `ground` (see [Verification](verification.md#sign-off-with-external-tools)) |
 | `[[cap]]` | Parasitic coefficients, as in `tech.json` |

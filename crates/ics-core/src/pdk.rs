@@ -14,6 +14,7 @@
 //! datatype = 20
 //! width = 0.15                 # µm, optional
 //! space = 0.27                 # µm, optional
+//! area = 0.0                   # µm², optional minimum area
 //! routing = false              # optional
 //! color = "#4cc85a"            # optional, "#rrggbb" or "#rrggbbaa"
 //! fill = "hatch"               # optional: solid hatch backhatch cross dots outline
@@ -65,6 +66,7 @@
 //! corners = ["tt", "ff", "ss", "sf", "fs"]
 //! default = "tt"
 //! length_unit = "um"           # "m" (default) or "um"
+//! extra = []                   # further model files loaded at the same corner
 //!
 //! drc_deck = "rules.deck"      # optional IC Studio DRC deck (see `drc`)
 //!
@@ -137,6 +139,8 @@ struct LayerEntry {
     datatype: Option<u16>,
     width: Option<f64>,
     space: Option<f64>,
+    /// µm²
+    area: Option<f64>,
     routing: Option<bool>,
     color: Option<String>,
     fill: Option<FillStyle>,
@@ -187,6 +191,8 @@ struct ModelsEntry {
     default: String,
     #[serde(default)]
     length_unit: LengthUnit,
+    #[serde(default)]
+    extra: Vec<String>,
 }
 
 /// A loaded PDK: the technology plus non-fatal problems found while loading it.
@@ -257,6 +263,9 @@ pub fn parse(text: &str, base: &Path, env: &dyn Fn(&str) -> Option<String>) -> R
         if let Some(s) = e.space {
             l.min_spacing = to_dbu(s);
         }
+        if let Some(a) = e.area {
+            l.min_area = (a * (dbu * dbu) as f64).round() as i64;
+        }
         if let Some(r) = e.routing {
             l.routing = r;
         }
@@ -326,7 +335,7 @@ pub fn parse(text: &str, base: &Path, env: &dyn Fn(&str) -> Option<String>) -> R
         None => None,
     };
     tech.models = f.models.map(|m| {
-        let path = match resolve(&m.path, base, env) {
+        let mut model_path = |raw: &str| match resolve(raw, base, env) {
             Ok(p) => {
                 if !p.exists() {
                     warnings.push(format!("model library {} does not exist", p.display()));
@@ -335,13 +344,15 @@ pub fn parse(text: &str, base: &Path, env: &dyn Fn(&str) -> Option<String>) -> R
             }
             Err(e) => {
                 warnings.push(format!("model library: {e}"));
-                m.path.clone()
+                raw.to_string()
             }
         };
+        let path = model_path(&m.path);
+        let extra: Vec<String> = m.extra.iter().map(|p| model_path(p)).collect();
         if !m.default.is_empty() && !m.corners.contains(&m.default) {
             warnings.push(format!("default corner '{}' is not one of {:?}", m.default, m.corners));
         }
-        ModelLib { path, corners: m.corners, default_corner: m.default, length_unit: m.length_unit }
+        ModelLib { path, corners: m.corners, default_corner: m.default, length_unit: m.length_unit, extra }
     });
     tech.signoff = f
         .signoff
@@ -379,13 +390,8 @@ pub fn check(tech: &Tech) -> Vec<String> {
         .diffusion
         .iter()
         .map(|n| ("diffusion", n))
-        .chain([
-            ("poly", &r.poly),
-            ("nwell", &r.nwell),
-            ("nimplant", &r.nimplant),
-            ("pimplant", &r.pimplant),
-            ("label", &r.label),
-        ])
+        .chain([("poly", &r.poly), ("nwell", &r.nwell), ("pimplant", &r.pimplant), ("label", &r.label)])
+        .chain((!r.nimplant.is_empty()).then_some(("nimplant", &r.nimplant)))
         .chain((!r.tap.is_empty()).then_some(("tap", &r.tap)))
     {
         if !has(n) {
@@ -523,8 +529,14 @@ mod tests {
 
     /// The demo inverter in SKY130 with the NMOS model set to `nmos_model`.
     fn sky130_inverter_with(nmos_model: Option<&str>) -> (Project, crate::Schematic, crate::Layout) {
+        inverter_in(sky130(Some("/pdk")).tech, nmos_model)
+    }
+
+    /// The demo inverter in `tech`, placed and routed from its schematic, with the NMOS model
+    /// set to `nmos_model`.
+    fn inverter_in(tech: Tech, nmos_model: Option<&str>) -> (Project, crate::Schematic, crate::Layout) {
         let mut p = crate::examples::demo_project();
-        p.set_tech(sky130(Some("/pdk")).tech).unwrap();
+        p.set_tech(tech).unwrap();
         let mut sch = p.cell(&CellRef::new("work", "cmos_inverter")).and_then(|c| c.schematic.clone()).unwrap();
         if let Some(m) = nmos_model {
             let n = sch.instances.iter_mut().find(|i| i.kind == crate::DeviceKind::Nmos).unwrap();
@@ -637,6 +649,85 @@ mod tests {
         for d in &tech.devices {
             let pmos = d.kind == crate::tech::MosType::Pmos;
             for (w, l) in [(420, 150), (1000, 150), (2000, 180), (1000, 500)] {
+                for fingers in 1..=3 {
+                    cells.push(crate::pcell::PCell::Mos { pmos, w, l, fingers, device: d.name.clone() });
+                }
+            }
+        }
+        for c in cells {
+            let lay = c.generate(&tech).unwrap_or_else(|e| panic!("{}: {e}", c.variant_name()));
+            let v = run_tech_deck(&lay, &crate::hier::NoCells, &tech).unwrap().violations;
+            assert!(v.is_empty(), "{}: {:?}", c.variant_name(), v.iter().map(|v| (&v.rule, v.marker)).collect::<Vec<_>>());
+            let x = extract(&lay, &crate::hier::NoCells, &tech);
+            if let crate::pcell::PCell::Mos { device, fingers, .. } = &c {
+                assert_eq!(x.devices.len(), *fingers as usize, "{}", c.variant_name());
+                assert!(x.devices.iter().all(|d| &d.model == device), "{}: {:?}", c.variant_name(), x.warnings);
+            }
+        }
+    }
+
+    const SG13G2: &str = include_str!("../../../pdks/ihp-sg13g2.toml");
+
+    fn sg13g2() -> Pdk {
+        parse(SG13G2, Path::new("."), &|v| (v == "PDK_ROOT").then(|| "/pdk".to_string())).unwrap()
+    }
+
+    #[test]
+    fn sg13g2_loads_consistently() {
+        let p = sg13g2();
+        assert!(p.warnings.iter().all(|w| w.contains("does not exist")), "only missing PDK files: {:?}", p.warnings);
+        let t = &p.tech;
+        assert_eq!((t.name.as_str(), t.grid, t.devices.len(), t.signoff.len()), ("ihp-sg13g2", 5, 4, 3));
+        assert_eq!(t.implant(false), None);
+        assert_eq!(t.metal1().and_then(|l| t.layer(l)).map(|l| l.name.as_str()), Some("Metal1"));
+        assert_eq!(t.layer(t.layer_index("Metal2").unwrap()).unwrap().min_area, 144_000);
+        assert_eq!(t.mos_device(true, "pmos").map(|d| d.name.as_str()), Some("sg13_lv_pmos"));
+        let lines = t.models.as_ref().unwrap().spice_line("mos_ss");
+        let lines: Vec<String> = lines.replace('\\', "/").lines().map(String::from).collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].ends_with("cornerMOSlv.lib\" mos_ss") && lines[1].ends_with("cornerMOShv.lib\" mos_ss"), "{lines:?}");
+    }
+
+    /// The demo inverter in SG13G2: placed, routed, DRC clean, extracted as the 1.2 V devices,
+    /// LVS clean, netlisted as subcircuits in metres; a 3.3 V NMOS gets ThickGateOx.
+    #[test]
+    fn sg13g2_inverter_end_to_end() {
+        for (model, expect) in [(None, "sg13_lv_nmos"), (Some("sg13_hv_nmos"), "sg13_hv_nmos")] {
+            let (p, sch, lay) = inverter_in(sg13g2().tech, model);
+            let drc = run_tech_deck(&lay, &p, &p.tech).unwrap();
+            assert!(
+                drc.violations.is_empty(),
+                "{expect}: {:?}",
+                drc.violations.iter().map(|v| (&v.rule, v.marker)).collect::<Vec<_>>()
+            );
+            let x = extract(&lay, &p, &p.tech);
+            assert!(x.warnings.is_empty(), "{:?}", x.warnings);
+            let models: Vec<&str> = x.devices.iter().map(|d| d.model.as_str()).collect();
+            assert_eq!(models, [expect, "sg13_lv_pmos"]);
+            let rep = compare(&sch, &x, &lvs_opts(&p.tech));
+            assert!(rep.matched, "{:?}", rep.errors);
+            let nl = netlist_for(&sch, &p.tech, "");
+            assert!(nl.warnings.is_empty(), "{:?}", nl.warnings);
+            let nmos = nl.body.lines().find(|l| l.contains(&format!(" {expect} "))).unwrap_or_default();
+            assert!(nmos.starts_with("XM") && nmos.ends_with(" w=1u l=180n"), "{}", nl.body);
+            assert_eq!(nl.body.matches(".lib ").count(), 2, "{}", nl.body);
+        }
+    }
+
+    /// Every SG13G2 PCell variant is DRC clean and extracts as its device.
+    #[test]
+    fn sg13g2_pcells_drc_clean() {
+        let tech = sg13g2().tech;
+        let mut cells = vec![
+            crate::pcell::PCell::PolyRes { w: 400, l: 5000 },
+            crate::pcell::PCell::MomCap { w: 5000, h: 5000 },
+            crate::pcell::PCell::Tap { well: true, w: 1000 },
+            crate::pcell::PCell::Tap { well: false, w: 1000 },
+        ];
+        for d in &tech.devices {
+            let pmos = d.kind == crate::tech::MosType::Pmos;
+            let l_min = if d.name.contains("hv") { if pmos { 400 } else { 450 } } else { 130 };
+            for (w, l) in [(400, l_min), (1000, l_min), (2000, 500)] {
                 for fingers in 1..=3 {
                     cells.push(crate::pcell::PCell::Mos { pmos, w, l, fingers, device: d.name.clone() });
                 }

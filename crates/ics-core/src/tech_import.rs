@@ -315,6 +315,7 @@ pub fn from_lyp(xml: &str, name: &str) -> Result<Tech, String> {
             fill: e.style.pattern.as_deref().map_or(FillStyle::Hatch, fill_style),
             min_width: 0,
             min_spacing: 0,
+            min_area: 0,
         });
     }
     if layers.is_empty() {

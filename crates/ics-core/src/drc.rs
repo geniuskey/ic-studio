@@ -754,6 +754,10 @@ pub fn default_deck_text(tech: &Tech) -> String {
         if l.min_spacing > 0 {
             push(format!("space {} {}", l.name, um(l.min_spacing)));
         }
+        if l.min_area > 0 {
+            let d = tech.dbu_per_um.max(1) as f64;
+            push(format!("area {} {}", l.name, l.min_area as f64 / (d * d)));
+        }
     }
     for v in &tech.vias {
         let def = |n: &str| tech.layer_index(n).and_then(|i| tech.layer(i));

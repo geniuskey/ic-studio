@@ -3,8 +3,9 @@
 //!
 //! - Layers: the chain of routing layers joined by vias, without poly (metal1, metal2, ... in the
 //!   generic technology).
-//! - A wire width per layer (its minimum width or the plates of the vias it carries) and one
-//!   pitch (the largest width + the largest spacing). Grid lines run through the device terminals first (source /
+//! - A wire width per layer (its minimum width or the plates of the vias it carries), a pad
+//!   size where a path changes layer (large enough for the layer's minimum area) and one
+//!   pitch (the largest pad + the largest spacing). Grid lines run through the device terminals first (source /
 //!   drain columns, gate rows), and the gaps are filled with lines at least one pitch apart, so
 //!   shapes on different nodes never come closer than the spacing.
 //! - A node or the wire between two neighbouring nodes is free, owned by one net (it touches only
@@ -86,6 +87,9 @@ struct Stack {
     /// Cut layer and size between `layers[k]` and `layers[k + 1]`.
     cuts: Vec<(usize, i64)>,
     widths: Vec<i64>,
+    /// Square drawn where a path changes layer: the wire width, or larger to reach the layer's
+    /// minimum area on its own.
+    pads: Vec<i64>,
     pitch: i64,
 }
 
@@ -129,9 +133,18 @@ fn stack(tech: &Tech) -> Result<Stack, String> {
     }
     let spacing: Vec<i64> = layers.iter().map(|&l| tech.layer(l).map_or(0, |d| d.min_spacing)).collect();
     let widths: Vec<i64> = widths.into_iter().map(|w| snap_up(w.max(g), 2 * g)).collect();
-    let width = widths.iter().copied().max().unwrap_or(g);
+    let pads: Vec<i64> = layers
+        .iter()
+        .zip(&widths)
+        .map(|(&l, &w)| {
+            let area = tech.layer(l).map_or(0, |d| d.min_area);
+            let side = (area as f64).sqrt().ceil() as i64;
+            w.max(snap_up(side, 2 * g))
+        })
+        .collect();
+    let width = pads.iter().copied().max().unwrap_or(g);
     let pitch = snap_up((width + spacing.iter().copied().max().unwrap_or(0)).max(cut_pitch), g);
-    Ok(Stack { layers, spacing, cuts, widths, pitch })
+    Ok(Stack { layers, spacing, cuts, widths, pads, pitch })
 }
 
 /// Grid lines covering `lo..=hi`: every `pins` coordinate, plus filler lines at least `pitch`
@@ -391,7 +404,7 @@ impl Router<'_> {
                 self.occupant[i] = j as u32 + 1;
             }
             let (k, _, _) = self.g.pos(i);
-            for n in near(self.g, i, self.st.widths[k] + self.st.spacing[k]) {
+            for n in near(self.g, i, self.st.pads[k] + self.st.spacing[k]) {
                 self.blockers.entry(n).or_default().push(j as u32);
             }
         }
@@ -405,7 +418,7 @@ impl Router<'_> {
                     self.occupant[i] = 0;
                 }
                 let (k, _, _) = self.g.pos(i);
-                for n in near(self.g, i, self.st.widths[k] + self.st.spacing[k]) {
+                for n in near(self.g, i, self.st.pads[k] + self.st.spacing[k]) {
                     if let Some(b) = self.blockers.get_mut(&n) {
                         if let Some(p) = b.iter().position(|&x| x == v as u32) {
                             b.swap_remove(p);
@@ -520,10 +533,15 @@ impl Router<'_> {
                         report.vias += 1;
                     }
                 }
-                for &i in path {
+                for (n, &i) in path.iter().enumerate() {
                     let (k, iy, ix) = grid.pos(i);
                     let (x, y) = (grid.xs[ix], grid.ys[iy]);
-                    let half = st.widths[k] / 2;
+                    let via = [n.checked_sub(1), Some(n + 1)]
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|m| path.get(m))
+                        .any(|&o| grid.pos(o).0 != k);
+                    let half = if via { st.pads[k] } else { st.widths[k] } / 2;
                     wires.entry(st.layers[k]).or_default().push(IRect::new(x - half, y - half, x + half, y + half));
                 }
             }
@@ -575,7 +593,7 @@ pub fn route_with(
     }
     let mut grid = Grid { xs, ys, nl, node: vec![FREE; total], right: vec![BLOCKED; total], up: vec![BLOCKED; total] };
     for (k, &l) in st.layers.iter().enumerate() {
-        let half = st.widths[k] / 2;
+        let (half, pad) = (st.widths[k] / 2, st.pads[k] / 2);
         let items: Vec<Item> = ex
             .nets
             .iter()
@@ -593,7 +611,7 @@ pub fn route_with(
             for ix in 0..grid.xs.len() {
                 let (x, y) = (grid.xs[ix], grid.ys[iy]);
                 let i = grid.idx(k, ix, iy);
-                grid.node[i] = classify(&tree, IRect::new(x - half, y - half, x + half, y + half), s);
+                grid.node[i] = classify(&tree, IRect::new(x - pad, y - pad, x + pad, y + pad), s);
                 if let Some(&xn) = grid.xs.get(ix + 1) {
                     grid.right[i] = classify(&tree, IRect::new(x - half, y - half, xn + half, y + half), s);
                 }

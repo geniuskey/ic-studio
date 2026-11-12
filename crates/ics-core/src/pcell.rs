@@ -121,7 +121,7 @@ pub fn via_array(tech: &Tech, via: &ViaDef, area: IRect) -> Result<Vec<(usize, G
     let g = tech.grid;
     let enc = via.enc_bottom.max(via.enc_top);
     let need = (via.cut_size + 2 * enc).max(min_width(tech, b)).max(min_width(tech, t));
-    let plate = grow_to(area, need, need, g);
+    let plate = grow_to_area(grow_to(area, need, need, g), plate_area(tech, b).max(plate_area(tech, t)), g);
     let mut out = vec![(b, Geometry::Rect(plate))];
     out.extend(cut_grid(grow(plate, -enc), via.cut_size, via.cut_spacing, g).into_iter().map(|r| (c, Geometry::Rect(r))));
     out.push((t, Geometry::Rect(plate)));
@@ -137,7 +137,7 @@ pub fn via_at(tech: &Tech, via: &ViaDef, at: (i64, i64)) -> Result<Vec<(usize, G
     let cut = IRect::new(x0, y0, x0 + s, y0 + s);
     let plate = |layer: usize, enc: i64| {
         let mw = min_width(tech, layer);
-        Geometry::Rect(grow_to(grow(cut, enc), mw, mw, g))
+        Geometry::Rect(grow_to_area(grow_to(grow(cut, enc), mw, mw, g), plate_area(tech, layer), g))
     };
     Ok(vec![(b, plate(b, via.enc_bottom)), (c, Geometry::Rect(cut)), (t, plate(t, via.enc_top))])
 }
@@ -157,6 +157,14 @@ fn role(tech: &Tech, l: Option<usize>, what: &str) -> Result<usize, String> {
     l.ok_or_else(|| format!("technology '{}' has no {what} layer", tech.name))
 }
 
+/// The implant layer of a polarity; `None` when the technology draws no n implant.
+fn implant(tech: &Tech, pmos: bool) -> Result<Option<usize>, String> {
+    if !pmos && tech.roles.nimplant.is_empty() {
+        return Ok(None);
+    }
+    role(tech, tech.implant(pmos), "implant").map(Some)
+}
+
 fn diff_contact(tech: &Tech) -> Result<&ViaDef, String> {
     tech.diff_contact()
         .ok_or_else(|| format!("technology '{}' has no diffusion contact '{}'", tech.name, tech.roles.diff_contact))
@@ -168,6 +176,35 @@ fn poly_contact(tech: &Tech) -> Result<&ViaDef, String> {
 
 fn min_width(tech: &Tech, layer: usize) -> i64 {
     tech.layer(layer).map_or(0, |l| l.min_width)
+}
+
+fn min_area(tech: &Tech, layer: usize) -> i64 {
+    tech.layer(layer).map_or(0, |l| l.min_area)
+}
+
+/// Minimum area a via plate on `layer` must reach: none on diffusion and poly, whose plates
+/// merge with the device they contact.
+fn plate_area(tech: &Tech, layer: usize) -> i64 {
+    if tech.diffusion_layers().contains(&layer) || Some(layer) == tech.poly() || Some(layer) == tech.tap_layer() {
+        0
+    } else {
+        min_area(tech, layer)
+    }
+}
+
+/// Grow `r` (on grid, symmetrically, along its longer side) to at least `area` dbu².
+fn grow_to_area(r: IRect, area: i64, g: i64) -> IRect {
+    if area <= 0 || r.width() * r.height() >= area || r.width() <= 0 || r.height() <= 0 {
+        return r;
+    }
+    let step = 2 * g.max(1);
+    if r.width() >= r.height() {
+        let w = snap_up((area + r.height() - 1) / r.height(), step);
+        grow_to(r, w, 0, g)
+    } else {
+        let h = snap_up((area + r.width() - 1) / r.width(), step);
+        grow_to(r, 0, h, g)
+    }
 }
 
 fn min_spacing(tech: &Tech, layer: usize) -> i64 {
@@ -271,7 +308,7 @@ fn gen_tap(tech: &Tech, well: bool, w: i64) -> Result<Layout, String> {
     let g = tech.grid;
     let w = snap(w, g);
     let active = role(tech, tech.tap_layer(), "tap")?;
-    let imp = role(tech, tech.implant(!well), "implant")?;
+    let imp = implant(tech, !well)?;
     let con = diff_contact(tech)?;
     let con_bottom = layer(tech, &con.bottom)?;
     let side = (con.cut_size + 2 * con.enc_bottom.max(con.enc_top)).max(min_width(tech, active));
@@ -283,8 +320,10 @@ fn gen_tap(tech: &Tech, well: bool, w: i64) -> Result<Layout, String> {
     lay.add(active, Geometry::Rect(act));
     add_all(&mut lay, via_array(tech, con, act)?, Some(con_bottom));
     label(&mut lay, tech, "B", centre(act));
-    let imp_min = min_width(tech, imp);
-    lay.add(imp, Geometry::Rect(grow_to(grow(act, snap_up(tech.rules.implant_enc, g)), imp_min, imp_min, g)));
+    if let Some(imp) = imp {
+        let imp_min = min_width(tech, imp);
+        lay.add(imp, Geometry::Rect(grow_to(grow(act, snap_up(tech.rules.implant_enc, g)), imp_min, imp_min, g)));
+    }
     if well {
         let nwell = role(tech, tech.nwell(), "nwell")?;
         let nw_min = min_width(tech, nwell);
@@ -358,7 +397,7 @@ fn gen_mos(tech: &Tech, pmos: bool, w: i64, l: i64, fingers: u32, device: Option
     let active = role(tech, tech.diffusion(), "diffusion")?;
     let poly = role(tech, tech.poly(), "poly")?;
     let m1 = role(tech, tech.metal1(), "first metal")?;
-    let imp = role(tech, tech.implant(pmos), "implant")?;
+    let imp = implant(tech, pmos)?;
     let con = diff_contact(tech)?;
     let pcon = poly_contact(tech)?;
     let con_bottom = layer(tech, &con.bottom)?;
@@ -369,7 +408,10 @@ fn gen_mos(tech: &Tech, pmos: bool, w: i64, l: i64, fingers: u32, device: Option
     if l < min_width(tech, poly) {
         return Err(format!("gate length {l} is below the poly minimum width {}", min_width(tech, poly)));
     }
-    let w_min = min_width(tech, active).max(con.cut_size + 2 * con_enc);
+    // A source / drain contact plate spans the width: it must reach the metal's minimum area.
+    let plate_w = (con.cut_size + 2 * con_enc).max(min_width(tech, m1));
+    let area_w = snap_up((min_area(tech, m1) + plate_w - 1) / plate_w.max(1), g);
+    let w_min = min_width(tech, active).max(con.cut_size + 2 * con_enc).max(area_w);
     if w < w_min {
         return Err(format!("width {w} is below the minimum {w_min} (active width / one contact)"));
     }
@@ -411,9 +453,10 @@ fn gen_mos(tech: &Tech, pmos: bool, w: i64, l: i64, fingers: u32, device: Option
         let mw = min_width(tech, ml);
         lay.add(ml, Geometry::Rect(grow_to(grow(act, snap_up(tech.rules.marker_enc, g)), mw, mw, g)));
     }
-    let imp_r = grow(act, snap_up(tech.rules.implant_enc, g));
-    let imp_min = min_width(tech, imp);
-    lay.add(imp, Geometry::Rect(grow_to(imp_r, imp_min, imp_min, g)));
+    if let Some(imp) = imp {
+        let imp_min = min_width(tech, imp);
+        lay.add(imp, Geometry::Rect(grow_to(grow(act, snap_up(tech.rules.implant_enc, g)), imp_min, imp_min, g)));
+    }
     if pmos {
         let nwell = role(tech, tech.nwell(), "nwell")?;
         let nw_min = min_width(tech, nwell);

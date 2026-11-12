@@ -1,0 +1,363 @@
+# IHP SG13G2 (130 nm SiGe BiCMOS, IHP-Open-PDK "ihp-sg13g2") for IC Studio.
+#
+# Layers, vias and devices are self-contained here; the SPICE models and sign-off decks come
+# from an installed PDK, found through $PDK_ROOT (the folder holding ihp-sg13g2/).
+# Values follow the SG13G2 layout rules (rev. 0.4) and the KLayout rule values of the open
+# PDK. Vias use the end-cap enclosure on all sides, which is conservative. The PCell rules
+# below also cover the 3.3 V (ThickGateOx) devices: NWell and pSD enclosures use the
+# thick-oxide values, which are larger than the 1.2 V ones.
+
+name = "ihp-sg13g2"
+dbu_per_um = 1000
+grid = 0.005
+
+# Checks added to the deck derived from the layer rules.
+drc_extra = [
+  "gate = GatPoly and Activ",
+  "ngate = gate not pSD",
+  "pgate = gate and pSD",
+  "dcont = Cont and Activ",
+  "pcont = Cont and GatPoly",
+  "pSD.i: enclosure pgate pSD 0.3",
+  "pSD.j: separation pSD ngate 0.3",
+  "Gat.d: separation Activ GatPoly 0.07",
+  "Cnt.e: separation Activ pcont 0.14",
+  "Cnt.f: separation GatPoly dcont 0.11",
+]
+
+[[layer]]
+name = "NWell"
+gds = 31
+datatype = 0
+width = 0.62
+space = 0.62
+color = "#78c878"
+fill = "dots"
+
+[[layer]]
+name = "Activ"
+gds = 1
+datatype = 0
+width = 0.15
+space = 0.21
+area = 0.122
+color = "#46be5a"
+fill = "hatch"
+
+[[layer]]
+name = "pSD"
+gds = 14
+datatype = 0
+width = 0.31
+space = 0.31
+area = 0.25
+color = "#c8a03c"
+fill = "outline"
+
+[[layer]]
+name = "ThickGateOx"
+gds = 44
+datatype = 0
+width = 0.86
+space = 0.86
+color = "#a078c8"
+fill = "outline"
+
+[[layer]]
+name = "GatPoly"
+gds = 5
+datatype = 0
+width = 0.13
+space = 0.18
+area = 0.09
+routing = true
+color = "#e63c3c"
+fill = "backhatch"
+
+[[layer]]
+name = "Cont"
+gds = 6
+datatype = 0
+color = "#ebebeb"
+fill = "cross"
+
+[[layer]]
+name = "Metal1"
+gds = 8
+datatype = 0
+width = 0.16
+space = 0.18
+area = 0.09
+routing = true
+color = "#508cfa"
+fill = "hatch"
+
+[[layer]]
+name = "Via1"
+gds = 19
+datatype = 0
+color = "#fad250"
+fill = "cross"
+
+[[layer]]
+name = "Metal2"
+gds = 10
+datatype = 0
+width = 0.2
+space = 0.21
+area = 0.144
+routing = true
+color = "#d264e6"
+fill = "backhatch"
+
+[[layer]]
+name = "Via2"
+gds = 29
+datatype = 0
+color = "#78e6e6"
+fill = "cross"
+
+[[layer]]
+name = "Metal3"
+gds = 30
+datatype = 0
+width = 0.2
+space = 0.21
+area = 0.144
+routing = true
+color = "#f0aa50"
+fill = "hatch"
+
+[[layer]]
+name = "Via3"
+gds = 49
+datatype = 0
+color = "#e6e678"
+fill = "cross"
+
+[[layer]]
+name = "Metal4"
+gds = 50
+datatype = 0
+width = 0.2
+space = 0.21
+area = 0.144
+routing = true
+color = "#64c8aa"
+fill = "backhatch"
+
+[[layer]]
+name = "Via4"
+gds = 66
+datatype = 0
+color = "#c8c878"
+fill = "cross"
+
+[[layer]]
+name = "Metal5"
+gds = 67
+datatype = 0
+width = 0.2
+space = 0.21
+area = 0.144
+routing = true
+color = "#a0a0f0"
+fill = "hatch"
+
+# Thick top metals: drawn and connected, but left out of the router (their pitch is far
+# coarser than the thin metals').
+[[layer]]
+name = "TopVia1"
+gds = 125
+datatype = 0
+color = "#f0c8a0"
+fill = "cross"
+
+[[layer]]
+name = "TopMetal1"
+gds = 126
+datatype = 0
+width = 1.64
+space = 1.64
+color = "#c89664"
+fill = "backhatch"
+
+[[layer]]
+name = "TopVia2"
+gds = 133
+datatype = 0
+color = "#f0a0c8"
+fill = "cross"
+
+[[layer]]
+name = "TopMetal2"
+gds = 134
+datatype = 0
+width = 2.0
+space = 2.0
+color = "#c86496"
+fill = "hatch"
+
+[[layer]]
+name = "TEXT"
+gds = 63
+datatype = 0
+color = "#ffffffff"
+fill = "outline"
+
+[[layer]]
+name = "prBoundary"
+gds = 189
+datatype = 0
+color = "#a0a0aaff"
+fill = "outline"
+
+# SG13G2 draws no n+ implant: n+ diffusion is Activ outside pSD.
+[roles]
+diffusion = ["Activ"]
+poly = "GatPoly"
+nwell = "NWell"
+nimplant = ""
+pimplant = "pSD"
+diff_contact = "cont"
+poly_contact = "gatcont"
+label = "TEXT"
+
+[rules]
+gate_contact_space = 0.11   # Cnt.f
+poly_endcap = 0.18          # GatPoly end cap over Activ
+implant_enc = 0.4           # pSD.i1 (pSD.i 0.3 for 1.2 V)
+nwell_enc = 0.62            # NW.c1 (NW.c 0.31 for 1.2 V)
+marker_enc = 0.34           # TGO.c: ThickGateOx over gate
+
+[[via]]
+name = "cont"
+bottom = "Activ"
+cut = "Cont"
+top = "Metal1"
+size = 0.16
+space = 0.18
+enc_bottom = 0.07
+enc_top = 0.05
+
+[[via]]
+name = "gatcont"
+bottom = "GatPoly"
+cut = "Cont"
+top = "Metal1"
+size = 0.16
+space = 0.18
+enc_bottom = 0.07
+enc_top = 0.05
+
+[[via]]
+name = "via1"
+bottom = "Metal1"
+cut = "Via1"
+top = "Metal2"
+size = 0.19
+space = 0.22
+enc_bottom = 0.05
+enc_top = 0.05
+
+[[via]]
+name = "via2"
+bottom = "Metal2"
+cut = "Via2"
+top = "Metal3"
+size = 0.19
+space = 0.22
+enc_bottom = 0.05
+enc_top = 0.05
+
+[[via]]
+name = "via3"
+bottom = "Metal3"
+cut = "Via3"
+top = "Metal4"
+size = 0.19
+space = 0.22
+enc_bottom = 0.05
+enc_top = 0.05
+
+[[via]]
+name = "via4"
+bottom = "Metal4"
+cut = "Via4"
+top = "Metal5"
+size = 0.19
+space = 0.22
+enc_bottom = 0.05
+enc_top = 0.05
+
+[[via]]
+name = "topvia1"
+bottom = "Metal5"
+cut = "TopVia1"
+top = "TopMetal1"
+size = 0.42
+space = 0.42
+enc_bottom = 0.1
+enc_top = 0.42
+
+[[via]]
+name = "topvia2"
+bottom = "TopMetal1"
+cut = "TopVia2"
+top = "TopMetal2"
+size = 0.9
+space = 1.06
+enc_bottom = 0.5
+enc_top = 0.5
+
+# First match wins; the first device of each polarity is the default for generic
+# schematic models ("nmos" / "pmos"). 3.3 V devices sit inside ThickGateOx.
+[[device]]
+name = "sg13_lv_nmos"
+type = "nmos"
+exclude = ["ThickGateOx"]
+subckt = true
+
+[[device]]
+name = "sg13_hv_nmos"
+type = "nmos"
+layers = ["ThickGateOx"]
+subckt = true
+
+[[device]]
+name = "sg13_lv_pmos"
+type = "pmos"
+exclude = ["ThickGateOx"]
+subckt = true
+
+[[device]]
+name = "sg13_hv_pmos"
+type = "pmos"
+layers = ["ThickGateOx"]
+subckt = true
+
+[models]
+path = "${PDK_ROOT}/ihp-sg13g2/libs.tech/ngspice/models/cornerMOSlv.lib"
+extra = ["${PDK_ROOT}/ihp-sg13g2/libs.tech/ngspice/models/cornerMOShv.lib"]
+corners = ["mos_tt", "mos_ss", "mos_ff", "mos_sf", "mos_fs"]
+default = "mos_tt"
+length_unit = "m"
+
+# Sign-off checks with the decks of the installed PDK.
+[[signoff]]
+name = "KLayout DRC (ihp-sg13g2)"
+tool = "klayout"
+check = "drc"
+deck = "${PDK_ROOT}/ihp-sg13g2/libs.tech/klayout/tech/drc/ihp-sg13g2.drc"
+
+[[signoff]]
+name = "KLayout LVS (sg13g2)"
+tool = "klayout"
+check = "lvs"
+deck = "${PDK_ROOT}/ihp-sg13g2/libs.tech/klayout/tech/lvs/sg13g2.lvs"
+
+[[signoff]]
+name = "netgen LVS"
+tool = "netgen"
+check = "lvs"
+deck = "${PDK_ROOT}/ihp-sg13g2/libs.tech/netgen/ihp-sg13g2_setup.tcl"

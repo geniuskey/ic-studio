@@ -33,6 +33,13 @@ pub struct LayerDef {
     /// Whether the layer is a routing layer that carries net labels.
     #[serde(default)]
     pub routing: bool,
+    /// Minimum area of a piece in dbu² (0 = unchecked).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub min_area: i64,
+}
+
+fn is_zero(v: &i64) -> bool {
+    *v == 0
 }
 
 impl LayerDef {
@@ -48,6 +55,7 @@ impl LayerDef {
             min_width: 0,
             min_spacing: 0,
             routing: false,
+            min_area: 0,
         }
     }
 }
@@ -114,6 +122,7 @@ pub struct LayerRoles {
     pub tap: String,
     pub poly: String,
     pub nwell: String,
+    /// N+ implant; empty when the process draws none (n+ is diffusion outside the p implant).
     pub nimplant: String,
     pub pimplant: String,
     /// Via from diffusion to the first metal.
@@ -178,6 +187,9 @@ pub struct ModelLib {
     /// Unit of MOS geometry parameters (`w`, `l`, `ad`, ...) the models expect.
     #[serde(default)]
     pub length_unit: LengthUnit,
+    /// Further model files loaded with the same corner (e.g. high-voltage devices).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra: Vec<String>,
 }
 
 /// Unit of device geometry in netlists: metres (`w=1u`) or microns (`w=1`, for model libraries
@@ -201,16 +213,20 @@ impl LengthUnit {
 }
 
 impl ModelLib {
-    /// The deck line loading the models at `corner` (empty = default corner).
+    /// The deck lines loading the models at `corner` (empty = default corner).
     pub fn spice_line(&self, corner: &str) -> String {
         let corner = [corner.trim(), self.default_corner.as_str()]
             .into_iter()
             .find(|c| !c.is_empty())
             .or(self.corners.first().map(String::as_str));
-        match corner {
-            Some(c) => format!(".lib \"{}\" {c}", self.path),
-            None => format!(".include \"{}\"", self.path),
-        }
+        std::iter::once(&self.path)
+            .chain(&self.extra)
+            .map(|p| match corner {
+                Some(c) => format!(".lib \"{p}\" {c}"),
+                None => format!(".include \"{p}\""),
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
@@ -396,6 +412,7 @@ impl Tech {
             min_width: w,
             min_spacing: s,
             routing,
+            min_area: 0,
         };
         let v = |name: &str, bottom: &str, cut: &str, top: &str, size: i64, space: i64, eb: i64, et: i64, ohms: f64| ViaDef {
             name: name.into(),
