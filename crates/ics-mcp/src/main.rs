@@ -1,22 +1,35 @@
 //! `ics-mcp` — Model Context Protocol server (stdio, newline-delimited JSON-RPC 2.0) exposing an
 //! IC Studio project to AI agents. stdout carries protocol messages only; logs go to stderr.
-
-mod tools;
+//!
+//! Live mode: while the IC Studio app runs, every tool call is forwarded to it (see
+//! `ics_mcp::bridge`), so the agent works on the project open in the window. Without a running
+//! app, or with `ICS_MCP_STANDALONE=1`, tools run on this server's own project.
 
 use std::io::{BufRead, Write};
-use std::panic::{AssertUnwindSafe, catch_unwind};
 
+use ics_mcp::bridge::Client;
+use ics_mcp::{ToolResult, call_tool, has_tool, tools};
 use serde_json::{Map, Value, json};
 
 const PROTOCOL_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
 
-const INSTRUCTIONS: &str = "IC Studio: full-custom IC design (schematic, SPICE simulation, layout, DRC/LVS). \
-Start with open_project or new_project, then project_info. Layout coordinates are in µm with y pointing up, \
-snapped to the technology grid. Edits stay in memory until save_project.";
+const INSTRUCTIONS: &str = "IC Studio: full-custom IC design (schematic, SPICE simulation, layout, DRC/LVS). Start with open_project or new_project, then project_info. Layout coordinates are in µm with y pointing up, snapped to the technology grid. Edits stay in memory until save_project. Live mode: while the IC Studio desktop app is running, every tool runs on the project open in its window and the user sees edits, DRC/LVS markers and waveforms there immediately; otherwise tools run on this server's own project. Call gui_status to check; in live mode a project is usually open already, so call project_info before opening another one.";
 
-#[derive(Default)]
-struct Server {
+struct Rpc {
     state: tools::State,
+    standalone: bool,
+    /// Pid of the app calls were last forwarded to (`None`: ran locally), for logging mode switches.
+    live: Option<Option<u32>>,
+}
+
+impl Default for Rpc {
+    fn default() -> Self {
+        Self {
+            state: tools::State::default(),
+            standalone: std::env::var_os("ICS_MCP_STANDALONE").is_some_and(|v| v == "1"),
+            live: None,
+        }
+    }
 }
 
 type RpcError = (i64, String);
@@ -36,7 +49,7 @@ fn initialize(params: &Value) -> Value {
     })
 }
 
-impl Server {
+impl Rpc {
     fn handle_line(&mut self, line: &str) -> Option<Value> {
         match serde_json::from_str::<Value>(line) {
             Ok(msg) => self.handle(msg),
@@ -79,24 +92,41 @@ impl Server {
             Some(Value::Object(m)) => m,
             Some(_) => return Err((-32602, "tools/call: arguments must be an object".into())),
         };
+        if !has_tool(name) {
+            return Err((-32602, format!("unknown tool: {name}")));
+        }
         eprintln!("ics-mcp: tool {name}");
-        let out = catch_unwind(AssertUnwindSafe(|| self.state.call(name, args)))
-            .unwrap_or_else(|_| Some(Err(format!("internal error while running {name}"))))
-            .ok_or_else(|| (-32602, format!("unknown tool: {name}")))?;
-        let (text, is_error) = match out {
-            Ok(v) => (v.to_string(), false),
-            Err(e) => {
-                eprintln!("ics-mcp: {name} failed: {e}");
-                (e, true)
-            }
-        };
+        let ToolResult { text, is_error } = self.run(name, args);
+        if is_error {
+            eprintln!("ics-mcp: {name} failed: {text}");
+        }
         Ok(json!({"content": [{"type": "text", "text": text}], "isError": is_error}))
+    }
+
+    /// Forward to a running IC Studio window if there is one, else run on the local state.
+    fn run(&mut self, name: &str, args: &Map<String, Value>) -> ToolResult {
+        let client = if self.standalone { None } else { Client::discover() };
+        let mode = client.as_ref().map(Client::pid);
+        if self.live != Some(mode) {
+            match mode {
+                Some(pid) => eprintln!("ics-mcp: live mode, forwarding tool calls to IC Studio (pid {pid})"),
+                None if self.live.is_some() => eprintln!("ics-mcp: IC Studio is gone; running tools locally"),
+                None => eprintln!("ics-mcp: no IC Studio window; running tools locally"),
+            }
+            self.live = Some(mode);
+        }
+        match client {
+            Some(mut c) => {
+                c.call(name, args).unwrap_or_else(|e| ToolResult::error(format!("lost the connection to IC Studio: {e}")))
+            }
+            None => call_tool(&mut self.state, name, args),
+        }
     }
 }
 
 fn main() {
     eprintln!("ics-mcp {} ready on stdio", env!("CARGO_PKG_VERSION"));
-    let mut server = Server::default();
+    let mut server = Rpc::default();
     let mut out = std::io::stdout().lock();
     for line in std::io::stdin().lock().lines() {
         let line = match line {
@@ -121,11 +151,15 @@ fn main() {
 mod tests {
     use super::*;
 
-    fn request(s: &mut Server, method: &str, params: Value) -> Value {
+    fn standalone() -> Rpc {
+        Rpc { standalone: true, ..Rpc::default() }
+    }
+
+    fn request(s: &mut Rpc, method: &str, params: Value) -> Value {
         s.handle(json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})).expect("response")
     }
 
-    fn call(s: &mut Server, name: &str, args: Value) -> Result<Value, String> {
+    fn call(s: &mut Rpc, name: &str, args: Value) -> Result<Value, String> {
         let r = request(s, "tools/call", json!({"name": name, "arguments": args}));
         let res = &r["result"];
         let text = res["content"][0]["text"].as_str().expect("text content").to_string();
@@ -134,7 +168,7 @@ mod tests {
 
     #[test]
     fn initialize_negotiates_version() {
-        let mut s = Server::default();
+        let mut s = standalone();
         for (asked, got) in [("2025-06-18", "2025-06-18"), ("2024-11-05", "2024-11-05"), ("1999-01-01", "2025-06-18")] {
             let r = request(&mut s, "initialize", json!({"protocolVersion": asked, "capabilities": {}}));
             assert_eq!(r["result"]["protocolVersion"], got);
@@ -146,7 +180,7 @@ mod tests {
 
     #[test]
     fn protocol_errors() {
-        let mut s = Server::default();
+        let mut s = standalone();
         assert_eq!(request(&mut s, "resources/list", json!({}))["error"]["code"], -32601);
         assert_eq!(request(&mut s, "tools/call", json!({"name": "nope"}))["error"]["code"], -32602);
         assert_eq!(s.handle_line("{not json").unwrap()["error"]["code"], -32700);
@@ -155,11 +189,14 @@ mod tests {
         assert_eq!(s.handle(json!({"jsonrpc": "2.0", "id": 3})).unwrap()["error"]["code"], -32600);
         let e = call(&mut s, "project_info", json!({})).unwrap_err();
         assert!(e.contains("no project is open"), "{e}");
+        let st = call(&mut s, "gui_status", json!({})).unwrap();
+        assert_eq!(st["live"], false);
+        assert!(st["project"].is_null());
     }
 
     #[test]
     fn tools_list_has_valid_schemas() {
-        let mut s = Server::default();
+        let mut s = standalone();
         let r = request(&mut s, "tools/list", json!({}));
         let tools = r["result"]["tools"].as_array().unwrap();
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
@@ -186,6 +223,7 @@ mod tests {
             "post_layout_parasitics",
             "export_gds",
             "import_gds",
+            "gui_status",
         ];
         assert_eq!(names, expected);
         for t in tools {
@@ -206,7 +244,7 @@ mod tests {
     fn design_flow() {
         let dir = std::env::temp_dir().join(format!("ics-mcp-flow-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let mut s = Server::default();
+        let mut s = standalone();
         let proj = dir.join("proj");
         let info = call(&mut s, "new_project", json!({"path": proj, "template": "demo"})).unwrap();
         assert!(proj.join("ic-studio.json").exists());

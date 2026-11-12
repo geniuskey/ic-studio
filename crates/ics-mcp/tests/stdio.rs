@@ -9,6 +9,7 @@ fn initialize_and_list_tools_over_pipes() {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
+        .env("ICS_MCP_STANDALONE", "1")
         .spawn()
         .expect("spawn ics-mcp");
     let mut stdin = child.stdin.take().unwrap();
@@ -32,5 +33,5 @@ fn initialize_and_list_tools_over_pipes() {
     assert_eq!(lines[1]["id"], 2);
     let tools = lines[1]["result"]["tools"].as_array().unwrap();
     assert!(tools.iter().any(|t| t["name"] == "run_drc"));
-    assert_eq!(tools.len(), 22);
+    assert_eq!(tools.len(), 23);
 }

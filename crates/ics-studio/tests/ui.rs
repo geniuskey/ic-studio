@@ -241,3 +241,49 @@ fn schematic_place_and_undo() {
     h.run_steps(3);
     assert_eq!(instance_count(&h), before, "undo should remove it");
 }
+
+/// Live mode: MCP tool calls arriving over the bridge channel run on the open project and
+/// switch the window to their result.
+#[test]
+fn mcp_live_requests() {
+    let args = LaunchArgs { project: None, demo: true, workspace: Some("home".into()), cell: None, run: false };
+    let mut h = Harness::builder().with_size(egui::vec2(1440.0, 900.0)).wgpu().build_eframe(|cc| IcStudio::new(cc, args));
+    let (tx, rx) = std::sync::mpsc::channel();
+    h.state_mut().attach_bridge(rx);
+    h.run_steps(2);
+    let call = |h: &mut Harness<'_, IcStudio>, tool: &str, args: serde_json::Value| {
+        let (reply, answer) = std::sync::mpsc::channel();
+        let arguments = args.as_object().unwrap().clone();
+        tx.send(ics_mcp::bridge::Pending { tool: tool.into(), arguments, reply }).unwrap();
+        h.run_steps(3);
+        answer.try_recv().expect("answered on the UI thread")
+    };
+    let status = call(&mut h, "gui_status", serde_json::json!({})).value().unwrap();
+    assert_eq!(status["live"], true);
+    assert_eq!(status["project"]["unsaved_changes"], false);
+
+    let before = shape_count(&h, "cmos_inverter");
+    let r = call(
+        &mut h,
+        "add_rect",
+        serde_json::json!({"cell": "cmos_inverter", "layer": "metal1", "x0": 0, "y0": -3, "x1": 2, "y1": -2}),
+    );
+    assert!(!r.is_error, "{r:?}");
+    assert_eq!(shape_count(&h, "cmos_inverter"), before + 1);
+    assert_eq!(h.state().workspace(), Workspace::Layout);
+    h.state_mut().command(Command::Undo);
+    h.run_steps(2);
+    assert_eq!(shape_count(&h, "cmos_inverter"), before, "MCP edits are undoable");
+
+    let lvs = call(&mut h, "run_lvs", serde_json::json!({"cell": "cmos_inverter"})).value().unwrap();
+    assert_eq!(lvs["differences"], 2);
+    assert_eq!(h.state().workspace(), Workspace::Layout);
+    let bad = call(&mut h, "run_drc", serde_json::json!({"cell": "nope"}));
+    assert!(bad.is_error);
+    h.run_steps(4);
+    let img = h.render().expect("render");
+    if let Ok(dir) = std::env::var("ICS_SHOT_DIR") {
+        std::fs::create_dir_all(&dir).unwrap();
+        img.save(std::path::Path::new(&dir).join("14_mcp_live.png")).unwrap();
+    }
+}

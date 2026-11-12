@@ -2,6 +2,8 @@
 
 #![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
 
+use std::sync::{Arc, OnceLock};
+
 fn main() -> eframe::Result {
     let args = ics_studio::parse_args();
     let options = eframe::NativeOptions {
@@ -13,5 +15,32 @@ fn main() -> eframe::Result {
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
-    eframe::run_native("IC Studio", options, Box::new(|cc| Ok(Box::new(ics_studio::app::IcStudio::new(cc, args)))))
+    let ctx: Arc<OnceLock<eframe::egui::Context>> = Arc::default();
+    let wake = ctx.clone();
+    let bridge = ics_mcp::bridge::Server::start(move || {
+        if let Some(c) = wake.get() {
+            c.request_repaint();
+        }
+    });
+    let (server, rx) = match bridge {
+        Ok((s, rx)) => (Some(s), Some(rx)),
+        Err(e) => {
+            eprintln!("ic-studio: MCP live mode unavailable: {e}");
+            (None, None)
+        }
+    };
+    let res = eframe::run_native(
+        "IC Studio",
+        options,
+        Box::new(move |cc| {
+            let _ = ctx.set(cc.egui_ctx.clone());
+            let mut app = ics_studio::app::IcStudio::new(cc, args);
+            if let Some(rx) = rx {
+                app.attach_bridge(rx);
+            }
+            Ok(Box::new(app))
+        }),
+    );
+    drop(server);
+    res
 }

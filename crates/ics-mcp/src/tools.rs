@@ -20,6 +20,7 @@ const MAX_LISTED: usize = 500;
 pub struct State {
     project: Option<Project>,
     dirty: bool,
+    in_gui: bool,
 }
 
 struct Args<'a>(&'a Map<String, Value>);
@@ -88,7 +89,8 @@ fn resolve(p: &Project, cell: &str) -> Result<CellRef, String> {
     find(p, cell).ok_or_else(|| format!("no cell '{cell}' (use project_info to list cells)"))
 }
 
-fn find(p: &Project, cell: &str) -> Option<CellRef> {
+/// Look up a cell given as `cell` or `lib/cell`.
+pub fn find(p: &Project, cell: &str) -> Option<CellRef> {
     match cell.split_once('/') {
         Some((l, c)) => {
             let r = CellRef::new(l, c);
@@ -438,10 +440,26 @@ pub fn definitions() -> Vec<Value> {
             }),
             &["path"],
         ),
+        tool(
+            "gui_status",
+            "Whether the IC Studio desktop app is connected (live mode: every tool runs on the project open in its window and the user sees edits, DRC/LVS markers and waveforms there immediately) and which project is open.",
+            json!({}),
+            &[],
+        ),
     ]
 }
 
 impl State {
+    /// State around the project open in the desktop app (live mode).
+    pub fn in_gui(project: Option<Project>, dirty: bool) -> Self {
+        Self { project, dirty, in_gui: true }
+    }
+
+    /// The project and whether it has unsaved changes.
+    pub fn into_parts(self) -> (Option<Project>, bool) {
+        (self.project, self.dirty)
+    }
+
     /// Run tool `name`; `None` if there is no such tool.
     pub fn call(&mut self, name: &str, args: &Map<String, Value>) -> Option<Result<Value, String>> {
         let a = &Args(args);
@@ -468,6 +486,7 @@ impl State {
             "post_layout_parasitics" => self.post_layout_parasitics(a),
             "export_gds" => self.export_gds(a),
             "import_gds" => self.import_gds(a),
+            "gui_status" => Ok(self.gui_status()),
             _ => return None,
         })
     }
@@ -520,6 +539,18 @@ impl State {
 
     fn layout_mut(&mut self, r: &CellRef) -> &mut Layout {
         self.project.as_mut().and_then(|p| p.cell_mut(r)).and_then(|c| c.layout.as_mut()).expect("target layout")
+    }
+
+    fn gui_status(&self) -> Value {
+        let project = self.project.as_ref().map(
+            |p| json!({"name": p.name, "root": p.root.as_ref().map(|r| r.display().to_string()), "unsaved_changes": self.dirty}),
+        );
+        let note = if self.in_gui {
+            "Live: tools run on the project open in the IC Studio window and their results are shown there."
+        } else {
+            "Standalone: no IC Studio window is connected (or ICS_MCP_STANDALONE is set); tools run on this server's own project. Start ic-studio to work live."
+        };
+        json!({"live": self.in_gui, "pid": std::process::id(), "project": project, "note": note})
     }
 
     fn open_project(&mut self, a: &Args) -> Result<Value, String> {

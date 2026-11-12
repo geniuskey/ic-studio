@@ -117,6 +117,16 @@ claude mcp add ic-studio -- /path/to/ic-studio/target/release/ics-mcp
 
 Then ask, for example: "create a demo project in ./demo and run LVS on cmos_inverter".
 
+**Live mode.** While the desktop app (`ic-studio`) is running, `ics-mcp` forwards every
+tool call to it (local TCP on 127.0.0.1 with a per-session token; discovery file
+`live.json` in `%LOCALAPPDATA%\ic-studio` or `~/.local/state/ic-studio`). The agent then
+works on the project open in the window: edits appear immediately and can be undone,
+DRC / LVS / simulation results open in their panels, and the status bar shows
+"MCP live". Without a running app, or with `ICS_MCP_STANDALONE=1`, the server works on its
+own in-memory project.
+
+Binaries: `ic-studio` (desktop app), `ics` (CLI), `ics-mcp` (MCP server).
+
 ## Architecture
 
 ```

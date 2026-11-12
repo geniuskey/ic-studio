@@ -2,10 +2,13 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::Receiver;
 use std::time::Instant;
 
 use eframe::egui::{self, Align2, Color32, FontId, Key, KeyboardShortcut, Modifiers, RichText, Sense, Stroke, Vec2};
 use ics_core::{Cell, CellRef, Layout, Project, SchObj, Schematic, ViewKind, examples};
+use ics_mcp::bridge::Pending;
+use ics_mcp::{ToolResult, tools};
 use ics_sim::SimOptions;
 use serde::{Deserialize, Serialize};
 
@@ -139,6 +142,52 @@ enum BottomTab {
     Netlist,
 }
 
+/// Live-mode link to `ics-mcp`: tool calls arrive here and run on the open project.
+struct Bridge {
+    rx: Receiver<Pending>,
+    calls: u64,
+    last: Option<(Instant, String)>,
+}
+
+/// MCP tools that change layouts or the project; their edits invalidate editor state.
+const MCP_EDITS: [&str; 10] = [
+    "add_rect",
+    "add_path",
+    "add_label",
+    "place_instance",
+    "place_pcell",
+    "delete_items",
+    "generate_layout",
+    "import_gds",
+    "open_project",
+    "new_project",
+];
+
+/// One-line console summary of an MCP tool result.
+fn mcp_summary(tool: &str, res: &ToolResult) -> String {
+    let Some(v) = res.value().filter(|_| !res.is_error) else {
+        let line = res.text.lines().next().unwrap_or_default();
+        return line.chars().take(160).collect();
+    };
+    let n = |k: &str| v[k].as_u64().unwrap_or(0);
+    let len = |k: &str| v[k].as_array().map_or(0, Vec::len);
+    match tool {
+        "run_lvs" if v["matched"] == true => "LVS clean".into(),
+        "run_lvs" => format!("{} difference(s)", n("differences")),
+        "run_drc" if v["clean"] == true => "DRC clean".into(),
+        "run_drc" => format!("{} violation(s)", n("violations")),
+        "extract" => format!("{} net(s), {} device(s)", n("net_count"), n("device_count")),
+        "simulate" | "run_spice" => format!("{} dataset(s)", len("datasets")),
+        "generate_layout" => format!("placed {}, {} flyline(s)", len("placed"), n("unrouted_flylines")),
+        "flylines" => format!("{} flyline(s)", n("count")),
+        "delete_items" => format!("deleted {}", len("deleted")),
+        "add_rect" | "add_path" | "add_label" | "place_instance" | "place_pcell" => format!("id {}", v["id"]),
+        "open_project" | "new_project" | "project_info" => format!("project '{}'", v["name"].as_str().unwrap_or("?")),
+        "import_gds" => format!("library '{}'", v["library"].as_str().unwrap_or("?")),
+        _ => "ok".into(),
+    }
+}
+
 struct PaletteState {
     query: String,
     sel: usize,
@@ -167,6 +216,7 @@ pub struct IcStudio {
     ngspice: Option<String>,
     allow_close: bool,
     last_title: String,
+    bridge: Option<Bridge>,
 }
 
 const SETTINGS_KEY: &str = "ic-studio-settings";
@@ -201,6 +251,7 @@ impl IcStudio {
             ngspice,
             allow_close: false,
             last_title: String::new(),
+            bridge: None,
         };
         app.info(format!("IC Studio {} ready — renderer: wgpu", env!("CARGO_PKG_VERSION")));
         match &app.ngspice {
@@ -1486,6 +1537,16 @@ impl IcStudio {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).small().color(pal.text_weak));
                 ui.separator();
+                if let Some(b) = &self.bridge {
+                    let hover = match &b.last {
+                        Some((t, tool)) => {
+                            format!("{} tool call(s) from ics-mcp; last: {tool}, {:.0} s ago", b.calls, t.elapsed().as_secs_f64())
+                        }
+                        None => "Waiting for tool calls from ics-mcp (Claude Code)".to_string(),
+                    };
+                    ui.label(RichText::new("● MCP live").small().color(pal.ok)).on_hover_text(hover);
+                    ui.separator();
+                }
                 let (txt, col) = match &self.ngspice {
                     Some(v) => (format!("● {v}"), pal.ok),
                     None => ("○ ngspice not found".to_string(), pal.text_weak),
@@ -1981,6 +2042,98 @@ impl IcStudio {
         self.queue.push(c);
     }
 
+    /// Serve MCP tool calls from `ics-mcp` (live mode) on this window's project.
+    pub fn attach_bridge(&mut self, rx: Receiver<Pending>) {
+        self.bridge = Some(Bridge { rx, calls: 0, last: None });
+        self.info("MCP live mode: tool calls from ics-mcp run on the open project".into());
+    }
+
+    fn serve_bridge(&mut self) {
+        let pending: Vec<Pending> = self.bridge.as_ref().map(|b| b.rx.try_iter().collect()).unwrap_or_default();
+        for p in pending {
+            let res = self.mcp_call(&p.tool, &p.arguments);
+            let _ = p.reply.send(res);
+        }
+    }
+
+    fn mcp_call(&mut self, tool: &str, args: &serde_json::Map<String, serde_json::Value>) -> ToolResult {
+        let cell = args.get("cell").and_then(|v| v.as_str()).map(str::to_string);
+        let edits = MCP_EDITS.contains(&tool);
+        let before = cell.as_deref().filter(|_| edits).and_then(|c| {
+            let p = self.project.as_ref()?;
+            let r = tools::find(p, c)?;
+            Some((p.cell(&r)?.layout.clone()?, r))
+        });
+        let mut state = tools::State::in_gui(self.project.take(), self.dirty);
+        let res = ics_mcp::call_tool(&mut state, tool, args);
+        let (project, dirty) = state.into_parts();
+        match project {
+            Some(p) if !res.is_error && matches!(tool, "open_project" | "new_project") => {
+                if self.dirty {
+                    self.warn("MCP replaced the project; unsaved changes were discarded".into());
+                }
+                let root = p.root.clone();
+                self.set_project(p);
+                if let Some(root) = root {
+                    self.remember_recent(&root);
+                }
+            }
+            p => self.project = p,
+        }
+        self.dirty = dirty;
+        if edits && !res.is_error {
+            self.hier.clear();
+            if let Some(p) = &self.project {
+                if let Some((lay, r)) = before
+                    && p.cell(&r).and_then(|c| c.layout.as_ref()) != Some(&lay)
+                {
+                    self.lay_eds.entry(r).or_default().history.push(&lay);
+                }
+                for (r, ed) in self.lay_eds.iter_mut() {
+                    ed.layout_changed();
+                    let lay = p.cell(r).and_then(|c| c.layout.as_ref());
+                    ed.selection.retain(|id| lay.is_some_and(|l| l.ids().any(|i| i == *id)));
+                }
+            }
+        }
+        let target = cell.as_deref().and_then(|c| self.project.as_ref().and_then(|p| tools::find(p, c)));
+        let summary = mcp_summary(tool, &res);
+        let line = match &target {
+            Some(r) => format!("MCP · {tool} {r} -> {summary}"),
+            None => format!("MCP · {tool} -> {summary}"),
+        };
+        if res.is_error {
+            self.warn(line);
+        } else {
+            self.info(line);
+        }
+        if let Some(b) = &mut self.bridge {
+            b.calls += 1;
+            b.last = Some((Instant::now(), tool.to_string()));
+        }
+        if let Some(r) = target.filter(|_| !res.is_error) {
+            let ws = match tool {
+                "simulate" => Workspace::Simulation,
+                "get_netlist" => Workspace::Schematic,
+                _ => Workspace::Layout,
+            };
+            self.queue.push(Command::OpenCell(r.clone(), Some(ws)));
+            match tool {
+                "run_drc" => self.queue.push(Command::RunDrc),
+                "run_lvs" => self.queue.push(Command::RunLvs),
+                "extract" => self.queue.push(Command::ExtractNets),
+                "simulate" => self.queue.push(Command::RunSimulation),
+                "generate_layout" | "flylines" => {
+                    let ed = self.lay_eds.entry(r).or_default();
+                    ed.show_flylines = true;
+                    ed.request_fit();
+                }
+                _ => {}
+            }
+        }
+        res
+    }
+
     pub fn project(&self) -> Option<&Project> {
         self.project.as_ref()
     }
@@ -2030,6 +2183,7 @@ impl eframe::App for IcStudio {
                 self.error(format!("{r}: {message}"));
             }
         }
+        self.serve_bridge();
         if self.dialog.is_none() && self.palette.is_none() {
             self.shortcuts(ctx);
         }
