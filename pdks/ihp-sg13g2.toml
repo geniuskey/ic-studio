@@ -205,12 +205,91 @@ datatype = 0
 color = "#ffffffff"
 fill = "outline"
 
+# Net labels: the LVS deck reads text on MetalN.text (datatype 25).
+[[layer]]
+name = "Metal1.text"
+gds = 8
+datatype = 25
+color = "#ffffffff"
+fill = "outline"
+
+[[layer]]
+name = "Metal2.text"
+gds = 10
+datatype = 25
+color = "#ffffffff"
+fill = "outline"
+
+[[layer]]
+name = "Metal3.text"
+gds = 30
+datatype = 25
+color = "#ffffffff"
+fill = "outline"
+
+[[layer]]
+name = "Metal4.text"
+gds = 50
+datatype = 25
+color = "#ffffffff"
+fill = "outline"
+
+[[layer]]
+name = "Metal5.text"
+gds = 67
+datatype = 25
+color = "#ffffffff"
+fill = "outline"
+
+[[layer]]
+name = "TopMetal1.text"
+gds = 126
+datatype = 25
+color = "#ffffffff"
+fill = "outline"
+
+[[layer]]
+name = "TopMetal2.text"
+gds = 134
+datatype = 25
+color = "#ffffffff"
+fill = "outline"
+
 [[layer]]
 name = "prBoundary"
 gds = 189
 datatype = 0
 color = "#a0a0aaff"
 fill = "outline"
+
+# Generated layouts label the named nets on these layers.
+[[pin_label]]
+layer = "Metal1"
+label = "Metal1.text"
+
+[[pin_label]]
+layer = "Metal2"
+label = "Metal2.text"
+
+[[pin_label]]
+layer = "Metal3"
+label = "Metal3.text"
+
+[[pin_label]]
+layer = "Metal4"
+label = "Metal4.text"
+
+[[pin_label]]
+layer = "Metal5"
+label = "Metal5.text"
+
+[[pin_label]]
+layer = "TopMetal1"
+label = "TopMetal1.text"
+
+[[pin_label]]
+layer = "TopMetal2"
+label = "TopMetal2.text"
 
 # SG13G2 draws no n+ implant: n+ diffusion is Activ outside pSD.
 [roles]

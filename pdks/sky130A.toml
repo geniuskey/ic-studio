@@ -201,12 +201,69 @@ datatype = 44
 color = "#ffffffff"
 fill = "outline"
 
+# Net labels (datatype 5 of each conductor).
+[[layer]]
+name = "li1.label"
+gds = 67
+datatype = 5
+color = "#ffffffff"
+fill = "outline"
+
+[[layer]]
+name = "met1.label"
+gds = 68
+datatype = 5
+color = "#ffffffff"
+fill = "outline"
+
+[[layer]]
+name = "met2.label"
+gds = 69
+datatype = 5
+color = "#ffffffff"
+fill = "outline"
+
+[[layer]]
+name = "met3.label"
+gds = 70
+datatype = 5
+color = "#ffffffff"
+fill = "outline"
+
+[[layer]]
+name = "met4.label"
+gds = 71
+datatype = 5
+color = "#ffffffff"
+fill = "outline"
+
 [[layer]]
 name = "prBndry"
 gds = 235
 datatype = 4
 color = "#a0a0aaff"
 fill = "outline"
+
+# Generated layouts label the named nets on these layers.
+[[pin_label]]
+layer = "li1"
+label = "li1.label"
+
+[[pin_label]]
+layer = "met1"
+label = "met1.label"
+
+[[pin_label]]
+layer = "met2"
+label = "met2.label"
+
+[[pin_label]]
+layer = "met3"
+label = "met3.label"
+
+[[pin_label]]
+layer = "met4"
+label = "met4.label"
 
 [roles]
 diffusion = ["diff", "tap"]

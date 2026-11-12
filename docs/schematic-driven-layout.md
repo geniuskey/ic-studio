@@ -82,6 +82,12 @@ poly (metal1, metal2 and metal3 in the generic technology):
 - Metal1 is expensive and each higher layer has a preferred direction, so long runs move
   to upper metals.
 
+Every named schematic net (labels and supplies; the ground symbol becomes `gnd`) that is
+fully connected after routing gets a text label at one of its terminals, unless the top
+cell already has a label of that name. The label goes on the first metal, or on the layer
+the PDK names for its net labels (`[[pin_label]]`, e.g. `Metal1.text` in SG13G2), so
+external LVS decks see the layout's ports with their schematic names.
+
 The console summary gives the routed nets, connections, vias and rip-ups. Nets that could
 not be routed stay as flylines with a reason (terminals not on conducting geometry, or
 pieces not reached). Finish them by hand and route again.

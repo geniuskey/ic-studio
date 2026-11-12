@@ -554,7 +554,8 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
         if text.is_empty() {
             continue;
         }
-        let own = pi_of(Some(*layer)).and_then(|pi| planes[pi].comp_at(*at, true).map(|c| offset[pi] + c));
+        let own = pi_of(Some(tech.labelled_layer(*layer).unwrap_or(*layer)))
+            .and_then(|pi| planes[pi].comp_at(*at, true).map(|c| offset[pi] + c));
         let hit = own.or_else(|| search.iter().find_map(|&pi| planes[pi].comp_at(*at, true).map(|c| offset[pi] + c)));
         match hit {
             Some(piece) => {

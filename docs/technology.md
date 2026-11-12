@@ -208,6 +208,7 @@ The main sections:
 | `[[layer]]` | `name`, `gds`, `datatype`, `width`, `space`, `area` (µm²), `routing`, `color` (`#rrggbb`), `fill`. Adds a layer, or sets rules on a layer from the `.lyp` |
 | `[roles]` | `diffusion` (list), `tap`, `poly`, `nwell`, `nimplant` (empty when the process draws no n+ implant: n+ is diffusion outside `pimplant`), `pimplant`, `diff_contact`, `poly_contact` (via names), `label` |
 | `[rules]` | `gate_contact_space`, `poly_endcap`, `implant_enc`, `nwell_enc`, `marker_enc` (device marker layers around the diffusion) |
+| `[[pin_label]]` | Net label layer of a conducting layer: `layer`, `label` (e.g. `Metal1` and `Metal1.text`). Routing labels named nets there, extraction reads labels there as names of that layer's nets |
 | `[[pcell_layer]]` | Extra layer the PCells draw: `layer`, `around` (`poly_contact`, `diff_contact`, `gate`, `diffusion`, `poly` or a layer name), `enc`, optional `kinds` (`nmos`, `pmos`, `poly_res`, `mom_cap`, `ntap`, `ptap`) |
 | `drc_extra` | Deck lines appended to the deck derived from the layer rules (top-level key, before the tables) |
 | `[[via]]` | `name`, `bottom`, `cut`, `top`, `size`, `space`, `enc_bottom`, `enc_top`, `resistance` |

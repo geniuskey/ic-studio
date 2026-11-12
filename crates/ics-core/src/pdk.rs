@@ -37,6 +37,10 @@
 //! nwell_enc = 0.18
 //! marker_enc = 0.18            # device marker layers (MosDef::layers) around the diffusion
 //!
+//! [[pin_label]]                # layer for the net labels of a conducting layer
+//! layer = "met1"
+//! label = "met1.label"
+//!
 //! [[pcell_layer]]              # extra layer drawn by the PCells (see PcellLayer)
 //! layer = "npc"
 //! around = "poly_contact"      # poly_contact, diff_contact, gate, diffusion, poly or a layer
@@ -93,7 +97,7 @@ use serde::Deserialize;
 
 use crate::signoff::Runset;
 use crate::tech::{
-    DeviceRules, FillStyle, LayerCap, LayerDef, LayerRoles, LengthUnit, ModelLib, MosDef, PcellLayer, Tech, ViaDef,
+    DeviceRules, FillStyle, LayerCap, LayerDef, LayerRoles, LengthUnit, ModelLib, MosDef, PcellLayer, PinLabel, Tech, ViaDef,
 };
 use crate::tech_import::{apply_lyt, from_lyp};
 
@@ -125,6 +129,8 @@ struct PdkFile {
     pcell_layer: Vec<PcellLayerEntry>,
     #[serde(default)]
     drc_extra: Vec<String>,
+    #[serde(default)]
+    pin_label: Vec<PinLabel>,
 }
 
 fn default_dbu() -> i64 {
@@ -323,6 +329,7 @@ pub fn parse(text: &str, base: &Path, env: &dyn Fn(&str) -> Option<String>) -> R
         .map(|p| PcellLayer { layer: p.layer, around: p.around, enc: to_dbu(p.enc), kinds: p.kinds })
         .collect();
     tech.drc_extra = f.drc_extra;
+    tech.pin_labels = f.pin_label;
     tech.caps = f.cap;
     tech.drc_deck = match f.drc_deck.as_deref() {
         Some(p) => {
@@ -417,6 +424,13 @@ pub fn check(tech: &Tech) -> Vec<String> {
         }
         if !AROUND.contains(&p.around.as_str()) && !has(&p.around) {
             w.push(format!("pcell layer '{}': unknown 'around' '{}'", p.layer, p.around));
+        }
+    }
+    for p in &tech.pin_labels {
+        for n in [&p.layer, &p.label] {
+            if !has(n) {
+                w.push(format!("pin label uses unknown layer '{n}'"));
+            }
         }
     }
     for c in &tech.caps {
@@ -561,6 +575,7 @@ mod tests {
         let models: Vec<&str> = x.devices.iter().map(|d| d.model.as_str()).collect();
         assert_eq!(models, ["sky130_fd_pr__nfet_01v8", "sky130_fd_pr__pfet_01v8"]);
         assert!(x.warnings.is_empty(), "{:?}", x.warnings);
+        assert_net_labels(&p.tech, &lay, &x, "li1.label");
         let rep = compare(&sch, &x, &lvs_opts(&p.tech));
         assert!(rep.matched, "{:?}", rep.errors);
         let nl = netlist_for(&sch, &p.tech, "");
@@ -704,6 +719,7 @@ mod tests {
             assert!(x.warnings.is_empty(), "{:?}", x.warnings);
             let models: Vec<&str> = x.devices.iter().map(|d| d.model.as_str()).collect();
             assert_eq!(models, [expect, "sg13_lv_pmos"]);
+            assert_net_labels(&p.tech, &lay, &x, "Metal1.text");
             let rep = compare(&sch, &x, &lvs_opts(&p.tech));
             assert!(rep.matched, "{:?}", rep.errors);
             let nl = netlist_for(&sch, &p.tech, "");
@@ -743,5 +759,21 @@ mod tests {
                 assert!(x.devices.iter().all(|d| &d.model == device), "{}: {:?}", c.variant_name(), x.warnings);
             }
         }
+    }
+
+    /// Routing labels the named nets on `label_layer`, and extraction names the nets after them.
+    fn assert_net_labels(tech: &Tech, lay: &crate::Layout, x: &crate::extract::Extraction, label_layer: &str) {
+        let ll = tech.layer_index(label_layer).unwrap();
+        let mut texts: Vec<&str> = lay
+            .shapes
+            .iter()
+            .filter(|s| s.layer == ll)
+            .filter_map(|s| if let crate::Geometry::Label { text, .. } = &s.geom { Some(text.as_str()) } else { None })
+            .collect();
+        texts.sort_unstable();
+        assert_eq!(texts, ["gnd", "in", "out", "vdd"]);
+        let mut named: Vec<&str> = x.nets.iter().filter(|n| n.labelled).map(|n| n.name.as_str()).collect();
+        named.sort_unstable();
+        assert_eq!(named, ["gnd", "in", "out", "vdd"], "{:?}", x.warnings);
     }
 }

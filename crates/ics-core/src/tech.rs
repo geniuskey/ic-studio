@@ -263,6 +263,14 @@ impl Default for DeviceRules {
     }
 }
 
+/// The layer that carries net names (text labels) for a conducting layer, e.g. `Metal1.text`
+/// for `Metal1`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PinLabel {
+    pub layer: String,
+    pub label: String,
+}
+
 /// An extra layer the PCells draw: `layer` covering every piece of `around` grown by `enc` (dbu),
 /// for the PCell kinds in `kinds` (all when empty).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -313,6 +321,9 @@ pub struct Tech {
     /// Deck lines appended to the deck derived from the layer rules (when `drc_deck` is unset).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub drc_extra: Vec<String>,
+    /// Net label layers per conducting layer; others carry their labels themselves.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pin_labels: Vec<PinLabel>,
 }
 
 impl Tech {
@@ -364,6 +375,22 @@ impl Tech {
 
     pub fn label_layer(&self) -> Option<usize> {
         self.layer_index(&self.roles.label)
+    }
+
+    /// Layer for net labels on conducting layer `layer`: its [`PinLabel`] layer, else the
+    /// conducting layer itself.
+    pub fn net_label_layer(&self, layer: usize) -> Option<usize> {
+        let name = &self.layer(layer)?.name;
+        match self.pin_labels.iter().find(|p| p.layer.eq_ignore_ascii_case(name)) {
+            Some(p) => self.layer_index(&p.label),
+            None => Some(layer),
+        }
+    }
+
+    /// The conducting layer whose net labels `label_layer` carries ([`Tech::pin_labels`]).
+    pub fn labelled_layer(&self, label_layer: usize) -> Option<usize> {
+        let name = &self.layer(label_layer)?.name;
+        self.pin_labels.iter().find(|p| p.label.eq_ignore_ascii_case(name)).and_then(|p| self.layer_index(&p.layer))
     }
 
     pub fn diff_contact(&self) -> Option<&ViaDef> {
@@ -473,6 +500,7 @@ impl Tech {
             signoff: vec![],
             pcell_layers: vec![],
             drc_extra: vec![],
+            pin_labels: vec![],
         }
     }
 }

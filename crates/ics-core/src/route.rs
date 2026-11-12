@@ -28,7 +28,7 @@ use rstar::{AABB, RTree, RTreeObject};
 use crate::extract::{self, Extraction};
 use crate::geom::IRect;
 use crate::hier::{LayoutSource, flatten};
-use crate::layout::Layout;
+use crate::layout::{Geometry, Layout};
 use crate::region::Region;
 use crate::schematic::Schematic;
 use crate::sdl;
@@ -650,7 +650,33 @@ pub fn route_with(
             layout.add(l, geom);
         }
     }
+    let connected = jobs.iter().filter(|j| j.floating == 0 && (j.groups.len() < 2 || report.routed.contains(&j.net)));
+    let at: Vec<(String, (i64, i64))> = connected.filter_map(|j| Some((j.net.clone(), pins.get(&j.net)?.first()?.1))).collect();
+    label_nets(layout, tech, &at);
     Ok(report)
+}
+
+/// Label each named schematic net in `nets` (net, terminal position) that has no top-level label
+/// yet, on the first metal's net label layer ([`Tech::net_label_layer`]). The schematic ground
+/// ("0") is labelled `gnd`; generated names (`net12`) get no label.
+fn label_nets(layout: &mut Layout, tech: &Tech, nets: &[(String, (i64, i64))]) {
+    let Some(layer) = tech.metal1().and_then(|m| tech.net_label_layer(m)) else { return };
+    let mut have: HashSet<String> = layout
+        .shapes
+        .iter()
+        .filter_map(|s| if let Geometry::Label { text, .. } = &s.geom { Some(text.to_ascii_lowercase()) } else { None })
+        .collect();
+    let auto = |n: &str| n.strip_prefix("net").is_some_and(|r| !r.is_empty() && r.bytes().all(|b| b.is_ascii_digit()));
+    let size = (tech.dbu_per_um / 5).max(1);
+    for (net, at) in nets {
+        if auto(net) || net == "?" {
+            continue;
+        }
+        let text = if net == "0" { "gnd".to_string() } else { net.clone() };
+        if have.insert(text.to_ascii_lowercase()) {
+            layout.add(layer, Geometry::Label { text, at: *at, size });
+        }
+    }
 }
 
 #[cfg(test)]
