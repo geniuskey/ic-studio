@@ -466,7 +466,7 @@ pub fn definitions() -> Vec<Value> {
         tool(
             "generate_layout",
             &format!(
-                "Schematic-driven layout: place every schematic MOS device that is not yet in the layout as a PCell instance named after it (PMOS row above NMOS row, DRC-clean spacing). Sources, R and C are skipped. Wiring is not done: call route, or use flylines to see what to connect. {NOT_SAVED}"
+                "Schematic-driven layout: place every schematic MOS device that is not yet in the layout as a PCell instance named after it (PMOS row above NMOS row, DRC-clean spacing, shared diffusion, a bulk tap per row). Differential pairs, current mirrors and devices with the same 'match' parameter are split into unit fingers named <device>.<k> in common-centroid order (reported under 'matched'). Sources, R and C are skipped. Wiring is not done: call route, or use flylines to see what to connect. {NOT_SAVED}"
             ),
             json!({"cell": cell()}),
             &["cell"],
@@ -983,7 +983,13 @@ impl State {
         let placed = res?;
         let flylines = sdl::ratsnest(&sch, layout_of(p, &r)?, p, &p.tech).len();
         self.dirty = true;
-        Ok(json!({"cell": r.to_string(), "placed": placed, "skipped": plan.skipped, "unrouted_flylines": flylines}))
+        Ok(json!({
+            "cell": r.to_string(),
+            "placed": placed,
+            "skipped": plan.skipped,
+            "matched": plan.notes,
+            "unrouted_flylines": flylines,
+        }))
     }
 
     fn route(&mut self, a: &Args) -> Result<Value, String> {

@@ -9,6 +9,10 @@
 //!   row's well and implant shapes are merged by row-wide fill rectangles.
 //! - A bulk tap closes each row: n+ in the nwell for PMOS, p+ substrate for NMOS, named
 //!   [`NTAP`] / [`PTAP`] + the row's bulk net, so flylines and the router connect it.
+//! - Matched groups ([`matched_groups`]: differential pairs, current mirrors, or devices sharing a
+//!   `match` parameter value) are split into equal unit fingers placed as instances named
+//!   `<device>.<k>` in common-centroid order (e.g. ABBA), abutted where their nets allow, at the
+//!   start of their row. LVS merges the units back into their devices.
 //!
 //! The placement is DRC clean by construction.
 
@@ -31,6 +35,11 @@ pub const MAX_FINGER_W_UM: f64 = 5.0;
 pub const NTAP: &str = "ntap:";
 /// Instance name prefix of the substrate tap of the NMOS row, followed by its net.
 pub const PTAP: &str = "ptap:";
+/// Instance parameter grouping devices to match (same value = one group; `none` opts out of the
+/// automatic grouping).
+pub const MATCH_PARAM: &str = "match";
+/// Most unit fingers a matched group is split into.
+const MAX_UNITS: usize = 32;
 /// Layers merged across a row instead of being spaced.
 const SOFT_LAYERS: [&str; 3] = ["nwell", "nplus", "pplus"];
 
@@ -49,6 +58,8 @@ pub struct SdlPlan {
     pub fills: Vec<(usize, IRect)>,
     /// Schematic devices with no generator (sources, R, C, ...), with the reason.
     pub skipped: Vec<String>,
+    /// How matched groups were placed (or why not).
+    pub notes: Vec<String>,
 }
 
 /// An unrouted connection between two device terminals of the same schematic net.
@@ -119,9 +130,169 @@ pub fn mos_pcell(inst: &Instance, tech: &Tech) -> Result<PCell, String> {
     Ok(PCell::Mos { pmos: inst.kind == DeviceKind::Pmos, w: snap(w / split, tech.grid), l, fingers })
 }
 
+/// The schematic device a layout instance belongs to: units of matched devices are named
+/// `<device>.<k>`.
+pub fn device_of(instance: &str) -> &str {
+    match instance.rsplit_once('.') {
+        Some((d, k)) if !d.is_empty() && !k.is_empty() && k.bytes().all(|b| b.is_ascii_digit()) => d,
+        _ => instance,
+    }
+}
+
+/// Groups of MOS devices to place matched (instance names, schematic order within a group):
+/// devices sharing a [`MATCH_PARAM`] value; differential pairs (same type, W, L and m, a common
+/// source net that is not a supply rail, different gates and drains); current mirrors (same
+/// type and L, common gate and source, the gate tied to the drain of one of them).
+pub fn matched_groups(sch: &Schematic) -> Vec<Vec<String>> {
+    let conn = connectivity::extract(sch);
+    let mos: Vec<&Instance> = sch.instances.iter().filter(|i| matches!(i.kind, DeviceKind::Nmos | DeviceKind::Pmos)).collect();
+    let rails: HashSet<&str> = sch
+        .instances
+        .iter()
+        .filter(|i| matches!(i.kind, DeviceKind::Ground | DeviceKind::Supply | DeviceKind::VSource))
+        .flat_map(|i| i.pin_positions().into_iter().filter_map(|(pin, _)| conn.net_of(i.id, pin)))
+        .collect();
+    let net = |i: &Instance, pin: &str| conn.net_of(i.id, pin);
+    let val = |i: &Instance, key: &str| parse_spice(i.param(key));
+    let mult = |i: &Instance| val(i, "m").unwrap_or(1.0);
+    let tag = |i: &Instance| i.param(MATCH_PARAM).trim().to_string();
+    let mut uf: Vec<usize> = (0..mos.len()).collect();
+    fn root(uf: &mut [usize], mut i: usize) -> usize {
+        while uf[i] != i {
+            i = uf[i];
+        }
+        i
+    }
+    for a in 0..mos.len() {
+        for b in a + 1..mos.len() {
+            let (x, y) = (mos[a], mos[b]);
+            if x.kind != y.kind || tag(x) == "none" || tag(y) == "none" {
+                continue;
+            }
+            let explicit = !tag(x).is_empty() && tag(x) == tag(y);
+            let same_l = val(x, "l").is_some() && val(x, "l") == val(y, "l");
+            let source = net(x, "s").filter(|s| net(y, "s") == Some(s));
+            let diff_pair = same_l
+                && val(x, "w") == val(y, "w")
+                && mult(x) == mult(y)
+                && source.is_some_and(|s| !rails.contains(s))
+                && net(x, "g") != net(y, "g")
+                && net(x, "d") != net(y, "d");
+            let gate = net(x, "g").filter(|g| net(y, "g") == Some(g));
+            let mirror = same_l && source.is_some() && gate.is_some_and(|g| net(x, "d") == Some(g) || net(y, "d") == Some(g));
+            let auto = tag(x).is_empty() && tag(y).is_empty() && (diff_pair || mirror);
+            if explicit || auto {
+                let (ra, rb) = (root(&mut uf, a), root(&mut uf, b));
+                uf[ra.max(rb)] = ra.min(rb);
+            }
+        }
+    }
+    let mut groups: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+    for (i, inst) in mos.iter().enumerate() {
+        let r = root(&mut uf, i);
+        groups.entry(r).or_default().push(inst.name.clone());
+    }
+    groups.into_values().filter(|g| g.len() > 1).collect()
+}
+
+/// Common-centroid order of units for devices with `counts` units each: half of every device's
+/// units interleaved, the odd units in the middle, then the half mirrored.
+pub fn common_centroid(counts: &[usize]) -> Vec<usize> {
+    let mut left: Vec<usize> = counts.iter().map(|c| c / 2).collect();
+    let mut half = Vec::new();
+    while left.iter().any(|&c| c > 0) {
+        for (i, c) in left.iter_mut().enumerate() {
+            if *c > 0 {
+                half.push(i);
+                *c -= 1;
+            }
+        }
+    }
+    let mut out = half.clone();
+    out.extend((0..counts.len()).filter(|&i| counts[i] % 2 == 1));
+    out.extend(half.iter().rev());
+    out
+}
+
+fn gcd(a: i64, b: i64) -> i64 {
+    if b == 0 { a } else { gcd(b, a % b) }
+}
+
+/// Unit candidates of a matched group in common-centroid order, and the pattern (A = first
+/// member, ...). Every member gets at least two units when the unit width allows.
+fn matched_units(group: &[&Instance], conn: &Connectivity, tech: &Tech) -> Result<(Vec<Candidate>, String), String> {
+    let mut cells = Vec::new();
+    for inst in group {
+        let PCell::Mos { pmos, w, l, fingers } = mos_pcell(inst, tech)? else { unreachable!("MOS cell") };
+        cells.push((inst, pmos, w * fingers as i64, l));
+    }
+    let g = tech.grid.max(1);
+    let fits =
+        |w: i64| w % g == 0 && cells.iter().all(|c| PCell::Mos { pmos: c.1, w, l: c.3, fingers: 1 }.generate(tech).is_ok());
+    let mut unit = cells.iter().map(|c| c.2).fold(0, gcd);
+    let max_w = (MAX_FINGER_W_UM * tech.dbu_per_um as f64) as i64;
+    while unit > max_w && unit % 2 == 0 && fits(unit / 2) {
+        unit /= 2;
+    }
+    while cells.iter().any(|c| c.2 / unit < 2) && unit % 2 == 0 && fits(unit / 2) {
+        unit /= 2;
+    }
+    if !fits(unit) || unit > max_w {
+        return Err(format!("no common unit width (gcd {} µm)", unit as f64 / tech.dbu_per_um as f64));
+    }
+    let counts: Vec<usize> = cells.iter().map(|c| (c.2 / unit) as usize).collect();
+    if counts.iter().sum::<usize>() > MAX_UNITS {
+        return Err(format!("more than {MAX_UNITS} units"));
+    }
+    let mut units: Vec<Vec<Candidate>> = Vec::new();
+    for (inst, pmos, _, l) in &cells {
+        let n = (cells.iter().find(|c| c.0.name == inst.name).map_or(0, |c| c.2) / unit) as usize;
+        let mut list = Vec::new();
+        for k in (1..=n).rev() {
+            let pcell = PCell::Mos { pmos: *pmos, w: unit, l: *l, fingers: 1 };
+            list.push(candidate_with(inst, conn, tech, pcell, format!("{}.{k}", inst.name))?);
+        }
+        units.push(list);
+    }
+    let order = common_centroid(&counts);
+    let pattern: String = order.iter().map(|&i| (b'A' + (i % 26) as u8) as char).collect();
+    Ok((order.into_iter().filter_map(|i| units[i].pop()).collect(), pattern))
+}
+
+/// Flips and abutments for units in a fixed order: each unit is turned to share its left column
+/// with the previous one when their nets allow, else towards the next unit's nets.
+fn arrange(units: Vec<Candidate>) -> Vec<(Candidate, bool, bool)> {
+    let plan = |first: bool| {
+        let mut prev: Option<&str> = None;
+        let mut flags = Vec::new();
+        for (i, u) in units.iter().enumerate() {
+            let (l, r) = u.ends(false);
+            let towards = |net: Option<&str>| {
+                units.get(i + 1).is_some_and(|n| net.is_some() && (n.ends(false).0 == net || n.ends(false).1 == net))
+            };
+            let (flip, abut) = match prev {
+                _ if i == 0 => (first, false),
+                Some(p) if l == Some(p) && units[i - 1].w == u.w => (false, true),
+                Some(p) if r == Some(p) && units[i - 1].w == u.w => (true, true),
+                _ => (towards(l) && !towards(r), false),
+            };
+            prev = u.ends(flip).1;
+            flags.push((flip, abut));
+        }
+        flags
+    };
+    let (a, b) = (plan(false), plan(true));
+    let shared = |f: &[(bool, bool)]| f.iter().filter(|x| x.1).count();
+    let flags = if shared(&b) > shared(&a) { b } else { a };
+    units.into_iter().zip(flags).map(|(u, (f, a))| (u, f, a)).collect()
+}
+
 fn candidate(inst: &Instance, conn: &Connectivity, tech: &Tech) -> Result<Candidate, String> {
-    let pcell = mos_pcell(inst, tech)?;
-    let PCell::Mos { w, l, fingers, .. } = pcell else { unreachable!("mos_pcell makes MOS cells") };
+    candidate_with(inst, conn, tech, mos_pcell(inst, tech)?, inst.name.clone())
+}
+
+fn candidate_with(inst: &Instance, conn: &Connectivity, tech: &Tech, pcell: PCell, name: String) -> Result<Candidate, String> {
+    let PCell::Mos { w, l, fingers, .. } = pcell else { unreachable!("MOS cells only") };
     let lay = pcell.generate(tech)?;
     let net = |pin: &str| conn.net_of(inst.id, pin).map(str::to_string);
     let cols = mos_columns(tech, l, fingers)?
@@ -135,7 +306,7 @@ fn candidate(inst: &Instance, conn: &Connectivity, tech: &Tech) -> Result<Candid
     let space = hard.map(|s| layer_space(tech, s.layer)).max().unwrap_or(0);
     let bulk_pin = inst.pin_positions().into_iter().find(|(n, _)| *n == "b").map(|(_, p)| p);
     let bulk = if bulk_pin.is_some_and(|p| conn.unconnected_pins.contains(&p)) { None } else { net("b") };
-    Ok(Candidate { name: inst.name.clone(), pcell, pmos: inst.kind == DeviceKind::Pmos, w, cols, bulk, lay, core, space })
+    Ok(Candidate { name, pcell, pmos: inst.kind == DeviceKind::Pmos, w, cols, bulk, lay, core, space })
 }
 
 /// Orientation: PMOS mirrored top-bottom; `flip` also mirrors left-right.
@@ -148,10 +319,11 @@ fn orient(pmos: bool, flip: bool) -> Trans {
     }
 }
 
-/// Chains of the row in placement order: (device, flipped, abutted to the previous one).
-fn chain(row: Vec<Candidate>) -> Vec<(Candidate, bool, bool)> {
+/// Chains of the row in placement order: (device, flipped, abutted to the previous one). Matched
+/// blocks come first, in their own order.
+fn chain(blocks: Vec<Vec<Candidate>>, row: Vec<Candidate>) -> Vec<(Candidate, bool, bool)> {
     let mut rest: Vec<Option<Candidate>> = row.into_iter().map(Some).collect();
-    let mut out: Vec<(Candidate, bool, bool)> = Vec::new();
+    let mut out: Vec<(Candidate, bool, bool)> = blocks.into_iter().flat_map(arrange).collect();
     while let Some(i) = rest.iter().position(Option::is_some) {
         let c = rest[i].take().expect("present");
         let partner = |net: Option<&str>, rest: &[Option<Candidate>]| {
@@ -183,14 +355,14 @@ struct Row {
     layouts: Vec<Layout>,
 }
 
-fn place_row(row: Vec<Candidate>, tech: &Tech) -> Row {
+fn place_row(blocks: Vec<Vec<Candidate>>, row: Vec<Candidate>, tech: &Tech) -> Row {
     let g = tech.grid;
     let mut out = Row { devices: Vec::new(), layouts: Vec::new() };
     let mut prev: Option<(i64, i64, i64)> = None;
     let mut bulk: HashMap<String, usize> = HashMap::new();
     let (mut pmos, mut min_w, mut active_y0) = (false, i64::MAX, None);
     let active = tech.layer_index("active");
-    for (c, flip, abut) in chain(row) {
+    for (c, flip, abut) in chain(blocks, row) {
         let t0 = orient(c.pmos, flip);
         let cb = t0.apply_rect(c.core);
         let xs: Vec<i64> = c.cols.iter().map(|(x, _)| t0.apply((*x, 0)).0).collect();
@@ -268,8 +440,23 @@ pub fn plan(sch: &Schematic, tech: &Tech) -> SdlPlan {
         }
     }
     mos.sort_by(|a, b| (a.pos.x, a.pos.y, &a.name).cmp(&(b.pos.x, b.pos.y, &b.name)));
+    let (mut pblocks, mut nblocks) = (Vec::new(), Vec::new());
+    let mut matched: HashSet<String> = HashSet::new();
+    for names in matched_groups(sch) {
+        let group: Vec<&Instance> = names.iter().filter_map(|n| mos.iter().find(|i| &i.name == n).copied()).collect();
+        match matched_units(&group, &conn, tech) {
+            Ok((units, pattern)) => {
+                let legend: Vec<String> =
+                    group.iter().enumerate().map(|(k, i)| format!("{} = {}", (b'A' + (k % 26) as u8) as char, i.name)).collect();
+                plan.notes.push(format!("{}: matched as {pattern} ({})", names.join(", "), legend.join(", ")));
+                matched.extend(names);
+                if group[0].kind == DeviceKind::Pmos { &mut pblocks } else { &mut nblocks }.push(units);
+            }
+            Err(e) => plan.notes.push(format!("{}: not matched, {e}", names.join(", "))),
+        }
+    }
     let (mut prow, mut nrow) = (Vec::new(), Vec::new());
-    for inst in mos {
+    for inst in mos.into_iter().filter(|i| !matched.contains(&i.name)) {
         match candidate(inst, &conn, tech) {
             Ok(c) if c.pmos => prow.push(c),
             Ok(c) => nrow.push(c),
@@ -277,8 +464,8 @@ pub fn plan(sch: &Schematic, tech: &Tech) -> SdlPlan {
         }
     }
     let row_gap = snap_up(tech.layers.iter().map(|l| l.min_spacing).max().unwrap_or(0), tech.grid);
-    let nrow = place_row(nrow, tech);
-    let mut prow = place_row(prow, tech);
+    let nrow = place_row(nblocks, nrow, tech);
+    let mut prow = place_row(pblocks, prow, tech);
     if let (Some(n), Some(p)) = (nrow.extent(), prow.extent()) {
         prow.shift(n.y1 + row_gap - p.y0);
     }
@@ -293,16 +480,17 @@ fn flat_bbox(layout: &Layout, src: &dyn LayoutSource) -> Option<IRect> {
     flatten(layout, src, 64).iter().map(|s| s.geom.bbox()).reduce(|a, b| a.union(&b))
 }
 
-/// Place the planned devices that are not in `layout` yet (matched by instance name). Existing
+/// Place the planned devices that are not in `layout` yet (matched by [`device_of`] their
+/// instance names, so a device placed whole is not placed again as units). Existing
 /// named instances are left where they are. Returns the names placed. The well / implant fills
 /// are added only when every planned device is new.
 ///
 /// When the new devices would come closer than the technology's largest spacing to existing
 /// content, they are all shifted to the right of it (bottom aligned).
 pub fn apply(project: &mut Project, layout: &mut Layout, plan: &SdlPlan) -> Result<Vec<String>, String> {
-    let existing: HashSet<String> = layout.instances.iter().filter_map(|i| i.name.clone()).collect();
+    let existing: HashSet<&str> = layout.instances.iter().filter_map(|i| i.name.as_deref().map(device_of)).collect();
     let mut todo = Vec::new();
-    for d in plan.devices.iter().filter(|d| !existing.contains(&d.name)) {
+    for d in plan.devices.iter().filter(|d| !existing.contains(device_of(&d.name))) {
         let cell = project.ensure_pcell(&d.pcell)?;
         let bbox =
             project.cell(&cell).and_then(|c| c.layout.as_ref()).and_then(Layout::shapes_bbox).map(|b| d.trans.apply_rect(b));
@@ -345,24 +533,25 @@ pub fn terminal_pins(sch: &Schematic, layout: &Layout, src: &dyn LayoutSource) -
     let conn = connectivity::extract(sch);
     let mut out: BTreeMap<String, Vec<Pin>> = BTreeMap::new();
     for inst in sch.instances.iter().filter(|i| matches!(i.kind, DeviceKind::Nmos | DeviceKind::Pmos)) {
-        let Some(placed) = layout.instances.iter().find(|i| i.name.as_deref() == Some(inst.name.as_str())) else { continue };
-        let Some(child) = src.layout(&placed.cell) else { continue };
-        let (cols, rows) = placed.dims();
-        for s in &child.shapes {
-            let Geometry::Label { text, .. } = &s.geom else { continue };
-            let pin = match text.as_str() {
-                "D" => "d",
-                "G" => "g",
-                "S" => "s",
-                _ => continue,
-            };
-            let Some(net) = conn.net_of(inst.id, pin) else { continue };
-            let b = s.geom.bbox();
-            let c = ((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2);
-            let pts = out.entry(net.to_string()).or_default();
-            for j in 0..rows {
-                for i in 0..cols {
-                    pts.push((pin, placed.element_trans(i, j).apply(c)));
+        for placed in layout.instances.iter().filter(|i| i.name.as_deref().is_some_and(|n| device_of(n) == inst.name)) {
+            let Some(child) = src.layout(&placed.cell) else { continue };
+            let (cols, rows) = placed.dims();
+            for s in &child.shapes {
+                let Geometry::Label { text, .. } = &s.geom else { continue };
+                let pin = match text.as_str() {
+                    "D" => "d",
+                    "G" => "g",
+                    "S" => "s",
+                    _ => continue,
+                };
+                let Some(net) = conn.net_of(inst.id, pin) else { continue };
+                let b = s.geom.bbox();
+                let c = ((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2);
+                let pts = out.entry(net.to_string()).or_default();
+                for j in 0..rows {
+                    for i in 0..cols {
+                        pts.push((pin, placed.element_trans(i, j).apply(c)));
+                    }
                 }
             }
         }
@@ -602,6 +791,81 @@ mod tests {
         layout.add(m1, Geometry::Path { points: vec![lo, (lo.0, ym), (hi.0, ym), hi], width: 230 });
         let fl = ratsnest(&sch, &layout, &project, &project.tech);
         assert_eq!(fl.iter().map(|f| f.net.as_str()).collect::<Vec<_>>(), ["0", "out", "vdd"]);
+    }
+
+    #[test]
+    fn common_centroid_orders() {
+        assert_eq!(common_centroid(&[2, 2]), [0, 1, 1, 0]);
+        assert_eq!(common_centroid(&[1, 4]), [1, 1, 0, 1, 1]);
+        assert_eq!(common_centroid(&[4, 4]), [0, 1, 0, 1, 1, 0, 1, 0]);
+        assert_eq!(common_centroid(&[1, 1]), [0, 1]);
+        for (name, dev) in [("M1.12", "M1"), ("M1", "M1"), ("a.b", "a.b"), (".3", ".3"), ("x.", "x.")] {
+            assert_eq!(device_of(name), dev);
+        }
+    }
+
+    #[test]
+    fn matched_placement() {
+        let mut project = Project::new("t");
+        let tech = project.tech.clone();
+        let mirror = crate::examples::current_mirror(&mut project).schematic.unwrap();
+        let ota = crate::examples::ota5t(&mut project).schematic.unwrap();
+        for f in [crate::examples::nand2, crate::examples::nor2, crate::examples::ring_osc5] {
+            let sch = f(&mut project).schematic.unwrap();
+            assert!(matched_groups(&sch).is_empty(), "{:?}", matched_groups(&sch));
+        }
+        assert!(matched_groups(&inverter()).is_empty());
+        assert_eq!(matched_groups(&mirror).len(), 1);
+        assert_eq!(matched_groups(&ota).len(), 2, "input pair and load mirror");
+
+        for sch in [&mirror, &ota] {
+            let p = plan(sch, &tech);
+            assert!(!p.notes.is_empty() && p.notes.iter().all(|n| n.contains("matched as ABBA")), "{:?}", p.notes);
+            for group in matched_groups(sch) {
+                let centroids: Vec<f64> = group
+                    .iter()
+                    .map(|name| {
+                        let xs: Vec<i64> = p
+                            .devices
+                            .iter()
+                            .filter(|d| d.name != *name && device_of(&d.name) == name)
+                            .map(|d| {
+                                let PCell::Mos { l, .. } = d.pcell else { panic!() };
+                                let c = mos_columns(&tech, l, 1).unwrap();
+                                d.trans.apply(((c[0] + c[1]) / 2, 0)).0
+                            })
+                            .collect();
+                        assert!(xs.len() >= 2, "{name}: {xs:?}");
+                        xs.iter().sum::<i64>() as f64 / xs.len() as f64
+                    })
+                    .collect();
+                assert!(centroids.windows(2).all(|w| (w[0] - w[1]).abs() <= tech.grid as f64), "{group:?}: {centroids:?}");
+            }
+            let mut layout = Layout::default();
+            apply(&mut project, &mut layout, &p).unwrap();
+            assert_drc_clean(&layout, &project);
+            let mut whole = Layout::default();
+            let first = p.devices.iter().find(|d| d.name.ends_with(".1")).unwrap();
+            let named = PlannedDevice { name: device_of(&first.name).to_string(), ..first.clone() };
+            apply(&mut project, &mut whole, &SdlPlan { devices: vec![named], ..Default::default() }).unwrap();
+            let again = apply(&mut project, &mut whole, &p).unwrap();
+            assert!(!again.iter().any(|n| device_of(n) == device_of(&first.name)), "{again:?}");
+            let x = extract::extract(&layout, &project, &tech);
+            let lvs = crate::lvs::compare(sch, &x, &crate::lvs::LvsOptions::default());
+            assert!(!lvs.errors.iter().any(|e| e.kind == crate::lvs::LvsErrorKind::Parameter), "{:?}", lvs.errors);
+        }
+
+        let mut s = Schematic::default();
+        let a = mos(&mut s, DeviceKind::Nmos, (0, 0), &[("w", "1u"), ("l", "180n"), ("match", "x")]);
+        let b = mos(&mut s, DeviceKind::Nmos, (10, 0), &[("w", "3u"), ("l", "500n"), ("match", "x")]);
+        mos(&mut s, DeviceKind::Nmos, (20, 0), &[("w", "1u"), ("l", "180n")]);
+        assert_eq!(matched_groups(&s), [vec![a, b]]);
+        let p = plan(&s, &tech);
+        assert!(p.notes[0].contains("matched as"), "{:?}", p.notes);
+        let mut opt_out = mirror.clone();
+        let id = opt_out.instances.iter().find(|i| i.kind == DeviceKind::Nmos).unwrap().id;
+        opt_out.instance_mut(id).unwrap().params.insert(MATCH_PARAM.into(), "none".into());
+        assert!(matched_groups(&opt_out).is_empty());
     }
 
     #[test]

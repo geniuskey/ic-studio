@@ -641,6 +641,9 @@ impl IcStudio {
         for s in &plan.skipped {
             self.info(format!("Not placed: {s}"));
         }
+        for n in &plan.notes {
+            self.info(format!("Matching: {n}"));
+        }
         match res {
             Ok(names) if names.is_empty() => self.info("Every schematic device is already placed".into()),
             Ok(names) => {
@@ -697,7 +700,11 @@ impl IcStudio {
                 .collect()
         });
         let lay_names: BTreeSet<String> = self.lay_eds.get(&r).map_or_else(BTreeSet::new, |ed| {
-            lay.instances.iter().filter(|i| ed.selection.contains(&i.id)).filter_map(|i| i.name.clone()).collect()
+            lay.instances
+                .iter()
+                .filter(|i| ed.selection.contains(&i.id))
+                .filter_map(|i| i.name.as_deref().map(|n| ics_core::sdl::device_of(n).to_string()))
+                .collect()
         });
         let (from, names) = match self.workspace {
             Workspace::Schematic => (Workspace::Schematic, sch_names),
@@ -712,8 +719,12 @@ impl IcStudio {
             return;
         }
         if from == Workspace::Schematic {
-            let ids: BTreeSet<u64> =
-                lay.instances.iter().filter(|i| i.name.as_ref().is_some_and(|n| names.contains(n))).map(|i| i.id).collect();
+            let ids: BTreeSet<u64> = lay
+                .instances
+                .iter()
+                .filter(|i| i.name.as_deref().is_some_and(|n| names.contains(ics_core::sdl::device_of(n))))
+                .map(|i| i.id)
+                .collect();
             if !ids.is_empty() {
                 self.lay_eds.entry(r).or_default().selection = ids;
             }
