@@ -1,6 +1,6 @@
 [book]
-title = "IC Studio User Guide"
-description = "User guide for IC Studio, a full-custom IC design environment: schematic, simulation, layout and verification."
+title = "IC Studio"
+description = "IC Studio: open-source full-custom IC design in one native app. Schematic, SPICE simulation, layout, automatic place and route, DRC, LVS and parasitic extraction, scriptable from the CLI and AI agents."
 authors = ["geniuskey"]
 language = "en"
 src = "."
@@ -13,3 +13,8 @@ create-missing = false
 git-repository-url = "https://github.com/geniuskey/ic-studio"
 edit-url-template = "https://github.com/geniuskey/ic-studio/edit/main/docs/{path}"
 site-url = "/ic-studio/"
+default-theme = "navy"
+preferred-dark-theme = "navy"
+additional-css = ["theme/custom.css"]
+smart-punctuation = true
+

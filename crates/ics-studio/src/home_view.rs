@@ -45,7 +45,7 @@ pub fn welcome(ui: &mut egui::Ui, recent: &[PathBuf], q: &mut Vec<Command>) {
                 ui.add_space(28.0);
                 theme::section(ui, "Start");
                 ui.horizontal_wrapped(|ui| {
-                    if action_card(ui, Icon::Library, "Open demo project", "Inverter, RC filter, clipper", pal.accent) {
+                    if action_card(ui, Icon::Library, "Open demo project", "Auto P&R, OTA, SRAM, pixels", pal.accent) {
                         q.push(Command::NewDemoProject);
                     }
                     if action_card(ui, Icon::Cell, "New project…", "Empty, generic 180 nm PDK", pal.schematic) {

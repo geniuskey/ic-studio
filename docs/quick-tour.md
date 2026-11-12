@@ -1,6 +1,8 @@
 # Quick tour
 
-This tour walks through the demo project and then builds a small circuit from scratch.
+This tour walks through the demo project: simulation, hierarchical layout, automatic place
+and route, verification and post-layout simulation. It ends by building a small circuit
+from scratch.
 
 ## Open the demo project
 
@@ -12,26 +14,8 @@ Or choose **Open demo project** on the welcome page (**File > New Demo Project**
 lives in memory until you save it with `Ctrl+S`. All cells are in the `work` library and
 use the generic 180 nm technology.
 
-| Cell | What it shows |
-|---|---|
-| `cmos_inverter` | Inverter with a hand-drawn layout; LVS reports deliberate findings (PMOS W, load cap) |
-| `rc_lowpass` | RC low-pass filter (fc about 159 kHz): OP, AC and transient |
-| `diode_clipper` | Resistor and shunt diode clipper: transient and DC sweep |
-| `nand2` | 2-input NAND: schematic plus routed PCell layout, DRC and LVS clean |
-| `nor2` | 2-input NOR: schematic plus routed PCell layout, DRC and LVS clean |
-| `ring_osc5` | 5-stage ring oscillator, fully routed |
-| `current_mirror` | NMOS current mirror with a 20 µA reference: DC sweep of the output |
-| `ota5t` | 5-transistor OTA: about 42 dB open-loop gain in AC |
-| `sram6t` | 6T SRAM bit cell, DRC and LVS clean: transient write and hold |
-| `sram_array` | 8 x 8 array of `sram6t` |
-| `aps3t` | 3T image sensor pixel, DRC and LVS clean: transient reset and integration |
-| `pixel_array` | 8 x 8 array of `aps3t` |
-| `full_adder` | 28T mirror full adder, placed and routed automatically: transient over all input combinations |
-| `ota2s` | Two-stage OTA, auto P&R with matched placement: about 80 dB open-loop gain in AC |
-| `inv_chain` | Four placed `cmos_inverter` instances |
-| `inv_array` | 16 x 8 array of inverters |
-| `inv_tiles` | 8 x 8 array of `inv_array`: 8192 inverters, two levels of hierarchy |
-| `devices` | One instance of every PCell |
+The [demo gallery](demos.md) describes every cell, and has scripts for presenting
+IC Studio to others.
 
 The `pcells` library holds the PCell variants the layouts use.
 
@@ -57,7 +41,18 @@ Try `rc_lowpass` (AC: the **f -3 dB** column shows the corner frequency) and `ot
 3. Press `1`, `2` and `9` to change how many hierarchy levels are drawn.
 4. Double-click an instance to open the placed cell.
 
-## 3. Verification
+## 3. Automatic place and route
+
+1. Open `full_adder` and press `Ctrl+4`. This layout was not drawn: it was generated from
+   the schematic and routed automatically.
+2. Press `Ctrl+A` and `Delete` to clear it.
+3. Choose **Verify > Generate Layout from Schematic**. The 28 transistors are placed and
+   flylines show the connections to make.
+4. Choose **Verify > Route Flylines**. Every net is routed on metal.
+
+![Generated and routed full adder](screenshots/demo_pnr_routed.png)
+
+## 4. Verification
 
 1. Open `nand2` and switch to the Layout workspace.
 2. In the right panel, press **Run DRC**: no violations.
@@ -67,7 +62,7 @@ Try `rc_lowpass` (AC: the **f -3 dB** column shows the corner frequency) and `ot
 
 ![LVS result](screenshots/12_layout_lvs.png)
 
-## 4. Post-layout simulation
+## 5. Post-layout simulation
 
 1. Open `ring_osc5` in the Simulation workspace.
 2. Press `F5` and note the oscillation period in the transient plot.
@@ -75,7 +70,7 @@ Try `rc_lowpass` (AC: the **f -3 dB** column shows the corner frequency) and `ot
    extracted capacitance and resistance. Compare the period: the added wire
    capacitance and resistance slow the oscillator down.
 
-## 5. Build an inverter from scratch
+## 6. Build an inverter from scratch
 
 1. Press `Ctrl+N`, name the cell `my_inv`, keep **schematic** checked, and press
    **Create**.
@@ -98,7 +93,7 @@ Try `rc_lowpass` (AC: the **f -3 dB** column shows the corner frequency) and `ot
 See [Schematic-driven layout](schematic-driven-layout.md) for what the generator and the
 router do, and how to match devices.
 
-## 6. Command line
+## 7. Command line
 
 The same project can be checked from a terminal:
 

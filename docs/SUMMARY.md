@@ -6,6 +6,7 @@
 
 - [Installation](install.md)
 - [Quick tour](quick-tour.md)
+- [Demo gallery and scripts](demos.md)
 - [Projects, libraries and cells](projects.md)
 
 # Design

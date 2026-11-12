@@ -367,6 +367,8 @@ impl IcStudio {
         if let (Some(c), Some(p)) = (&args.cell, &app.project)
             && let Some((r, _)) = p.all_cells().find(|(_, x)| &x.name == c)
         {
+            app.tabs.clear();
+            app.active = None;
             app.queue.push(Command::OpenCell(r, None));
         }
         if let Some(w) = &args.workspace

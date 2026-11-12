@@ -9,13 +9,17 @@ on Windows, Linux and macOS. Unlike a standalone layout viewer, the schematic, t
 simulator and the layout share one design database: layouts are generated from
 schematics, checked against them (LVS) and their parasitics flow back into simulation.
 
-![Project home](docs/screenshots/02_project_home.png)
+**[User guide](https://geniuskey.github.io/ic-studio/)** · [Quick tour](https://geniuskey.github.io/ic-studio/quick-tour.html) · [Demo gallery and scripts](https://geniuskey.github.io/ic-studio/demos.html)
+
+![Auto place and route of a 28-transistor full adder](docs/screenshots/demo_pnr_routed.png)
 
 | Schematic with DC operating point back-annotation | Transient / DC sweep waveforms |
 |---|---|
 | ![Schematic](docs/screenshots/07_schematic_op.png) | ![Simulation](docs/screenshots/04_simulation.png) |
 | **Hierarchical layout: 8192 inverters, level of detail** | **Parametric devices (PCells)** |
 | ![Hierarchy](docs/screenshots/09_layout_tiles.png) | ![PCells](docs/screenshots/10_layout_pcells.png) |
+| **Common-centroid matched OTA, placed and routed automatically** | **8 × 8 SRAM array** |
+| ![OTA](docs/screenshots/demo_ota2s.png) | ![SRAM](docs/screenshots/demo_sram_array.png) |
 | **Layout generated from the schematic, with flylines** | **Rule-deck DRC on placed cells** |
 | ![SDL](docs/screenshots/13_layout_sdl.png) | ![DRC](docs/screenshots/11_layout_drc.png) |
 

@@ -26,12 +26,7 @@ fn scenario(name: &str, demo: bool, cell: Option<&str>, workspace: &str, run: bo
 
 fn scenario_then(name: &str, demo: bool, cell: Option<&str>, workspace: &str, run: bool, then: Option<Command>) {
     let args = LaunchArgs { project: None, demo, workspace: Some(workspace.into()), cell: cell.map(str::to_string), run };
-    let mut h = Harness::builder()
-        .with_size(egui::vec2(1440.0, 900.0))
-        .with_pixels_per_point(1.0)
-        .wgpu()
-        .build_eframe(|cc| IcStudio::new(cc, args));
-    h.run_steps(4);
+    let mut h = app(args);
     let mut waited = 0;
     while h.state().is_simulating() && waited < 300 {
         std::thread::sleep(Duration::from_millis(20));
@@ -44,6 +39,30 @@ fn scenario_then(name: &str, demo: bool, cell: Option<&str>, workspace: &str, ru
     }
     h.run_steps(6);
     settle(&mut h, name);
+    shot(&mut h, name);
+}
+
+/// The app at screenshot size.
+fn app(args: LaunchArgs) -> Harness<'static, IcStudio> {
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1440.0, 900.0))
+        .with_pixels_per_point(1.0)
+        .wgpu()
+        .build_eframe(|cc| IcStudio::new(cc, args));
+    h.run_steps(4);
+    h
+}
+
+/// Close the cell tab that opening a project adds, and forget the explorer state it left.
+fn close_first_tab(h: &mut Harness<'_, IcStudio>) {
+    if let Some(first) = h.state().project().and_then(|p| p.all_cells().next().map(|(r, _)| r)) {
+        h.state_mut().command(Command::CloseTab(first));
+        h.step();
+        h.ctx.data_mut(|d| d.clear());
+    }
+}
+
+fn shot(h: &mut Harness<'_, IcStudio>, name: &str) {
     let img = h.render().expect("render");
     if let Ok(dir) = std::env::var("ICS_SHOT_DIR") {
         std::fs::create_dir_all(&dir).unwrap();
@@ -120,12 +139,7 @@ fn layout_routed() {
         cell: Some("cmos_inverter".into()),
         run: false,
     };
-    let mut h = Harness::builder()
-        .with_size(egui::vec2(1440.0, 900.0))
-        .with_pixels_per_point(1.0)
-        .wgpu()
-        .build_eframe(|cc| IcStudio::new(cc, args));
-    h.run_steps(4);
+    let mut h = app(args);
     h.state_mut().command(Command::GenerateLayout);
     h.run_steps(2);
     let before = shape_count(&h, "cmos_inverter");
@@ -145,9 +159,103 @@ fn layout_routed() {
     }
 }
 
+/// The demo project with the layout of `cell` removed, saved to a temporary directory.
+fn demo_without_layout(test: &str, cell: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("ics-ui-{test}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut p = ics_core::examples::demo_project();
+    p.cell_mut(&ics_core::CellRef::new("work", cell)).unwrap().layout = None;
+    p.save_as(&dir).unwrap();
+    dir
+}
+
+fn flylines(h: &Harness<'_, IcStudio>, cell: &str) -> usize {
+    let p = h.state().project().unwrap();
+    let c = p.cell(&ics_core::CellRef::new("work", cell)).unwrap();
+    ics_core::sdl::ratsnest(c.schematic.as_ref().unwrap(), c.layout.as_ref().unwrap(), p, &p.tech).len()
+}
+
+/// Placement of the 28-transistor mirror adder from its schematic, before routing.
+fn full_adder_placed(test: &str) -> Harness<'static, IcStudio> {
+    let dir = demo_without_layout(test, "full_adder");
+    let args = LaunchArgs {
+        project: Some(dir),
+        demo: false,
+        workspace: Some("schematic".into()),
+        cell: Some("full_adder".into()),
+        run: false,
+    };
+    let mut h = app(args);
+    h.state_mut().command(Command::GenerateLayout);
+    h.run_steps(4);
+    assert!(flylines(&h, "full_adder") > 0);
+    h
+}
+
 #[test]
-fn layout_auto_pnr() {
-    scenario_then("16_layout_auto_pnr", true, Some("full_adder"), "layout", false, Some(Command::RunLvs));
+fn demo_pnr_placed() {
+    let mut h = full_adder_placed("pnr-placed");
+    h.run_steps(4);
+    settle(&mut h, "demo_pnr_placed");
+    shot(&mut h, "demo_pnr_placed");
+}
+
+#[test]
+fn demo_pnr_routed() {
+    let mut h = full_adder_placed("pnr-routed");
+    h.state_mut().command(Command::RouteFlylines);
+    h.run_steps(4);
+    assert_eq!(flylines(&h, "full_adder"), 0);
+    h.state_mut().command(Command::RunLvs);
+    h.run_steps(2);
+    settle(&mut h, "demo_pnr_routed");
+    assert!(
+        h.state().console_lines().any(|l| l.ends_with("LVS: layout matches schematic")),
+        "{:?}",
+        h.state().console_lines().collect::<Vec<_>>()
+    );
+    h.state_mut().command(Command::FitView);
+    h.run_steps(4);
+    shot(&mut h, "demo_pnr_routed");
+}
+
+#[test]
+fn demo_ota2s() {
+    scenario("demo_ota2s", true, Some("ota2s"), "layout", false);
+}
+
+/// Transient of the mirror adder, plotting its sum and carry outputs.
+#[test]
+fn demo_full_adder_sim() {
+    use egui_kittest::kittest::Queryable;
+    let args = LaunchArgs {
+        project: None,
+        demo: true,
+        workspace: Some("simulation".into()),
+        cell: Some("full_adder".into()),
+        run: true,
+    };
+    let mut h = app(args);
+    settle(&mut h, "demo_full_adder_sim");
+    for sig in ["v(a)", "v(n3)", "v(n9)", "v(s)", "v(co)"] {
+        // The plot legend has a checkbox per plotted signal too; use the signal list's.
+        let boxes = h.get_all_by_role_and_label(egui::accesskit::Role::CheckBox, sig);
+        boxes.max_by(|a, b| a.rect().left().total_cmp(&b.rect().left())).unwrap().click();
+        h.run_steps(2);
+    }
+    h.event(egui::Event::PointerGone);
+    h.run_steps(2);
+    shot(&mut h, "demo_full_adder_sim");
+}
+
+#[test]
+fn demo_sram_array() {
+    scenario("demo_sram_array", true, Some("sram_array"), "layout", false);
+}
+
+#[test]
+fn demo_pixel_array() {
+    scenario("demo_pixel_array", true, Some("pixel_array"), "layout", false);
 }
 
 #[test]
@@ -352,6 +460,7 @@ fn mcp_live_requests() {
 fn mcp_live_write_schematic() {
     let args = LaunchArgs { project: None, demo: true, workspace: Some("home".into()), cell: None, run: false };
     let mut h = Harness::builder().with_size(egui::vec2(1440.0, 900.0)).wgpu().build_eframe(|cc| IcStudio::new(cc, args));
+    close_first_tab(&mut h);
     let (tx, rx) = std::sync::mpsc::channel();
     h.state_mut().attach_bridge(rx);
     h.run_steps(2);
