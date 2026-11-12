@@ -338,21 +338,52 @@ impl Raster {
             return;
         }
         let words = self.words();
-        for y in 0..self.h {
-            let row = &self.bits[y * words..(y + 1) * words];
-            let mut x = 0;
-            while x < self.w {
-                if row[x / 64] >> (x % 64) & 1 == 0 {
-                    x += 1;
-                    continue;
+        let cell = Self::CELL;
+        let quad = |mesh: &mut Mesh, (x0, x1, y0): (usize, usize, usize), y1: usize| {
+            let min = self.origin + Vec2::new(x0 as f32 * cell, y0 as f32 * cell);
+            mesh.add_colored_rect(Rect::from_min_size(min, Vec2::new((x1 - x0) as f32 * cell, (y1 - y0) as f32 * cell)), color);
+        };
+        // Runs identical to the row above extend the rectangle started there.
+        let mut open: Vec<(usize, usize, usize)> = vec![];
+        for y in 0..=self.h {
+            let mut runs: Vec<(usize, usize)> = vec![];
+            if y < self.h {
+                let row = &self.bits[y * words..(y + 1) * words];
+                let mut x = 0;
+                while x < self.w {
+                    if row[x / 64] >> (x % 64) & 1 == 0 {
+                        x += 1;
+                        continue;
+                    }
+                    let start = x;
+                    while x < self.w && row[x / 64] >> (x % 64) & 1 == 1 {
+                        x += 1;
+                    }
+                    runs.push((start, x));
                 }
-                let start = x;
-                while x < self.w && row[x / 64] >> (x % 64) & 1 == 1 {
-                    x += 1;
-                }
-                let min = self.origin + Vec2::new(start as f32 * Self::CELL, y as f32 * Self::CELL);
-                mesh.add_colored_rect(Rect::from_min_size(min, Vec2::new((x - start) as f32 * Self::CELL, Self::CELL)), color);
             }
+            let mut next = Vec::with_capacity(runs.len());
+            let mut k = 0;
+            for (a, b) in runs {
+                while k < open.len() && open[k].0 < a {
+                    quad(mesh, open[k], y);
+                    k += 1;
+                }
+                if k < open.len() && open[k].0 == a && open[k].1 == b {
+                    next.push(open[k]);
+                    k += 1;
+                } else {
+                    if k < open.len() && open[k].0 == a {
+                        quad(mesh, open[k], y);
+                        k += 1;
+                    }
+                    next.push((a, b, y));
+                }
+            }
+            for &o in &open[k..] {
+                quad(mesh, o, y);
+            }
+            open = next;
         }
     }
 }
@@ -434,16 +465,16 @@ pub fn draw_layout(
         min_cell: ((if o.thumbnail { 3.0 } else { 8.0 }) * px) as i64,
         min_shape: (1.5 * px) as i64,
         visible: o.visible,
-        limit: if o.thumbnail { 50_000 } else { 400_000 },
+        limit: if o.thumbnail { 50_000 } else { 2_000_000 },
     };
     let vis = hier::query(hier, src, layout, &idx, &q);
     let selected = |id: u64| o.selection.is_some_and(|s| s.contains(&id));
     let has_sel = o.selection.is_some_and(|s| !s.is_empty());
     let to_s = |x: f64, y: f64| view.to_screen(rect, x, y);
     let stipple = !o.thumbnail && vis.count < 20_000;
-    let small = |g: &Geometry, t: &Trans| {
+    let thin = |g: &Geometry, t: &Trans| {
         let b = t.apply_rect(g.bbox());
-        (b.width().max(b.height()) as f64 * view.scale) < 3.0
+        (b.width().min(b.height()) as f64 * view.scale) < 3.0
     };
     let mut labels = 0;
     for li in 0..tech.layers.len() {
@@ -483,12 +514,14 @@ pub fn draw_layout(
                         }
                     }
                 }
-                Geometry::Polygon { points } if small(&p.shape.geom, &p.trans) => {
-                    let _ = points;
+                Geometry::Polygon { .. } if thin(&p.shape.geom, &p.trans) => {
                     raster.mark(screen_rect(view, rect, p.trans.apply_rect(p.shape.bbox())));
                 }
-                Geometry::Path { .. } if small(&p.shape.geom, &p.trans) => {
-                    raster.mark(screen_rect(view, rect, p.trans.apply_rect(p.shape.bbox())));
+                Geometry::Path { points, width } if (*width as f64 * view.scale) < 3.0 => {
+                    for w in points.windows(2) {
+                        let seg = Geometry::Path { points: w.to_vec(), width: *width }.bbox();
+                        raster.mark(screen_rect(view, rect, p.trans.apply_rect(seg)));
+                    }
                 }
                 Geometry::Polygon { points } => {
                     let pts: Vec<Pos2> = points
@@ -522,7 +555,7 @@ pub fn draw_layout(
                 }
                 Geometry::Label { text, at, size } => {
                     let fs = (*size as f64 * view.scale) as f32;
-                    if o.thumbnail || (p.depth > 0 && fs < 6.0) || labels >= MAX_LABELS {
+                    if o.thumbnail || fs < if p.depth > 0 { 6.0 } else { 5.0 } || labels >= MAX_LABELS {
                         continue;
                     }
                     labels += 1;
@@ -1813,4 +1846,23 @@ fn hier_node(
 
 fn manhattan(from: (i64, i64), to: (i64, i64)) -> (i64, i64) {
     if (to.0 - from.0).abs() >= (to.1 - from.1).abs() { (to.0, from.1) } else { (from.0, to.1) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raster_runs_cover_exactly_the_marked_cells() {
+        let mut r = Raster::new(Rect::from_min_size(Pos2::ZERO, Vec2::new(40.0, 40.0)));
+        r.mark(Rect::from_min_max(Pos2::new(2.0, 2.0), Pos2::new(3.0, 30.0)));
+        r.mark(Rect::from_min_max(Pos2::new(10.0, 4.0), Pos2::new(20.0, 6.0)));
+        r.mark(Rect::from_min_max(Pos2::new(10.0, 8.0), Pos2::new(14.0, 9.0)));
+        let marked: usize = r.bits.iter().map(|w| w.count_ones() as usize).sum();
+        let mut mesh = Mesh::default();
+        r.emit(&mut mesh, Color32::WHITE);
+        let area: f32 = mesh.vertices.chunks(4).map(|q| (q[3].pos.x - q[0].pos.x) * (q[3].pos.y - q[0].pos.y)).sum();
+        assert_eq!(area, marked as f32 * Raster::CELL * Raster::CELL);
+        assert!(mesh.vertices.len() / 4 <= 4, "the vertical bar must merge into one quad: {}", mesh.vertices.len() / 4);
+    }
 }

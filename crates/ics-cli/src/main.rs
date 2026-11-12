@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand, ValueEnum};
 use ics_core::hier::{LayoutSource, descendants};
 use ics_core::units::format_eng;
-use ics_core::{Backend, CellRef, Project};
+use ics_core::{Backend, CellRef, LibStorage, Project};
 use ics_sim::{SimOptions, SimResults};
 
 #[derive(Parser)]
@@ -20,6 +20,12 @@ struct Cli {
 enum BackendArg {
     Builtin,
     Ngspice,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum StorageArg {
+    Gds,
+    Json,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -80,9 +86,10 @@ enum Cmd {
     Extract { project: PathBuf, cell: String },
     /// Compare a cell's layout with its schematic (non-zero exit on differences).
     Lvs { project: PathBuf, cell: String },
-    /// Import a GDSII file as a new library. Layers the technology lacks are added to it.
     /// Read a GDSII file and print hierarchy statistics and timings (nothing is written).
     GdsInfo { file: PathBuf },
+    /// Import a GDSII file as a new library stored as one GDS file. Layers the technology
+    /// lacks are added to it.
     ImportGds {
         project: PathBuf,
         file: PathBuf,
@@ -92,6 +99,16 @@ enum Cmd {
         /// Skip shapes on layers the technology does not define instead of adding the layers.
         #[arg(long)]
         skip_unknown_layers: bool,
+        /// Store the library as one JSON directory per cell instead of a GDS file.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Change how a library is stored on disk.
+    LibStorage {
+        project: PathBuf,
+        lib: String,
+        #[arg(value_enum)]
+        storage: StorageArg,
     },
     /// Replace the technology with the layers of a KLayout layer properties file (.lyp).
     /// Layout shapes keep their GDS layer/datatype; layers missing from the file are kept.
@@ -353,13 +370,18 @@ fn run(cli: Cli) -> Result<(), String> {
             let t1 = std::time::Instant::now();
             let mut hier = ics_core::hier::Hier::default();
             let mut flat = 0u64;
-            for t in &tops {
+            for (k, t) in tops.iter().enumerate() {
                 if let Some(i) = hier.get(&ics_core::CellRef::new("gds", t), &src) {
                     flat += i.flat_shapes;
-                    if let Some(b) = i.bbox {
+                    if let Some(b) = i.bbox
+                        && k < 10
+                    {
                         println!("top {t}: {:.1} x {:.1} µm", b.width() as f64 / 1000.0, b.height() as f64 / 1000.0);
                     }
                 }
+            }
+            if tops.len() > 10 {
+                println!("... {} more top cells", tops.len() - 10);
             }
             println!("{} cells, {shapes} shapes, {insts} instances, {flat} flattened shapes", src.len());
             println!(
@@ -369,7 +391,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 t1.elapsed().as_secs_f64()
             );
         }
-        Cmd::ImportGds { project, file, lib, skip_unknown_layers } => {
+        Cmd::ImportGds { project, file, lib, skip_unknown_layers, json } => {
             let mut p = Project::open(&project).map_err(|e| e.to_string())?;
             let data = std::fs::read(&file).map_err(|e| format!("{}: {e}", file.display()))?;
             let opts = ics_core::gds::ReadOptions { add_unknown_layers: !skip_unknown_layers };
@@ -378,6 +400,9 @@ fn run(cli: Cli) -> Result<(), String> {
             let layers_before = p.tech.layers.len();
             let hint = lib.unwrap_or_else(|| file.file_stem().map_or("gds".into(), |s| s.to_string_lossy().to_string()));
             let (name, tops) = p.add_gds_library(&hint, imp)?;
+            if json {
+                p.set_library_storage(&name, LibStorage::Json)?;
+            }
             p.save().map_err(|e| e.to_string())?;
             let n = p.libraries.iter().find(|l| l.name == name).map_or(0, |l| l.cells.len());
             println!("library {name}: {n} cells");
@@ -393,6 +418,16 @@ fn run(cli: Cli) -> Result<(), String> {
             for w in &warnings {
                 eprintln!("warning: {w}");
             }
+        }
+        Cmd::LibStorage { project, lib, storage } => {
+            let mut p = Project::open(&project).map_err(|e| e.to_string())?;
+            let storage = match storage {
+                StorageArg::Gds => LibStorage::Gds,
+                StorageArg::Json => LibStorage::Json,
+            };
+            p.set_library_storage(&lib, storage)?;
+            p.save().map_err(|e| e.to_string())?;
+            println!("library {lib}: stored as {}", if storage == LibStorage::Gds { "GDS" } else { "JSON" });
         }
         Cmd::ImportTech { project, lyp, lyt } => {
             let mut p = Project::open(&project).map_err(|e| e.to_string())?;

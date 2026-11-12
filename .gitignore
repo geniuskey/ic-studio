@@ -1,3 +1,4 @@
 /target
 **/*.json.tmp
 .DS_Store
+/examples/

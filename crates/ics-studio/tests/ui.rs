@@ -346,9 +346,10 @@ fn perf_large_layout() {
         let ms: Vec<f64> = (0..5).map(|_| frame(&mut h)).collect();
         let avg = ms.iter().sum::<f64>() / ms.len() as f64;
         println!("{label}: {avg:.1} ms/frame");
-    }
-    if let Ok(dir) = std::env::var("ICS_SHOT_DIR") {
-        std::fs::create_dir_all(&dir).unwrap();
-        h.render().unwrap().save(std::path::Path::new(&dir).join("perf_zoomed.png")).unwrap();
+        if let Ok(dir) = std::env::var("ICS_SHOT_DIR") {
+            std::fs::create_dir_all(&dir).unwrap();
+            let name = format!("perf_{}.png", label.replace(' ', "_"));
+            h.render().unwrap().save(std::path::Path::new(&dir).join(name)).unwrap();
+        }
     }
 }

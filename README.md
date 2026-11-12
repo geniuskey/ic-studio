@@ -102,6 +102,48 @@ ics extract myproj inv_chain                            # extracted SPICE netlis
 ics lvs myproj cmos_inverter                            # non-zero exit on differences
 ```
 
+## Examples
+
+`--demo` (or `ics new myproj --template demo`) opens a project with these cells in the
+`work` library, all in the generic 180 nm technology:
+
+| Cell | What it shows |
+|---|---|
+| `cmos_inverter` | Inverter with a hand-drawn layout; LVS reports its deliberate findings (PMOS W, load cap) |
+| `rc_lowpass` | RC low-pass filter (fc ≈ 159 kHz): op, AC and transient |
+| `diode_clipper` | Resistor and shunt diode clipper: transient and DC sweep |
+| `nand2` | 2-input NAND: schematic plus routed PCell layout, DRC and LVS clean |
+| `nor2` | 2-input NOR: schematic plus routed PCell layout, DRC and LVS clean |
+| `ring_osc5` | 5-stage ring oscillator, fully routed (no flylines); about 8.8 GHz on the built-in simulator |
+| `current_mirror` | NMOS current mirror with a 20 µA reference; DC sweep of the output voltage |
+| `ota5t` | 5-transistor OTA (NMOS pair, PMOS mirror load); about 42 dB open-loop gain in AC |
+| `inv_chain` | Four placed `cmos_inverter` instances |
+| `inv_array` | 16 × 8 array (AREF) of inverters |
+| `inv_tiles` | 8 × 8 array of `inv_array`: 8192 inverters, two levels of hierarchy |
+| `devices` | One instance of every PCell (NMOS, PMOS, poly resistor, MOM capacitor) |
+
+The routed cells (`nand2`, `nor2`, `ring_osc5`, `current_mirror`, `ota5t`) run the whole
+flow: simulate the schematic, open the layout, run DRC and LVS, and simulate again with
+`--parasitics`.
+
+Real open-source designs can be downloaded into `examples/` (git-ignored) as ready-to-open
+projects:
+
+```sh
+./scripts/fetch-examples.sh             # macOS / Linux (curl, gunzip)
+./scripts/fetch-examples.ps1            # Windows PowerShell
+#   --caravel / -Caravel  also the full caravel chip (52 MB download, 278 MB unpacked)
+#   --force   / -Force    rebuild the projects from the downloaded files
+```
+
+- `examples/sky130`: SKY130 layer set (open_pdks KLayout files) with the efabless caravel
+  libraries `caravel_clocking`, `housekeeping` and `chip_io` (and `caravel`)
+- `examples/gf180`: GF180MCU layer set with the `gf180mcu_fd_sc_mcu7t5v0` standard cells
+  and the `gf180mcu_fd_ip_sram` 512 × 8 SRAM macro
+
+The scripts skip files that are already downloaded and libraries already imported, and
+use `target/release/ics` when it exists (otherwise `cargo run --release -p ics-cli`).
+
 ## MCP server (AI agents)
 
 `ics-mcp` exposes an IC Studio project to AI agents over the Model Context Protocol

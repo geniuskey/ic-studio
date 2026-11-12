@@ -38,6 +38,13 @@ const ANGLE: u16 = 0x1C05;
 const PATHTYPE: u16 = 0x2102;
 const BOX: u16 = 0x2D00;
 const BOXTYPE: u16 = 0x2E02;
+const PROPATTR: u16 = 0x2B02;
+const PROPVALUE: u16 = 0x2C06;
+
+/// Property attribute under which SREF / AREF elements carry the instance name
+/// ([`CellInst::name`](crate::layout::CellInst::name)), written as PROPATTR / PROPVALUE.
+/// KLayout shows it as user property 61. Other properties are ignored on read.
+pub const INST_NAME_ATTR: i16 = 61;
 
 fn real8(v: f64) -> [u8; 8] {
     if v == 0.0 {
@@ -148,7 +155,8 @@ fn child_first_order(cells: &[(&CellRef, &Layout)]) -> Vec<usize> {
 /// Serialize the given cells to a GDSII byte stream, children before their parents.
 ///
 /// Structures are named after their cell, or `lib__cell` when the same cell name occurs in
-/// more than one library among `cells`.
+/// more than one library among `cells`. References to cells not among `cells` use the plain
+/// cell name, or `lib__cell` when a structure in the file already has that name.
 pub fn write_gds(lib_name: &str, cells: &[(&CellRef, &Layout)], tech: &Tech) -> Vec<u8> {
     let est: usize = cells.iter().map(|(_, l)| 64 + l.shapes.len() * 64 + l.instances.len() * 80).sum();
     let mut w = W(Vec::with_capacity(est + 256));
@@ -162,6 +170,12 @@ pub fn write_gds(lib_name: &str, cells: &[(&CellRef, &Layout)], tech: &Tech) -> 
     units.extend_from_slice(&real8(meters_per_dbu));
     w.rec(UNITS, &units);
     let names = gds_names(cells);
+    let structures: HashSet<&str> = names.values().map(String::as_str).collect();
+    let sname = |r: &CellRef| match names.get(r) {
+        Some(n) => n.clone(),
+        None if structures.contains(r.cell.as_str()) => format!("{}__{}", r.lib, r.cell),
+        None => r.cell.clone(),
+    };
     for k in child_first_order(cells) {
         let (r, layout) = cells[k];
         w.i16s(BGNSTR, &date);
@@ -211,7 +225,7 @@ pub fn write_gds(lib_name: &str, cells: &[(&CellRef, &Layout)], tech: &Tech) -> 
             let (cols, rows) = inst.dims();
             let array = inst.array.filter(|_| cols * rows > 1);
             w.rec(if array.is_some() { AREF } else { SREF }, &[]);
-            w.str(SNAME, names.get(&inst.cell).map_or(inst.cell.cell.as_str(), String::as_str));
+            w.str(SNAME, &sname(&inst.cell));
             let t = inst.trans;
             if t.mirror || t.rot % 4 != 0 {
                 w.rec(STRANS, &(if t.mirror { 0x8000u16 } else { 0 }).to_be_bytes());
@@ -227,6 +241,10 @@ pub fn write_gds(lib_name: &str, cells: &[(&CellRef, &Layout)], tech: &Tech) -> 
                     w.xy(&[o, (o.0 + c * a.col.0, o.1 + c * a.col.1), (o.0 + r * a.row.0, o.1 + r * a.row.1)]);
                 }
                 None => w.xy(&[o]),
+            }
+            if let Some(name) = &inst.name {
+                w.i16s(PROPATTR, &[INST_NAME_ATTR]);
+                w.str(PROPVALUE, name);
             }
             w.rec(ENDEL, &[]);
         }
@@ -339,6 +357,8 @@ struct El {
     angle: f64,
     mirror: bool,
     colrow: (u16, u16),
+    propattr: i16,
+    inst_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -358,6 +378,10 @@ pub fn read_gds(data: &[u8], tech: &Tech, lib: &str) -> Result<GdsImport, String
 /// on new layers. Instances refer to cells of library `lib` by their structure name.
 pub fn read_gds_with(data: &[u8], tech: &Tech, lib: &str, opts: ReadOptions) -> Result<GdsImport, String> {
     let mut out = GdsImport { new_layer_base: tech.layers.len(), ..GdsImport::default() };
+    let mut by_gds: HashMap<(u16, u16), usize> = HashMap::with_capacity(tech.layers.len());
+    for (k, l) in tech.layers.iter().enumerate() {
+        by_gds.entry((l.gds_layer, l.gds_datatype)).or_insert(k);
+    }
     let mut new_index: HashMap<(u16, u16), usize> = HashMap::new();
     let mut i = 0usize;
     let mut cur: Option<(String, Layout)> = None;
@@ -407,6 +431,8 @@ pub fn read_gds_with(data: &[u8], tech: &Tech, lib: &str, opts: ReadOptions) -> 
                 el.angle = 0.0;
                 el.mirror = false;
                 el.colrow = (1, 1);
+                el.propattr = 0;
+                el.inst_name = None;
                 in_el = true;
             }
             _ if !in_el => {}
@@ -427,6 +453,10 @@ pub fn read_gds_with(data: &[u8], tech: &Tech, lib: &str, opts: ReadOptions) -> 
             }
             STRING => set_str(&mut el.text),
             SNAME => set_str(&mut el.sname),
+            PROPATTR if d.len() >= 2 => el.propattr = i16_at(0),
+            PROPVALUE if el.propattr == INST_NAME_ATTR && matches!(el.kind, SREF | AREF) => {
+                el.inst_name = Some(String::from_utf8_lossy(d).trim_end_matches('\0').to_string());
+            }
             ENDEL => {
                 in_el = false;
                 let Some(c) = cur.as_mut() else { continue };
@@ -454,13 +484,16 @@ pub fn read_gds_with(data: &[u8], tech: &Tech, lib: &str, opts: ReadOptions) -> 
                         _ => None,
                     };
                     c.1.add_instance(CellRef::new(lib, el.sname.as_str()), trans, array);
+                    if let Some(i) = c.1.instances.last_mut() {
+                        i.name = el.inst_name.take();
+                    }
                     continue;
                 }
                 if el.kind == NODE {
                     continue;
                 }
                 let layer = if opts.add_unknown_layers {
-                    tech.layer_by_gds(el.layer, el.dt).unwrap_or_else(|| {
+                    by_gds.get(&(el.layer, el.dt)).copied().unwrap_or_else(|| {
                         *new_index.entry((el.layer, el.dt)).or_insert_with(|| {
                             let k = out.new_layers.len();
                             out.new_layers.push(LayerDef::generated(el.layer, el.dt, tech.layers.len() + k));
@@ -468,7 +501,7 @@ pub fn read_gds_with(data: &[u8], tech: &Tech, lib: &str, opts: ReadOptions) -> 
                         })
                     })
                 } else {
-                    let Some(l) = tech.layer_by_gds(el.layer, el.dt).or_else(|| tech.layer_by_gds(el.layer, 0)) else {
+                    let Some(&l) = by_gds.get(&(el.layer, el.dt)).or_else(|| by_gds.get(&(el.layer, 0))) else {
                         out.skipped_unknown_layers += 1;
                         continue;
                     };
@@ -486,7 +519,7 @@ pub fn read_gds_with(data: &[u8], tech: &Tech, lib: &str, opts: ReadOptions) -> 
                     _ => Geometry::Label {
                         text: std::mem::take(&mut el.text),
                         at: pts().next().unwrap_or_default(),
-                        size: (el.mag * tech.dbu_per_um as f64).max(50.0) as i64,
+                        size: (el.mag * tech.dbu_per_um as f64).max(50.0).round() as i64,
                     },
                 };
                 c.1.add(layer, geom);
@@ -662,13 +695,39 @@ mod tests {
         t.add_instance(ia.clone(), Trans::IDENTITY, None);
         t.add_instance(ib.clone(), Trans::new(100, 0), None);
         t.add_instance(CellRef::new("c", "ext"), Trans::IDENTITY, None);
+        t.add_instance(CellRef::new("c", "top"), Trans::IDENTITY, None);
         let bytes = write_gds("x", &[(&top, &t), (&ia, &leaf), (&ib, &leaf)], &tech);
         let imp = read_gds(&bytes, &tech, "x").unwrap();
         let names: Vec<&str> = imp.cells.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, ["a__inv", "b__inv", "top"]);
         let refs: Vec<&str> = imp.cells[2].1.instances.iter().map(|i| i.cell.cell.as_str()).collect();
-        assert_eq!(refs, ["a__inv", "b__inv", "ext"]);
+        assert_eq!(refs, ["a__inv", "b__inv", "ext", "c__top"]);
         assert_eq!(imp.top_cells(), ["top"]);
+    }
+
+    #[test]
+    fn instance_names_survive_as_properties() {
+        let tech = Tech::generic();
+        let (leaf, top) = (CellRef::new("l", "leaf"), CellRef::new("l", "top"));
+        let mut t = Layout::default();
+        let a = t.add_instance(leaf.clone(), Trans::with(10, 20, 1, true), None);
+        t.instance_mut(a).unwrap().name = Some("M1".into());
+        t.add_instance(leaf.clone(), Trans::IDENTITY, None);
+        let b = t.add_instance(leaf.clone(), Trans::IDENTITY, Some(ArraySpec { cols: 2, rows: 3, col: (5, 0), row: (0, 7) }));
+        t.instance_mut(b).unwrap().name = Some("XARR".into());
+        let mut bytes = write_gds("l", &[(&top, &t), (&leaf, &Layout::default())], &tech);
+        let imp = read_gds(&bytes, &tech, "l").unwrap();
+        let names: Vec<Option<&str>> = imp.cells[1].1.instances.iter().map(|i| i.name.as_deref()).collect();
+        assert_eq!(names, [Some("M1"), None, Some("XARR")]);
+
+        let mut w = W(Vec::new());
+        w.i16s(PROPATTR, &[1]);
+        w.str(PROPVALUE, "other");
+        let second_endel = bytes.windows(4).enumerate().filter(|(_, r)| *r == [0, 4, 0x11, 0]).nth(1).unwrap().0;
+        bytes.splice(second_endel..second_endel, w.0);
+        let imp = read_gds(&bytes, &tech, "l").unwrap();
+        let again: Vec<Option<&str>> = imp.cells[1].1.instances.iter().map(|i| i.name.as_deref()).collect();
+        assert_eq!(again, names, "only attribute {INST_NAME_ATTR} names instances");
     }
 
     #[test]

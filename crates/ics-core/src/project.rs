@@ -9,14 +9,25 @@
 //! <root>/<lib>/<cell>/layout.json
 //! <root>/<lib>/<cell>/sim.json
 //! ```
+//!
+//! A library with [`LibStorage::Gds`] is stored instead as
+//! ```text
+//! <root>/<lib>/<lib>.gds           every layout of the library (see `gds::write_gds`)
+//! <root>/<lib>/library.json        per-cell data GDS cannot hold: description, PCell
+//!                                  parameters, schematic and simulation setup
+//! ```
+//! A cell listed in `library.json` without a structure in the GDS file has no layout.
+//! References to cells of other libraries are written by plain cell name (`lib__cell` if the
+//! file has a structure of that name); on open they resolve to the first library in manifest
+//! order holding such a cell.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::gds::{GdsImport, sanitize_name, unique_name};
+use crate::gds::{GdsImport, ReadOptions, read_gds_with, sanitize_name, unique_name, write_gds};
 use crate::layout::{Geometry, Layout};
 use crate::pcell::{PCELL_LIB, PCell};
 use crate::schematic::Schematic;
@@ -25,6 +36,7 @@ use crate::tech::{LayerDef, Tech};
 
 pub const MANIFEST: &str = "ic-studio.json";
 pub const FORMAT_VERSION: u32 = 1;
+const LIBRARY_FILE: &str = "library.json";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProjectError {
@@ -48,11 +60,23 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
 }
 
 fn write_json<T: Serialize>(path: &Path, v: &T) -> Result<()> {
-    let text = serde_json::to_string_pretty(v).expect("serializable");
-    // Write atomically so a crash never leaves a truncated file behind.
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, text).map_err(io_err(&tmp))?;
+    write_atomic(path, serde_json::to_string_pretty(v).expect("serializable").as_bytes())
+}
+
+/// Write via a temporary file so a crash never leaves a truncated file behind.
+fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    fs::write(&tmp, data).map_err(io_err(&tmp))?;
     fs::rename(&tmp, path).map_err(io_err(path))
+}
+
+fn remove_file_if_exists(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(io_err(path)(e)),
+        _ => Ok(()),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -103,9 +127,37 @@ struct Manifest {
     format_version: u32,
     #[serde(default)]
     description: String,
-    libraries: Vec<String>,
+    libraries: Vec<LibEntry>,
     #[serde(default)]
     settings: ProjectSettings,
+}
+
+/// A manifest library entry: a plain name for JSON storage, an object otherwise.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum LibEntry {
+    Name(String),
+    Spec {
+        name: String,
+        #[serde(default)]
+        storage: LibStorage,
+    },
+}
+
+impl LibEntry {
+    fn of(l: &Library) -> Self {
+        match l.storage {
+            LibStorage::Json => LibEntry::Name(l.name.clone()),
+            storage => LibEntry::Spec { name: l.name.clone(), storage },
+        }
+    }
+
+    fn parts(&self) -> (&str, LibStorage) {
+        match self {
+            LibEntry::Name(n) => (n, LibStorage::Json),
+            LibEntry::Spec { name, storage } => (name, *storage),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -114,6 +166,36 @@ struct CellMeta {
     description: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pcell: Option<PCell>,
+}
+
+/// `library.json` of a GDS-stored library.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct GdsLibraryFile {
+    #[serde(default)]
+    cells: BTreeMap<String, GdsCellMeta>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct GdsCellMeta {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pcell: Option<PCell>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    schematic: Option<Schematic>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sim: Option<SimSetup>,
+}
+
+/// How a library is stored on disk (see the module docs).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LibStorage {
+    /// A directory of JSON files per cell.
+    #[default]
+    Json,
+    /// One GDSII file with every layout, plus `library.json`.
+    Gds,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -152,6 +234,13 @@ impl Cell {
 pub struct Library {
     pub name: String,
     pub cells: Vec<Cell>,
+    pub storage: LibStorage,
+}
+
+impl Library {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self { name: name.into(), cells: vec![], storage: LibStorage::Json }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -176,7 +265,7 @@ impl Project {
             name: name.into(),
             description: String::new(),
             tech: Tech::generic(),
-            libraries: vec![Library { name: "work".into(), cells: vec![] }],
+            libraries: vec![Library::new("work")],
             settings: ProjectSettings::default(),
         }
     }
@@ -204,7 +293,7 @@ impl Project {
         if self.libraries.iter().any(|l| l.name == name) {
             return Err(format!("library '{name}' already exists"));
         }
-        self.libraries.push(Library { name: name.into(), cells: vec![] });
+        self.libraries.push(Library::new(name));
         Ok(())
     }
 
@@ -243,7 +332,8 @@ impl Project {
 
     /// Add the cells of a GDS import as a new library named after `name_hint` (made valid and
     /// unique). The import's `new_layers` are appended to the technology unless a layer with
-    /// the same GDS numbers exists. Returns the library name and the top cells of the import.
+    /// the same GDS numbers exists. The library is stored as GDS ([`LibStorage::Gds`]).
+    /// Returns the library name and the top cells of the import.
     pub fn add_gds_library(
         &mut self,
         name_hint: &str,
@@ -252,18 +342,7 @@ impl Project {
         if imp.cells.is_empty() {
             return Err("the GDS file contains no cells".into());
         }
-        let base = imp.new_layer_base;
-        let new_layers: Vec<usize> = std::mem::take(&mut imp.new_layers)
-            .into_iter()
-            .map(|d| self.tech.layer_by_gds(d.gds_layer, d.gds_datatype).unwrap_or_else(|| push_layer(&mut self.tech, d)))
-            .collect();
-        for (_, l) in &mut imp.cells {
-            for s in &mut l.shapes {
-                if let Some(&to) = s.layer.checked_sub(base).and_then(|k| new_layers.get(k)) {
-                    s.layer = to;
-                }
-            }
-        }
+        merge_new_layers(&mut self.tech, &mut imp);
         let mut used: HashSet<String> = self.libraries.iter().map(|l| l.name.to_ascii_lowercase()).collect();
         let lib = unique_name(&sanitize_name(name_hint), &mut used);
         imp.sanitize_names(&lib);
@@ -274,8 +353,21 @@ impl Project {
             .map(|(name, layout)| Cell { description: "Imported from GDS".into(), layout: Some(layout), ..Cell::new(name) })
             .collect();
         cells.sort_by(|a, b| a.name.cmp(&b.name));
-        self.libraries.push(Library { name: lib.clone(), cells });
+        self.libraries.push(Library { name: lib.clone(), cells, storage: LibStorage::Gds });
         Ok((lib, tops))
+    }
+
+    /// Change how library `lib` is stored; the old files are removed by the next [`Project::save`].
+    pub fn set_library_storage(&mut self, lib: &str, storage: LibStorage) -> std::result::Result<(), String> {
+        let l = self.library_mut(lib).ok_or_else(|| format!("no library '{lib}'"))?;
+        if storage == LibStorage::Json {
+            let mut seen = HashSet::new();
+            if let Some(c) = l.cells.iter().find(|c| !seen.insert(c.name.to_ascii_lowercase())) {
+                return Err(format!("cell names differing only in case (e.g. '{}') cannot be stored as directories", c.name));
+            }
+        }
+        l.storage = storage;
+        Ok(())
     }
 
     /// Replace the technology, moving every layout shape to the new layer with the same
@@ -399,22 +491,30 @@ impl Project {
             name: self.name.clone(),
             format_version: FORMAT_VERSION,
             description: self.description.clone(),
-            libraries: self.libraries.iter().map(|l| l.name.clone()).collect(),
+            libraries: self.libraries.iter().map(LibEntry::of).collect(),
             settings: self.settings.clone(),
         };
         write_json(&root.join(MANIFEST), &manifest)?;
         write_json(&root.join("tech.json"), &self.tech)?;
         for lib in &self.libraries {
-            for cell in &lib.cells {
-                let dir = root.join(&lib.name).join(&cell.name);
-                fs::create_dir_all(&dir).map_err(io_err(&dir))?;
-                write_json(
-                    &dir.join("cell.json"),
-                    &CellMeta { description: cell.description.clone(), pcell: cell.pcell.clone() },
-                )?;
-                write_json(&dir.join("sim.json"), &cell.sim)?;
-                sync_view(&dir.join("schematic.json"), cell.schematic.as_ref())?;
-                sync_view(&dir.join("layout.json"), cell.layout.as_ref())?;
+            let lib_dir = root.join(&lib.name);
+            match lib.storage {
+                LibStorage::Json => {
+                    for cell in &lib.cells {
+                        let dir = lib_dir.join(&cell.name);
+                        fs::create_dir_all(&dir).map_err(io_err(&dir))?;
+                        write_json(
+                            &dir.join("cell.json"),
+                            &CellMeta { description: cell.description.clone(), pcell: cell.pcell.clone() },
+                        )?;
+                        write_json(&dir.join("sim.json"), &cell.sim)?;
+                        sync_view(&dir.join("schematic.json"), cell.schematic.as_ref())?;
+                        sync_view(&dir.join("layout.json"), cell.layout.as_ref())?;
+                    }
+                    remove_file_if_exists(&gds_file(&lib_dir, &lib.name))?;
+                    remove_file_if_exists(&lib_dir.join(LIBRARY_FILE))?;
+                }
+                LibStorage::Gds => save_gds_library(&lib_dir, lib, &self.tech)?,
             }
         }
         Ok(())
@@ -430,10 +530,16 @@ impl Project {
             )));
         }
         let tech_path = root.join("tech.json");
-        let tech = if tech_path.exists() { read_json(&tech_path)? } else { Tech::generic() };
+        let mut tech = if tech_path.exists() { read_json(&tech_path)? } else { Tech::generic() };
         let mut libraries = vec![];
-        for lib_name in &manifest.libraries {
+        for entry in &manifest.libraries {
+            let (lib_name, storage) = entry.parts();
             let lib_dir = root.join(lib_name);
+            if storage == LibStorage::Gds {
+                let cells = open_gds_library(&lib_dir, lib_name, &mut tech)?;
+                libraries.push(Library { name: lib_name.into(), cells, storage });
+                continue;
+            }
             let mut cells = vec![];
             if let Ok(rd) = fs::read_dir(&lib_dir) {
                 for e in rd.flatten() {
@@ -454,8 +560,9 @@ impl Project {
                 }
             }
             cells.sort_by(|a, b| a.name.cmp(&b.name));
-            libraries.push(Library { name: lib_name.clone(), cells });
+            libraries.push(Library { name: lib_name.into(), cells, storage });
         }
+        resolve_external_refs(&mut libraries);
         Ok(Project {
             root: Some(root),
             name: manifest.name,
@@ -464,6 +571,144 @@ impl Project {
             libraries,
             settings: manifest.settings,
         })
+    }
+}
+
+fn gds_file(lib_dir: &Path, lib: &str) -> PathBuf {
+    lib_dir.join(format!("{lib}.gds"))
+}
+
+fn save_gds_library(dir: &Path, lib: &Library, tech: &Tech) -> Result<()> {
+    fs::create_dir_all(dir).map_err(io_err(dir))?;
+    let refs: Vec<CellRef> = lib.cells.iter().filter(|c| c.layout.is_some()).map(|c| CellRef::new(&lib.name, &c.name)).collect();
+    let cells: Vec<(&CellRef, &Layout)> = refs.iter().zip(lib.cells.iter().filter_map(|c| c.layout.as_ref())).collect();
+    write_atomic(&gds_file(dir, &lib.name), &write_gds(&lib.name, &cells, tech))?;
+    let default_sim = SimSetup::default();
+    let file = GdsLibraryFile {
+        cells: lib
+            .cells
+            .iter()
+            .map(|c| {
+                let meta = GdsCellMeta {
+                    description: c.description.clone(),
+                    pcell: c.pcell.clone(),
+                    schematic: c.schematic.clone(),
+                    sim: (c.sim != default_sim).then(|| c.sim.clone()),
+                };
+                (c, meta)
+            })
+            .filter(|(c, m)| {
+                c.layout.is_none() || !m.description.is_empty() || m.pcell.is_some() || m.schematic.is_some() || m.sim.is_some()
+            })
+            .map(|(c, m)| (c.name.clone(), m))
+            .collect(),
+    };
+    write_json(&dir.join(LIBRARY_FILE), &file)?;
+    for e in fs::read_dir(dir).map_err(io_err(dir))?.flatten() {
+        let p = e.path();
+        if p.join("cell.json").is_file() {
+            fs::remove_dir_all(&p).map_err(io_err(&p))?;
+        }
+    }
+    Ok(())
+}
+
+/// Cells of a GDS-stored library. Layers the technology lacks are appended to `tech`;
+/// references to cells missing from the file are left for [`resolve_external_refs`].
+fn open_gds_library(dir: &Path, lib: &str, tech: &mut Tech) -> Result<Vec<Cell>> {
+    let path = gds_file(dir, lib);
+    let data = fs::read(&path).map_err(io_err(&path))?;
+    let mut imp = read_gds_with(&data, tech, lib, ReadOptions { add_unknown_layers: true })
+        .map_err(|e| ProjectError::Other(format!("{}: {e}", path.display())))?;
+    drop(data);
+    merge_new_layers(tech, &mut imp);
+    let meta_path = dir.join(LIBRARY_FILE);
+    let mut meta: GdsLibraryFile = if meta_path.exists() { read_json(&meta_path)? } else { GdsLibraryFile::default() };
+    let mut used: HashSet<String> = imp.cells.iter().map(|(n, _)| n.to_ascii_lowercase()).collect();
+    let renamed: HashMap<String, String> = imp
+        .cells
+        .iter()
+        .filter(|(n, _)| !valid_name(n))
+        .map(|(n, _)| (n.clone(), unique_name(&sanitize_name(n), &mut used)))
+        .collect();
+    let mut cells = Vec::with_capacity(imp.cells.len() + meta.cells.len());
+    for (name, mut layout) in imp.cells {
+        if !renamed.is_empty() {
+            for i in &mut layout.instances {
+                if let Some(n) = renamed.get(&i.cell.cell) {
+                    i.cell.cell = n.clone();
+                }
+            }
+        }
+        let name = renamed.get(&name).cloned().unwrap_or(name);
+        let m = meta.cells.remove(&name).unwrap_or_default();
+        cells.push(Cell {
+            name,
+            description: m.description,
+            schematic: m.schematic,
+            layout: Some(layout),
+            sim: m.sim.unwrap_or_default(),
+            pcell: m.pcell,
+        });
+    }
+    for (name, m) in meta.cells {
+        cells.push(Cell {
+            description: m.description,
+            schematic: m.schematic,
+            sim: m.sim.unwrap_or_default(),
+            pcell: m.pcell,
+            ..Cell::new(name)
+        });
+    }
+    cells.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(cells)
+}
+
+/// Point references a GDS-stored library makes to cells it does not hold at the first library
+/// with a cell of that name, or at `lib/cell` for a `lib__cell` reference.
+fn resolve_external_refs(libraries: &mut [Library]) {
+    let mut owner: HashMap<String, String> = HashMap::new();
+    let mut all: HashSet<(String, String)> = HashSet::new();
+    for l in libraries.iter() {
+        for c in &l.cells {
+            owner.entry(c.name.clone()).or_insert_with(|| l.name.clone());
+            all.insert((l.name.clone(), c.name.clone()));
+        }
+    }
+    for l in libraries.iter_mut().filter(|l| l.storage == LibStorage::Gds) {
+        let own: HashSet<String> = l.cells.iter().map(|c| c.name.clone()).collect();
+        for i in l.cells.iter_mut().filter_map(|c| c.layout.as_mut()).flat_map(|lay| &mut lay.instances) {
+            if i.cell.lib != l.name || own.contains(&i.cell.cell) {
+                continue;
+            }
+            if let Some(lib) = owner.get(&i.cell.cell) {
+                i.cell.lib = lib.clone();
+            } else if let Some((a, b)) = i.cell.cell.split_once("__")
+                && all.contains(&(a.to_string(), b.to_string()))
+            {
+                i.cell = CellRef::new(a, b);
+            }
+        }
+    }
+}
+
+/// Append the import's new layers to `tech` (reusing layers with the same GDS numbers) and
+/// move the shapes on them to their final indices.
+fn merge_new_layers(tech: &mut Tech, imp: &mut GdsImport) {
+    if imp.new_layers.is_empty() {
+        return;
+    }
+    let base = imp.new_layer_base;
+    let new_layers: Vec<usize> = std::mem::take(&mut imp.new_layers)
+        .into_iter()
+        .map(|d| tech.layer_by_gds(d.gds_layer, d.gds_datatype).unwrap_or_else(|| push_layer(tech, d)))
+        .collect();
+    for (_, l) in &mut imp.cells {
+        for s in &mut l.shapes {
+            if let Some(&to) = s.layer.checked_sub(base).and_then(|k| new_layers.get(k)) {
+                s.layer = to;
+            }
+        }
     }
 }
 
@@ -654,6 +899,176 @@ mod tests {
         let (lib2, _) = p.add_gds_library("chip", imp).unwrap();
         assert_eq!(p.tech.layers.len(), layers, "known layers are not added again");
         assert_eq!(layer_gds(&p, &CellRef::new(&lib2, "top")), [(99, 0), (98, 3), (1, 0)]);
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ics-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        dir
+    }
+
+    /// Libraries with layout ids renumbered the way a GDS read assigns them.
+    fn canonical(p: &Project) -> Vec<Library> {
+        let mut libs = p.libraries.clone();
+        for l in libs.iter_mut().flat_map(|l| &mut l.cells).filter_map(|c| c.layout.as_mut()) {
+            let mut id = 0;
+            for s in &mut l.shapes {
+                id += 1;
+                s.id = id;
+            }
+            for i in &mut l.instances {
+                id += 1;
+                i.id = id;
+            }
+            l.next_id = id;
+        }
+        libs
+    }
+
+    fn cell_dirs(dir: &Path) -> usize {
+        fs::read_dir(dir).map_or(0, |rd| rd.flatten().filter(|e| e.path().join("cell.json").exists()).count())
+    }
+
+    fn chip_library(p: &mut Project) {
+        use crate::layout::{ArraySpec, Trans};
+        p.add_library("other").unwrap();
+        let mut other_leaf = Layout::default();
+        other_leaf.add_rect(2, 0, 0, 50, 50);
+        p.add_cell("other", Cell { layout: Some(other_leaf), ..Cell::new("leaf") }).unwrap();
+        p.add_library("chip").unwrap();
+        p.set_library_storage("chip", LibStorage::Gds).unwrap();
+        let mut leaf = Layout::default();
+        leaf.add_rect(6, 0, 0, 1000, 500);
+        leaf.add(4, Geometry::Polygon { points: vec![(0, 0), (500, 0), (500, 500), (250, 800), (0, 500)] });
+        leaf.add(7, Geometry::Path { points: vec![(0, 0), (2000, 0), (2000, 3000)], width: 280 });
+        leaf.add(7, Geometry::Label { text: "out".into(), at: (100, 100), size: 200 });
+        p.add_cell("chip", Cell { description: "leaf cell".into(), layout: Some(leaf), ..Cell::new("leaf") }).unwrap();
+        let nmos = PCell::Mos { pmos: false, w: 1000, l: 180, fingers: 2 };
+        let dev = p.ensure_pcell(&nmos).unwrap();
+        let mut top = Layout::default();
+        top.add_rect(1, -100, -100, 5000, 5000);
+        for (k, rot) in (0..4u8).enumerate() {
+            let id = top.add_instance(CellRef::new("chip", "leaf"), Trans::with(k as i64 * 3000, 0, rot, k % 2 == 1), None);
+            top.instance_mut(id).unwrap().name = (k < 2).then(|| format!("X{k}"));
+        }
+        let arr = Some(ArraySpec { cols: 3, rows: 2, col: (5000, 0), row: (300, 7000) });
+        let id = top.add_instance(CellRef::new("chip", "leaf"), Trans::with(0, 9000, 1, true), arr);
+        top.instance_mut(id).unwrap().name = Some("XARR".into());
+        let id = top.add_instance(dev, Trans::new(0, -5000), None);
+        top.instance_mut(id).unwrap().name = Some("M1".into());
+        top.add_instance(CellRef::new("other", "leaf"), Trans::new(7, 7), None);
+        let src = p.cell(&CellRef::new("work", "cmos_inverter")).unwrap().clone();
+        assert!(src.schematic.is_some());
+        let mut sim = src.sim.clone();
+        sim.temp = 85.0;
+        p.add_cell("chip", Cell { schematic: src.schematic.clone(), sim, layout: Some(top), ..Cell::new("top") }).unwrap();
+        p.add_cell("chip", Cell { description: "schematic only".into(), schematic: src.schematic, ..Cell::new("sch") }).unwrap();
+        let pc = PCell::PolyRes { w: 400, l: 5000 };
+        let res = Cell {
+            description: pc.summary(p.tech.dbu_per_um),
+            layout: Some(pc.generate(&p.tech).unwrap()),
+            pcell: Some(pc),
+            ..Cell::new("res")
+        };
+        p.add_cell("chip", res).unwrap();
+        p.add_cell("chip", Cell { layout: Some(Layout::default()), ..Cell::new("empty") }).unwrap();
+    }
+
+    #[test]
+    fn gds_library_round_trip() {
+        let dir = temp_dir("gdslib");
+        let mut p = crate::examples::demo_project();
+        chip_library(&mut p);
+        p.set_library_storage("work", LibStorage::Gds).unwrap();
+        p.save_as(&dir).unwrap();
+        assert!(dir.join("chip").join("chip.gds").is_file());
+        assert!(dir.join("chip").join(LIBRARY_FILE).is_file());
+        assert_eq!(cell_dirs(&dir.join("chip")), 0);
+        assert!(cell_dirs(&dir.join(PCELL_LIB)) > 0, "JSON libraries keep their cell directories");
+        let q = Project::open(&dir).unwrap();
+        assert_eq!(q.tech, p.tech);
+        assert_eq!(canonical(&q), canonical(&p));
+        let top = q.cell(&CellRef::new("chip", "top")).unwrap().layout.as_ref().unwrap();
+        let refs: Vec<String> = top.instances.iter().map(|i| i.cell.to_string()).collect();
+        assert_eq!(refs[5..], ["pcells/nmos_w1000_l180_nf2", "other/leaf"]);
+        assert!(q.cell(&CellRef::new("chip", "empty")).unwrap().layout.is_some(), "an empty layout is kept");
+        assert!(q.cell(&CellRef::new("chip", "sch")).unwrap().layout.is_none());
+
+        q.save().unwrap();
+        assert_eq!(canonical(&Project::open(&dir).unwrap()), canonical(&p));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn json_manifest_is_unchanged_and_gds_entries_are_objects() {
+        let dir = temp_dir("manifest");
+        let mut p = crate::examples::demo_project();
+        p.save_as(&dir).unwrap();
+        let manifest = dir.join(MANIFEST);
+        let before = fs::read(&manifest).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&before).unwrap();
+        assert!(v["libraries"].as_array().unwrap().iter().all(|l| l.is_string()));
+        Project::open(&dir).unwrap().save().unwrap();
+        assert_eq!(fs::read(&manifest).unwrap(), before);
+
+        p.set_library_storage(PCELL_LIB, LibStorage::Gds).unwrap();
+        p.save().unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+        assert_eq!(v["libraries"], serde_json::json!(["work", { "name": PCELL_LIB, "storage": "gds" }]));
+        let q = Project::open(&dir).unwrap();
+        assert_eq!(q.libraries.iter().map(|l| l.storage).collect::<Vec<_>>(), [LibStorage::Json, LibStorage::Gds]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn set_library_storage_replaces_the_old_files() {
+        let dir = temp_dir("storage");
+        let mut p = crate::examples::demo_project();
+        p.save_as(&dir).unwrap();
+        let work = dir.join("work");
+        let n = p.libraries[0].cells.len();
+        assert_eq!(cell_dirs(&work), n);
+        p.set_library_storage("work", LibStorage::Gds).unwrap();
+        p.save().unwrap();
+        assert_eq!(cell_dirs(&work), 0);
+        assert!(work.join("work.gds").is_file() && work.join(LIBRARY_FILE).is_file());
+        let mut q = Project::open(&dir).unwrap();
+        assert_eq!(canonical(&q), canonical(&p));
+        q.set_library_storage("work", LibStorage::Json).unwrap();
+        q.save().unwrap();
+        assert_eq!(cell_dirs(&work), n);
+        assert!(!work.join("work.gds").exists() && !work.join(LIBRARY_FILE).exists());
+        assert_eq!(Project::open(&dir).unwrap().libraries, q.libraries);
+
+        let lib = q.library_mut("work").unwrap();
+        lib.storage = LibStorage::Gds;
+        lib.cells.push(Cell::new("CMOS_INVERTER"));
+        assert!(q.set_library_storage("work", LibStorage::Json).is_err(), "case clashes cannot become directories");
+        assert!(q.set_library_storage("nope", LibStorage::Gds).is_err());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn unknown_layers_of_a_gds_library_are_added_on_open() {
+        let dir = temp_dir("gdslayers");
+        let mut p = Project::new("u");
+        p.tech.layers.push(LayerDef::generated(120, 3, 0));
+        let extra = p.tech.layers.len() - 1;
+        p.set_library_storage("work", LibStorage::Gds).unwrap();
+        let mut l = Layout::default();
+        l.add_rect(0, 0, 0, 10, 10);
+        l.add_rect(extra, 0, 0, 20, 20);
+        p.add_cell("work", Cell { layout: Some(l), ..Cell::new("a") }).unwrap();
+        p.save_as(&dir).unwrap();
+        let mut tech = p.tech.clone();
+        tech.layers.pop();
+        write_json(&dir.join("tech.json"), &tech).unwrap();
+        let q = Project::open(&dir).unwrap();
+        assert_eq!(q.tech.layers.len(), p.tech.layers.len());
+        assert_eq!(q.tech.layers[extra].name, "L120D3");
+        let d0 = &p.tech.layers[0];
+        assert_eq!(layer_gds(&q, &CellRef::new("work", "a")), [(d0.gds_layer, d0.gds_datatype), (120, 3)]);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
