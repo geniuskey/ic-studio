@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod canvas;
+pub mod ciw;
 pub mod history;
 pub mod home_view;
 pub mod icons;

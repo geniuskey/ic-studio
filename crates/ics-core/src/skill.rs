@@ -79,20 +79,89 @@ pub fn run_with(
     file: Option<&Path>,
     current: Option<&CellRef>,
 ) -> Result<RunResult, SkillError> {
-    let mut it = Interp::new(project, current.cloned());
-    let r = it.run_source(src, file.map(Path::to_path_buf));
-    let modified = std::mem::take(&mut it.modified);
-    let output = std::mem::take(&mut it.out);
-    match r {
-        Ok(v) => Ok(RunResult { output, value: it.repr(&v), modified }),
-        Err(Flow::Return(v)) => Ok(RunResult { output, value: it.repr(&v), modified }),
-        Err(Flow::Err(e)) => Err(SkillError {
-            message: e.msg,
-            file: e.pos.and_then(|p| it.files.get(p.file as usize).cloned().flatten()).map(|p| p.display().to_string()),
-            line: e.pos.map_or(0, |p| p.line as usize),
-            output,
-            modified,
-        }),
+    Session::new().eval(project, src, file, current)
+}
+
+/// An interpreter whose global variables, procedures and open cellviews persist between
+/// evaluations, like Virtuoso's CIW.
+#[derive(Default)]
+pub struct Session {
+    globals: HashMap<Name, Value>,
+    funcs: HashMap<Name, Rc<Func>>,
+    cvs: Vec<CvState>,
+    files: Vec<Option<PathBuf>>,
+}
+
+impl Session {
+    pub fn new() -> Self {
+        let globals = ["poport", "errport", "woport", "piport"].into_iter().map(|p| (p.into(), Value::Port)).collect();
+        Session { globals, ..Default::default() }
+    }
+
+    /// Evaluate `src`; `file` names it for errors and is the base directory of relative `load()`
+    /// paths, `current` is the cell `geGetEditCellView()` returns.
+    pub fn eval(
+        &mut self,
+        project: &mut Project,
+        src: &str,
+        file: Option<&Path>,
+        current: Option<&CellRef>,
+    ) -> Result<RunResult, SkillError> {
+        let mut it = Interp::new(project, current.cloned(), std::mem::take(self));
+        let r = it.run_source(src, file.map(Path::to_path_buf));
+        let modified = std::mem::take(&mut it.modified);
+        let output = std::mem::take(&mut it.out);
+        let res = match r {
+            Ok(v) | Err(Flow::Return(v)) => Ok(RunResult { output, value: it.repr(&v), modified }),
+            Err(Flow::Err(e)) => Err(SkillError {
+                message: e.msg,
+                file: e.pos.and_then(|p| it.files.get(p.file as usize).cloned().flatten()).map(|p| p.display().to_string()),
+                line: e.pos.map_or(0, |p| p.line as usize),
+                output,
+                modified,
+            }),
+        };
+        *self = it.into_session();
+        res
+    }
+
+    /// Read and evaluate a `.il` file.
+    pub fn load(&mut self, project: &mut Project, path: &Path, current: Option<&CellRef>) -> Result<RunResult, SkillError> {
+        let src = std::fs::read_to_string(path).map_err(|e| SkillError {
+            message: e.to_string(),
+            file: Some(path.display().to_string()),
+            line: 0,
+            output: String::new(),
+            modified: vec![],
+        })?;
+        self.eval(project, &src, Some(path), current)
+    }
+
+    /// Names of the procedures defined so far, sorted.
+    pub fn procedures(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.funcs.keys().map(|k| k.to_string()).collect();
+        v.sort();
+        v
+    }
+}
+
+/// Whether `src` is a complete input: no unclosed parenthesis, brace, bracket, string or comment.
+/// Other syntax errors count as complete, so evaluating reports them.
+pub fn is_complete(src: &str) -> bool {
+    match lex(src, 0) {
+        Ok(toks) => {
+            let mut depth = 0i64;
+            for (t, _) in &toks {
+                match t {
+                    Tok::LParen | Tok::CallStart(_) | Tok::LBrace | Tok::LBracket => depth += 1,
+                    Tok::RParen | Tok::RBrace | Tok::RBracket => depth -= 1,
+                    _ => {}
+                }
+            }
+            depth <= 0
+        }
+        Err(Flow::Err(e)) => !e.msg.starts_with("unterminated"),
+        Err(_) => true,
     }
 }
 
@@ -256,7 +325,7 @@ fn type_name(v: &Value) -> &'static str {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Pos {
-    file: u16,
+    file: u32,
     line: u32,
 }
 
@@ -321,7 +390,7 @@ fn ident_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_' || c == '?'
 }
 
-fn lex(src: &str, file: u16) -> R<Vec<(Tok, Pos)>> {
+fn lex(src: &str, file: u32) -> R<Vec<(Tok, Pos)>> {
     let cs: Vec<char> = src.chars().collect();
     let mut out = vec![];
     let (mut i, mut line) = (0, 1u32);
@@ -753,7 +822,7 @@ impl Parser {
     }
 }
 
-fn parse(src: &str, file: u16) -> R<Vec<Node>> {
+fn parse(src: &str, file: u32) -> R<Vec<Node>> {
     Parser { toks: lex(src, file)?, i: 0 }.program()
 }
 
@@ -826,21 +895,16 @@ struct Args {
 }
 
 impl<'p> Interp<'p> {
-    fn new(p: &'p mut Project, current: Option<CellRef>) -> Self {
-        let mut globals = HashMap::new();
-        globals.insert("poport".into(), Value::Port);
-        globals.insert("errport".into(), Value::Port);
-        globals.insert("woport".into(), Value::Port);
-        globals.insert("piport".into(), Value::Port);
+    fn new(p: &'p mut Project, current: Option<CellRef>, s: Session) -> Self {
         Interp {
             p,
-            globals,
+            globals: s.globals,
             frames: vec![],
-            funcs: HashMap::new(),
+            funcs: s.funcs,
             out: String::new(),
-            cvs: vec![],
+            cvs: s.cvs,
             modified: vec![],
-            files: vec![],
+            files: s.files,
             load_stack: vec![],
             depth: 0,
             steps: 0,
@@ -848,11 +912,15 @@ impl<'p> Interp<'p> {
         }
     }
 
+    fn into_session(self) -> Session {
+        Session { globals: self.globals, funcs: self.funcs, cvs: self.cvs, files: self.files }
+    }
+
     fn run_source(&mut self, src: &str, file: Option<PathBuf>) -> R<Value> {
-        if self.files.len() >= u16::MAX as usize {
+        if self.files.len() >= u32::MAX as usize {
             return fail("too many loaded files");
         }
-        let idx = self.files.len() as u16;
+        let idx = self.files.len() as u32;
         self.files.push(file.clone());
         let nodes = parse(src, idx)?;
         self.load_stack.push(file);
@@ -3140,5 +3208,29 @@ mod tests {
         assert_eq!(e.line, 3);
         assert!(e.file.unwrap().ends_with("bad.il"));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn session_keeps_state() {
+        let mut p = Project::new("t");
+        let mut s = Session::new();
+        s.eval(&mut p, "x = 2 procedure(dbl(v) v * 2)", None, None).unwrap();
+        assert_eq!(s.eval(&mut p, "dbl(x)", None, None).unwrap().value, "4");
+        s.eval(&mut p, "cv = dbOpenCellViewByType(\"work\" \"c\" \"layout\" \"\" \"w\")", None, None).unwrap();
+        let r = s.eval(&mut p, "dbCreateRect(cv \"metal1\" list(0:0 1:1)) length(cv~>shapes)", None, None).unwrap();
+        assert_eq!((r.value.as_str(), r.modified.len()), ("1", 1));
+        assert!(s.eval(&mut p, "undefinedFn()", None, None).is_err());
+        assert_eq!(s.eval(&mut p, "x", None, None).unwrap().value, "2");
+        assert_eq!(s.procedures(), vec!["dbl".to_string()]);
+    }
+
+    #[test]
+    fn completeness() {
+        assert!(is_complete("list(1 2)"));
+        assert!(!is_complete("procedure(f(x)"));
+        assert!(!is_complete("printf(\"a"));
+        assert!(!is_complete("/* open"));
+        assert!(is_complete("x = 1)"));
+        assert!(is_complete(""));
     }
 }

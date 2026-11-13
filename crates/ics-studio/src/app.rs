@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::canvas::Profile;
 use crate::canvas::View2D;
+use crate::ciw::{Ciw, CiwKind};
 use crate::home_view;
 use crate::icons::{self, Icon};
 use crate::layout_view::{EipContext, LayAction, LayCtx, LayRequest, LayTool, LayoutEditor, Verify, fmt_count, um};
@@ -100,6 +101,10 @@ pub enum Command {
     /// Import a GDSII or OASIS file (detected from its contents); `None` asks for the file.
     ImportGds(Option<PathBuf>),
     ImportTech,
+    /// Show the CIW (SKILL command interpreter) tab and focus its prompt.
+    Ciw,
+    /// Evaluate SKILL in the CIW session, as if typed at its prompt.
+    CiwEval(String),
     /// Run a Cadence SKILL (.il) script on the project; `None` asks for the file.
     LoadSkill(Option<PathBuf>),
     /// Replace the technology with a PDK file (see `ics_core::pdk`); `None` asks for the file.
@@ -169,6 +174,7 @@ struct LogLine {
 #[derive(PartialEq, Clone, Copy)]
 enum BottomTab {
     Console,
+    Ciw,
     Problems,
     Netlist,
 }
@@ -404,6 +410,7 @@ pub struct IcStudio {
     last_title: String,
     bridge: Option<Bridge>,
     rule_designer: RuleDesigner,
+    ciw: Ciw,
 }
 
 const SETTINGS_KEY: &str = "ic-studio-settings";
@@ -441,6 +448,7 @@ impl IcStudio {
             last_title: String::new(),
             bridge: None,
             rule_designer: RuleDesigner::default(),
+            ciw: Ciw::default(),
         };
         app.info(format!("IC Studio {} ready — renderer: wgpu", env!("CARGO_PKG_VERSION")));
         match &app.ngspice {
@@ -501,6 +509,7 @@ impl IcStudio {
     // ----- project management -----
     fn set_project(&mut self, p: Project) {
         self.project = Some(p);
+        self.ciw.reset();
         self.dirty = false;
         self.tabs.clear();
         self.active = None;
@@ -642,6 +651,7 @@ impl IcStudio {
                     return;
                 }
                 self.project = None;
+                self.ciw.reset();
                 self.dirty = false;
                 self.tabs.clear();
                 self.active = None;
@@ -730,6 +740,15 @@ impl IcStudio {
             Command::ImportGds(path) => self.import_gds(path),
             Command::ImportTech => self.import_tech(),
             Command::LoadSkill(path) => self.load_skill(path),
+            Command::Ciw => {
+                self.show_console = true;
+                self.bottom_tab = BottomTab::Ciw;
+                self.ciw.request_focus();
+            }
+            Command::CiwEval(src) => {
+                self.ciw.push(CiwKind::Input, src.clone());
+                self.ciw_eval(&src);
+            }
             Command::LoadPdk(path) => {
                 if let Some(path) = path.or_else(|| rfd::FileDialog::new().add_filter("IC Studio PDK", &["toml"]).pick_file()) {
                     self.load_pdk(&path);
@@ -1158,7 +1177,9 @@ impl IcStudio {
             return;
         };
         let before = layout_snapshot(p);
-        let res = ics_core::skill::run_file_with(p, &path, current.as_ref());
+        let res = self.ciw.session.load(p, &path, current.as_ref());
+        self.ciw.push(CiwKind::Input, format!("load(\"{}\")", path.display().to_string().replace('\\', "/")));
+        self.ciw.show(&res);
         let (output, err) = match &res {
             Ok(r) => (r.output.clone(), None),
             Err(e) => (e.output.clone(), Some(e.to_string())),
@@ -1176,6 +1197,24 @@ impl IcStudio {
                 }
             }
         }
+        if self.active.is_none()
+            && let Some(r) = changed.into_iter().next()
+        {
+            self.queue.push(Command::OpenCell(r, Some(Workspace::Layout)));
+        }
+    }
+
+    /// Evaluate a CIW command in the persistent SKILL session.
+    fn ciw_eval(&mut self, src: &str) {
+        let current = self.active.clone();
+        let Some(p) = self.project.as_mut() else {
+            self.ciw.push(CiwKind::Error, "*Error* no project is open");
+            return;
+        };
+        let before = layout_snapshot(p);
+        let res = self.ciw.session.eval(p, src, None, current.as_ref());
+        self.ciw.show(&res);
+        let changed = self.layouts_edited(before);
         if self.active.is_none()
             && let Some(r) = changed.into_iter().next()
         {
@@ -1361,6 +1400,9 @@ impl IcStudio {
                 }
                 if ui.add(egui::Button::new("Toggle Console").shortcut_text("⌘J")).clicked() {
                     q.push(Command::ToggleConsole);
+                }
+                if ui.button("SKILL CIW").clicked() {
+                    q.push(Command::Ciw);
                 }
                 if ui.button(if self.settings.dark { "Light Theme" } else { "Dark Theme" }).clicked() {
                     q.push(Command::ToggleTheme);
@@ -2109,6 +2151,13 @@ impl IcStudio {
         let problems = self.netlist_active().map(|(_, w)| w).unwrap_or_default();
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.bottom_tab, BottomTab::Console, "Console");
+            if ui
+                .selectable_value(&mut self.bottom_tab, BottomTab::Ciw, "CIW")
+                .on_hover_text("SKILL command interpreter")
+                .clicked()
+            {
+                self.ciw.request_focus();
+            }
             let ptxt = if problems.is_empty() { "Problems".to_string() } else { format!("Problems ({})", problems.len()) };
             ui.selectable_value(&mut self.bottom_tab, BottomTab::Problems, ptxt);
             ui.selectable_value(&mut self.bottom_tab, BottomTab::Netlist, "Netlist");
@@ -2119,10 +2168,18 @@ impl IcStudio {
                 if self.bottom_tab == BottomTab::Console && ui.small_button("Clear").clicked() {
                     self.log.clear();
                 }
+                if self.bottom_tab == BottomTab::Ciw && ui.small_button("Clear").clicked() {
+                    self.ciw.clear();
+                }
             });
         });
         ui.separator();
         match self.bottom_tab {
+            BottomTab::Ciw => {
+                if let Some(src) = self.ciw.ui(ui) {
+                    self.queue.push(Command::CiwEval(src));
+                }
+            }
             BottomTab::Console => {
                 egui::ScrollArea::vertical().stick_to_bottom(true).auto_shrink([false, false]).show(ui, |ui| {
                     for l in &self.log {
@@ -2188,6 +2245,7 @@ impl IcStudio {
             ("Import technology (KLayout .lyp)…".into(), "", Command::ImportTech),
             ("Load PDK…".into(), "", Command::LoadPdk(None)),
             ("Load SKILL (.il)…".into(), "", Command::LoadSkill(None)),
+            ("SKILL command interpreter (CIW)".into(), "", Command::Ciw),
             ("Export SPICE netlist…".into(), "", Command::ExportNetlist),
             ("Toggle light / dark theme".into(), "", Command::ToggleTheme),
             ("Toggle console".into(), "⌘J", Command::ToggleConsole),
@@ -2886,6 +2944,10 @@ impl IcStudio {
 
     pub fn rule_designer(&self) -> &RuleDesigner {
         &self.rule_designer
+    }
+
+    pub fn ciw(&self) -> &Ciw {
+        &self.ciw
     }
 
     fn update_title(&mut self, ctx: &egui::Context) {

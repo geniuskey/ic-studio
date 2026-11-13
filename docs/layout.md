@@ -233,6 +233,13 @@ the MCP tool `run_skill` do the same from the command line and from agents. Prin
 goes to the log, every changed layout can be undone, and `geGetEditCellView()` returns the
 cell open in the editor.
 
+The **CIW** tab of the bottom panel (View > SKILL CIW, or "CIW" in the command palette) is
+an interactive SKILL prompt like Virtuoso's Command Interpreter Window. Variables,
+procedures and open cellviews persist between commands and include everything defined by
+files loaded with File > Import > Load SKILL; opening another project starts a fresh
+session. Enter runs the line, a line with unclosed parentheses or strings continues on the
+next one (the prompt shows `...`), and Up / Down recall earlier commands.
+
 ```lisp
 cv = dbOpenCellViewByType("work" "pad" "layout" "maskLayout" "w")
 for(i 0 3

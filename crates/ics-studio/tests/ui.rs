@@ -359,6 +359,34 @@ fn rule_designer() {
 }
 
 #[test]
+fn ciw_console() {
+    let args = LaunchArgs {
+        project: None,
+        demo: true,
+        workspace: Some("layout".into()),
+        cell: Some("cmos_inverter".into()),
+        run: false,
+    };
+    let mut h = app(args);
+    let count = |h: &Harness<'_, IcStudio>| {
+        let p = h.state().project().unwrap();
+        p.all_cells().find(|(r, _)| r.cell == "cmos_inverter").and_then(|(_, c)| c.layout.as_ref()).map_or(0, |l| l.shapes.len())
+    };
+    let before = count(&h);
+    h.state_mut().command(Command::Ciw);
+    h.state_mut().command(Command::CiwEval("procedure(pad(cv x) dbCreateRect(cv \"metal1\" list(x:10 x+1:11)))".into()));
+    h.state_mut().command(Command::CiwEval("cv = geGetEditCellView() pad(cv 0) pad(cv 2) length(cv~>shapes)".into()));
+    h.state_mut().command(Command::CiwEval("printf(\"hello %d\n\" 42) undefinedFn()".into()));
+    h.run_steps(6);
+    assert_eq!(count(&h), before + 2);
+    let lines = &h.state().ciw().lines;
+    assert!(lines.iter().any(|(_, t)| t == &(before + 2).to_string()), "{lines:?}");
+    assert!(lines.iter().any(|(_, t)| t == "hello 42"));
+    assert!(lines.last().is_some_and(|(_, t)| t.contains("undefined function undefinedFn")));
+    shot(&mut h, "31_ciw");
+}
+
+#[test]
 fn glyph_coverage() {
     let sources = [
         include_str!("../src/app.rs"),
@@ -369,6 +397,7 @@ fn glyph_coverage() {
         include_str!("../src/schematic_view.rs"),
         include_str!("../src/sim_view.rs"),
         include_str!("../src/rule_designer.rs"),
+        include_str!("../src/ciw.rs"),
         include_str!("../src/theme.rs"),
         include_str!("../../ics-core/src/units.rs"),
         include_str!("../../ics-core/src/schematic.rs"),
