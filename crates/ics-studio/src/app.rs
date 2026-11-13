@@ -3478,6 +3478,7 @@ impl IcStudio {
             GenAction::Match(spec) => {
                 ics_core::matching::apply(p, &r, &spec).map(|names| format!("placed {} unit(s)", names.len()))
             }
+            GenAction::PlaceLike { reference, route } => place_like(p, &reference, &r, route),
             other => {
                 let shapes = match other {
                     GenAction::GuardRing(g) => ics_core::layout_gen::guard_ring(&p.tech, &g),
@@ -3485,7 +3486,7 @@ impl IcStudio {
                     GenAction::ViaOverlaps { via, area } => {
                         ics_core::layout_gen::via_arrays_at_overlaps(&before, &*p, &p.tech, &via, area)
                     }
-                    GenAction::Match(_) => unreachable!(),
+                    GenAction::Match(_) | GenAction::PlaceLike { .. } => unreachable!(),
                 };
                 shapes.and_then(|shapes| {
                     if shapes.is_empty() {
@@ -3808,4 +3809,25 @@ impl eframe::App for IcStudio {
             storage.set_string(SETTINGS_KEY, s);
         }
     }
+}
+
+/// Layout by example, then optionally routing: the generator behind "By Example".
+fn place_like(p: &mut Project, reference: &CellRef, target: &CellRef, route: bool) -> Result<String, String> {
+    let rep = ics_core::by_example::place_like(p, reference, target)?;
+    let mut msg = format!(
+        "placed {} device(s), {} tap(s) and {} well / implant shape(s) like {reference}",
+        rep.placed, rep.taps, rep.shapes
+    );
+    for n in &rep.notes {
+        msg += &format!("; {n}");
+    }
+    if route && let Some(sch) = p.cell(target).and_then(|c| c.schematic.clone()) {
+        let mut lay = p.cell_mut(target).and_then(|c| c.layout.take()).unwrap_or_default();
+        let res = ics_core::route::route(&sch, &mut lay, p, &p.tech);
+        if let Some(c) = p.cell_mut(target) {
+            c.layout = Some(lay);
+        }
+        msg += &format!("; {}", res?.summary());
+    }
+    Ok(msg)
 }

@@ -594,6 +594,14 @@ pub fn definitions() -> Vec<Value> {
             &["cell"],
         ),
         tool(
+            "place_like",
+            &format!(
+                "Layout by example: place a cell's devices like a finished reference cell with the same circuit topology. Devices and nets are matched by topology (names and sizes may differ); every MOS device goes where its counterpart is in the reference, sized from this cell's schematic, with the reference's wells, implants and taps. The cell's layout is replaced. Optionally route afterwards. {NOT_SAVED}"
+            ),
+            json!({"cell": cell(), "reference": {"type": "string", "description": "Reference cell name or lib/cell"}, "route": {"type": "boolean", "description": "Route the flylines afterwards (default true)."}}),
+            &["cell", "reference"],
+        ),
+        tool(
             "diff_layout",
             "Compare a cell's layout with the version committed at a git revision of the project (default HEAD) or saved on disk: the flattened geometry XOR-ed per layer, as added / removed pieces with their boxes (µm), and placements added, removed or moved.",
             json!({"cell": cell(), "rev": {"type": "string", "description": "Git revision (default HEAD); \"saved\" compares with the project files on disk."}}),
@@ -716,6 +724,7 @@ impl State {
             "compact" => self.compact(a),
             "diff_layout" => self.diff_layout(a),
             "optimize" => self.optimize(a),
+            "place_like" => self.place_like(a),
             "extract" => self.extract(a),
             "run_lvs" => self.run_lvs(a),
             "run_signoff" => self.run_signoff(a),
@@ -1433,6 +1442,25 @@ impl State {
             "note": best.note,
             "applied": apply,
         }))
+    }
+
+    fn place_like(&mut self, a: &Args) -> Result<Value, String> {
+        let (p, target) = self.cell_arg(a)?;
+        let reference = resolve(p, a.str("reference")?)?;
+        let route = a.0.get("route").and_then(Value::as_bool).unwrap_or(true);
+        let p = self.project_mut()?;
+        let rep = ics_core::by_example::place_like(p, &reference, &target)?;
+        let mut out = json!({"cell": target.to_string(), "reference": reference.to_string(), "placed": rep.placed, "taps": rep.taps, "shapes": rep.shapes, "notes": rep.notes});
+        if route && let Some(sch) = p.cell(&target).and_then(|c| c.schematic.clone()) {
+            let mut lay = p.cell_mut(&target).expect("resolved").layout.take().unwrap_or_default();
+            let res = ics_core::route::route(&sch, &mut lay, p, &p.tech);
+            p.cell_mut(&target).expect("resolved").layout = Some(lay);
+            let r = res?;
+            out["routed"] = json!(r.routed);
+            out["failed"] = json!(r.failed);
+        }
+        self.dirty = true;
+        Ok(out)
     }
 
     fn diff_layout(&self, a: &Args) -> Result<Value, String> {

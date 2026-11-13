@@ -142,6 +142,17 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Place a cell's devices like another cell's layout with the same circuit topology (layout
+    /// by example), optionally route it, and save.
+    PlaceLike {
+        project: PathBuf,
+        cell: String,
+        /// Reference cell with a finished layout.
+        #[arg(long)]
+        from: String,
+        #[arg(long)]
+        route: bool,
+    },
     /// Extract nets and transistors from a cell layout and print them as SPICE.
     Extract { project: PathBuf, cell: String },
     /// Compare a cell's layout with its schematic (non-zero exit on differences).
@@ -589,6 +600,23 @@ fn run(cli: Cli) -> Result<(), String> {
             if !best.passed {
                 return Err("no evaluated point meets every spec".into());
             }
+        }
+        Cmd::PlaceLike { project, cell, from, route } => {
+            let mut p = Project::open(&project).map_err(|e| e.to_string())?;
+            let (target, reference) = (resolve(&p, &cell)?, resolve(&p, &from)?);
+            let rep = ics_core::by_example::place_like(&mut p, &reference, &target)?;
+            println!("placed {} device(s), {} tap(s), {} well / implant shape(s)", rep.placed, rep.taps, rep.shapes);
+            for n in &rep.notes {
+                eprintln!("note: {n}");
+            }
+            if route {
+                let sch = p.cell(&target).unwrap().schematic.clone().ok_or("cell has no schematic")?;
+                let mut lay = p.cell_mut(&target).unwrap().layout.take().unwrap_or_default();
+                let res = ics_core::route::route(&sch, &mut lay, &p, &p.tech);
+                p.cell_mut(&target).unwrap().layout = Some(lay);
+                println!("{}", res?.summary());
+            }
+            p.save().map_err(|e| e.to_string())?;
         }
         Cmd::Extract { project, cell } => {
             let p = Project::open(&project).map_err(|e| e.to_string())?;

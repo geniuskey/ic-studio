@@ -99,6 +99,9 @@ Linux needs the usual windowing libraries:
 - Optimizer: a pattern search sizes device parameters until the specs pass, optionally
   placing, routing and extracting every candidate so they pass after layout
   (`ics optimize --post-layout --apply`, MCP `optimize`)
+- Layout by example (Layout Generators > By Example): a cell with the same circuit as a
+  finished one is matched device for device by topology and placed like it, sized from its
+  own schematic, then routed (`ics place-like`, MCP `place_like`)
 - Design copilot (Tools > Design Copilot, `GEMINI_API_KEY`): a Gemini chat that works on
   the open project through the MCP tools, every edit visible and undoable in the window
 
@@ -167,6 +170,7 @@ ics drc myproj cmos_inverter --fix                      # apply verified quick f
 ics compact myproj full_adder --dir left,down           # compact, keep constraints, save
 ics diff myproj cmos_inverter --rev HEAD~1              # XOR against a git revision
 ics optimize myproj ota2s --post-layout --apply         # size devices to meet the specs
+ics place-like myproj nand2_b --from nand2 --route      # reuse a finished placement
 ics route myproj nand2 --place                          # place devices, route flylines, save
 ics extract myproj inv_chain                            # extracted SPICE netlist
 ics lvs myproj cmos_inverter                            # non-zero exit on differences

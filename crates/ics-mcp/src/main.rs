@@ -225,6 +225,7 @@ mod tests {
             "fix_drc",
             "compact",
             "optimize",
+            "place_like",
             "diff_layout",
             "extract",
             "run_lvs",

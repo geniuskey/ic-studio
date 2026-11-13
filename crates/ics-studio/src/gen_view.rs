@@ -15,6 +15,7 @@ pub enum GenTab {
     GuardRing,
     ViaArray,
     Matching,
+    Example,
 }
 
 pub enum GenAction {
@@ -26,6 +27,11 @@ pub enum GenAction {
         area: Option<IRect>,
     },
     Match(MatchSpec),
+    /// Place the active cell's devices like the reference cell's layout, then route if asked.
+    PlaceLike {
+        reference: CellRef,
+        route: bool,
+    },
 }
 
 pub struct LayoutGenerators {
@@ -37,6 +43,9 @@ pub struct LayoutGenerators {
     pub via: String,
     pub overlaps: bool,
     pub matching: MatchSpec,
+    /// Reference cell for layout by example.
+    pub reference: Option<CellRef>,
+    pub route_after: bool,
 }
 
 impl Default for LayoutGenerators {
@@ -49,6 +58,8 @@ impl Default for LayoutGenerators {
             via: String::new(),
             overlaps: true,
             matching: MatchSpec::default(),
+            reference: None,
+            route_after: true,
         }
     }
 }
@@ -119,6 +130,7 @@ impl LayoutGenerators {
                         (GenTab::GuardRing, "Guard Ring"),
                         (GenTab::ViaArray, "Via Array"),
                         (GenTab::Matching, "Matched Placement"),
+                        (GenTab::Example, "By Example"),
                     ] {
                         if ui.selectable_label(self.tab == t, n).clicked() {
                             self.tab = t;
@@ -131,6 +143,7 @@ impl LayoutGenerators {
                         GenTab::GuardRing => self.ring_ui(ui, &project.tech, sel, cell.is_some(), &pal),
                         GenTab::ViaArray => self.via_ui(ui, &project.tech, sel, cell.is_some(), &pal),
                         GenTab::Matching => self.match_ui(ui, devices, cell.is_some(), &pal),
+                        GenTab::Example => self.example_ui(ui, project, cell, &pal),
                     };
                 });
             });
@@ -236,6 +249,46 @@ impl LayoutGenerators {
         } else {
             GenAction::ViaArray(ViaArray { area, via: self.via.clone() })
         })
+    }
+
+    fn example_ui(&mut self, ui: &mut egui::Ui, project: &Project, cell: Option<&CellRef>, pal: &Palette) -> Option<GenAction> {
+        theme::section(ui, "Layout by example");
+        ui.label(
+            RichText::new(
+                "Reuse the placement of a finished cell with the same circuit: devices are matched by topology, \
+                 placed where their counterparts are and sized from this cell's schematic. Wells, implants and taps \
+                 are copied; wires are routed again.",
+            )
+            .color(pal.text_weak),
+        );
+        let refs: Vec<CellRef> = project
+            .all_cells()
+            .filter(|(r, c)| {
+                Some(r) != cell && c.schematic.is_some() && c.layout.as_ref().is_some_and(|l| !l.instances.is_empty())
+            })
+            .map(|(r, _)| r)
+            .collect();
+        if self.reference.as_ref().is_some_and(|r| !refs.contains(r)) {
+            self.reference = None;
+        }
+        ui.horizontal(|ui| {
+            let l = ui.label("Reference");
+            egui::ComboBox::from_id_salt("gen_reference")
+                .selected_text(self.reference.as_ref().map_or("choose a cell".into(), |r| r.to_string()))
+                .show_ui(ui, |ui| {
+                    for r in &refs {
+                        ui.selectable_value(&mut self.reference, Some(r.clone()), r.to_string());
+                    }
+                })
+                .response
+                .labelled_by(l.id);
+        });
+        ui.checkbox(&mut self.route_after, "Route the flylines afterwards");
+        let ready = cell.is_some() && self.reference.is_some();
+        if ui.add_enabled(ready, egui::Button::new("Place like reference")).clicked() {
+            return Some(GenAction::PlaceLike { reference: self.reference.clone()?, route: self.route_after });
+        }
+        None
     }
 
     fn match_ui(&mut self, ui: &mut egui::Ui, devices: &[String], ready: bool, pal: &Palette) -> Option<GenAction> {

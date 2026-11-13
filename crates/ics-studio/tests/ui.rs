@@ -1583,3 +1583,43 @@ fn copilot_optimizes_rc_filter() {
     assert!(opt.evals[best].passed);
     shot(&mut h, "45_optimizer");
 }
+
+/// Layout by example: a renamed copy of the NAND2 circuit is placed like the demo NAND2 layout
+/// and routed, leaving no flylines.
+#[test]
+fn layout_by_example() {
+    use ics_studio::gen_view::GenAction;
+    let dir = std::env::temp_dir().join(format!("ics-ui-example-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut p = ics_core::examples::demo_project();
+    let reference = ics_core::CellRef::new("work", "nand2");
+    let mut copy = p.cell(&reference).unwrap().clone();
+    copy.name = "nand2_b".into();
+    copy.layout = Some(Default::default());
+    for i in &mut copy.schematic.as_mut().unwrap().instances {
+        if matches!(i.kind, ics_core::schematic::DeviceKind::Nmos | ics_core::schematic::DeviceKind::Pmos) {
+            i.name = format!("Q{}", i.name);
+        }
+    }
+    p.libraries.iter_mut().find(|l| l.name == "work").unwrap().cells.push(copy);
+    p.save_as(&dir).unwrap();
+    let args = LaunchArgs {
+        project: Some(dir.clone()),
+        demo: false,
+        workspace: Some("layout".into()),
+        cell: Some("nand2_b".into()),
+        run: false,
+    };
+    let mut h = app(args);
+    h.state_mut().apply_gen(GenAction::PlaceLike { reference: reference.clone(), route: true });
+    h.run_steps(3);
+    let (n_ref, n_new) = {
+        let p = h.state().project().unwrap();
+        let count = |c: &str| p.cell(&ics_core::CellRef::new("work", c)).unwrap().layout.as_ref().unwrap().instances.len();
+        (count("nand2"), count("nand2_b"))
+    };
+    assert_eq!(n_new, n_ref, "{:?}", h.state().console_lines().collect::<Vec<_>>());
+    assert_eq!(flylines(&h, "nand2_b"), 0, "{:?}", h.state().console_lines().collect::<Vec<_>>());
+    shot(&mut h, "46_layout_by_example");
+    let _ = std::fs::remove_dir_all(&dir);
+}

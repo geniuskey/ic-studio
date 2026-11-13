@@ -3,6 +3,7 @@
 //! This crate is UI-independent so it can back the desktop app, the CLI and future
 //! Python / MCP automation interfaces.
 
+pub mod by_example;
 pub mod compact;
 pub mod connectivity;
 pub mod constraints;
