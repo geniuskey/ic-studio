@@ -60,11 +60,154 @@ pub enum Subject {
     Derived(usize),
 }
 
+/// A one-click repair for a [`Finding`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum Fix {
+    /// Replace the subject rule with this one (snapped or technology value).
+    Replace(Rule),
+    /// Rename the subject rule.
+    Rename(String),
+    /// Remove the subject rule.
+    RemoveRule,
+    /// Remove the subject derived layer.
+    RemoveDerived,
+    /// Add this rule to the deck.
+    AddRule(Rule),
+}
+
+impl Fix {
+    /// Button text for the fix.
+    pub fn label(&self, tech: &Tech, names: &[String]) -> String {
+        match self {
+            Fix::Replace(r) => match length(r) {
+                Some(v) => format!("Set to {} µm", um(v, tech)),
+                None => format!("Change to {}", r.deck_line(tech, names)),
+            },
+            Fix::Rename(n) => format!("Rename to {n}"),
+            Fix::RemoveRule => "Remove this rule".into(),
+            Fix::RemoveDerived => "Remove this layer".into(),
+            Fix::AddRule(r) => format!("Add {}", r.auto_name(names)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Finding {
     pub severity: Severity,
     pub subject: Subject,
     pub message: String,
+    pub fix: Option<Fix>,
+}
+
+/// `rule` with its length value replaced by `v`.
+fn with_length(rule: &Rule, v: i64) -> Rule {
+    let mut r = rule.clone();
+    if let Rule::Width { min, .. }
+    | Rule::Space { min, .. }
+    | Rule::Separation { min, .. }
+    | Rule::Enclosure { min, .. }
+    | Rule::Extension { min, .. } = &mut r
+    {
+        *min = v;
+    }
+    r
+}
+
+/// Every layer index a rule reads, mutably.
+pub fn rule_layers_mut(r: &mut Rule) -> Vec<&mut usize> {
+    match r {
+        Rule::Width { layer, .. }
+        | Rule::Space { layer, .. }
+        | Rule::Area { layer, .. }
+        | Rule::Density { layer, .. }
+        | Rule::Flag { layer } => vec![layer],
+        Rule::Separation { a, b, .. } | Rule::Extension { a, b, .. } => vec![a, b],
+        Rule::Enclosure { inner, outer, .. } => vec![inner, outer],
+        Rule::Antenna { layer, poly, active, vias, .. } => {
+            let mut v = vec![layer, poly, active];
+            for (b, c, t) in vias.iter_mut() {
+                v.extend([b, c, t]);
+            }
+            v
+        }
+    }
+}
+
+/// Every layer index a derived-layer expression reads, mutably.
+pub fn expr_layers_mut(e: &mut LayerExpr) -> Vec<&mut usize> {
+    match e {
+        LayerExpr::Bool { a, b, .. } | LayerExpr::Select { a, b, .. } => vec![a, b],
+        LayerExpr::Size { a, .. }
+        | LayerExpr::Wide { a, .. }
+        | LayerExpr::Holes { a }
+        | LayerExpr::Extents { a }
+        | LayerExpr::AreaRange { a, .. } => vec![a],
+        LayerExpr::Union(v) => v.iter_mut().collect(),
+        LayerExpr::Check(r) => rule_layers_mut(r),
+    }
+}
+
+/// Remove derived layer `k`, renumbering the layers after it. The caller makes sure nothing
+/// reads it.
+pub fn remove_derived(deck: &mut Deck, k: usize, tech: &Tech) {
+    let me = tech.layers.len() + k;
+    deck.derived.remove(k);
+    let shift = |l: &mut usize| {
+        if *l > me {
+            *l -= 1;
+        }
+    };
+    for r in &mut deck.rules {
+        rule_layers_mut(&mut r.rule).into_iter().for_each(shift);
+    }
+    for d in &mut deck.derived {
+        expr_layers_mut(&mut d.expr).into_iter().for_each(shift);
+    }
+}
+
+/// Carry out `f.fix` on `deck`; false when the finding has no fix or no longer applies.
+pub fn apply_fix(deck: &mut Deck, f: &Finding, tech: &Tech) -> bool {
+    let Some(fix) = &f.fix else { return false };
+    let names = deck.layer_names(tech);
+    match (fix, f.subject) {
+        (Fix::Replace(r), Subject::Rule(i)) if i < deck.rules.len() => {
+            let nr = &mut deck.rules[i];
+            if nr.name == nr.rule.auto_name(&names) {
+                nr.name = r.auto_name(&names);
+            }
+            nr.rule = r.clone();
+        }
+        (Fix::Rename(n), Subject::Rule(i)) if i < deck.rules.len() => deck.rules[i].name = n.clone(),
+        (Fix::RemoveRule, Subject::Rule(i)) if i < deck.rules.len() => {
+            deck.rules.remove(i);
+        }
+        (Fix::RemoveDerived, Subject::Derived(k)) if k < deck.derived.len() => remove_derived(deck, k, tech),
+        (Fix::AddRule(r), _) => deck.rules.push(NamedRule { name: r.auto_name(&names), rule: r.clone(), comment: None }),
+        _ => return false,
+    }
+    true
+}
+
+/// Whether [`fix_all`] applies this finding's fix: every fix of an error or warning, and the
+/// missing rules among the notes.
+pub fn auto_fixable(f: &Finding) -> bool {
+    f.fix.is_some() && (f.severity != Severity::Info || matches!(f.fix, Some(Fix::AddRule(_))))
+}
+
+/// Apply every [`auto_fixable`] fix until none is left; returns how many were applied.
+pub fn fix_all(deck: &mut Deck, tech: &Tech) -> usize {
+    let mut n = 0;
+    for _ in 0..1000 {
+        match lint(deck, tech).into_iter().find(auto_fixable) {
+            Some(f) if apply_fix(deck, &f, tech) => n += 1,
+            _ => break,
+        }
+    }
+    n
+}
+
+fn unique_name(base: &str, deck: &Deck) -> String {
+    (2..).map(|k| format!("{base}_{k}")).find(|n| deck.rules.iter().all(|r| r.name != *n)).expect("unbounded")
 }
 
 /// The length a rule is measured against (dbu), for the rules that have one.
@@ -109,33 +252,47 @@ pub fn lint(deck: &Deck, tech: &Tech) -> Vec<Finding> {
     let n = tech.layers.len();
     let name = |l: usize| names.get(l).cloned().unwrap_or_else(|| format!("#{l}"));
     let mut out = Vec::new();
-    let mut push = |severity, subject, message: String| out.push(Finding { severity, subject, message });
+    let mut push = |severity, subject, message: String, fix: Option<Fix>| out.push(Finding { severity, subject, message, fix });
 
     if deck.rules.is_empty() {
-        push(Severity::Info, Subject::Deck, "The deck has no rules".into());
+        push(Severity::Info, Subject::Deck, "The deck has no rules".into(), None);
     }
     for (i, nr) in deck.rules.iter().enumerate() {
         let s = Subject::Rule(i);
         let NamedRule { name: rname, rule, .. } = nr;
+        let tech_value = match *rule {
+            Rule::Width { layer, .. } if layer < n => Some(tech.layers[layer].min_width).filter(|&v| v > 0),
+            Rule::Space { layer, .. } if layer < n => Some(tech.layers[layer].min_spacing).filter(|&v| v > 0),
+            _ => None,
+        };
         if rname.is_empty() || rname.chars().any(|c| c.is_whitespace() || ":#=".contains(c)) {
-            push(Severity::Error, s, format!("Invalid rule name '{rname}' (no spaces, ':', '#' or '=')"));
+            let clean: String =
+                rname.chars().filter(|c| !":#=".contains(*c)).map(|c| if c.is_whitespace() { '_' } else { c }).collect();
+            let clean = if clean.is_empty() { rule.auto_name(&names) } else { clean };
+            let clean = if deck.rules.iter().any(|r| r.name == clean) { unique_name(&clean, deck) } else { clean };
+            let msg = format!("Invalid rule name '{rname}' (no spaces, ':', '#' or '=')");
+            push(Severity::Error, s, msg, Some(Fix::Rename(clean)));
         }
         if let Some(j) = deck.rules[..i].iter().position(|o| o.name == *rname) {
-            push(Severity::Error, s, format!("Duplicate rule name '{rname}' (also rule {})", j + 1));
+            let fix = Fix::Rename(unique_name(rname, deck));
+            push(Severity::Error, s, format!("Duplicate rule name '{rname}' (also rule {})", j + 1), Some(fix));
         }
         let zero = length(rule) == Some(0) || matches!(rule, Rule::Area { min: 0, .. });
         if zero {
-            push(Severity::Error, s, "The value is 0, so the rule never fires".into());
+            let fix = tech_value.map(|v| Fix::Replace(with_length(rule, v)));
+            push(Severity::Error, s, "The value is 0, so the rule never fires".into(), fix);
         }
         match *rule {
             Rule::Enclosure { inner, outer, .. } if inner == outer => {
-                push(Severity::Error, s, format!("Enclosure of {} by itself never fires", name(inner)));
+                push(Severity::Error, s, format!("Enclosure of {} by itself never fires", name(inner)), None);
             }
             Rule::Extension { a, b, .. } if a == b => {
-                push(Severity::Error, s, format!("Extension of {} past itself never fires", name(a)));
+                push(Severity::Error, s, format!("Extension of {} past itself never fires", name(a)), None);
             }
-            Rule::Separation { a, b, .. } if a == b => {
-                push(Severity::Warning, s, format!("Separation of {} from itself never fires; use space", name(a)));
+            Rule::Separation { a, b, min } if a == b => {
+                let fix = Fix::Replace(Rule::Space { layer: a, min });
+                let msg = format!("Separation of {} from itself never fires; use space", name(a));
+                push(Severity::Warning, s, msg, Some(fix));
             }
             _ => {}
         }
@@ -144,17 +301,20 @@ pub fn lint(deck: &Deck, tech: &Tech) -> Vec<Finding> {
             let hi = lo + tech.grid;
             let suggest =
                 if lo > 0 { format!("{} or {} µm", um(lo, tech), um(hi, tech)) } else { format!("{} µm", um(hi, tech)) };
-            push(Severity::Warning, s, format!("{} µm is off the {} µm grid (use {suggest})", um(v, tech), um(tech.grid, tech)));
+            let msg = format!("{} µm is off the {} µm grid (use {suggest})", um(v, tech), um(tech.grid, tech));
+            push(Severity::Warning, s, msg, Some(Fix::Replace(with_length(rule, hi))));
         }
         let key = check_key(rule);
         if let Some(e) = deck.rules[..i].iter().find(|o| check_key(&o.rule) == key) {
-            let msg = match stricter(&e.rule, rule, tech) {
-                Some((true, a, b)) => format!("Same check as {}; this rule is stricter ({b} vs {a})", e.name),
-                Some((false, a, b)) => format!("Same check as {}, which is stricter ({a} vs {b})", e.name),
-                None if e.rule == *rule => format!("Same check as {} with the same value", e.name),
-                None => format!("Same check as {}", e.name),
+            let (msg, fix) = match stricter(&e.rule, rule, tech) {
+                Some((true, a, b)) => (format!("Same check as {}; this rule is stricter ({b} vs {a})", e.name), None),
+                Some((false, a, b)) => {
+                    (format!("Same check as {}, which is stricter ({a} vs {b})", e.name), Some(Fix::RemoveRule))
+                }
+                None if e.rule == *rule => (format!("Same check as {} with the same value", e.name), Some(Fix::RemoveRule)),
+                None => (format!("Same check as {}", e.name), None),
             };
-            push(Severity::Warning, s, msg);
+            push(Severity::Warning, s, msg, fix);
         }
         let tech_min = match *rule {
             Rule::Width { layer, min } if layer < n => Some((min, tech.layers[layer].min_width, "width")),
@@ -170,6 +330,7 @@ pub fn lint(deck: &Deck, tech: &Tech) -> Vec<Finding> {
                     um(v, tech),
                     um(t, tech)
                 ),
+                Some(Fix::Replace(with_length(rule, t))),
             );
         }
     }
@@ -178,10 +339,10 @@ pub fn lint(deck: &Deck, tech: &Tech) -> Vec<Finding> {
         let s = Subject::Derived(k);
         match d.expr {
             LayerExpr::Union(_) => {
-                push(Severity::Error, s, format!("'{}' is a union, which has no native deck syntax", d.name));
+                push(Severity::Error, s, format!("'{}' is a union, which has no native deck syntax", d.name), None);
             }
             LayerExpr::Check(_) => {
-                push(Severity::Error, s, format!("'{}' is a rule check, which has no native deck syntax", d.name));
+                push(Severity::Error, s, format!("'{}' is a rule check, which has no native deck syntax", d.name), None);
             }
             _ => {}
         }
@@ -189,7 +350,8 @@ pub fn lint(deck: &Deck, tech: &Tech) -> Vec<Finding> {
         let used = deck.rules.iter().any(|r| r.rule.layers().contains(&idx))
             || deck.derived[k + 1..].iter().any(|o| o.expr.inputs().contains(&idx));
         if !used {
-            push(Severity::Warning, s, format!("Derived layer '{}' is not used by any rule", d.name));
+            let msg = format!("Derived layer '{}' is not used by any rule", d.name);
+            push(Severity::Warning, s, msg, Some(Fix::RemoveDerived));
         }
     }
 
@@ -203,13 +365,14 @@ pub fn lint(deck: &Deck, tech: &Tech) -> Vec<Finding> {
         else {
             continue;
         };
-        for outer in [bottom, top] {
+        for (outer, enc) in [(bottom, v.enc_bottom), (top, v.enc_top)] {
             if !has_enc(cut, outer) && !seen.contains(&(cut, outer)) {
                 seen.push((cut, outer));
                 push(
                     Severity::Warning,
                     Subject::Deck,
                     format!("Via {}: no enclosure rule for {} by {}", v.name, name(cut), name(outer)),
+                    (enc > 0).then_some(Fix::AddRule(Rule::Enclosure { inner: cut, outer, min: enc })),
                 );
             }
         }
@@ -218,10 +381,12 @@ pub fn lint(deck: &Deck, tech: &Tech) -> Vec<Finding> {
     for (l, def) in tech.layers.iter().enumerate().filter(|(_, d)| d.routing) {
         let has = |f: fn(&Rule, usize) -> bool| deck.rules.iter().any(|r| f(&r.rule, l));
         if !has(|r, l| matches!(*r, Rule::Width { layer, .. } if layer == l)) {
-            push(Severity::Info, Subject::Deck, format!("Routing layer {} has no width rule", def.name));
+            let fix = (def.min_width > 0).then_some(Fix::AddRule(Rule::Width { layer: l, min: def.min_width }));
+            push(Severity::Info, Subject::Deck, format!("Routing layer {} has no width rule", def.name), fix);
         }
         if !has(|r, l| matches!(*r, Rule::Space { layer, .. } if layer == l)) {
-            push(Severity::Info, Subject::Deck, format!("Routing layer {} has no space rule", def.name));
+            let fix = (def.min_spacing > 0).then_some(Fix::AddRule(Rule::Space { layer: l, min: def.min_spacing }));
+            push(Severity::Info, Subject::Deck, format!("Routing layer {} has no space rule", def.name), fix);
         }
     }
 
@@ -576,6 +741,31 @@ mod tests {
         let f = lint(&bad, &t);
         assert!(f.iter().any(|x| x.subject == Subject::Rule(0) && x.message.starts_with("Invalid rule name")));
         assert!(f.iter().any(|x| x.subject == Subject::Derived(1) && x.severity == Severity::Error));
+    }
+
+    #[test]
+    fn fixes_repair_the_deck() {
+        let t = tech();
+        let src = "width metal1 0\n\
+                   X: width metal1 0.225\n\
+                   X: space metal1 0.3\n\
+                   separation metal2 metal2 0.3\n\
+                   unused = poly and active\n\
+                   big = metal1 size 0.1\n\
+                   flag big";
+        let mut d = parse_deck(src, &t).unwrap();
+        assert!(lint(&d, &t).iter().filter(|f| f.severity == Severity::Error).all(|f| f.fix.is_some()));
+        assert!(fix_all(&mut d, &t) >= 5);
+        let f = lint(&d, &t);
+        assert!(f.iter().all(|f| !auto_fixable(f)), "{f:?}");
+        assert!(f.iter().all(|f| f.severity == Severity::Info), "{f:?}");
+        assert_eq!(d.derived.len(), 1);
+        assert!(d.rules.iter().any(|r| r.rule == Rule::Flag { layer: t.layers.len() }));
+        let m1 = t.layer_index("metal1").unwrap();
+        assert_eq!(d.rules.iter().filter(|r| matches!(r.rule, Rule::Width { layer, .. } if layer == m1)).count(), 1);
+        assert!(d.rules.iter().any(|r| r.rule == Rule::Space { layer: t.layer_index("metal2").unwrap(), min: 300 }));
+        assert!(d.rules.iter().any(|r| r.name == "X_2"));
+        assert!(parse_deck(&deck_text(&d, &t), &t).is_ok());
     }
 
     #[test]

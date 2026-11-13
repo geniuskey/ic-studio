@@ -355,6 +355,15 @@ fn rule_designer() {
     let text = h.state().rule_designer().deck_text(&tech);
     let deck = ics_core::drc::parse_deck(&text, &tech).expect("designer deck parses");
     assert!(!deck.rules.is_empty());
+    shot(&mut h, "30_rule_designer_guide");
+    use egui_kittest::kittest::Queryable;
+    h.get_by_label("+ Rule").click();
+    h.run_steps(3);
+    shot(&mut h, "30_rule_designer_add");
+    h.get_by_label("Minimum area").click();
+    h.run_steps(3);
+    let added = ics_core::drc::parse_deck(&h.state().rule_designer().deck_text(&tech), &tech).unwrap();
+    assert_eq!(added.rules.len(), deck.rules.len() + 1);
     shot(&mut h, "30_rule_designer");
 }
 

@@ -226,9 +226,15 @@ interdigitated, or more fingers per device.
 the layout inspector) edits the technology's [DRC deck](technology.md#drc-rule-deck) as
 forms instead of text.
 
-- **Rule list** (left): rules grouped by layer with their values; **+ Rule** and **+
-  Derived layer** add one, **Filter** finds one.
-- **Design**: the selected rule's check, layers, value, name and description. Every rule
+- **Start here**: a step-by-step guide for people new to DRC (start from a deck, fill the
+  gaps, fix problems, add rules, try the deck on the active cell, apply), a glossary and a
+  picture of every kind of check.
+- **Rule list** (left): rules grouped by layer with their values; **+ Rule** opens a
+  gallery of checks drawn as pictures with the question each answers, marking the ones
+  recommended for the chosen layer; **+ Derived layer** offers presets (transistor gates,
+  poly outside active, wide metal) or a custom expression; **Filter** finds a rule.
+- **Design**: the selected rule's check, layers, value, name and description, with the
+  technology's value next to the field and a **Use** button when they differ. Every rule
   is **self-tested** on generated pass and fail patterns with the real DRC engine, drawn
   side by side, so you see that the engine accepts the limit and flags a violation one grid
   step inside it.
@@ -236,7 +242,9 @@ forms instead of text.
 - **Deck text**: the generated deck.
 - **Issues**: lint findings, such as duplicate rule names, rules that can never fire,
   values off the manufacturing grid, unused derived layers and routing layers without a
-  width or space rule.
+  width or space rule. Most come with a one-click fix (snap to the grid, rename, remove a
+  redundant rule, add the missing rule); **Fix automatically** applies all fixes of errors
+  and warnings and adds the missing rules.
 
 The toolbar has **Reload** (the technology's deck), **Layer defaults** (the deck derived
 from the layer and via rules), **Fill gaps** (adds missing width / space rules of routing

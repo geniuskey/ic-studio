@@ -28,10 +28,13 @@ enum Sel {
     None,
     Rule(usize),
     Derived(usize),
+    /// The gallery for adding a rule.
+    Add,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
+    Guide,
     Design,
     Coverage,
     Text,
@@ -103,6 +106,35 @@ impl Kind {
             Kind::Antenna => "ANT",
             Kind::Density => "DEN",
             Kind::Flag => "FLAG",
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Kind::Width => "Minimum width",
+            Kind::Space => "Minimum spacing",
+            Kind::Separation => "Spacing to another layer",
+            Kind::Enclosure => "Enclosure",
+            Kind::Extension => "Extension",
+            Kind::Area => "Minimum area",
+            Kind::Antenna => "Antenna ratio",
+            Kind::Density => "Density",
+            Kind::Flag => "Flag every shape",
+        }
+    }
+
+    /// The question the check answers, in plain words.
+    fn question(self) -> &'static str {
+        match self {
+            Kind::Width => "How narrow may a shape be?",
+            Kind::Space => "How close may two shapes of the same layer be?",
+            Kind::Separation => "How close may shapes of two different layers be?",
+            Kind::Enclosure => "How far must one layer reach around another, e.g. metal around a via?",
+            Kind::Extension => "How far must one layer stick out past another, e.g. poly past active?",
+            Kind::Area => "How small may a single shape be?",
+            Kind::Antenna => "Can a long wire damage a transistor gate during manufacturing?",
+            Kind::Density => "How much of each region must the layer fill?",
+            Kind::Flag => "Report every shape of a layer, e.g. a forbidden layer or a computed error layer.",
         }
     }
 
@@ -262,6 +294,20 @@ pub struct RuleDesigner {
     check: Option<CellCheck>,
     job: Option<CheckJob>,
     status: Option<(bool, String)>,
+    /// Layer picked in the add-rule gallery.
+    add_layer: usize,
+}
+
+/// A designer action that the toolbar and the guide share.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Act {
+    Reload,
+    Defaults,
+    FillGaps,
+    FixAll,
+    Check,
+    Apply,
+    ApplyRun,
 }
 
 impl Default for RuleDesigner {
@@ -273,7 +319,7 @@ impl Default for RuleDesigner {
             tech_sig: (String::new(), 0),
             notes: vec![],
             sel: Sel::None,
-            tab: Tab::Design,
+            tab: Tab::Guide,
             filter: String::new(),
             gen_: 1,
             lint_gen: 0,
@@ -287,6 +333,7 @@ impl Default for RuleDesigner {
             check: None,
             job: None,
             status: None,
+            add_layer: 0,
         }
     }
 }
@@ -337,37 +384,48 @@ fn chip(ui: &mut egui::Ui, text: &str, fill: Color32) -> egui::Response {
     r
 }
 
-/// Every layer index a rule reads, mutably.
-fn rule_layers_mut(r: &mut Rule) -> Vec<&mut usize> {
-    match r {
-        Rule::Width { layer, .. }
-        | Rule::Space { layer, .. }
-        | Rule::Area { layer, .. }
-        | Rule::Density { layer, .. }
-        | Rule::Flag { layer } => vec![layer],
-        Rule::Separation { a, b, .. } | Rule::Extension { a, b, .. } => vec![a, b],
-        Rule::Enclosure { inner, outer, .. } => vec![inner, outer],
-        Rule::Antenna { layer, poly, active, vias, .. } => {
-            let mut v = vec![layer, poly, active];
-            for (b, c, t) in vias.iter_mut() {
-                v.extend([b, c, t]);
-            }
-            v
-        }
-    }
+/// The value the technology's layer and via definitions give for a rule's length, if any.
+fn tech_value(r: &Rule, tech: &Tech) -> Option<i64> {
+    let n = tech.layers.len();
+    let name = |l: usize| tech.layer(l).map_or("", |d| d.name.as_str());
+    let cut = |l: usize| tech.vias.iter().find(|v| !name(l).is_empty() && v.cut == name(l));
+    let v = match *r {
+        Rule::Width { layer, .. } if layer < n => tech.layers[layer].min_width.max(cut(layer).map_or(0, |c| c.cut_size)),
+        Rule::Space { layer, .. } if layer < n => tech.layers[layer].min_spacing.max(cut(layer).map_or(0, |c| c.cut_spacing)),
+        Rule::Enclosure { inner, outer, .. } if inner < n && outer < n => tech
+            .vias
+            .iter()
+            .filter(|v| v.cut == name(inner))
+            .find_map(|v| if v.bottom == name(outer) { Some(v.enc_bottom) } else { (v.top == name(outer)).then_some(v.enc_top) })
+            .unwrap_or(0),
+        Rule::Extension { a, b, .. } if Some(a) == tech.poly() && Some(b) == tech.diffusion() => tech.rules.poly_endcap,
+        _ => 0,
+    };
+    (v > 0).then_some(v)
 }
 
-fn expr_layers_mut(e: &mut LayerExpr) -> Vec<&mut usize> {
-    match e {
-        LayerExpr::Bool { a, b, .. } | LayerExpr::Select { a, b, .. } => vec![a, b],
-        LayerExpr::Size { a, .. }
-        | LayerExpr::Wide { a, .. }
-        | LayerExpr::Holes { a }
-        | LayerExpr::Extents { a }
-        | LayerExpr::AreaRange { a, .. } => vec![a],
-        LayerExpr::Union(v) => v.iter_mut().collect(),
-        LayerExpr::Check(r) => rule_layers_mut(r),
+/// The checks a layer usually needs.
+fn recommended(l: usize, tech: &Tech) -> Vec<Kind> {
+    let Some(def) = tech.layer(l) else { return vec![] };
+    let mut v = vec![Kind::Width, Kind::Space];
+    if def.routing {
+        v.push(Kind::Area);
     }
+    if tech.vias.iter().any(|x| x.cut == def.name) {
+        v.push(Kind::Enclosure);
+    }
+    if Some(l) == tech.poly() {
+        v.push(Kind::Extension);
+    }
+    v
+}
+
+fn unique_layer_name(base: &str, names: &[String]) -> String {
+    let free = |n: &str| !names.iter().any(|x| x.eq_ignore_ascii_case(n));
+    if free(base) {
+        return base.to_string();
+    }
+    (2..).map(|i| format!("{base}{i}")).find(|n| free(n)).expect("unbounded")
 }
 
 /// The main value of a rule as a length (dbu), when it has one.
@@ -587,10 +645,10 @@ impl RuleDesigner {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
         }
         self.refresh(tech);
-        let mut action = None;
+        let mut act = None;
         egui::Panel::top("rd_toolbar")
             .frame(egui::Frame::new().fill(pal.bg_sidebar).inner_margin(egui::Margin::symmetric(10, 6)))
-            .show(ui, |ui| action = self.toolbar(ui, project, active, &pal));
+            .show(ui, |ui| act = self.toolbar(ui, active, tech, &pal));
         egui::Panel::left("rd_list")
             .resizable(true)
             .default_size(290.0)
@@ -601,6 +659,7 @@ impl RuleDesigner {
             ui.horizontal(|ui| {
                 let issues = self.findings.iter().filter(|f| f.severity != Severity::Info).count();
                 for (t, name) in [
+                    (Tab::Guide, "Start here".to_string()),
                     (Tab::Design, "Design".to_string()),
                     (Tab::Coverage, "Coverage".into()),
                     (Tab::Text, "Deck text".into()),
@@ -616,54 +675,99 @@ impl RuleDesigner {
                 ui.label(RichText::new(n).small().color(pal.warning));
             }
             egui::ScrollArea::vertical().id_salt("rd_main").auto_shrink([false, false]).show(ui, |ui| match self.tab {
+                Tab::Guide => {
+                    if let Some(a) = self.guide(ui, tech, active, &pal) {
+                        act = Some(a);
+                    }
+                }
                 Tab::Design => match self.sel {
                     Sel::Rule(i) if i < self.deck.rules.len() => self.rule_editor(ui, i, tech, &pal),
                     Sel::Derived(k) if k < self.deck.derived.len() => self.derived_editor(ui, k, tech, &pal),
+                    Sel::Add => self.add_gallery(ui, tech, &pal),
                     _ => {
                         ui.add_space(40.0);
                         ui.vertical_centered(|ui| {
                             ui.label(RichText::new("Select a rule on the left, or add one.").color(pal.text_weak));
+                            ui.add_space(6.0);
+                            if ui.button("Add a rule…").clicked() {
+                                self.open_gallery(tech);
+                            }
+                            if ui.button("Open the guide").clicked() {
+                                self.tab = Tab::Guide;
+                            }
                         });
                     }
                 },
                 Tab::Coverage => self.coverage(ui, tech, &pal),
                 Tab::Text => self.text_tab(ui, tech, &pal),
-                Tab::Issues => self.issues(ui, &pal),
+                Tab::Issues => self.issues(ui, tech, &pal),
             });
         });
-        action
+        act.and_then(|a| self.run(a, ui.ctx(), project, active))
     }
 
-    fn toolbar(
-        &mut self,
-        ui: &mut egui::Ui,
-        project: &Project,
-        active: Option<&CellRef>,
-        pal: &Palette,
-    ) -> Option<DesignerAction> {
+    fn run(&mut self, a: Act, ctx: &egui::Context, project: &Project, active: Option<&CellRef>) -> Option<DesignerAction> {
         let tech = &project.tech;
-        let mut action = None;
+        match a {
+            Act::Reload => self.load(tech, &tech.deck_text()),
+            Act::Defaults => {
+                self.load(tech, &drc::default_deck_text(tech));
+                self.notes.push("Started from the layer defaults (not applied yet)".into());
+            }
+            Act::FillGaps => {
+                let n = self.fill_gaps(tech);
+                self.status = Some((true, format!("Added {n} rule(s)")));
+            }
+            Act::FixAll => {
+                let n = rule_design::fix_all(&mut self.deck, tech);
+                self.status = Some((true, format!("Applied {n} fix(es)")));
+                if n > 0 {
+                    self.touch();
+                }
+            }
+            Act::Check => {
+                if let Some(c) = active {
+                    self.start_check(ctx, project, c);
+                }
+            }
+            Act::Apply => return self.apply_text(tech).map(DesignerAction::Apply),
+            Act::ApplyRun => return self.apply_text(tech).map(DesignerAction::ApplyAndRun),
+        }
+        None
+    }
+
+    fn open_gallery(&mut self, tech: &Tech) {
+        self.add_layer = match self.sel {
+            Sel::Rule(i) => self.deck.rules.get(i).map_or(0, |r| r.rule.checked_layer()),
+            Sel::Derived(k) => tech.layers.len() + k,
+            Sel::None | Sel::Add => tech.layers.iter().position(|l| l.routing).unwrap_or(0),
+        };
+        self.sel = Sel::Add;
+        self.tab = Tab::Design;
+    }
+
+    fn toolbar(&mut self, ui: &mut egui::Ui, active: Option<&CellRef>, tech: &Tech, pal: &Palette) -> Option<Act> {
+        let mut act = None;
         ui.horizontal(|ui| {
             ui.label(RichText::new("DRC Rule Designer").strong().color(pal.text_strong));
             ui.label(RichText::new(format!("· {}", tech.name)).color(pal.text_weak));
             if self.dirty {
-                ui.label(RichText::new("● not applied").color(pal.warning)).on_hover_text("The draft differs from the technology deck");
+                ui.label(RichText::new("● not applied").color(pal.warning))
+                    .on_hover_text("The draft differs from the technology deck. Apply it to use it for DRC.");
             }
             ui.separator();
             if ui.button("Reload").on_hover_text("Discard the draft and load the technology's deck").clicked() {
-                self.load(tech, &tech.deck_text());
+                act = Some(Act::Reload);
             }
             if ui.button("Layer defaults").on_hover_text("Start from the rules derived from the layer and via definitions").clicked() {
-                self.load(tech, &drc::default_deck_text(tech));
-                self.notes.push("Started from the layer defaults (not applied yet)".into());
+                act = Some(Act::Defaults);
             }
             if ui
                 .button("Fill gaps")
                 .on_hover_text("Add the width / space rules of routing layers and the via enclosures that are missing, with technology values")
                 .clicked()
             {
-                let n = self.fill_gaps(tech);
-                self.status = Some((true, format!("Added {n} rule(s)")));
+                act = Some(Act::FillGaps);
             }
             ui.separator();
             let busy = self.job.is_some();
@@ -673,10 +777,8 @@ impl RuleDesigner {
                 Some(c) => format!("Run the draft deck on {c} and count violations per rule"),
                 None => "Open a layout cell first".into(),
             };
-            if check.on_hover_text(hover).on_disabled_hover_text("Open a layout cell first").clicked()
-                && let Some(c) = active
-            {
-                self.start_check(ui.ctx(), project, c);
+            if check.on_hover_text(hover).on_disabled_hover_text("Open a layout cell first").clicked() {
+                act = Some(Act::Check);
             }
             if busy {
                 ui.spinner();
@@ -689,22 +791,197 @@ impl RuleDesigner {
                     .add_enabled(active.is_some(), egui::Button::new("Apply & run DRC"))
                     .on_hover_text("Store the deck in the technology and run DRC on the active cell")
                     .clicked()
-                    && let Some(t) = self.apply_text(tech)
                 {
-                    action = Some(DesignerAction::ApplyAndRun(t));
+                    act = Some(Act::ApplyRun);
                 }
                 let apply = egui::Button::new(RichText::new("Apply to technology").color(theme::on_fill(pal.accent))).fill(pal.accent);
-                if ui.add(apply).on_hover_text("Store the deck in the project's technology (save the project to keep it)").clicked()
-                    && let Some(t) = self.apply_text(tech)
-                {
-                    action = Some(DesignerAction::Apply(t));
+                if ui.add(apply).on_hover_text("Store the deck in the project's technology (save the project to keep it)").clicked() {
+                    act = Some(Act::Apply);
                 }
                 if let Some((ok, s)) = &self.status {
                     ui.label(RichText::new(s).small().color(if *ok { pal.text_weak } else { pal.danger }));
                 }
             });
         });
-        action
+        act
+    }
+
+    fn guide(&mut self, ui: &mut egui::Ui, tech: &Tech, active: Option<&CellRef>, pal: &Palette) -> Option<Act> {
+        let mut act = None;
+        ui.set_max_width(ui.available_width().min(780.0));
+        ui.label(RichText::new("Designing DRC rules").heading().color(pal.text_strong));
+        ui.label(
+            RichText::new(
+                "Design Rule Checking (DRC) makes sure a layout can be manufactured. The foundry sets limits such as \
+                 \"metal1 lines must be at least 0.23 µm wide\". Each rule in the deck checks one such limit and marks every \
+                 place in the layout that breaks it. This window builds the deck with forms and pictures, and tests every \
+                 rule while you edit it.",
+            )
+            .color(pal.text),
+        );
+        ui.add_space(10.0);
+        let issues = self.findings.iter().filter(|f| f.severity != Severity::Info).count();
+        let fixable = self.findings.iter().filter(|f| rule_design::auto_fixable(f)).count();
+        step(ui, 1, "Start from a deck", pal, |ui| {
+            ui.label(format!(
+                "The deck has {} rule(s) now. To start over, take the rules the technology derives from its layer and via definitions.",
+                self.deck.rules.len()
+            ));
+            ui.horizontal(|ui| {
+                if ui.button("Start from layer defaults").clicked() {
+                    act = Some(Act::Defaults);
+                }
+                if ui.button("Reload technology deck").clicked() {
+                    act = Some(Act::Reload);
+                }
+            });
+        });
+        step(ui, 2, "Fill the gaps", pal, |ui| {
+            ui.label(
+                "Add the width and space rules of routing layers and the via enclosures that the technology defines but the \
+                 deck lacks. Coverage shows which checks each layer has.",
+            );
+            ui.horizontal(|ui| {
+                if ui.button("Fill gaps").clicked() {
+                    act = Some(Act::FillGaps);
+                }
+                if ui.button("Open coverage").clicked() {
+                    self.tab = Tab::Coverage;
+                }
+            });
+        });
+        step(ui, 3, "Fix problems", pal, |ui| {
+            let t = match (issues, fixable) {
+                (0, 0) => "No errors or warnings. Notes with suggestions are listed under Issues.".to_string(),
+                (n, 0) => format!("{n} error(s) or warning(s); open Issues to see what to change."),
+                (n, m) => format!("{n} error(s) or warning(s); {m} can be fixed with one click."),
+            };
+            ui.label(t);
+            ui.horizontal(|ui| {
+                let fix = ui.add_enabled(fixable > 0, egui::Button::new(format!("Fix automatically ({fixable})")));
+                if fix.on_hover_text("Apply every suggested fix of the errors and warnings, and add the missing rules").clicked()
+                {
+                    act = Some(Act::FixAll);
+                }
+                if ui.button("Open issues").clicked() {
+                    self.tab = Tab::Issues;
+                }
+            });
+        });
+        step(ui, 4, "Add or change rules", pal, |ui| {
+            ui.label(
+                "Click a rule on the left to edit it. Every rule is tested on generated shapes: one exactly at the limit, \
+                 which must pass, and one a grid step inside it, which must be flagged.",
+            );
+            if ui.button("Add a rule…").clicked() {
+                self.open_gallery(tech);
+            }
+        });
+        step(ui, 5, "Try it on your layout", pal, |ui| {
+            ui.label(match active {
+                Some(c) => format!("Count the violations of each rule in {c}. Nothing is changed."),
+                None => "Open a layout cell to try the deck on it.".to_string(),
+            });
+            if ui.add_enabled(active.is_some() && self.job.is_none(), egui::Button::new("Check active cell")).clicked() {
+                act = Some(Act::Check);
+            }
+        });
+        step(ui, 6, "Apply", pal, |ui| {
+            ui.label("Store the deck as the technology's DRC deck so DRC uses it. Save the project to keep it.");
+            if ui.button("Apply to technology").clicked() {
+                act = Some(Act::Apply);
+            }
+        });
+        ui.add_space(12.0);
+        theme::section(ui, "Words you will see");
+        let grid = um(tech.grid.max(1), tech);
+        egui::Grid::new("rd_terms").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
+            let terms = [
+                ("Layer", "A mask layer such as poly, metal1 or via1. Each rule checks one layer; some compare two.".to_string()),
+                ("Rule", "One limit, e.g. a minimum width. Its name (like metal1.W) is shown with every violation.".into()),
+                ("Violation", "A place where the layout breaks a rule. DRC marks it in the layout.".into()),
+                (
+                    "Derived layer",
+                    "A layer computed from others, e.g. gate = poly and active, to check only part of a layer.".into(),
+                ),
+                ("Grid", format!("The manufacturing grid. Every length must be a multiple of it ({grid} µm here).")),
+            ];
+            for (t, d) in terms {
+                ui.label(RichText::new(t).strong().color(pal.text_strong));
+                ui.label(RichText::new(d).color(pal.text));
+                ui.end_row();
+            }
+        });
+        ui.add_space(12.0);
+        theme::section(ui, "Kinds of checks");
+        ui.label(RichText::new("Click one to add it.").small().color(pal.text_weak));
+        let (a, b) = (color_of(0, tech, pal.dark), color_of(other_layer(0, tech), tech, pal.dark));
+        let mut pick = false;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::splat(10.0);
+            for k in KINDS {
+                pick |= kind_card(ui, k, a, b, pal, None).clicked();
+            }
+        });
+        if pick {
+            self.open_gallery(tech);
+        }
+        act
+    }
+
+    fn add_gallery(&mut self, ui: &mut egui::Ui, tech: &Tech, pal: &Palette) {
+        let names = self.deck.layer_names(tech);
+        if self.add_layer >= names.len() {
+            self.add_layer = 0;
+        }
+        ui.label(RichText::new("Add a rule").heading().color(pal.text_strong));
+        ui.label(
+            RichText::new(
+                "Choose the layer, then click the kind of check. The value starts from the technology; you can change it afterwards.",
+            )
+            .color(pal.text_weak),
+        );
+        ui.add_space(8.0);
+        let cx = Names { names: &names, tech, dark: pal.dark };
+        egui::Grid::new("rd_add_layer").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+            Self::layer_pick(ui, "rd_add_l", "Layer to check", &mut self.add_layer, names.len(), &cx);
+        });
+        let l = self.add_layer;
+        let rec = recommended(l, tech);
+        let (a, b) = (color_of(l, tech, pal.dark), color_of(other_layer(l, tech), tech, pal.dark));
+        ui.add_space(8.0);
+        let order: Vec<Kind> =
+            KINDS.into_iter().filter(|k| rec.contains(k)).chain(KINDS.into_iter().filter(|k| !rec.contains(k))).collect();
+        let mut chosen = None;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::splat(10.0);
+            for k in order {
+                let have = self.deck.rules.iter().any(|r| Kind::of(&r.rule) == k && r.rule.checked_layer() == l);
+                let note = if have {
+                    Some(("Already in the deck: click to edit it".to_string(), pal.text_weak))
+                } else if rec.contains(&k) {
+                    Some(("Recommended for this layer".to_string(), pal.ok))
+                } else {
+                    None
+                };
+                if kind_card(ui, k, a, b, pal, note).clicked() {
+                    chosen = Some(k);
+                }
+            }
+        });
+        let existing = |k: Kind| self.deck.rules.iter().position(|r| Kind::of(&r.rule) == k && r.rule.checked_layer() == l);
+        if let Some(i) = chosen.and_then(existing) {
+            self.sel = Sel::Rule(i);
+        } else if let Some(k) = chosen {
+            match new_rule(k, l, tech) {
+                Ok(rule) => {
+                    self.deck.rules.push(NamedRule { name: rule.auto_name(&names), rule, comment: None });
+                    self.sel = Sel::Rule(self.deck.rules.len() - 1);
+                    self.touch();
+                }
+                Err(e) => self.status = Some((false, e)),
+            }
+        }
     }
 
     fn fill_gaps(&mut self, tech: &Tech) -> usize {
@@ -763,41 +1040,51 @@ impl RuleDesigner {
                 .labelled_by(fl.id);
         });
         ui.horizontal(|ui| {
-            ui.menu_button("+ Rule", |ui| {
-                let layer = match self.sel {
-                    Sel::Rule(i) => self.deck.rules.get(i).map_or(0, |r| r.rule.checked_layer()),
-                    Sel::Derived(k) => tech.layers.len() + k,
-                    Sel::None => tech.layers.iter().position(|l| l.routing).unwrap_or(0),
-                };
-                for k in KINDS {
-                    if ui.button(k.label()).on_hover_text(k.explain()).clicked() {
-                        match new_rule(k, layer, tech) {
-                            Ok(rule) => {
-                                self.deck.rules.push(NamedRule { name: rule.auto_name(&names), rule, comment: None });
-                                self.sel = Sel::Rule(self.deck.rules.len() - 1);
-                                self.tab = Tab::Design;
-                                self.touch();
-                            }
-                            Err(e) => self.status = Some((false, e)),
-                        }
+            if ui.button("+ Rule").on_hover_text("Pick a layer and a kind of check from pictures").clicked() {
+                self.open_gallery(tech);
+            }
+            ui.menu_button("+ Derived layer", |ui| {
+                ui.label(
+                    RichText::new("A layer computed from others, used by rules like any layer").small().color(pal.text_weak),
+                );
+                let a = tech.poly().unwrap_or(0);
+                let b = tech.diffusion().unwrap_or(other_layer(a, tech));
+                let mut presets = vec![];
+                if let (Some(p), Some(d)) = (tech.poly(), tech.diffusion()) {
+                    presets.push((
+                        "gate",
+                        "Transistor gates: where poly crosses active",
+                        LayerExpr::Bool { a: p, op: BoolOp::And, b: d },
+                    ));
+                    presets.push(("fieldpoly", "Poly wiring outside active", LayerExpr::Bool { a: p, op: BoolOp::Not, b: d }));
+                }
+                let wide = (0..tech.layers.len()).find(|&i| tech.layers[i].routing && Some(i) != tech.poly());
+                let wide_name = wide.and_then(|m| tech.layer(m)).map(|d| format!("wide_{}", d.name));
+                if let (Some(m), Some(n)) = (wide, wide_name.as_deref()) {
+                    let min = 10 * tech.dbu_per_um.max(1);
+                    presets.push((
+                        n,
+                        "Wide metal (10 µm and wider), for wide-metal spacing rules",
+                        LayerExpr::Wide { a: m, min },
+                    ));
+                }
+                presets.push((
+                    "derived",
+                    "Custom: pick the operation and layers yourself",
+                    LayerExpr::Bool { a, op: BoolOp::And, b },
+                ));
+                for (base, what, expr) in presets {
+                    let name = unique_layer_name(base, &names);
+                    let line = DerivedLayer { name: name.clone(), expr: expr.clone() }.deck_line(tech, &names);
+                    if ui.button(format!("{name}: {what}")).on_hover_text(line).clicked() {
+                        self.deck.derived.push(DerivedLayer { name, expr });
+                        self.sel = Sel::Derived(self.deck.derived.len() - 1);
+                        self.tab = Tab::Design;
+                        self.touch();
                         ui.close();
                     }
                 }
             });
-            if ui.button("+ Derived layer").on_hover_text("A layer computed from others, e.g. gate = poly and active").clicked() {
-                let mut i = 1;
-                while names.iter().any(|n| n.eq_ignore_ascii_case(&format!("derived{i}"))) {
-                    i += 1;
-                }
-                let a = tech.poly().unwrap_or(0);
-                let b = tech.diffusion().unwrap_or(other_layer(a, tech));
-                self.deck
-                    .derived
-                    .push(DerivedLayer { name: format!("derived{i}"), expr: LayerExpr::Bool { a, op: BoolOp::And, b } });
-                self.sel = Sel::Derived(self.deck.derived.len() - 1);
-                self.tab = Tab::Design;
-                self.touch();
-            }
         });
         ui.label(
             RichText::new(format!("{} rule(s) · {} derived layer(s)", self.deck.rules.len(), self.deck.derived.len()))
@@ -851,7 +1138,8 @@ impl RuleDesigner {
                         for i in idx {
                             let r = &self.deck.rules[i];
                             ui.horizontal(|ui| {
-                                chip(ui, Kind::of(&r.rule).tag(), c);
+                                let k = Kind::of(&r.rule);
+                                chip(ui, k.tag(), c).on_hover_text(format!("{}: {}", k.title(), k.question()));
                                 let resp = ui.selectable_label(self.sel == Sel::Rule(i), &r.name);
                                 if resp.on_hover_text(r.rule.description(tech, &names)).clicked() {
                                     pick = Some(Sel::Rule(i));
@@ -906,7 +1194,8 @@ impl RuleDesigner {
         *l != before
     }
 
-    fn len_edit(ui: &mut egui::Ui, label: &str, v: &mut i64, tech: &Tech, pal: &Palette) -> bool {
+    /// A length in µm; `hint` is the technology's value, offered when it differs.
+    fn len_edit(ui: &mut egui::Ui, label: &str, v: &mut i64, tech: &Tech, pal: &Palette, hint: Option<i64>) -> bool {
         let d = tech.dbu_per_um.max(1) as f64;
         let g = tech.grid.max(1);
         let lb = ui.label(label);
@@ -927,6 +1216,19 @@ impl RuleDesigner {
                     *v = snapped;
                     changed = true;
                 }
+            }
+            match hint {
+                Some(t) if t == *v => {
+                    ui.label(RichText::new("technology value").small().color(pal.text_weak));
+                }
+                Some(t) => {
+                    ui.label(RichText::new(format!("technology: {} µm", um(t, tech))).small().color(pal.text_weak));
+                    if ui.small_button("Use").on_hover_text("Use the value from the layer and via definitions").clicked() {
+                        *v = t;
+                        changed = true;
+                    }
+                }
+                None => {}
             }
         });
         ui.end_row();
@@ -950,8 +1252,14 @@ impl RuleDesigner {
         let kind = Kind::of(&self.deck.rules[i].rule);
         let layer = self.deck.rules[i].rule.checked_layer();
         ui.horizontal(|ui| {
-            chip(ui, kind.tag(), color_of(layer, tech, pal.dark));
-            ui.label(RichText::new(&self.deck.rules[i].name).heading().color(pal.text_strong));
+            let second = self.deck.rules[i].rule.layers().into_iter().find(|&l| l != layer).unwrap_or(other_layer(layer, tech));
+            let (r, p) = ui.allocate_painter(Vec2::new(72.0, 44.0), Sense::hover());
+            p.rect_filled(r.rect, 4.0, pal.bg_canvas);
+            kind_icon(&p, r.rect.shrink(4.0), kind, color_of(layer, tech, pal.dark), color_of(second, tech, pal.dark), pal);
+            ui.vertical(|ui| {
+                ui.label(RichText::new(&self.deck.rules[i].name).heading().color(pal.text_strong));
+                ui.label(RichText::new(format!("{}: {}", kind.title(), kind.question())).color(pal.text_weak));
+            });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("Delete").clicked() {
                     delete = true;
@@ -985,11 +1293,11 @@ impl RuleDesigner {
             let lb = ui.label("Check");
             let mut k = kind;
             egui::ComboBox::from_id_salt("rd_kind")
-                .selected_text(k.label())
+                .selected_text(k.title())
                 .width(180.0)
                 .show_ui(ui, |ui| {
                     for x in KINDS {
-                        ui.selectable_value(&mut k, x, x.label()).on_hover_text(x.explain());
+                        ui.selectable_value(&mut k, x, x.title()).on_hover_text(format!("{}\n{}", x.question(), x.explain()));
                     }
                 })
                 .response
@@ -1006,29 +1314,30 @@ impl RuleDesigner {
             }
             let cx = Names { names: &names, tech, dark: pal.dark };
             let mut swap = None;
+            let hint = tech_value(&nr.rule, tech);
             match &mut nr.rule {
                 Rule::Width { layer, min } => {
                     changed |= Self::layer_pick(ui, "rd_l0", "Layer", layer, limit, &cx);
-                    changed |= Self::len_edit(ui, "Minimum width", min, tech, pal);
+                    changed |= Self::len_edit(ui, "Minimum width", min, tech, pal, hint);
                 }
                 Rule::Space { layer, min } => {
                     changed |= Self::layer_pick(ui, "rd_l0", "Layer", layer, limit, &cx);
-                    changed |= Self::len_edit(ui, "Minimum spacing", min, tech, pal);
+                    changed |= Self::len_edit(ui, "Minimum spacing", min, tech, pal, hint);
                 }
                 Rule::Separation { a, b, min } => {
                     changed |= Self::layer_pick(ui, "rd_l0", "From layer", a, limit, &cx);
                     changed |= Self::layer_pick(ui, "rd_l1", "Checked layer", b, limit, &cx);
-                    changed |= Self::len_edit(ui, "Minimum separation", min, tech, pal);
+                    changed |= Self::len_edit(ui, "Minimum separation", min, tech, pal, hint);
                 }
                 Rule::Enclosure { inner, outer, min } => {
-                    changed |= Self::layer_pick(ui, "rd_l0", "Inner layer", inner, limit, &cx);
-                    changed |= Self::layer_pick(ui, "rd_l1", "Outer layer", outer, limit, &cx);
-                    changed |= Self::len_edit(ui, "Minimum margin", min, tech, pal);
+                    changed |= Self::layer_pick(ui, "rd_l0", "Inner layer (e.g. via)", inner, limit, &cx);
+                    changed |= Self::layer_pick(ui, "rd_l1", "Outer layer (e.g. metal)", outer, limit, &cx);
+                    changed |= Self::len_edit(ui, "Minimum margin", min, tech, pal, hint);
                 }
                 Rule::Extension { a, b, min } => {
-                    changed |= Self::layer_pick(ui, "rd_l0", "Extending layer", a, limit, &cx);
-                    changed |= Self::layer_pick(ui, "rd_l1", "Past layer", b, limit, &cx);
-                    changed |= Self::len_edit(ui, "Minimum extension", min, tech, pal);
+                    changed |= Self::layer_pick(ui, "rd_l0", "Extending layer (e.g. poly)", a, limit, &cx);
+                    changed |= Self::layer_pick(ui, "rd_l1", "Past layer (e.g. active)", b, limit, &cx);
+                    changed |= Self::len_edit(ui, "Minimum extension", min, tech, pal, hint);
                 }
                 Rule::Area { layer, min } => {
                     changed |= Self::layer_pick(ui, "rd_l0", "Layer", layer, limit, &cx);
@@ -1058,8 +1367,8 @@ impl RuleDesigner {
                     if *min > *max {
                         *max = *min;
                     }
-                    changed |= Self::len_edit(ui, "Window", window, tech, pal);
-                    changed |= Self::len_edit(ui, "Step", step, tech, pal);
+                    changed |= Self::len_edit(ui, "Window", window, tech, pal, None);
+                    changed |= Self::len_edit(ui, "Step", step, tech, pal, None);
                     *window = (*window).max(1);
                     *step = (*step).max(1);
                 }
@@ -1117,12 +1426,16 @@ impl RuleDesigner {
         if !findings.is_empty() {
             ui.add_space(8.0);
             for f in &findings {
-                finding_label(ui, f, pal);
+                if finding_row(ui, f, tech, &names, pal) {
+                    rule_design::apply_fix(&mut self.deck, f, tech);
+                    self.touch();
+                    return;
+                }
             }
         }
 
         ui.add_space(14.0);
-        theme::section(ui, "Self-test patterns (real DRC engine)");
+        theme::section(ui, "Does the rule work? Self-test on generated shapes (real DRC engine)");
         let rule = self.deck.rules[i].rule.clone();
         if self.runs.as_ref().is_none_or(|(r, _)| *r != rule) {
             let runs = if rule.layers().iter().all(|&l| l < tech.layers.len()) {
@@ -1192,18 +1505,7 @@ impl RuleDesigner {
             });
         });
         if delete {
-            self.deck.derived.remove(k);
-            let shift = |l: &mut usize| {
-                if *l > me {
-                    *l -= 1;
-                }
-            };
-            for r in &mut self.deck.rules {
-                rule_layers_mut(&mut r.rule).into_iter().for_each(shift);
-            }
-            for d in &mut self.deck.derived {
-                expr_layers_mut(&mut d.expr).into_iter().for_each(shift);
-            }
+            rule_design::remove_derived(&mut self.deck, k, tech);
             self.sel = Sel::None;
             self.touch();
             return;
@@ -1283,7 +1585,7 @@ impl RuleDesigner {
                         }
                         LayerExpr::Wide { a, min } => {
                             changed |= Self::layer_pick(ui, "rd_da", "A", a, me, &cx);
-                            changed |= Self::len_edit(ui, "D (minimum width)", min, tech, pal);
+                            changed |= Self::len_edit(ui, "D (minimum width)", min, tech, pal, None);
                             *min = (*min).max(1);
                         }
                         LayerExpr::AreaRange { a, min, max } => {
@@ -1335,9 +1637,18 @@ impl RuleDesigner {
         if !users.is_empty() {
             ui.label(RichText::new(format!("Used by {}", users.join(", "))).small().color(pal.text_weak));
         }
-        for f in self.findings_for(Subject::Derived(k)) {
-            finding_label(ui, f, pal);
+        let findings: Vec<Finding> = self.findings_for(Subject::Derived(k)).cloned().collect();
+        for f in &findings {
+            if finding_row(ui, f, tech, &names, pal) {
+                rule_design::apply_fix(&mut self.deck, f, tech);
+                if matches!(f.fix, Some(rule_design::Fix::RemoveDerived)) {
+                    self.sel = Sel::None;
+                }
+                self.touch();
+                return;
+            }
         }
+        let d = &self.deck.derived[k];
         ui.add_space(14.0);
         theme::section(ui, "Preview on sample shapes");
         if let Some(p) = rule_design::derived_preview(&d.expr) {
@@ -1371,7 +1682,7 @@ impl RuleDesigner {
         egui::Grid::new("rd_cov").striped(true).spacing([14.0, 6.0]).show(ui, |ui| {
             ui.label(RichText::new("Layer").strong());
             for k in cols {
-                ui.label(RichText::new(k.label()).strong());
+                ui.label(RichText::new(k.label()).strong()).on_hover_text(format!("{}: {}", k.title(), k.question()));
             }
             ui.end_row();
             for (l, lname) in names.iter().enumerate() {
@@ -1480,15 +1791,32 @@ impl RuleDesigner {
         }
     }
 
-    fn issues(&mut self, ui: &mut egui::Ui, pal: &Palette) {
+    fn issues(&mut self, ui: &mut egui::Ui, tech: &Tech, pal: &Palette) {
         if self.findings.is_empty() {
             ui.label(RichText::new("✔ No issues found").color(pal.ok));
             return;
         }
+        let names = self.deck.layer_names(tech);
+        ui.label(
+            RichText::new(
+                "error: the rule cannot work as written · warning: probably a mistake · note: a suggestion. \
+                 The buttons apply the suggested change to the draft.",
+            )
+            .small()
+            .color(pal.text_weak),
+        );
+        let fixable = self.findings.iter().filter(|f| rule_design::auto_fixable(f)).count();
+        let all = ui.add_enabled(fixable > 0, egui::Button::new(format!("Fix automatically ({fixable})")));
+        let fix_all =
+            all.on_hover_text("Apply every suggested fix of the errors and warnings, and add the missing rules").clicked();
+        ui.add_space(6.0);
         let mut pick = None;
+        let mut fix = None;
         for f in &self.findings {
             ui.horizontal(|ui| {
-                finding_label(ui, f, pal);
+                if finding_row(ui, f, tech, &names, pal) {
+                    fix = Some(f.clone());
+                }
                 let target = match f.subject {
                     Subject::Rule(i) => self.deck.rules.get(i).map(|r| (Sel::Rule(i), r.name.clone())),
                     Subject::Derived(k) => self.deck.derived.get(k).map(|d| (Sel::Derived(k), d.name.clone())),
@@ -1505,10 +1833,19 @@ impl RuleDesigner {
             self.sel = s;
             self.tab = Tab::Design;
         }
+        if fix_all {
+            let n = rule_design::fix_all(&mut self.deck, tech);
+            self.status = Some((true, format!("Applied {n} fix(es)")));
+            self.touch();
+        } else if let Some(f) = fix {
+            rule_design::apply_fix(&mut self.deck, &f, tech);
+            self.touch();
+        }
     }
 }
 
-fn finding_label(ui: &mut egui::Ui, f: &Finding, pal: &Palette) {
+/// A finding with its fix button; true when the fix was clicked.
+fn finding_row(ui: &mut egui::Ui, f: &Finding, tech: &Tech, names: &[String], pal: &Palette) -> bool {
     let (tag, c) = match f.severity {
         Severity::Error => ("error", pal.danger),
         Severity::Warning => ("warning", pal.warning),
@@ -1517,7 +1854,151 @@ fn finding_label(ui: &mut egui::Ui, f: &Finding, pal: &Palette) {
     ui.horizontal_wrapped(|ui| {
         ui.label(RichText::new(tag).small().strong().color(c));
         ui.label(RichText::new(&f.message).small().color(pal.text));
-    });
+        f.fix.as_ref().is_some_and(|x| ui.small_button(x.label(tech, names)).clicked())
+    })
+    .inner
+}
+
+/// A numbered step of the guide.
+fn step(ui: &mut egui::Ui, n: usize, title: &str, pal: &Palette, body: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::new().fill(pal.bg_sidebar).stroke(Stroke::new(1.0, pal.border)).corner_radius(6).inner_margin(10).show(
+        ui,
+        |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_top(|ui| {
+                let (r, p) = ui.allocate_painter(Vec2::splat(24.0), Sense::hover());
+                p.circle_filled(r.rect.center(), 11.0, pal.accent);
+                p.text(
+                    r.rect.center(),
+                    Align2::CENTER_CENTER,
+                    n.to_string(),
+                    FontId::proportional(13.0),
+                    theme::on_fill(pal.accent),
+                );
+                ui.vertical(|ui| {
+                    ui.label(RichText::new(title).strong().color(pal.text_strong));
+                    body(ui);
+                });
+            });
+        },
+    );
+    ui.add_space(6.0);
+}
+
+/// A clickable card with a picture of a kind of check, its plain question and an optional note.
+fn kind_card(
+    ui: &mut egui::Ui,
+    kind: Kind,
+    a: Color32,
+    b: Color32,
+    pal: &Palette,
+    note: Option<(String, Color32)>,
+) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(232.0, 176.0), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, kind.title()));
+    if ui.is_rect_visible(rect) {
+        let p = ui.painter();
+        let hov = resp.hovered();
+        p.rect_filled(rect, 6.0, if hov { pal.bg_hover } else { pal.bg_sidebar });
+        let edge = if hov { Stroke::new(1.5, pal.accent) } else { Stroke::new(1.0, pal.border) };
+        p.rect_stroke(rect, 6.0, edge, StrokeKind::Inside);
+        let inner = rect.shrink(10.0);
+        let icon = Rect::from_min_size(inner.min, Vec2::new(inner.width(), 60.0));
+        p.rect_filled(icon, 4.0, pal.bg_canvas);
+        kind_icon(p, icon.shrink(6.0), kind, a, b, pal);
+        let title = p.layout_no_wrap(kind.title().to_string(), FontId::proportional(14.0), pal.text_strong);
+        let mut y = icon.bottom() + 6.0;
+        let th = title.size().y;
+        p.galley(Pos2::new(inner.left(), y), title, pal.text_strong);
+        y += th + 2.0;
+        let q = p.layout(kind.question().to_string(), FontId::proportional(12.0), pal.text, inner.width());
+        p.galley(Pos2::new(inner.left(), y), q, pal.text);
+        if let Some((t, c)) = note {
+            p.text(inner.left_bottom(), Align2::LEFT_BOTTOM, t, FontId::proportional(11.0), c);
+        }
+    }
+    resp.on_hover_text(kind.explain())
+}
+
+/// A double-headed dimension arrow.
+fn arrow(p: &egui::Painter, a: Pos2, b: Pos2, col: Color32) {
+    let st = Stroke::new(1.2, col);
+    p.line_segment([a, b], st);
+    let d = (b - a).normalized();
+    let n = Vec2::new(-d.y, d.x);
+    for (q, dir) in [(a, d), (b, -d)] {
+        p.line_segment([q, q + dir * 4.0 + n * 2.5], st);
+        p.line_segment([q, q + dir * 4.0 - n * 2.5], st);
+    }
+}
+
+/// A small picture of what a kind of check measures; `a` is the checked layer, `b` the other.
+fn kind_icon(p: &egui::Painter, r: Rect, kind: Kind, a: Color32, b: Color32, pal: &Palette) {
+    let close = |x: u8, y: u8| x.abs_diff(y) as u32;
+    let b = if close(a.r(), b.r()) + close(a.g(), b.g()) + close(a.b(), b.b()) < 120 { pal.accent } else { b };
+    let at = |fx: f32, fy: f32| r.min + Vec2::new(r.width() * fx, r.height() * fy);
+    let rr = |x0: f32, y0: f32, x1: f32, y1: f32| Rect::from_min_max(at(x0, y0), at(x1, y1));
+    let fill = |q: Rect, c: Color32| {
+        p.rect_filled(q, 1.0, c.gamma_multiply(0.45));
+        p.rect_stroke(q, 1.0, Stroke::new(1.2, c), StrokeKind::Inside);
+    };
+    let ink = pal.text_strong;
+    match kind {
+        Kind::Width => {
+            fill(rr(0.42, 0.05, 0.58, 0.95), a);
+            arrow(p, at(0.42, 0.5), at(0.58, 0.5), ink);
+        }
+        Kind::Space => {
+            fill(rr(0.2, 0.05, 0.4, 0.95), a);
+            fill(rr(0.6, 0.05, 0.8, 0.95), a);
+            arrow(p, at(0.4, 0.5), at(0.6, 0.5), ink);
+        }
+        Kind::Separation => {
+            fill(rr(0.2, 0.05, 0.4, 0.95), b);
+            fill(rr(0.6, 0.05, 0.8, 0.95), a);
+            arrow(p, at(0.4, 0.5), at(0.6, 0.5), ink);
+        }
+        Kind::Enclosure => {
+            fill(rr(0.3, 0.05, 0.7, 0.95), b);
+            fill(rr(0.42, 0.3, 0.55, 0.7), a);
+            arrow(p, at(0.55, 0.5), at(0.7, 0.5), ink);
+        }
+        Kind::Extension => {
+            fill(rr(0.2, 0.4, 0.8, 0.95), b);
+            fill(rr(0.45, 0.05, 0.55, 0.95), a);
+            arrow(p, at(0.62, 0.4), at(0.62, 0.05), ink);
+        }
+        Kind::Area => {
+            fill(rr(0.4, 0.15, 0.6, 0.85), a);
+            p.text(at(0.5, 0.5), Align2::CENTER_CENTER, "A", FontId::proportional(13.0), ink);
+            fill(rr(0.68, 0.55, 0.74, 0.75), a);
+            p.rect_stroke(rr(0.66, 0.5, 0.76, 0.8), 1.0, Stroke::new(1.5, pal.danger), StrokeKind::Outside);
+        }
+        Kind::Density => {
+            for (k, f) in [0.2f32, 0.6, 0.9, 0.4, 0.7, 0.3].into_iter().enumerate() {
+                let (cx, cy) = (0.2 + 0.2 * (k % 3) as f32, 0.05 + 0.45 * (k / 3) as f32);
+                let cell = rr(cx, cy, cx + 0.2, cy + 0.45);
+                p.rect_filled(
+                    Rect::from_min_max(Pos2::new(cell.left(), cell.bottom() - cell.height() * f), cell.max),
+                    0.0,
+                    a.gamma_multiply(0.5),
+                );
+                p.rect_stroke(cell, 0.0, Stroke::new(0.8, pal.border), StrokeKind::Inside);
+            }
+        }
+        Kind::Antenna => {
+            fill(rr(0.15, 0.1, 0.85, 0.3), a);
+            fill(rr(0.2, 0.7, 0.3, 0.95), b);
+            p.line_segment([at(0.25, 0.3), at(0.25, 0.7)], Stroke::new(2.0, pal.text_weak));
+        }
+        Kind::Flag => {
+            for (x0, y0) in [(0.25, 0.2), (0.55, 0.45)] {
+                let q = rr(x0, y0, x0 + 0.2, y0 + 0.35);
+                fill(q, a);
+                p.rect_stroke(q.expand(2.0), 0.0, Stroke::new(1.5, pal.danger), StrokeKind::Middle);
+            }
+        }
+    }
 }
 
 /// World (dbu, y up) to screen mapping that fits `bb` into `rect`.
@@ -1596,6 +2077,12 @@ fn pattern_card(ui: &mut egui::Ui, run: &PatternRun, tech: &Tech, pal: &Palette)
                 chip(ui, &t, c);
             });
         });
+        let cap = if run.pattern.expect_fail {
+            "One grid step past the limit: the rule must flag it."
+        } else {
+            "Exactly at the limit: the rule must accept it."
+        };
+        ui.label(RichText::new(cap).small().color(pal.text_weak));
         let (resp, p) = ui.allocate_painter(Vec2::new(w - 16.0, 220.0), Sense::hover());
         let rect = resp.rect.shrink(10.0);
         let all = run.pattern.shapes.iter().map(|s| s.1).chain(run.markers.iter().copied()).reduce(|a, b| a.union(&b));
