@@ -22,7 +22,7 @@ const TOOL_TIMEOUT: Duration = Duration::from_secs(600);
 /// Tools the copilot does not get: it works on the project already open in the window.
 const HIDDEN: [&str; 3] = ["new_project", "open_project", "gui_status"];
 /// Design tools that only read the project: the ones plan mode runs.
-const READ_ONLY: [&str; 12] = [
+const READ_ONLY: [&str; 13] = [
     "project_info",
     "get_netlist",
     "simulate",
@@ -34,6 +34,7 @@ const READ_ONLY: [&str; 12] = [
     "run_lvs",
     "run_signoff",
     "post_layout_parasitics",
+    "emir",
     "diff_layout",
 ];
 

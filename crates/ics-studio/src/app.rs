@@ -121,6 +121,8 @@ pub enum Command {
     RunDrc,
     ExtractNets,
     RunLvs,
+    /// IR drop / EM analysis of the active layout: of the named net, else the Verify panel's.
+    IrDrop(Option<String>),
     /// Open the DRC Rule Designer window on the technology's deck.
     RuleDesigner,
     /// Open the Stream Layer Map editor (GDSII / OASIS layer numbers on import and export).
@@ -884,6 +886,12 @@ impl IcStudio {
             Command::RunDrc => self.verify(ctx, Verify::Drc),
             Command::ExtractNets => self.verify(ctx, Verify::Extract),
             Command::RunLvs => self.verify(ctx, Verify::Lvs),
+            Command::IrDrop(net) => {
+                if let (Some(r), Some(n)) = (self.active.clone(), net) {
+                    self.lay_eds.entry(r).or_default().verify.emir_net = n;
+                }
+                self.verify(ctx, Verify::Emir);
+            }
             Command::RuleDesigner => match &self.project {
                 Some(p) => self.rule_designer.show(&p.tech),
                 None => self.warn("Open a project to design DRC rules".into()),
@@ -2663,6 +2671,7 @@ impl IcStudio {
             ("Run DRC".into(), "", Command::RunDrc),
             ("Extract nets".into(), "", Command::ExtractNets),
             ("Run LVS".into(), "", Command::RunLvs),
+            ("IR drop / EM analysis".into(), "", Command::IrDrop(None)),
             ("DRC rule designer".into(), "", Command::RuleDesigner),
             ("Stream layer map (GDSII / OASIS layer numbers)".into(), "", Command::StreamMap),
             ("Dummy fill (metal density)".into(), "", Command::DummyFill),
