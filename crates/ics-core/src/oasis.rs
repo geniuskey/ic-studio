@@ -1239,7 +1239,7 @@ mod tests {
         let bytes = write_oasis(&[(&top, &t), (&leaf, &lf)], &tech);
         assert!(bytes.len() < 1000, "the leaf body is compressed ({} bytes)", bytes.len());
 
-        let imp = read_oasis_with(&bytes, &generic, "l", ReadOptions { add_unknown_layers: true }).unwrap();
+        let imp = read_oasis_with(&bytes, &generic, "l", ReadOptions { add_unknown_layers: true, ..Default::default() }).unwrap();
         let t2 = &imp.cells[1].1;
         let names: Vec<Option<&str>> = t2.instances.iter().map(|i| i.name.as_deref()).collect();
         assert_eq!(names, [Some("M1"), None, Some("XARR")]);

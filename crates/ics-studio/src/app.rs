@@ -12,15 +12,19 @@ use ics_mcp::{ToolResult, tools};
 use ics_sim::SimOptions;
 use serde::{Deserialize, Serialize};
 
+use crate::calc_view::Calculator;
 use crate::canvas::Profile;
 use crate::canvas::View2D;
 use crate::ciw::{Ciw, CiwKind};
+use crate::fill_view::FillTool;
 use crate::home_view;
 use crate::icons::{self, Icon};
 use crate::layout_view::{EipContext, LayAction, LayCtx, LayRequest, LayTool, LayoutEditor, Verify, fmt_count, um};
 use crate::rule_designer::{DesignerAction, RuleDesigner};
 use crate::schematic_view::{SchTool, SchematicEditor, device_palette};
 use crate::sim_view::{self, SimEvent, SimState};
+use crate::stream_map_view::StreamMapEditor;
+use crate::sweep_view::{SweepAction, SweepManager};
 use crate::theme::{self, Palette};
 use ics_core::gds::StreamFormat;
 use ics_core::hier::Hier;
@@ -80,6 +84,14 @@ pub enum Command {
     CreateView(CellRef, ViewKind),
     SetWorkspace(Workspace),
     RunSimulation,
+    /// Open the Waveform Calculator on the active cell's results.
+    Calculator,
+    /// Evaluate a calculator expression on the active cell's shown dataset and plot waveforms.
+    CalcPlot(String),
+    /// Open the Corner / Sweep Manager on the active cell.
+    SweepManager,
+    /// Run the active cell's corner / parametric sweep.
+    RunSweep,
     Undo,
     Redo,
     Delete,
@@ -93,6 +105,12 @@ pub enum Command {
     RunLvs,
     /// Open the DRC Rule Designer window on the technology's deck.
     RuleDesigner,
+    /// Open the Stream Layer Map editor (GDSII / OASIS layer numbers on import and export).
+    StreamMap,
+    /// Open the Dummy Fill tool.
+    DummyFill,
+    /// Add dummy fill with the Dummy Fill tool's parameters to the active cell.
+    AddFill,
     /// Run an external sign-off runset of the technology on the active cell: the one named
     /// (or uniquely matched), else the one selected in the Sign-off section.
     RunSignoff(Option<String>),
@@ -410,6 +428,10 @@ pub struct IcStudio {
     last_title: String,
     bridge: Option<Bridge>,
     rule_designer: RuleDesigner,
+    stream_map: StreamMapEditor,
+    fill: FillTool,
+    calc: Calculator,
+    sweep: SweepManager,
     ciw: Ciw,
 }
 
@@ -448,6 +470,10 @@ impl IcStudio {
             last_title: String::new(),
             bridge: None,
             rule_designer: RuleDesigner::default(),
+            stream_map: StreamMapEditor::default(),
+            fill: FillTool::default(),
+            calc: Calculator::default(),
+            sweep: SweepManager::default(),
             ciw: Ciw::default(),
         };
         app.info(format!("IC Studio {} ready — renderer: wgpu", env!("CARGO_PKG_VERSION")));
@@ -716,6 +742,27 @@ impl IcStudio {
             }
             Command::SetWorkspace(w) => self.workspace = w,
             Command::RunSimulation => self.run_simulation(ctx),
+            Command::Calculator => self.calc.show(),
+            Command::SweepManager => match (self.active.clone(), self.active_cell()) {
+                (Some(r), Some(c)) if c.schematic.is_some() => {
+                    let setup = c.sim.sweep.clone();
+                    self.sweep.show(&r, &setup);
+                }
+                _ => self.warn("Open a cell with a schematic to sweep".into()),
+            },
+            Command::RunSweep => self.run_sweep(ctx),
+            Command::CalcPlot(expr) => {
+                let Some(r) = self.active.clone() else { return };
+                let Some(sim) = self.sims.get_mut(&r) else {
+                    self.warn(format!("Calculator: simulate {r} first"));
+                    return;
+                };
+                let tab = sim.tab.clone();
+                match self.calc.evaluate(sim, &tab, &expr, true) {
+                    Ok(v) => self.ok(format!("Calculator: {expr} = {v}")),
+                    Err(e) => self.error(format!("Calculator: {e}")),
+                }
+            }
             Command::Undo | Command::Redo | Command::Delete | Command::FitView => self.editor_command(cmd),
             Command::Lay(a) => {
                 if let Some(r) = self.active.clone() {
@@ -730,6 +777,15 @@ impl IcStudio {
                 Some(p) => self.rule_designer.show(&p.tech),
                 None => self.warn("Open a project to design DRC rules".into()),
             },
+            Command::StreamMap => match &self.project {
+                Some(p) => self.stream_map.show(&p.tech),
+                None => self.warn("Open a project to edit the stream layer map".into()),
+            },
+            Command::DummyFill => match &self.project {
+                Some(p) => self.fill.show(&p.tech),
+                None => self.warn("Open a project to add dummy fill".into()),
+            },
+            Command::AddFill => self.add_fill(),
             Command::RunSignoff(name) => self.run_signoff(ctx, name.as_deref()),
             Command::GenerateLayout => self.generate_layout(),
             Command::RouteFlylines => self.route_flylines(),
@@ -1029,6 +1085,105 @@ impl IcStudio {
         self.workspace = Workspace::Simulation;
     }
 
+    fn run_sweep(&mut self, ctx: &egui::Context) {
+        if self.sweep.is_running() {
+            self.warn("A sweep is already running".into());
+            return;
+        }
+        let Some(r) = self.active.clone() else { return };
+        if self.sweep.cell.as_ref() != Some(&r)
+            && let Some(c) = self.active_cell()
+        {
+            let s = c.sim.sweep.clone();
+            self.sweep.show(&r, &s);
+            self.sweep.open = false;
+        }
+        let mut notes = vec![];
+        match self.sweep_decks(&r, &mut notes) {
+            Ok((decks, analyses, backend)) => {
+                for n in notes {
+                    self.warn(n);
+                }
+                let n = decks.len();
+                let opts = self.sim_options(backend);
+                self.sweep.start(ctx, decks, analyses, opts);
+                self.info(format!("Sweep {r}: {n} point(s) with {}", backend.label()));
+            }
+            Err(e) => {
+                for n in notes {
+                    self.warn(n);
+                }
+                self.error(format!("Sweep: {e}"));
+            }
+        }
+    }
+
+    /// The decks of every point of the sweep draft on cell `r`.
+    #[allow(clippy::type_complexity)]
+    fn sweep_decks(
+        &self,
+        r: &CellRef,
+        notes: &mut Vec<String>,
+    ) -> Result<(Vec<(ics_core::sweep::SweepPoint, String)>, Vec<ics_core::Analysis>, ics_core::Backend), String> {
+        let p = self.project.as_ref().ok_or("no project")?;
+        let cell = p.cell(r).ok_or_else(|| format!("no cell {r}"))?;
+        let sch = cell.schematic.as_ref().ok_or_else(|| format!("{r} has no schematic to sweep"))?;
+        let mut setup = cell.sim.clone();
+        setup.sweep = self.sweep.setup.clone();
+        let analyses: Vec<_> = setup.enabled().cloned().collect();
+        if analyses.is_empty() {
+            return Err("no analyses enabled".into());
+        }
+        let points = setup.sweep.points(&setup)?;
+        let pex = if setup.parasitics && cell.layout.is_some() {
+            match ics_core::pex::post_layout(p, r) {
+                Ok(pl) => Some(pl),
+                Err(e) => {
+                    notes.push(format!("Parasitics not included: {e}"));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let mut decks = Vec::with_capacity(points.len());
+        for (k, pt) in points.into_iter().enumerate() {
+            let (deck, w) = ics_core::sweep::point_deck(sch, &p.tech, &r.to_string(), &setup, &pt)?;
+            if k == 0 {
+                notes.extend(w.into_iter().map(|w| format!("netlist: {w}")));
+            }
+            let deck = match &pex {
+                Some(pl) => pl.apply(&deck),
+                None => deck,
+            };
+            decks.push((pt, deck));
+        }
+        Ok((decks, analyses, setup.backend))
+    }
+
+    fn sweep_window(&mut self, ctx: &egui::Context) {
+        match self.sweep.window(ctx, self.project.as_ref()) {
+            Some(SweepAction::Changed(s)) => {
+                let r = self.sweep.cell.clone();
+                if let Some(c) = r.and_then(|r| self.project.as_mut()?.cell_mut(&r)) {
+                    c.sim.sweep = s;
+                    self.mark_dirty();
+                }
+            }
+            Some(SweepAction::Run) => {
+                if let Some(r) = self.sweep.cell.clone() {
+                    self.queue.push(Command::OpenCell(r, None));
+                    self.queue.push(Command::RunSweep);
+                }
+            }
+            None => {}
+        }
+    }
+
+    pub fn sweep_manager(&mut self) -> &mut SweepManager {
+        &mut self.sweep
+    }
+
     fn export_stream(&mut self, library: bool, format: StreamFormat) {
         let Some(p) = &self.project else { return };
         let tops: Vec<CellRef> = if library {
@@ -1056,7 +1211,7 @@ impl IcStudio {
             return;
         };
         let n = tops.iter().flat_map(|t| ics_core::hier::descendants(p, t)).collect::<std::collections::HashSet<_>>().len();
-        let bytes = ics_core::gds::write_stream_hier(format, &p.name, p, &tops, &p.tech);
+        let bytes = ics_core::gds::write_stream_hier(format, &p.name, p, &tops, &ics_core::stream_map::export_tech(&p.tech));
         match std::fs::write(&path, &bytes) {
             Ok(()) => self.ok(format!("Exported {n} cell(s) to {} ({} bytes)", path.display(), bytes.len())),
             Err(e) => self.error(format!("{} export failed: {e}", format.label())),
@@ -1082,7 +1237,7 @@ impl IcStudio {
             }
         };
         let t0 = Instant::now();
-        let opts = ics_core::gds::ReadOptions { add_unknown_layers: true };
+        let opts = ics_core::gds::ReadOptions { add_unknown_layers: true, use_stream_map: true };
         let label = StreamFormat::detect(&data).label();
         let imp = match ics_core::gds::read_stream_with(&data, &p.tech, "gds", opts) {
             Ok(imp) => imp,
@@ -1416,6 +1571,13 @@ impl IcStudio {
                 if ui.button("Export Netlist…").clicked() {
                     q.push(Command::ExportNetlist);
                 }
+                ui.separator();
+                if ui.button("Waveform Calculator…").clicked() {
+                    q.push(Command::Calculator);
+                }
+                if ui.button("Corner / Sweep Manager…").clicked() {
+                    q.push(Command::SweepManager);
+                }
             });
             ui.menu_button("Verify", |ui| {
                 if ui.button("Run DRC").clicked() {
@@ -1442,8 +1604,21 @@ impl IcStudio {
                 }
             });
             ui.menu_button("Tools", |ui| {
+                if ui.button("Waveform Calculator…").clicked() {
+                    q.push(Command::Calculator);
+                }
+                if ui.button("Corner / Sweep Manager…").clicked() {
+                    q.push(Command::SweepManager);
+                }
+                ui.separator();
                 if ui.add_enabled(has_project, egui::Button::new("DRC Rule Designer…")).clicked() {
                     q.push(Command::RuleDesigner);
+                }
+                if ui.add_enabled(has_project, egui::Button::new("Stream Layer Map…")).clicked() {
+                    q.push(Command::StreamMap);
+                }
+                if ui.add_enabled(has_project, egui::Button::new("Dummy Fill…")).clicked() {
+                    q.push(Command::DummyFill);
                 }
                 ui.separator();
                 if ui.button("SKILL CIW").clicked() {
@@ -2244,6 +2419,11 @@ impl IcStudio {
             ("Extract nets".into(), "", Command::ExtractNets),
             ("Run LVS".into(), "", Command::RunLvs),
             ("DRC rule designer".into(), "", Command::RuleDesigner),
+            ("Stream layer map (GDSII / OASIS layer numbers)".into(), "", Command::StreamMap),
+            ("Dummy fill (metal density)".into(), "", Command::DummyFill),
+            ("Waveform calculator".into(), "", Command::Calculator),
+            ("Corner / sweep manager".into(), "", Command::SweepManager),
+            ("Run corner / parametric sweep".into(), "", Command::RunSweep),
             ("Run sign-off runset (KLayout / Calibre / netgen)".into(), "", Command::RunSignoff(None)),
             ("Generate layout from schematic".into(), "", Command::GenerateLayout),
             ("Route flylines".into(), "", Command::RouteFlylines),
@@ -2932,11 +3112,11 @@ impl IcStudio {
             || self.lay_eds.values().any(LayoutEditor::is_verifying)
             || self.bridge.as_ref().is_some_and(|b| b.job.is_some() || !b.waiting.is_empty())
             || self.rule_designer.is_checking()
+            || self.sweep.is_running()
     }
 
     fn rule_designer_window(&mut self, ctx: &egui::Context) {
-        let active =
-            self.active.clone().filter(|r| self.project.as_ref().and_then(|p| p.cell(r)).is_some_and(|c| c.layout.is_some()));
+        let active = self.active_layout();
         let Some(action) = self.rule_designer.window(ctx, self.project.as_ref(), active.as_ref()) else { return };
         let (DesignerAction::Apply(text) | DesignerAction::ApplyAndRun(text)) = &action;
         if let Some(p) = self.project.as_mut() {
@@ -2950,6 +3130,81 @@ impl IcStudio {
         if matches!(action, DesignerAction::ApplyAndRun(_)) {
             self.queue.push(Command::RunDrc);
         }
+    }
+
+    fn stream_map_window(&mut self, ctx: &egui::Context) {
+        let Some(rows) = self.stream_map.window(ctx, self.project.as_ref()) else { return };
+        let Some(p) = self.project.as_mut() else { return };
+        p.tech.stream_map = rows;
+        let problems = ics_core::stream_map::problems(&p.tech);
+        let n = p.tech.stream_map.len();
+        self.mark_dirty();
+        self.ok(format!("Stream layer map: {n} row(s) applied to the technology"));
+        for w in problems {
+            self.warn(format!("Stream layer map: {w}"));
+        }
+    }
+
+    fn fill_window(&mut self, ctx: &egui::Context) {
+        let active = self.active_layout();
+        if self.fill.window(ctx, self.project.as_ref(), active.as_ref()) {
+            self.add_fill();
+        }
+    }
+
+    /// The active cell when it has a layout.
+    fn active_layout(&self) -> Option<CellRef> {
+        self.active.clone().filter(|r| self.project.as_ref().and_then(|p| p.cell(r)).is_some_and(|c| c.layout.is_some()))
+    }
+
+    fn add_fill(&mut self) {
+        let Some(r) = self.active_layout() else {
+            self.warn("Open a layout cell to add fill".into());
+            return;
+        };
+        let Some(p) = self.project.as_mut() else { return };
+        if self.fill.params.is_none() {
+            self.fill.show(&p.tech);
+            self.fill.open = false;
+        }
+        let rep = match self.fill.run(p, &r) {
+            Ok(rep) => rep,
+            Err(e) => {
+                self.error(format!("Dummy fill: {e}"));
+                return;
+            }
+        };
+        if rep.rects.is_empty() {
+            self.info(format!("Dummy fill: nothing to add to {r} ({})", crate::fill_view::summary(&rep)));
+            return;
+        }
+        let layer = self.fill.params.as_ref().map_or(0, |f| f.layer);
+        let Some(lay) = p.cell_mut(&r).and_then(|c| c.layout.as_mut()) else { return };
+        let ed = self.lay_eds.entry(r.clone()).or_default();
+        ed.history.push(lay);
+        for rect in &rep.rects {
+            lay.add(layer, ics_core::Geometry::Rect(*rect));
+        }
+        ed.layout_changed();
+        self.hier.invalidate(&r);
+        self.mark_dirty();
+        self.ok(format!("Dummy fill on {r}: {}", crate::fill_view::summary(&rep)));
+    }
+
+    pub fn calculator(&self) -> &Calculator {
+        &self.calc
+    }
+
+    pub fn sim_state(&self, r: &CellRef) -> Option<&SimState> {
+        self.sims.get(r)
+    }
+
+    pub fn fill_tool(&mut self) -> &mut FillTool {
+        &mut self.fill
+    }
+
+    pub fn stream_map_editor(&mut self) -> &mut StreamMapEditor {
+        &mut self.stream_map
     }
 
     pub fn rule_designer(&self) -> &RuleDesigner {
@@ -3004,6 +3259,14 @@ impl eframe::App for IcStudio {
         }
         for m in verified {
             self.info(m);
+        }
+        if let Some(m) = self.sweep.poll() {
+            let cell = self.sweep.cell.as_ref().map_or(String::new(), |c| c.to_string());
+            if self.sweep.status().is_some_and(|s| s.0) {
+                self.ok(format!("Sweep {cell}: {m}"))
+            } else {
+                self.warn(format!("Sweep {cell}: {m}"))
+            }
         }
         self.serve_bridge(ctx);
         if self.is_busy() {
@@ -3065,6 +3328,12 @@ impl eframe::App for IcStudio {
         self.command_palette(&ctx);
         self.dialogs(&ctx);
         self.rule_designer_window(&ctx);
+        self.stream_map_window(&ctx);
+        self.fill_window(&ctx);
+        let active = self.active.clone();
+        let sim = active.as_ref().and_then(|r| self.sims.get_mut(r));
+        self.calc.window(&ctx, active.as_ref(), sim);
+        self.sweep_window(&ctx);
 
         let cmds = std::mem::take(&mut self.queue);
         for c in cmds {

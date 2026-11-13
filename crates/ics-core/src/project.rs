@@ -633,7 +633,7 @@ fn save_gds_library(dir: &Path, lib: &Library, tech: &Tech) -> Result<()> {
 fn open_gds_library(dir: &Path, lib: &str, tech: &mut Tech) -> Result<Vec<Cell>> {
     let path = gds_file(dir, lib);
     let data = fs::read(&path).map_err(io_err(&path))?;
-    let mut imp = read_gds_with(&data, tech, lib, ReadOptions { add_unknown_layers: true })
+    let mut imp = read_gds_with(&data, tech, lib, ReadOptions { add_unknown_layers: true, ..Default::default() })
         .map_err(|e| ProjectError::Other(format!("{}: {e}", path.display())))?;
     drop(data);
     merge_new_layers(tech, &mut imp);
@@ -897,7 +897,7 @@ mod tests {
         l.add_rect(0, 0, 0, 30, 30);
         let top = CellRef::new("x", "top");
         let bytes = write_gds("x", &[(&top, &l)], &src_tech);
-        let opts = ReadOptions { add_unknown_layers: true };
+        let opts = ReadOptions { add_unknown_layers: true, ..Default::default() };
 
         p.tech.layers.push(LayerDef { name: "L98D3".into(), ..LayerDef::generated(97, 0, 5) });
         let imp = read_gds_with(&bytes, &Tech::generic(), "gds", opts).unwrap();

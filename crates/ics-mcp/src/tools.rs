@@ -1344,7 +1344,13 @@ impl State {
         layout_of(p, &r)?;
         let path = PathBuf::from(a.str("path")?);
         let format = ics_core::gds::StreamFormat::from_path(&path);
-        let bytes = ics_core::gds::write_stream_hier(format, &r.lib, p, std::slice::from_ref(&r), &p.tech);
+        let bytes = ics_core::gds::write_stream_hier(
+            format,
+            &r.lib,
+            p,
+            std::slice::from_ref(&r),
+            &ics_core::stream_map::export_tech(&p.tech),
+        );
         std::fs::write(&path, &bytes).map_err(|e| format!("{}: {e}", path.display()))?;
         let cells = descendants(p, &r).iter().filter(|c| p.layout(c).is_some()).count();
         Ok(json!({"path": path.display().to_string(), "bytes": bytes.len(), "cells": cells}))
@@ -1358,7 +1364,12 @@ impl State {
         };
         let p = self.project_mut()?;
         let data = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let imp = ics_core::gds::read_stream_with(&data, &p.tech, "gds", Default::default())?;
+        let imp = ics_core::gds::read_stream_with(
+            &data,
+            &p.tech,
+            "gds",
+            ics_core::gds::ReadOptions { use_stream_map: true, ..Default::default() },
+        )?;
         let (skipped, warnings) = (imp.skipped_unknown_layers, imp.warnings.clone());
         let (lib, tops) = p.add_gds_library(&hint, imp)?;
         let cells = p.libraries.iter().find(|l| l.name == lib).map_or(0, |l| l.cells.len());

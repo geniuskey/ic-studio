@@ -122,6 +122,9 @@ pub struct SimSetup {
     /// Model corner of the PDK model library (empty = its default).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub corner: String,
+    /// Corner / parametric sweep of the Sweep Manager.
+    #[serde(default, skip_serializing_if = "crate::sweep::SweepSetup::is_empty")]
+    pub sweep: crate::sweep::SweepSetup,
 }
 
 fn default_temp() -> f64 {
@@ -148,6 +151,7 @@ impl Default for SimSetup {
             temp: 27.0,
             parasitics: false,
             corner: String::new(),
+            sweep: Default::default(),
         }
     }
 }

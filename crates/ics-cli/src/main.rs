@@ -354,7 +354,13 @@ fn run(cli: Cli) -> Result<(), String> {
             let r = resolve(&p, &cell)?;
             p.cell(&r).unwrap().layout.as_ref().ok_or("cell has no layout")?;
             let format = ics_core::gds::StreamFormat::from_path(&out);
-            let bytes = ics_core::gds::write_stream_hier(format, &r.lib, &p, std::slice::from_ref(&r), &p.tech);
+            let bytes = ics_core::gds::write_stream_hier(
+                format,
+                &r.lib,
+                &p,
+                std::slice::from_ref(&r),
+                &ics_core::stream_map::export_tech(&p.tech),
+            );
             std::fs::write(&out, &bytes).map_err(|e| e.to_string())?;
             let layouts: Vec<_> = descendants(&p, &r).iter().filter_map(|c| p.layout(c)).collect();
             let shapes: usize = layouts.iter().map(|l| l.shapes.len()).sum();
@@ -494,7 +500,7 @@ fn run(cli: Cli) -> Result<(), String> {
             let data = std::fs::read(&file).map_err(|e| format!("{}: {e}", file.display()))?;
             let t_io = t0.elapsed();
             let tech = ics_core::Tech::generic();
-            let opts = ics_core::gds::ReadOptions { add_unknown_layers: true };
+            let opts = ics_core::gds::ReadOptions { add_unknown_layers: true, ..Default::default() };
             let imp = ics_core::gds::read_stream_with(&data, &tech, "gds", opts)?;
             drop(data);
             let t_parse = t0.elapsed() - t_io;
@@ -530,7 +536,7 @@ fn run(cli: Cli) -> Result<(), String> {
         Cmd::ImportGds { project, file, lib, skip_unknown_layers, json } => {
             let mut p = Project::open(&project).map_err(|e| e.to_string())?;
             let data = std::fs::read(&file).map_err(|e| format!("{}: {e}", file.display()))?;
-            let opts = ics_core::gds::ReadOptions { add_unknown_layers: !skip_unknown_layers };
+            let opts = ics_core::gds::ReadOptions { add_unknown_layers: !skip_unknown_layers, use_stream_map: true };
             let imp = ics_core::gds::read_stream_with(&data, &p.tech, "gds", opts)?;
             let (skipped, warnings) = (imp.skipped_unknown_layers, imp.warnings.clone());
             let layers_before = p.tech.layers.len();

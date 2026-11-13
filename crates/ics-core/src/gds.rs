@@ -441,6 +441,8 @@ pub struct ReadOptions {
     /// Turn every (layer, datatype) pair `tech` does not define into a new layer instead of
     /// skipping its shapes. Datatypes are then matched exactly (no fallback to datatype 0).
     pub add_unknown_layers: bool,
+    /// Apply the technology's stream layer map ([`Tech::stream_map`]) before its own layer pairs.
+    pub use_stream_map: bool,
 }
 
 /// [`read_gds_with`] with default options: shapes on unknown layers are skipped.
@@ -597,6 +599,8 @@ pub fn read_gds_with(data: &[u8], tech: &Tech, lib: &str, opts: ReadOptions) -> 
 /// [`read_gds_with`].
 pub(crate) struct LayerMap {
     by_gds: HashMap<(u16, u16), usize>,
+    /// Pairs the stream map drops.
+    dropped: HashSet<(u16, u16)>,
     new_index: HashMap<(u16, u16), usize>,
     base: usize,
     add_unknown: bool,
@@ -608,11 +612,28 @@ impl LayerMap {
         for (k, l) in tech.layers.iter().enumerate() {
             by_gds.entry((l.gds_layer, l.gds_datatype)).or_insert(k);
         }
-        Self { by_gds, new_index: HashMap::new(), base: tech.layers.len(), add_unknown: opts.add_unknown_layers }
+        let mut dropped = HashSet::new();
+        if opts.use_stream_map {
+            for (pair, to) in crate::stream_map::import_pairs(tech) {
+                match to {
+                    Some(k) => {
+                        by_gds.insert(pair, k);
+                    }
+                    None => {
+                        dropped.insert(pair);
+                    }
+                }
+            }
+        }
+        Self { by_gds, dropped, new_index: HashMap::new(), base: tech.layers.len(), add_unknown: opts.add_unknown_layers }
     }
 
     /// The layer of a shape on `(layer, dt)`, or `None` (counted in `out`) when it is skipped.
     pub(crate) fn get(&mut self, layer: u16, dt: u16, out: &mut GdsImport) -> Option<usize> {
+        if self.dropped.contains(&(layer, dt)) {
+            out.skipped_unknown_layers += 1;
+            return None;
+        }
         if self.add_unknown {
             return Some(self.by_gds.get(&(layer, dt)).copied().unwrap_or_else(|| {
                 *self.new_index.entry((layer, dt)).or_insert_with(|| {
@@ -708,7 +729,7 @@ pub(crate) mod tests {
         let layers: Vec<usize> = skip.cells[0].1.shapes.iter().map(|s| s.layer).collect();
         assert_eq!(layers, [6, 6], "without the option 7/16 falls back to 7/0");
 
-        let imp = read_gds_with(&bytes, &generic, "lib", ReadOptions { add_unknown_layers: true }).unwrap();
+        let imp = read_gds_with(&bytes, &generic, "lib", ReadOptions { add_unknown_layers: true, ..Default::default() }).unwrap();
         assert_eq!(imp.skipped_unknown_layers, 0);
         let new: Vec<(&str, u16, u16)> = imp.new_layers.iter().map(|d| (d.name.as_str(), d.gds_layer, d.gds_datatype)).collect();
         assert_eq!(new, [("L99D0", 99, 0), ("L7D16", 7, 16)]);

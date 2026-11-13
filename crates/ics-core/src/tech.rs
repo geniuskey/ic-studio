@@ -324,6 +324,20 @@ pub struct Tech {
     /// Net label layers per conducting layer; others carry their labels themselves.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pin_labels: Vec<PinLabel>,
+    /// Stream (GDSII / OASIS) layer map used by File > Import / Export (see `stream_map`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stream_map: Vec<StreamMapEntry>,
+}
+
+/// A row of the stream layer map: shapes on stream `(stream_layer, datatype)` are read onto
+/// technology layer `layer`, and the first row naming a layer sets the pair it is written as.
+/// An empty `layer` drops the pair on import.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct StreamMapEntry {
+    pub layer: String,
+    pub stream_layer: u16,
+    #[serde(default)]
+    pub datatype: u16,
 }
 
 impl Tech {
@@ -501,6 +515,7 @@ impl Tech {
             pcell_layers: vec![],
             drc_extra: vec![],
             pin_labels: vec![],
+            stream_map: vec![],
         }
     }
 }

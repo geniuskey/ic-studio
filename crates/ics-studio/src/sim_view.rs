@@ -9,7 +9,8 @@ use egui_plot::{Legend, Line, Plot, PlotPoints};
 use ics_core::tech::ModelLib;
 use ics_core::units::{format_eng, parse_spice};
 use ics_core::{Analysis, Backend, Cell, DeviceKind, SimSetup};
-use ics_sim::{Dataset, SimOptions, SimResults, VecKind};
+use ics_sim::calc::{self, CalcValue};
+use ics_sim::{Dataset, SimOptions, SimResults, VecKind, Vector};
 
 use crate::schematic_view::OpAnnotation;
 use crate::theme;
@@ -50,6 +51,8 @@ pub struct SimState {
     pub last_deck: String,
     pub show_netlist: bool,
     pub filter: String,
+    /// Calculator expressions plotted per analysis, re-evaluated after every run.
+    pub calc: BTreeMap<String, Vec<String>>,
 }
 
 pub enum SimEvent {
@@ -74,6 +77,27 @@ impl SimState {
             a.device.insert(d.name.to_ascii_lowercase(), d.values.clone());
         }
         Some(a)
+    }
+
+    /// Evaluate a calculator expression on the `analysis` dataset. A waveform result is added to
+    /// the dataset as a signal named after the expression and plotted when `plot` is set.
+    pub fn eval_calc(&mut self, analysis: &str, expr: &str, plot: bool) -> Result<CalcValue, String> {
+        let expr = expr.trim();
+        let ds = self.results.as_mut().and_then(|r| r.datasets.iter_mut().find(|d| d.analysis == analysis));
+        let ds = ds.ok_or_else(|| format!("no {analysis} results; run the simulation first"))?;
+        let v = calc::eval(expr, ds)?;
+        if plot && let CalcValue::Wave(w) = &v {
+            if ds.analysis == "op" {
+                return Err("waveforms cannot be plotted for the operating point".into());
+            }
+            add_wave(ds, expr, w.clone());
+            self.selected.entry(analysis.to_string()).or_default().insert(expr.to_string());
+            let list = self.calc.entry(analysis.to_string()).or_default();
+            if !list.iter().any(|e| e == expr) {
+                list.push(expr.to_string());
+            }
+        }
+        Ok(v)
     }
 
     pub fn start(&mut self, ctx: &egui::Context, deck: String, analyses: Vec<Analysis>, opts: SimOptions) {
@@ -103,6 +127,14 @@ impl SimState {
                     res.datasets.len()
                 );
                 let log = res.log.clone();
+                let mut res = res;
+                for d in &mut res.datasets {
+                    for e in self.calc.get(&d.analysis).into_iter().flatten() {
+                        if let Ok(CalcValue::Wave(w)) = calc::eval(e, d) {
+                            add_wave(d, e, w);
+                        }
+                    }
+                }
                 // default signal selection per analysis
                 for d in &res.datasets {
                     let sel = self.selected.entry(d.analysis.clone()).or_default();
@@ -130,6 +162,19 @@ impl SimState {
                 SimEvent::Finished { ok: false, message: format!("Simulation failed: {e}"), log: String::new() }
             }
         })
+    }
+}
+
+/// A real calculator result in an AC dataset (e.g. `db(v(out))`): plotted as is, not in dB.
+fn is_derived_real(v: &Vector) -> bool {
+    v.im.is_none() && v.kind == VecKind::Other
+}
+
+fn add_wave(ds: &mut Dataset, name: &str, mut w: Vector) {
+    w.name = name.to_string();
+    match ds.vectors.iter_mut().find(|v| v.name == name) {
+        Some(v) => *v = w,
+        None => ds.vectors.push(w),
     }
 }
 
@@ -357,7 +402,8 @@ fn plot_dataset(ui: &mut egui::Ui, d: &Dataset, sel: &BTreeSet<String>, colors: 
             .show(ui, |pu| {
                 for name in sel {
                     if let Some(v) = d.get(name) {
-                        let pts: PlotPoints = xs.iter().zip(v.db()).map(|(x, y)| [*x, y]).collect();
+                        let ys = if is_derived_real(v) { v.re.clone() } else { v.db() };
+                        let pts: PlotPoints = xs.iter().zip(ys).map(|(x, y)| [*x, y]).collect();
                         pu.line(Line::new(name.clone(), pts).color(colors[name]).width(1.8));
                     }
                 }
@@ -372,7 +418,7 @@ fn plot_dataset(ui: &mut egui::Ui, d: &Dataset, sel: &BTreeSet<String>, colors: 
             .link_cursor(link, [true, false])
             .show(ui, |pu| {
                 for name in sel {
-                    if let Some(v) = d.get(name) {
+                    if let Some(v) = d.get(name).filter(|v| !is_derived_real(v)) {
                         let pts: PlotPoints = xs.iter().zip(v.phase_deg()).map(|(x, y)| [*x, y]).collect();
                         pu.line(Line::new(name.clone(), pts).color(colors[name]).width(1.8));
                     }
@@ -421,7 +467,7 @@ fn measurements(ui: &mut egui::Ui, d: &Dataset, sel: &BTreeSet<String>, colors: 
             let Some(v) = d.get(name) else { continue };
             ui.label(RichText::new(name).monospace().color(colors[name]));
             if d.analysis == "ac" {
-                let db = v.db();
+                let db = if is_derived_real(v) { v.re.clone() } else { v.db() };
                 let g0 = db.first().copied().unwrap_or(f64::NAN);
                 let peak = db.iter().cloned().fold(f64::MIN, f64::max);
                 let cross = |lvl: f64| -> Option<f64> {

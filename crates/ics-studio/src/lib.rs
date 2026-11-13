@@ -1,8 +1,10 @@
 //! IC Studio desktop application (library part, so UI tests can drive the app headlessly).
 
 pub mod app;
+pub mod calc_view;
 pub mod canvas;
 pub mod ciw;
+pub mod fill_view;
 pub mod history;
 pub mod home_view;
 pub mod icons;
@@ -10,6 +12,8 @@ pub mod layout_view;
 pub mod rule_designer;
 pub mod schematic_view;
 pub mod sim_view;
+pub mod stream_map_view;
+pub mod sweep_view;
 pub mod theme;
 
 /// Command line: `ics-studio [PROJECT_DIR] [--demo] [--workspace home|schematic|simulation|layout] [--run]`

@@ -386,6 +386,126 @@ fn ciw_console() {
     shot(&mut h, "31_ciw");
 }
 
+fn demo_args(cell: &str, workspace: &str, run: bool) -> LaunchArgs {
+    LaunchArgs { project: None, demo: true, workspace: Some(workspace.into()), cell: Some(cell.into()), run }
+}
+
+/// Waveform Calculator: a scalar measurement and a plotted derived waveform, kept across reruns.
+#[test]
+fn waveform_calculator() {
+    let mut h = app(demo_args("rc_lowpass", "simulation", true));
+    settle(&mut h, "calculator");
+    let r = ics_core::CellRef::new("work", "rc_lowpass");
+    assert_eq!(h.state().sim_state(&r).unwrap().tab, "ac");
+    h.state_mut().command(Command::Calculator);
+    h.state_mut().command(Command::CalcPlot("bandwidth(v(out)/v(in))".into()));
+    h.state_mut().command(Command::CalcPlot("db(v(out)) + 3".into()));
+    h.state_mut().command(Command::CalcPlot("nosuch(v(out))".into()));
+    h.run_steps(4);
+    let hist = &h.state().calculator().history;
+    assert_eq!(hist.len(), 3);
+    let bw = ics_core::units::parse_spice(hist[0].2.trim_end_matches('k')).unwrap();
+    assert!((bw - 159.15).abs() < 2.0, "{hist:?}");
+    assert!(hist[1].3 && !hist[2].3, "{hist:?}");
+    h.state_mut().command(Command::RunSimulation);
+    h.run_steps(2);
+    settle(&mut h, "calculator rerun");
+    let res = h.state().sim_state(&r).unwrap().results.as_ref().unwrap();
+    assert!(res.dataset("ac").unwrap().get("db(v(out)) + 3").is_some(), "derived trace re-evaluated after a rerun");
+    shot(&mut h, "32_calculator");
+}
+
+/// Corner / Sweep Manager: sweep R1 and check the bandwidth spec on every point.
+#[test]
+fn sweep_manager() {
+    let mut h = app(demo_args("rc_lowpass", "simulation", false));
+    h.state_mut().command(Command::SweepManager);
+    h.run_steps(2);
+    {
+        let sw = h.state_mut().sweep_manager();
+        assert!(sw.open);
+        sw.setup.temps = "-40 125".into();
+        sw.setup.vars.push(ics_core::sweep::SweepVar { name: "R1.r".into(), values: "1k 2k 4k".into() });
+        sw.setup.specs.push(ics_core::sweep::Spec {
+            name: "bw".into(),
+            analysis: "ac".into(),
+            expr: "bandwidth(v(out))".into(),
+            min: "50k".into(),
+            max: String::new(),
+        });
+    }
+    h.state_mut().command(Command::RunSweep);
+    h.run_steps(2);
+    settle(&mut h, "sweep");
+    let sw = h.state_mut().sweep_manager();
+    assert_eq!(sw.results.len(), 6);
+    let bws: Vec<f64> = sw.results.iter().map(|r| *r.as_ref().unwrap().specs[0].as_ref().unwrap()).collect();
+    for (k, want) in [159.15e3, 79.58e3, 39.79e3].iter().enumerate() {
+        assert!((bws[k] - want).abs() / want < 0.02, "{bws:?}");
+    }
+    assert_eq!(sw.pass_count(), (4, 6));
+    assert!(h.state().console_lines().any(|l| l.contains("4/6 pass every spec")));
+    h.state_mut().sweep_manager().setup.specs[0].name = "bandwidth".into();
+    h.run_steps(4);
+    shot(&mut h, "33_sweep_manager");
+}
+
+/// Stream Layer Map: a map applied to the technology renumbers metal1 on export.
+#[test]
+fn stream_layer_map() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = app(demo_args("cmos_inverter", "layout", false));
+    h.state_mut().command(Command::StreamMap);
+    h.run_steps(2);
+    let tech = h.state().project().unwrap().tech.clone();
+    assert_eq!(
+        h.state_mut().stream_map_editor().load_text(
+            "metal1 drawing 31 0
+via1 drawing 51 0
+",
+            &tech
+        ),
+        2
+    );
+    h.run_steps(2);
+    h.get_by_label("Apply").click();
+    h.run_steps(3);
+    let tech = &h.state().project().unwrap().tech;
+    assert_eq!(tech.stream_map.len(), 2);
+    let m1 = tech.layer_index("metal1").unwrap();
+    assert_eq!(ics_core::stream_map::export_pairs(tech)[m1], (31, 0));
+    shot(&mut h, "34_stream_map");
+}
+
+/// Dummy Fill: adds squares to the active layout, undoable.
+#[test]
+fn dummy_fill() {
+    let mut h = app(demo_args("inv_chain", "layout", false));
+    let before = shape_count(&h, "inv_chain");
+    h.state_mut().command(Command::DummyFill);
+    h.run_steps(2);
+    let bb = {
+        let p = h.state().project().unwrap();
+        let (_, c) = p.all_cells().find(|(_, c)| c.name == "inv_chain").unwrap();
+        let shapes = &c.layout.as_ref().unwrap().shapes;
+        let um = |v: i64| v as f64 / 1000.0;
+        let x0 = shapes.iter().map(|s| s.bbox().x0).min().unwrap();
+        let y0 = shapes.iter().map(|s| s.bbox().y0).min().unwrap();
+        let x1 = shapes.iter().map(|s| s.bbox().x1).max().unwrap();
+        [um(x0) - 20.0, um(y0) - 20.0, um(x1) + 20.0, um(y0)]
+    };
+    h.state_mut().fill_tool().region = Some(bb);
+    h.state_mut().command(Command::AddFill);
+    h.run_steps(3);
+    let after = shape_count(&h, "inv_chain");
+    assert!(after > before, "{:?}", h.state().console_lines().collect::<Vec<_>>());
+    assert!(h.state().console_lines().any(|l| l.starts_with("Dummy fill on")));
+    shot(&mut h, "35_dummy_fill");
+    h.state_mut().command(Command::Undo);
+    h.run_steps(2);
+    assert_eq!(shape_count(&h, "inv_chain"), before);
+}
+
 #[test]
 fn glyph_coverage() {
     let sources = [
@@ -398,6 +518,11 @@ fn glyph_coverage() {
         include_str!("../src/sim_view.rs"),
         include_str!("../src/rule_designer.rs"),
         include_str!("../src/ciw.rs"),
+        include_str!("../src/calc_view.rs"),
+        include_str!("../src/sweep_view.rs"),
+        include_str!("../src/stream_map_view.rs"),
+        include_str!("../src/fill_view.rs"),
+        include_str!("../../ics-core/src/sweep.rs"),
         include_str!("../src/theme.rs"),
         include_str!("../../ics-core/src/units.rs"),
         include_str!("../../ics-core/src/schematic.rs"),

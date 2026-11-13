@@ -7,6 +7,7 @@
 // Index-based loops read more naturally in the numerical kernels.
 #![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 
+pub mod calc;
 pub mod circuit;
 pub mod engine;
 pub mod linalg;
