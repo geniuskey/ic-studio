@@ -2,6 +2,49 @@
 
 use eframe::egui::{self, Pos2, Rect, Vec2};
 use ics_core::Trans;
+use serde::{Deserialize, Serialize};
+
+/// How the mouse drives the canvases (Settings > Interaction).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub enum Profile {
+    /// Cadence Virtuoso: wheel pans (Shift+wheel sideways), Ctrl+wheel zooms at the mouse,
+    /// right drag zooms into a box in the layout.
+    #[default]
+    Virtuoso,
+    /// Wheel zooms at the mouse, Shift+wheel pans sideways, right drag pans.
+    Conventional,
+}
+
+impl Profile {
+    pub const ALL: [Profile; 2] = [Profile::Virtuoso, Profile::Conventional];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Profile::Virtuoso => "Virtuoso",
+            Profile::Conventional => "Conventional",
+        }
+    }
+
+    pub fn describe(self) -> &'static str {
+        match self {
+            Profile::Virtuoso => "Wheel pans, Shift+wheel pans sideways, Ctrl+wheel zooms; right drag zooms into a box (layout)",
+            Profile::Conventional => "Wheel zooms, Shift+wheel pans sideways; right or middle drag pans",
+        }
+    }
+
+    fn id() -> egui::Id {
+        egui::Id::unique("interaction-profile")
+    }
+
+    /// The profile in effect (set by the app each frame).
+    pub fn get(ctx: &egui::Context) -> Profile {
+        ctx.data(|d| d.get_temp(Self::id())).unwrap_or_default()
+    }
+
+    pub fn set(self, ctx: &egui::Context) {
+        ctx.data_mut(|d| d.insert_temp(Self::id(), self));
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct View2D {
@@ -89,8 +132,10 @@ impl View2D {
         self.center = ((min.0 + max.0) / 2.0, (min.1 + max.1) / 2.0);
     }
 
-    /// Standard EDA-style navigation: wheel / pinch zoom, middle drag pans (and right drag, if
-    /// `right_pan`), shift+wheel / trackpad horizontal scroll pans. Returns true if the view changed.
+    /// Mouse navigation by the interaction [`Profile`]: middle drag pans (and right drag, if
+    /// `right_pan`); pinch and Ctrl+wheel zoom at the mouse; the wheel pans (Virtuoso) or zooms
+    /// (conventional); Shift+wheel and horizontal trackpad scrolling pan sideways. Returns true if
+    /// the view changed.
     pub fn handle_navigation(&mut self, ui: &egui::Ui, resp: &egui::Response, rect: Rect, right_pan: bool) -> bool {
         let mut changed = false;
         if resp.dragged_by(egui::PointerButton::Middle) || (right_pan && resp.dragged_by(egui::PointerButton::Secondary)) {
@@ -105,7 +150,8 @@ impl View2D {
                 self.zoom_at(rect, anchor, zoom as f64);
                 changed = true;
             }
-            if shift || scroll.x.abs() > scroll.y.abs() {
+            let wheel_pans = Profile::get(ui.ctx()) == Profile::Virtuoso || shift || scroll.x.abs() > scroll.y.abs();
+            if wheel_pans {
                 if scroll != Vec2::ZERO {
                     self.pan_pixels(scroll);
                     changed = true;

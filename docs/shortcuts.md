@@ -24,9 +24,17 @@ Canvas keys work while the mouse is over the canvas and no text field has focus.
 
 | Keys | Action |
 |---|---|
-| Wheel, pinch | Zoom at the cursor |
-| Middle drag | Pan (schematic: right drag too; layout: right drag zooms into the box) |
+| Wheel | Pan up / down (Conventional profile: zoom at the cursor) |
+| `Ctrl`+wheel, pinch | Zoom at the cursor |
 | `Shift`+wheel | Pan horizontally |
+| Middle drag | Pan |
+| Right drag | Layout: zoom into the box (Conventional profile: pan); schematic: pan |
+
+The mouse follows the **Interaction** profile in **Settings** (`Ctrl+,`). **Virtuoso**
+(the default) matches the Virtuoso defaults: the wheel pans, `Ctrl`+wheel zooms at the
+mouse and a right drag zooms into a box. **Conventional** zooms with the wheel and pans with
+a right drag. Bindkeys are the same in both.
+
 | `F` | Fit to window |
 | `Esc` | Cancel the current operation, then back to Select, then clear the selection |
 | `Del`, `Backspace` | Delete the selection |

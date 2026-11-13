@@ -242,6 +242,10 @@ pub struct LayoutEditor {
     part_ref: Option<(i64, i64)>,
     /// Start of a right-button drag (zoom to area).
     zoom_drag: Option<Pos2>,
+    /// Bindkeys go to this canvas: it was hovered or clicked last, not another part of the window.
+    kbd_focus: bool,
+    /// Screen areas of the open forms and the pop-up menu (last frame).
+    form_rects: Vec<Rect>,
     /// Actions from menus, run on the next frame.
     pub actions: Vec<LayAction>,
     pub show_props: bool,
@@ -303,6 +307,8 @@ impl Default for LayoutEditor {
             part: Partial::default(),
             part_ref: None,
             zoom_drag: None,
+            kbd_focus: false,
+            form_rects: vec![],
             actions: vec![],
             show_props: false,
             show_opts: false,
@@ -1266,7 +1272,7 @@ impl LayoutEditor {
 
     fn handle_keys(&mut self, ui: &egui::Ui, l: &mut Layout, cx: &mut LayCtx, rect: Rect) -> bool {
         let tech = cx.tech;
-        if ui.ctx().egui_wants_keyboard_input() {
+        if ui.ctx().text_edit_focused() {
             return false;
         }
         let mut changed = false;
@@ -1704,8 +1710,9 @@ impl LayoutEditor {
             }
             self.needs_fit = false;
         }
-        self.view.handle_navigation(ui, &resp, rect, false);
-        if resp.hovered() && self.handle_keys(ui, l, cx, rect) {
+        let virtuoso = crate::canvas::Profile::get(ui.ctx()) == crate::canvas::Profile::Virtuoso;
+        self.view.handle_navigation(ui, &resp, rect, !virtuoso);
+        if self.keyboard_focus(ui, &resp, rect) && self.handle_keys(ui, l, cx, rect) {
             out.changed = true;
             cx.touched();
         }
@@ -1720,7 +1727,7 @@ impl LayoutEditor {
             cx.touched();
         }
         // Virtuoso: dragging with the right button zooms into the box.
-        if resp.drag_started_by(egui::PointerButton::Secondary) {
+        if virtuoso && resp.drag_started_by(egui::PointerButton::Secondary) {
             self.zoom_drag = ui.input(|i| i.pointer.press_origin());
         }
         if resp.drag_stopped_by(egui::PointerButton::Secondary)
@@ -2370,7 +2377,7 @@ impl LayoutEditor {
             painter.text(
                 rect.center(),
                 Align2::CENTER_CENTER,
-                "Empty layout — choose a layer on the left, then press R and drag to draw a rectangle.\nP draws paths, L places labels, I places cells, K measures. Scroll to zoom, middle-drag pans, right-drag zooms into a box.",
+                "Empty layout — choose a layer on the left, then press R and drag to draw a rectangle.\nP draws paths, L places labels, I places cells, K measures. Ctrl+wheel zooms, the wheel and middle-drag pan, right-drag zooms into a box.",
                 FontId::proportional(14.0),
                 pal.text_weak,
             );

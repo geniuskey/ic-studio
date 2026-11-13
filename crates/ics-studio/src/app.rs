@@ -12,6 +12,7 @@ use ics_mcp::{ToolResult, tools};
 use ics_sim::SimOptions;
 use serde::{Deserialize, Serialize};
 
+use crate::canvas::Profile;
 use crate::canvas::View2D;
 use crate::home_view;
 use crate::icons::{self, Icon};
@@ -115,17 +116,26 @@ pub enum Command {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+#[serde(default)]
 struct Settings {
     dark: bool,
     recent: Vec<PathBuf>,
     ngspice_path: String,
     ui_scale: f32,
     reopen_last: bool,
+    interaction: Profile,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { dark: true, recent: vec![], ngspice_path: ics_sim::ngspice::default_exe(), ui_scale: 1.0, reopen_last: true }
+        Self {
+            dark: true,
+            recent: vec![],
+            ngspice_path: ics_sim::ngspice::default_exe(),
+            ui_scale: 1.0,
+            reopen_last: true,
+            interaction: Profile::Virtuoso,
+        }
     }
 }
 
@@ -254,11 +264,12 @@ const SHORTCUTS: &[ShortcutGroup] = &[
     (
         "Canvas",
         &[
-            ("Wheel / pinch", "Zoom at cursor"),
-            ("Middle drag (schematic: or right drag)", "Pan"),
-            ("Right drag (layout)", "Zoom into the box"),
-            ("Middle click (layout)", "Pop-up menu"),
+            ("Wheel", "Pan (Conventional profile: zoom)"),
+            ("Ctrl+wheel / pinch", "Zoom at the cursor"),
             ("Shift+wheel", "Pan horizontally"),
+            ("Middle drag", "Pan"),
+            ("Right drag", "Layout: zoom into the box (Conventional: pan); schematic: pan"),
+            ("Middle click (layout)", "Pop-up menu"),
             ("F", "Fit view"),
             ("Esc", "Cancel, back to Select, clear selection"),
             ("Del / Backspace", "Delete selection"),
@@ -1155,7 +1166,7 @@ impl IcStudio {
         fire(cmd, Key::Comma, Command::Settings, q);
         fire(Modifiers::NONE, Key::F1, Command::Shortcuts, q);
         fire(Modifiers::NONE, Key::F2, Command::Save, q);
-        if !ctx.egui_wants_keyboard_input() {
+        if !ctx.text_edit_focused() {
             fire(cs, Key::Z, Command::Redo, q);
             fire(cmd, Key::Z, Command::Undo, q);
             fire(cmd, Key::Y, Command::Redo, q);
@@ -2456,6 +2467,18 @@ impl IcStudio {
                             None => ui.colored_label(pal.text_weak, "not found — built-in engine will be used"),
                         };
                         ui.end_row();
+                        let il = ui.label("Interaction");
+                        egui::ComboBox::from_id_salt("interaction")
+                            .selected_text(self.settings.interaction.name())
+                            .show_ui(ui, |ui| {
+                                for p in Profile::ALL {
+                                    ui.selectable_value(&mut self.settings.interaction, p, p.name()).on_hover_text(p.describe());
+                                }
+                            })
+                            .response
+                            .labelled_by(il.id)
+                            .on_hover_text(self.settings.interaction.describe());
+                        ui.end_row();
                         ui.label("Startup");
                         ui.checkbox(&mut self.settings.reopen_last, "Reopen last project");
                         ui.end_row();
@@ -2717,6 +2740,11 @@ impl IcStudio {
         self.project.as_ref()
     }
 
+    /// Settings > Interaction.
+    pub fn set_interaction(&mut self, p: Profile) {
+        self.settings.interaction = p;
+    }
+
     pub fn active_ref(&self) -> Option<&CellRef> {
         self.active.as_ref()
     }
@@ -2827,6 +2855,7 @@ impl eframe::App for IcStudio {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.settings.interaction.set(&ctx);
         let pal = theme::palette(&ctx);
         egui::Panel::top("menubar")
             .frame(egui::Frame::new().fill(pal.bg_sidebar).inner_margin(egui::Margin::symmetric(8, 5)))

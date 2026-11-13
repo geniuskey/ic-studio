@@ -36,8 +36,8 @@ Try `rc_lowpass` (AC: the **f -3 dB** column shows the corner frequency) and `ot
 ## 2. Layout and hierarchy
 
 1. Press `Ctrl+4` with `cmos_inverter` open. This layout was drawn by hand.
-2. Open `inv_tiles` (Explorer, or `Ctrl+K` and type `inv_tiles`). Zoom with the wheel,
-   pan with the right mouse button, and press `F` to fit.
+2. Open `inv_tiles` (Explorer, or `Ctrl+K` and type `inv_tiles`). Zoom with `Ctrl`+wheel,
+   pan with the wheel or the middle mouse button, and press `F` to fit.
 3. Press `1`, `2` and `9` to change how many hierarchy levels are drawn.
 4. Double-click an instance to open the placed cell.
 

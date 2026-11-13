@@ -479,7 +479,7 @@ impl SchematicEditor {
     }
 
     fn handle_keys(&mut self, ui: &egui::Ui, sch: &mut Schematic) -> bool {
-        if ui.ctx().egui_wants_keyboard_input() {
+        if ui.ctx().text_edit_focused() {
             return false;
         }
         let mut changed = false;

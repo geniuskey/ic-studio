@@ -491,7 +491,7 @@ impl LayoutEditor {
             }
         }
         let mut picked = None;
-        egui::Popup::menu(resp)
+        let shown = egui::Popup::menu(resp)
             .id(egui::Id::unique("lay_popup"))
             .open_memory(open.then_some(egui::SetOpenCommand::Bool(true)))
             .at_pointer_fixed()
@@ -509,9 +509,39 @@ impl LayoutEditor {
                     }
                 }
             });
+        if let Some(r) = shown {
+            self.form_rects.push(r.response.rect);
+        }
         if let Some(a) = picked {
             self.actions.push(a);
         }
+    }
+
+    /// Whether bindkeys go to the canvas. Like Virtuoso's window focus, the canvas keeps them
+    /// while one of its forms is open on top of it, until another part of the window is clicked;
+    /// a focused widget in a form, or any text field, gets keys first.
+    pub(super) fn keyboard_focus(&mut self, ui: &egui::Ui, resp: &egui::Response, rect: Rect) -> bool {
+        let (press, hover) =
+            ui.input(|i| (i.pointer.any_pressed().then(|| i.pointer.press_origin()).flatten(), i.pointer.hover_pos()));
+        let on_form = |p: Pos2| self.form_rects.iter().any(|r| r.contains(p));
+        if let Some(p) = press
+            && !on_form(p)
+        {
+            self.kbd_focus = rect.contains(p);
+            if self.kbd_focus {
+                // Enter / Space must not re-trigger a form button clicked earlier.
+                ui.memory_mut(|m| {
+                    if let Some(id) = m.focused() {
+                        m.surrender_focus(id);
+                    }
+                });
+            }
+        }
+        if resp.hovered() {
+            self.kbd_focus = true;
+        }
+        let form_widget = hover.is_some_and(on_form) && ui.memory(|m| m.focused().is_some());
+        self.kbd_focus && !form_widget
     }
 
     /// What the left, middle and right mouse buttons do now (Virtuoso's mouse line).
@@ -568,6 +598,7 @@ impl LayoutEditor {
     /// (Shift+E) options. Returns true if the layout changed.
     pub(super) fn forms(&mut self, ctx: &egui::Context, rect: Rect, l: &mut Layout, cx: &mut LayCtx) -> bool {
         let mut changed = false;
+        let mut rects = vec![];
         // Command options open at the top left of the canvas, properties at the top right.
         let window = |title: &str, id: &str, at: Pos2| {
             egui::Window::new(egui::RichText::new(title).size(14.0).strong())
@@ -579,9 +610,9 @@ impl LayoutEditor {
         };
         if self.show_props {
             let mut open = true;
-            window("Edit Object Properties", "lay_form_props", rect.right_top() + Vec2::new(-300.0, 48.0)).open(&mut open).show(
-                ctx,
-                |ui| {
+            let shown = window("Edit Object Properties", "lay_form_props", rect.right_top() + Vec2::new(-300.0, 48.0))
+                .open(&mut open)
+                .show(ctx, |ui| {
                     egui::ScrollArea::vertical().max_height(480.0).show(ui, |ui| {
                         let (c, o) = self.inspector(ui, l, cx);
                         changed |= c;
@@ -589,27 +620,29 @@ impl LayoutEditor {
                             self.requests.push(LayRequest::Open(o));
                         }
                     });
-                },
-            );
+                });
+            rects.extend(shown.map(|r| r.response.rect));
             self.show_props = open;
         }
         if self.show_opts {
             let mut open = true;
             let title = format!("{} Options", self.tool.name());
-            window(&title, "lay_form_opts", rect.left_top() + Vec2::new(12.0, 48.0)).open(&mut open).show(ctx, |ui| {
-                if !self.tool_options(ui, cx) {
-                    ui.label(egui::RichText::new(format!("{} has no options of its own.", self.tool.name())).weak());
-                    self.snap_control(ui, cx.tech);
-                    ui.checkbox(&mut self.gravity, "Gravity");
-                }
-            });
+            let shown =
+                window(&title, "lay_form_opts", rect.left_top() + Vec2::new(12.0, 48.0)).open(&mut open).show(ctx, |ui| {
+                    if !self.tool_options(ui, cx) {
+                        ui.label(egui::RichText::new(format!("{} has no options of its own.", self.tool.name())).weak());
+                        self.snap_control(ui, cx.tech);
+                        ui.checkbox(&mut self.gravity, "Gravity");
+                    }
+                });
+            rects.extend(shown.map(|r| r.response.rect));
             self.show_opts = open;
         }
         if self.show_display {
             let mut open = true;
-            window("Display Options", "lay_form_display", rect.left_top() + Vec2::new(12.0, 240.0)).open(&mut open).show(
-                ctx,
-                |ui| {
+            let shown = window("Display Options", "lay_form_display", rect.left_top() + Vec2::new(12.0, 240.0))
+                .open(&mut open)
+                .show(ctx, |ui| {
                     theme::section(ui, "Grid");
                     ui.checkbox(&mut self.show_grid, "Show grid");
                     theme::section(ui, "Display Levels");
@@ -623,15 +656,15 @@ impl LayoutEditor {
                     if ui.button("Clear all rulers").clicked() {
                         self.rulers.clear();
                     }
-                },
-            );
+                });
+            rects.extend(shown.map(|r| r.response.rect));
             self.show_display = open;
         }
         if self.show_editor {
             let mut open = true;
-            window("Layout Editor Options", "lay_form_editor", rect.left_top() + Vec2::new(300.0, 240.0)).open(&mut open).show(
-                ctx,
-                |ui| {
+            let shown = window("Layout Editor Options", "lay_form_editor", rect.left_top() + Vec2::new(300.0, 240.0))
+                .open(&mut open)
+                .show(ctx, |ui| {
                     theme::section(ui, "Snapping");
                     self.snap_control(ui, cx.tech);
                     ui.checkbox(&mut self.gravity, "Gravity (snap to vertices and edges)");
@@ -645,10 +678,11 @@ impl LayoutEditor {
                         let w = ui.label("Default path width (nm)");
                         ui.add(egui::DragValue::new(&mut self.path_width).range(0..=100_000).speed(10)).labelled_by(w.id);
                     });
-                },
-            );
+                });
+            rects.extend(shown.map(|r| r.response.rect));
             self.show_editor = open;
         }
+        self.form_rects = rects;
         changed
     }
 }

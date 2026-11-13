@@ -143,12 +143,20 @@ The **Edit** section of the right panel (shown when something is selected) also 
 
 | Action | How |
 |---|---|
-| Zoom | Mouse wheel or pinch, `[` / `]` at the cursor, `Shift+Z` out |
+| Zoom | `Ctrl`+wheel or pinch, `[` / `]` at the cursor, `Shift+Z` out (Conventional profile: the wheel) |
 | Zoom box | Right drag, or `Z` (or **Zoom box**), then drag or click two corners |
 | Previous / next view | `W` / `Shift+W` (or **Prev view**) |
 | Fit | `F` |
-| Pan | Middle drag, `Shift`+wheel, or the arrow keys |
+| Pan | Wheel (up / down), `Shift`+wheel (sideways), middle drag, or the arrow keys |
 | Pop-up menu | Middle-click (or right-click when no command point is pending) |
+
+These are the **Virtuoso** interaction profile, the default. With **Conventional**
+(**Settings** > **Interaction**) the wheel zooms and a right drag pans.
+
+Bindkeys go to the canvas while the mouse is over it, and stay with it while one of its
+forms (`q`, `F3`, `e`, `Shift+E`) is open on top, until you click elsewhere in the window.
+A text field being typed in, or a focused control in a form under the mouse, gets the keys
+first.
 
 ## Layer operations
 

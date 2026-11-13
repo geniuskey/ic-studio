@@ -208,7 +208,7 @@ engineer would, and LVS still sees seven transistors."
 ### 5. Scale
 
 1. Open `inv_tiles` in the Layout workspace: 8,192 inverters.
-2. Zoom with the wheel, pan with the right mouse button, `F` to fit.
+2. Zoom with `Ctrl`+wheel, pan with the wheel or the middle mouse button, `F` to fit.
 3. Press `1`, `2` and `9` to change how many hierarchy levels are drawn, and double-click
    an instance to descend into it.
 

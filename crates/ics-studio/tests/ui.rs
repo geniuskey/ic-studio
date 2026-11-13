@@ -1009,10 +1009,10 @@ fn layout_virtuoso_stretch_and_forms() {
     // Option forms.
     key(&mut h, none, egui::Key::F);
     key(&mut h, egui::Modifiers::COMMAND, egui::Key::A);
-    // Keys reach the canvas while the pointer is over it, not over a form.
-    h.hover_at(pos(560.0, 690.0));
-    h.run_steps(2);
     key(&mut h, none, egui::Key::Q);
+    // The canvas keeps the bindkeys while the pointer is over a form opened on top of it.
+    h.hover_at(pos(1100.0, 300.0));
+    h.run_steps(2);
     key(&mut h, none, egui::Key::E);
     key(&mut h, egui::Modifiers::SHIFT, egui::Key::E);
     key(&mut h, none, egui::Key::P);
@@ -1044,4 +1044,49 @@ fn layout_virtuoso_stretch_and_forms() {
     }
     h.run_steps(3);
     shot(&mut h, "18_layout_virtuoso_popup");
+}
+
+fn wheel(h: &mut Harness<'_, IcStudio>, at: egui::Pos2, dy: f32, modifiers: egui::Modifiers) {
+    h.hover_at(at);
+    h.step();
+    h.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(0.0, dy),
+        phase: egui::TouchPhase::Move,
+        source: egui::MouseWheelSource::Unknown,
+        modifiers,
+    });
+    h.run_steps(3);
+}
+
+/// Interaction profiles: Virtuoso (default) pans with the wheel and zooms with Ctrl+wheel and a
+/// right drag; Conventional zooms with the wheel and pans with a right drag.
+#[test]
+fn layout_interaction_profiles() {
+    use ics_studio::canvas::Profile;
+    let args =
+        LaunchArgs { project: None, demo: true, workspace: Some("layout".into()), cell: Some("inv_chain".into()), run: false };
+    let mut h = app(args);
+    let r = h.state().active_ref().cloned().unwrap();
+    let view = |h: &Harness<'_, IcStudio>| h.state().layout_editor(&r).unwrap().view;
+    let at = egui::pos2(865.0, 440.0);
+
+    let v0 = view(&h);
+    wheel(&mut h, at, -60.0, egui::Modifiers::NONE);
+    let v1 = view(&h);
+    assert_eq!(v1.scale, v0.scale, "Virtuoso: the wheel does not zoom");
+    assert!(v1.center.1 != v0.center.1, "Virtuoso: the wheel pans");
+    wheel(&mut h, at, 60.0, egui::Modifiers::COMMAND);
+    assert!(view(&h).scale > v1.scale, "Virtuoso: Ctrl+wheel zooms");
+
+    h.state_mut().set_interaction(Profile::Conventional);
+    h.run_steps(2);
+    let v2 = view(&h);
+    wheel(&mut h, at, 60.0, egui::Modifiers::NONE);
+    assert!(view(&h).scale != v2.scale, "Conventional: the wheel zooms");
+    let v3 = view(&h);
+    drag(&mut h, egui::PointerButton::Secondary, egui::pos2(700.0, 400.0), egui::pos2(800.0, 450.0));
+    let v4 = view(&h);
+    assert_eq!(v4.scale, v3.scale, "Conventional: right drag pans");
+    assert!(v4.center != v3.center);
 }
