@@ -172,6 +172,10 @@ pub enum Command {
     InstallUpdate,
     /// Restart into the installed update.
     RestartToUpdate,
+    /// Register this executable (`--mcp`) as an MCP server of Claude Code.
+    AddMcpToClaudeCode,
+    /// Copy an MCP client configuration that starts this executable.
+    CopyMcpConfig,
     CommandPalette,
     /// A layout editor action (Virtuoso menus and bindkeys) on the active layout.
     Lay(LayAction),
@@ -967,6 +971,17 @@ impl IcStudio {
                     Err(e) => self.error(e),
                 }
             }
+            Command::AddMcpToClaudeCode => match update::add_to_claude_code() {
+                Ok(m) => self.ok(m),
+                Err(e) => self.error(format!("{e}. Use Copy MCP config and add it to your agent by hand.")),
+            },
+            Command::CopyMcpConfig => match update::mcp_config() {
+                Ok(c) => {
+                    ctx.copy_text(c);
+                    self.ok("Copied the MCP server configuration (command: this executable, args: --mcp)".into());
+                }
+                Err(e) => self.error(e),
+            },
             Command::CommandPalette => self.palette = Some(PaletteState { query: String::new(), sel: 0 }),
             Command::Quit => {
                 if !self.guard_unsaved(Command::Quit) {
@@ -2687,6 +2702,8 @@ impl IcStudio {
             ("Open user guide (web)".into(), "", Command::UserGuide),
             ("About IC Studio".into(), "", Command::About),
             ("Check for updates".into(), "", Command::CheckForUpdates),
+            ("Add IC Studio MCP server to Claude Code".into(), "", Command::AddMcpToClaudeCode),
+            ("Copy MCP server config".into(), "", Command::CopyMcpConfig),
         ];
         if self.workspace == Workspace::Layout && self.active.is_some() {
             for (menu, items) in LayAction::MENUS {
@@ -3066,6 +3083,27 @@ impl IcStudio {
                         if ui.button(format!("AI Models… ({})", self.settings.llm.describe())).clicked() {
                             self.ai_models.open = true;
                         }
+                        ui.end_row();
+                        ui.label("AI agents (MCP)").on_hover_text(
+                            "Let AI agents such as Claude Code drive IC Studio. They start this program with --mcp; \
+                             while this window is open they work on its project.",
+                        );
+                        ui.horizontal(|ui| {
+                            if ui
+                                .button("Add to Claude Code")
+                                .on_hover_text("Runs: claude mcp add --scope user ic-studio -- <this program> --mcp")
+                                .clicked()
+                            {
+                                self.queue.push(Command::AddMcpToClaudeCode);
+                            }
+                            if ui
+                                .button("Copy MCP config")
+                                .on_hover_text("JSON for other MCP clients (Cursor, Claude Desktop, ...)")
+                                .clicked()
+                            {
+                                self.queue.push(Command::CopyMcpConfig);
+                            }
+                        });
                         ui.end_row();
                     });
                     ui.add_space(8.0);

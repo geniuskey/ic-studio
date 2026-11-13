@@ -1,6 +1,8 @@
-//! IC Studio MCP tool layer, shared by the `ics-mcp` stdio server and the desktop app (live mode).
+//! IC Studio MCP tool layer and stdio server, shared by `ics-mcp`, `ic-studio --mcp` and the
+//! desktop app (live mode).
 
 pub mod bridge;
+pub mod server;
 pub mod tools;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};

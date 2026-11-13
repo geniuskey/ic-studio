@@ -25,7 +25,23 @@ schematics, checked against them (LVS) and their parasitics flow back into simul
 | **Monte Carlo with spec statistics, yield and histogram** | **Visual DRC rule designer with self-tested rules** |
 | ![Monte Carlo](docs/screenshots/tool_monte_carlo.png) | ![Rule designer](docs/screenshots/tool_rule_designer.png) |
 
-## Quick start
+## Install
+
+```powershell
+# Windows (PowerShell)
+irm https://github.com/geniuskey/ic-studio/releases/latest/download/install.ps1 | iex
+```
+
+```sh
+# macOS (Apple silicon) and Linux (x86_64)
+curl -fsSL https://github.com/geniuskey/ic-studio/releases/latest/download/install.sh | sh
+```
+
+The installer puts `ic-studio`, `ics` and `ics-mcp` on the `PATH`, adds a launcher and
+registers the MCP server with Claude Code if it is installed. Options, uninstall and
+manual downloads: [Installation](https://geniuskey.github.io/ic-studio/install.html).
+
+## Build from source
 
 ```sh
 # Rust 1.95+ (https://rustup.rs)
@@ -229,20 +245,25 @@ use `target/release/ics` when it exists (otherwise `cargo run --release -p ics-c
 
 ## MCP server (AI agents)
 
-`ics-mcp` exposes an IC Studio project to AI agents over the Model Context Protocol
-(stdio). Its 22 tools cover projects, netlisting and simulation, layout editing (rects,
+`ics-mcp` (or `ic-studio --mcp`) exposes an IC Studio project to AI agents over the Model
+Context Protocol (stdio). Its 22 tools cover projects, netlisting and simulation, layout editing (rects,
 paths, labels, instances, PCells, schematic-driven placement, flylines), DRC, extraction,
 LVS, parasitics and GDS import / export. Coordinates are in µm; edits stay in memory until
 `save_project`.
 
+The release installer registers it with Claude Code, as does **Add to Claude Code** in
+**File > Settings... > AI agents (MCP)** (**Copy MCP config** copies the JSON for other clients).
+By hand:
+
 ```sh
-cargo build --release -p ics-mcp
-claude mcp add ic-studio -- /path/to/ic-studio/target/release/ics-mcp
+claude mcp add --scope user ic-studio -- /path/to/ic-studio --mcp
+# from source: cargo build --release -p ics-mcp, then
+claude mcp add --scope user ic-studio -- /path/to/ic-studio/target/release/ics-mcp
 ```
 
 Then ask, for example: "create a demo project in ./demo and run LVS on cmos_inverter".
 
-**Live mode.** While the desktop app (`ic-studio`) is running, `ics-mcp` forwards every
+**Live mode.** While the desktop app (`ic-studio`) is running, the MCP server forwards every
 tool call to it (local TCP on 127.0.0.1 with a per-session token; discovery file
 `live.json` in `%LOCALAPPDATA%\ic-studio` or `~/.local/state/ic-studio`). The agent then
 works on the project open in the window: edits appear immediately and can be undone,
@@ -250,7 +271,8 @@ DRC / LVS / simulation results open in their panels, and the status bar shows
 "MCP live". Without a running app, or with `ICS_MCP_STANDALONE=1`, the server works on its
 own in-memory project.
 
-Binaries: `ic-studio` (desktop app), `ics` (CLI), `ics-mcp` (MCP server).
+Binaries: `ic-studio` (desktop app; `--mcp` runs the MCP server), `ics` (CLI), `ics-mcp`
+(MCP server).
 
 ## Architecture
 

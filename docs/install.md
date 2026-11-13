@@ -1,8 +1,68 @@
 # Installation
 
-IC Studio is built from source with the Rust toolchain.
+Install a release build with one command, or build IC Studio from source with the Rust
+toolchain.
 
-## Requirements
+## Install a release
+
+Windows (PowerShell):
+
+```powershell
+irm https://github.com/geniuskey/ic-studio/releases/latest/download/install.ps1 | iex
+```
+
+macOS (Apple silicon) and Linux (x86_64):
+
+```sh
+curl -fsSL https://github.com/geniuskey/ic-studio/releases/latest/download/install.sh | sh
+```
+
+The installer downloads the latest release and installs the desktop app `ic-studio`, the
+CLI `ics` and the MCP server `ics-mcp` into one folder:
+
+| | Windows | macOS / Linux |
+|---|---|---|
+| Folder | `%LOCALAPPDATA%\Programs\IC Studio` | `~/.local/share/ic-studio` |
+| On the PATH | folder added to the user `PATH` | links in `~/.local/bin` |
+| Launcher | Start Menu shortcut **IC Studio** | `~/.local/share/applications/ic-studio.desktop` (Linux) |
+
+If `claude` is on the `PATH`, the installer also registers the MCP server with Claude Code
+(`claude mcp add --scope user ic-studio -- <folder>/ic-studio --mcp`); otherwise it prints
+that command and the JSON config for other clients (see [MCP server](mcp.md)). On macOS it
+removes the download quarantine attribute. If `~/.local/bin` is not on the `PATH`, it
+prints the line to add to your shell profile. On Windows, open a new terminal to pick up
+the `PATH` change. Run the installer again to update; the app's own updater also replaces
+`ics` and `ics-mcp` when they are in the same folder.
+
+Options are environment variables:
+
+| Variable | Effect |
+|---|---|
+| `ICS_VERSION` | Install this release tag, e.g. `v0.2.0` (default: latest) |
+| `ICS_INSTALL_DIR` | Install into this folder |
+| `ICS_UNINSTALL=1` | Remove the folder, the `PATH` entry or links, the launcher and the MCP registration |
+
+```powershell
+$env:ICS_VERSION="v0.2.0"; irm https://github.com/geniuskey/ic-studio/releases/latest/download/install.ps1 | iex
+```
+
+```sh
+curl -fsSL https://github.com/geniuskey/ic-studio/releases/latest/download/install.sh | ICS_UNINSTALL=1 sh
+```
+
+Release builds exist for Windows x86_64, Linux x86_64 and macOS on Apple silicon. On an
+Intel Mac, build from source.
+
+**Manual download.** Each [release](https://github.com/geniuskey/ic-studio/releases) has
+the archive `ic-studio-<platform>.zip` (Windows) or `.tar.gz` with all three binaries, and
+each binary on its own (`ic-studio-<platform>`, `ics-<platform>`, `ics-mcp-<platform>`),
+where `<platform>` is `windows-x86_64`, `linux-x86_64` or `macos-aarch64`. The single
+`ic-studio` binary is enough for the app and the MCP server (`ic-studio --mcp`); the
+archive adds the `ics` CLI.
+
+## Build from source
+
+### Requirements
 
 - **Rust 1.95 or newer** from [rustup.rs](https://rustup.rs).
 - **Windows**: the MSVC toolchain (`x86_64-pc-windows-msvc`), which needs the Visual
@@ -12,7 +72,7 @@ IC Studio is built from source with the Rust toolchain.
 - **macOS**: the Xcode command line tools.
 - A GPU driver supported by `wgpu` (DX12 on Windows, Vulkan on Linux, Metal on macOS).
 
-## Build and run
+### Build and run
 
 ```sh
 git clone https://github.com/geniuskey/ic-studio
@@ -32,6 +92,7 @@ cargo build --release --workspace
 
 ```text
 ic-studio [PROJECT_DIR] [--demo] [--cell NAME] [--workspace home|schematic|simulation|layout] [--run]
+ic-studio --mcp
 ```
 
 | Option | Effect |
@@ -41,6 +102,7 @@ ic-studio [PROJECT_DIR] [--demo] [--cell NAME] [--workspace home|schematic|simul
 | `--cell NAME`, `-c NAME` | Open the cell with this name |
 | `--workspace W`, `-w W` | Start in this workspace |
 | `--run` | Run the cell's simulation on startup |
+| `--mcp` | Run the MCP server on stdio instead of the window (same as `ics-mcp`, see [MCP server](mcp.md)) |
 
 Example: `cargo run --release -- --demo --cell inv_tiles --workspace layout`.
 

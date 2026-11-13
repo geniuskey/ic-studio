@@ -1,5 +1,6 @@
-//! `ics-mcp` — Model Context Protocol server (stdio, newline-delimited JSON-RPC 2.0) exposing an
-//! IC Studio project to AI agents. stdout carries protocol messages only; logs go to stderr.
+//! Model Context Protocol server (stdio, newline-delimited JSON-RPC 2.0) exposing an IC Studio
+//! project to AI agents, run by `ics-mcp` and `ic-studio --mcp`. stdout carries protocol
+//! messages only; logs go to stderr.
 //!
 //! Live mode: while the IC Studio app runs, every tool call is forwarded to it (see
 //! `ics_mcp::bridge`), so the agent works on the project open in the window. Without a running
@@ -7,8 +8,8 @@
 
 use std::io::{BufRead, Write};
 
-use ics_mcp::bridge::Client;
-use ics_mcp::{ToolResult, call_tool, has_tool, tools};
+use crate::bridge::Client;
+use crate::{ToolResult, call_tool, has_tool, tools};
 use serde_json::{Map, Value, json};
 
 const PROTOCOL_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -124,8 +125,9 @@ impl Rpc {
     }
 }
 
-fn main() {
-    eprintln!("ics-mcp {} ready on stdio", env!("CARGO_PKG_VERSION"));
+/// Serve MCP requests on stdin / stdout until stdin closes.
+pub fn serve_stdio() {
+    eprintln!("ic-studio MCP server {} ready on stdio", env!("CARGO_PKG_VERSION"));
     let mut server = Rpc::default();
     let mut out = std::io::stdout().lock();
     for line in std::io::stdin().lock().lines() {

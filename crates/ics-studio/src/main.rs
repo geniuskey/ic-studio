@@ -5,6 +5,10 @@
 use std::sync::{Arc, OnceLock};
 
 fn main() -> eframe::Result {
+    if std::env::args().nth(1).as_deref() == Some("--mcp") {
+        ics_mcp::server::serve_stdio();
+        return Ok(());
+    }
     let args = ics_studio::parse_args();
     ics_studio::update::cleanup();
     let options = eframe::NativeOptions {

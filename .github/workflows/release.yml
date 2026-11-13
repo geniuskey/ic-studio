@@ -43,8 +43,10 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist pkg
-          for b in ic-studio ics ics-mcp; do cp "target/release/$b${{ matrix.ext }}" pkg/; done
-          cp "target/release/ic-studio${{ matrix.ext }}" "dist/ic-studio-${{ matrix.platform }}${{ matrix.ext }}"
+          for b in ic-studio ics ics-mcp; do
+            cp "target/release/$b${{ matrix.ext }}" pkg/
+            cp "target/release/$b${{ matrix.ext }}" "dist/$b-${{ matrix.platform }}${{ matrix.ext }}"
+          done
           if [ "${{ runner.os }}" = "Windows" ]; then
             7z a "dist/ic-studio-${{ matrix.platform }}.zip" ./pkg/*
           else
@@ -59,10 +61,13 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
+      - name: Add the installers
+        run: cp scripts/install.ps1 scripts/install.sh dist/
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*

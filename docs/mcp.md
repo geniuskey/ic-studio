@@ -1,20 +1,35 @@
 # MCP server for AI agents
 
-`ics-mcp` exposes IC Studio to AI agents through the Model Context Protocol (stdio). An
-agent can create and open projects, read netlists, simulate, edit layouts, generate and
-route layout from a schematic, and run DRC, extraction and LVS.
+`ics-mcp`, or the desktop app started as `ic-studio --mcp`, exposes IC Studio to AI agents
+through the Model Context Protocol (stdio). An agent can create and open projects, read
+netlists, simulate, edit layouts, generate and route layout from a schematic, and run DRC,
+extraction and LVS.
 
 ## Setup
 
+The [release installer](install.md#install-a-release) registers the server with Claude
+Code when `claude` is on the `PATH`. In the app, **File > Settings... > AI agents (MCP)**
+has **Add to Claude Code**, which does the same, and **Copy MCP config**, which copies the JSON
+below for other clients.
+
+To register it by hand:
+
 ```sh
-cargo build --release -p ics-mcp
-claude mcp add ic-studio -- /path/to/ic-studio/target/release/ics-mcp
+claude mcp add --scope user ic-studio -- /path/to/ic-studio --mcp
 ```
 
-For other MCP clients, add a stdio server whose command is the `ics-mcp` binary, e.g.:
+For other MCP clients, add a stdio server whose command is the `ic-studio` binary with the
+argument `--mcp`:
 
 ```json
-{ "mcpServers": { "ic-studio": { "command": "/path/to/ic-studio/target/release/ics-mcp" } } }
+{ "mcpServers": { "ic-studio": { "command": "/path/to/ic-studio", "args": ["--mcp"] } } }
+```
+
+From source, the standalone `ics-mcp` binary works the same way without arguments:
+
+```sh
+cargo build --release -p ics-mcp
+claude mcp add --scope user ic-studio -- /path/to/ic-studio/target/release/ics-mcp
 ```
 
 Then ask, for example: "create a demo project in ./demo and run LVS on cmos_inverter".
@@ -83,7 +98,8 @@ cell is open.
 
 ## Live mode
 
-While the desktop app is running, `ics-mcp` forwards every tool call to it, and the agent
+While the desktop app is running, the MCP server (`ic-studio --mcp` or `ics-mcp`) forwards
+every tool call to it, and the agent
 works on the project open in the window:
 
 - edits appear immediately and layout edits can be undone with `Ctrl+Z`,

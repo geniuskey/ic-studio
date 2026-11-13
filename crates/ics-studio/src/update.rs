@@ -1,5 +1,6 @@
 //! Self-update from GitHub Releases: check the latest release, download this platform's
-//! binary next to the running one, swap it in and restart.
+//! binary next to the running one, swap it in and restart. The `ics` CLI and `ics-mcp`
+//! binaries are updated too when they sit next to the app (as the installers put them).
 
 use serde::Deserialize;
 use std::io::{Read, Write};
@@ -11,14 +12,21 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 pub const REPO: &str = "geniuskey/ic-studio";
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 
-/// Name of the raw `ic-studio` binary attached to each release for this platform.
-pub fn asset_name() -> Option<&'static str> {
+/// Command-line binaries released and updated alongside the app.
+const TOOLS: [&str; 2] = ["ics", "ics-mcp"];
+
+fn platform() -> Option<&'static str> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("windows", "x86_64") => Some("ic-studio-windows-x86_64.exe"),
-        ("linux", "x86_64") => Some("ic-studio-linux-x86_64"),
-        ("macos", "aarch64") => Some("ic-studio-macos-aarch64"),
+        ("windows", "x86_64") => Some("windows-x86_64"),
+        ("linux", "x86_64") => Some("linux-x86_64"),
+        ("macos", "aarch64") => Some("macos-aarch64"),
         _ => None,
     }
+}
+
+/// Name of the raw binary `bin` attached to each release for this platform.
+fn asset_name(bin: &str) -> Option<String> {
+    platform().map(|p| format!("{bin}-{p}{}", std::env::consts::EXE_SUFFIX))
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -45,6 +53,15 @@ pub struct Release {
     pub notes: String,
     pub url: Option<String>,
     pub size: u64,
+    /// `(binary, url, size)` of the command-line tools.
+    pub tools: Vec<(String, String, u64)>,
+}
+
+/// One file to download and swap in.
+struct Job {
+    url: String,
+    size: u64,
+    target: PathBuf,
 }
 
 fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
@@ -77,30 +94,67 @@ fn fetch_latest() -> Result<Release, String> {
         s => return Err(format!("GitHub returned HTTP {s}")),
     }
     let r: GhRelease = res.body_mut().read_json().map_err(|e| format!("bad response: {e}"))?;
-    let asset = asset_name().and_then(|n| r.assets.iter().find(|a| a.name == n));
+    let find = |bin: &str| asset_name(bin).and_then(|n| r.assets.iter().find(|a| a.name == n));
+    let asset = find("ic-studio");
+    let tools = TOOLS.iter().filter_map(|t| find(t).map(|a| (t.to_string(), a.browser_download_url.clone(), a.size))).collect();
     Ok(Release {
         version: r.tag_name.trim_start_matches('v').to_string(),
         page: r.html_url,
         notes: r.body.unwrap_or_default(),
         url: asset.map(|a| a.browser_download_url.clone()),
         size: asset.map_or(0, |a| a.size),
+        tools,
     })
 }
 
-/// Downloads to `<exe>.new`, then replaces the running executable. On Windows the running
-/// file cannot be overwritten but can be renamed, so it is moved aside to `<exe>.old`
-/// (removed on the next start by [`cleanup`]).
-fn download_and_install(url: &str, size: u64, done: &AtomicU64) -> Result<PathBuf, String> {
+fn current_exe() -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| format!("cannot locate the executable: {e}"))?;
-    let exe = exe.canonicalize().unwrap_or(exe);
-    let new = with_suffix(&exe, "new");
+    Ok(exe.canonicalize().unwrap_or(exe))
+}
+
+/// The app binary, then every tool that is installed next to it.
+fn jobs(r: &Release) -> Result<Vec<Job>, String> {
+    let exe = current_exe()?;
+    let url = r.url.clone().ok_or("no download for this platform")?;
+    let mut v = vec![Job { url, size: r.size, target: exe.clone() }];
+    for (bin, url, size) in &r.tools {
+        let target = exe.with_file_name(format!("{bin}{}", std::env::consts::EXE_SUFFIX));
+        if target.exists() {
+            v.push(Job { url: url.clone(), size: *size, target });
+        }
+    }
+    Ok(v)
+}
+
+/// Downloads every job first, then swaps them all in, so a failed download changes nothing.
+fn download_all(jobs: &[Job], done: &AtomicU64) -> Result<PathBuf, String> {
+    let mut base = 0;
+    for j in jobs {
+        if let Err(e) = download(&j.url, j.size, &with_suffix(&j.target, "new"), base, done) {
+            for j in jobs {
+                let _ = std::fs::remove_file(with_suffix(&j.target, "new"));
+            }
+            return Err(e);
+        }
+        base += j.size;
+    }
+    for j in jobs {
+        install(&j.target, &with_suffix(&j.target, "new"))?;
+    }
+    current_exe()
+}
+
+/// Downloads `url` to `new`, adding the bytes read to `base` in `done`. [`install`] then
+/// swaps it in: on Windows a running file cannot be overwritten but can be renamed, so it
+/// is moved aside to `<exe>.old` (removed on the next start by [`cleanup`]).
+fn download(url: &str, size: u64, new: &Path, base: u64, done: &AtomicU64) -> Result<(), String> {
     let res = ureq::get(url)
         .header("User-Agent", concat!("ic-studio/", env!("CARGO_PKG_VERSION")))
         .call()
         .map_err(|e| format!("download failed: {e}"))?;
     let mut body = res.into_body();
     let mut reader = body.with_config().limit(1 << 31).reader();
-    let mut file = std::fs::File::create(&new).map_err(|e| format!("cannot write {}: {e}", new.display()))?;
+    let mut file = std::fs::File::create(new).map_err(|e| format!("cannot write {}: {e}", new.display()))?;
     let mut buf = vec![0u8; 1 << 16];
     let mut total = 0u64;
     loop {
@@ -110,16 +164,14 @@ fn download_and_install(url: &str, size: u64, done: &AtomicU64) -> Result<PathBu
         }
         file.write_all(&buf[..n]).map_err(|e| format!("write failed: {e}"))?;
         total += n as u64;
-        done.store(total, Ordering::Relaxed);
+        done.store(base + total, Ordering::Relaxed);
     }
     file.sync_all().map_err(|e| format!("write failed: {e}"))?;
     drop(file);
     if size > 0 && total != size {
-        let _ = std::fs::remove_file(&new);
         return Err(format!("incomplete download ({total} of {size} bytes)"));
     }
-    install(&exe, &new)?;
-    Ok(exe)
+    Ok(())
 }
 
 fn with_suffix(exe: &Path, suffix: &str) -> PathBuf {
@@ -149,9 +201,12 @@ fn install(exe: &Path, new: &Path) -> Result<(), String> {
 
 /// Removes leftovers of a previous update.
 pub fn cleanup() {
-    if let Ok(exe) = std::env::current_exe() {
-        let _ = std::fs::remove_file(with_suffix(&exe, "old"));
-        let _ = std::fs::remove_file(with_suffix(&exe, "new"));
+    if let Ok(exe) = current_exe() {
+        let tools = TOOLS.iter().map(|t| exe.with_file_name(format!("{t}{}", std::env::consts::EXE_SUFFIX)));
+        for f in std::iter::once(exe.clone()).chain(tools) {
+            let _ = std::fs::remove_file(with_suffix(&f, "old"));
+            let _ = std::fs::remove_file(with_suffix(&f, "new"));
+        }
     }
 }
 
@@ -164,12 +219,65 @@ pub fn relaunch(exe: &Path) -> Result<(), String> {
         .map_err(|e| format!("cannot restart: {e}"))
 }
 
+/// The running executable as a plain path (no `\\?\` prefix), for other programs to start.
+pub fn exe_path() -> Result<String, String> {
+    let exe = current_exe()?.display().to_string();
+    Ok(exe.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(exe))
+}
+
+/// MCP client configuration that starts this executable as the MCP server.
+pub fn mcp_config() -> Result<String, String> {
+    let cfg = serde_json::json!({"mcpServers": {"ic-studio": {"command": exe_path()?, "args": ["--mcp"]}}});
+    Ok(serde_json::to_string_pretty(&cfg).unwrap_or_default())
+}
+
+fn claude(args: &[&str]) -> std::io::Result<std::process::Output> {
+    let mut cmd = std::process::Command::new("claude");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        // npm installs `claude.cmd`, which only a shell finds.
+        if which("claude.exe").is_none() {
+            cmd = std::process::Command::new("cmd");
+            cmd.creation_flags(CREATE_NO_WINDOW).arg("/C").arg("claude");
+        }
+    }
+    cmd.args(args).stdin(std::process::Stdio::null()).output()
+}
+
+#[cfg(windows)]
+fn which(name: &str) -> Option<PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH")?).map(|d| d.join(name)).find(|p| p.is_file())
+}
+
+/// Register this executable as the `ic-studio` MCP server of Claude Code (user scope),
+/// replacing an earlier registration.
+pub fn add_to_claude_code() -> Result<String, String> {
+    let exe = exe_path()?;
+    let _ = claude(&["mcp", "remove", "--scope", "user", "ic-studio"]);
+    let out = claude(&["mcp", "add", "--scope", "user", "ic-studio", "--", &exe, "--mcp"])
+        .map_err(|e| format!("Claude Code (claude) not found: {e}"))?;
+    if out.status.success() {
+        Ok(format!("Added the ic-studio MCP server to Claude Code ({exe} --mcp). Restart Claude Code sessions to use it."))
+    } else {
+        let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let msg = if msg.is_empty() { String::from_utf8_lossy(&out.stdout).trim().to_string() } else { msg };
+        Err(if msg.is_empty() {
+            "Claude Code (claude) not found on the PATH".into()
+        } else {
+            format!("claude mcp add failed: {msg}")
+        })
+    }
+}
+
 pub enum State {
     Idle,
     Checking(Receiver<Result<Release, String>>),
     UpToDate,
     Available(Release),
-    Downloading { release: Release, done: Arc<AtomicU64>, rx: Receiver<Result<PathBuf, String>> },
+    Downloading { release: Release, total: u64, done: Arc<AtomicU64>, rx: Receiver<Result<PathBuf, String>> },
     Installed { release: Release, exe: PathBuf },
     Failed(String),
 }
@@ -214,25 +322,29 @@ impl Updater {
 
     pub fn download(&mut self, ctx: &egui::Context) {
         let State::Available(release) = &self.state else { return };
-        let Some(url) = release.url.clone() else { return };
         let release = release.clone();
-        let size = release.size;
+        let jobs = match jobs(&release) {
+            Ok(j) => j,
+            Err(e) => {
+                self.state = State::Failed(e);
+                return;
+            }
+        };
+        let total = if jobs.iter().all(|j| j.size > 0) { jobs.iter().map(|j| j.size).sum() } else { 0 };
         let done = Arc::new(AtomicU64::new(0));
         let (tx, rx) = mpsc::channel();
         let (d, ctx) = (done.clone(), ctx.clone());
         std::thread::spawn(move || {
-            let _ = tx.send(download_and_install(&url, size, &d));
+            let _ = tx.send(download_all(&jobs, &d));
             ctx.request_repaint();
         });
-        self.state = State::Downloading { release, done, rx };
+        self.state = State::Downloading { release, total, done, rx };
     }
 
     /// Download progress in [0, 1], when known.
     pub fn progress(&self) -> Option<f32> {
         match &self.state {
-            State::Downloading { release, done, .. } if release.size > 0 => {
-                Some(done.load(Ordering::Relaxed) as f32 / release.size as f32)
-            }
+            State::Downloading { total, done, .. } if *total > 0 => Some(done.load(Ordering::Relaxed) as f32 / *total as f32),
             _ => None,
         }
     }
