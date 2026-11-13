@@ -18,7 +18,7 @@ const MAX_LISTED: usize = 500;
 
 /// Read-only tools that can take long on large designs. Live mode runs them on a worker
 /// thread against a [`snapshot`] so the window stays responsive.
-pub const BACKGROUND: [&str; 11] = [
+pub const BACKGROUND: [&str; 13] = [
     "get_netlist",
     "simulate",
     "run_spice",
@@ -30,6 +30,8 @@ pub const BACKGROUND: [&str; 11] = [
     "run_signoff",
     "post_layout_parasitics",
     "export_gds",
+    "export_lef",
+    "export_def",
 ];
 
 /// Verification results behind a live-mode run_drc / extract / run_lvs call, for the app to show.
@@ -653,6 +655,49 @@ pub fn definitions() -> Vec<Value> {
             &["path"],
         ),
         tool(
+            "export_lef",
+            "Write the LEF abstract of a cell with a technology header (units, routing and cut layers, default vias): MACRO with CLASS, ORIGIN, SIZE (boundary layer, else the cell extent), a PIN per labelled net (DIRECTION from the devices it drives or is driven by, USE POWER / GROUND for supply names, PORT shapes on the routing layers) and OBS for the other metal.",
+            json!({
+                "cell": cell(),
+                "path": {"type": "string", "description": "Output .lef file path."},
+                "obs": {"type": "string", "enum": ["detailed", "block", "none"], "description": "Obstructions: merged shapes (default), per-layer blocks around the pins, or none."},
+                "class": {"type": "string", "description": "Macro CLASS (default BLOCK)."},
+            }),
+            &["cell", "path"],
+        ),
+        tool(
+            "import_lef",
+            &format!(
+                "Import the macros of a LEF file as layout cells of a new library: the SIZE box on the boundary layer, pin ports with a label of the pin name, and obstructions (layers matched by name; M1 / met1 / metal1 are the same). {NOT_SAVED}"
+            ),
+            json!({
+                "path": {"type": "string", "description": "LEF file to read."},
+                "lib": {"type": "string", "description": "Library name (defaults to the file name; made unique)."},
+            }),
+            &["path"],
+        ),
+        tool(
+            "export_def",
+            "Write a top cell as DEF: DIEAREA from its box, COMPONENTS from its instances (array elements expanded), PINS from its top-level labels and NETS from the extracted connectivity between the placed cells' pins. Optionally also writes the LEF abstracts of the placed cells.",
+            json!({
+                "cell": cell(),
+                "path": {"type": "string", "description": "Output .def file path."},
+                "lef_path": {"type": "string", "description": "Also write the LEF of the placed cells to this file."},
+            }),
+            &["cell", "path"],
+        ),
+        tool(
+            "import_def",
+            &format!(
+                "Import a DEF file as a new top cell placing the project cells named by its components' macros (import their LEF first), with its pins as labelled shapes and its die area on the boundary layer. {NOT_SAVED}"
+            ),
+            json!({
+                "path": {"type": "string", "description": "DEF file to read."},
+                "lib": {"type": "string", "description": "Library of the new cell, searched first for macros (default work)."},
+            }),
+            &["path"],
+        ),
+        tool(
             "run_skill",
             &format!(
                 "Run Cadence SKILL (.il) code on the project, e.g. dbOpenCellViewByType / dbCreateRect / dbCreateInst (coordinates in µm). Give 'code' or 'file'. Returns what the script printed, the value of its last form and the cells whose layout it created or changed (lib/cell). On an error the edits made before it are kept. {NOT_SAVED}"
@@ -731,6 +776,10 @@ impl State {
             "post_layout_parasitics" => self.post_layout_parasitics(a),
             "export_gds" => self.export_gds(a),
             "import_gds" => self.import_gds(a),
+            "export_lef" => self.export_lef(a),
+            "import_lef" => self.import_lef(a),
+            "export_def" => self.export_def(a),
+            "import_def" => self.import_def(a),
             "run_skill" => self.run_skill(a),
             "gui_status" => Ok(self.gui_status()),
             _ => return None,
@@ -1648,6 +1697,89 @@ impl State {
             "top_cells": tops.iter().map(|t| t.to_string()).collect::<Vec<_>>(),
             "skipped_unknown_layer_shapes": skipped,
             "warnings": warnings,
+        }))
+    }
+
+    fn export_lef(&self, a: &Args) -> Result<Value, String> {
+        let (p, r) = self.cell_arg(a)?;
+        let path = PathBuf::from(a.str("path")?);
+        let mut opts = ics_core::lefdef::AbstractOptions::default();
+        if let Some(o) = a.opt_str("obs")? {
+            opts.obs = o.parse()?;
+        }
+        if let Some(c) = a.opt_str("class")? {
+            opts.class = c.to_string();
+        }
+        let (m, warnings) = ics_core::lefdef::generate_abstract(&r.cell, layout_of(p, &r)?, p, &p.tech, &opts);
+        let text = ics_core::lefdef::write_lef(&p.tech, std::slice::from_ref(&m), true);
+        std::fs::write(&path, &text).map_err(|e| format!("{}: {e}", path.display()))?;
+        let pins: Vec<Value> = m
+            .pins
+            .iter()
+            .map(|p| json!({"name": p.name, "direction": p.direction, "use": p.usage, "shapes": p.ports.len()}))
+            .collect();
+        Ok(json!({
+            "path": path.display().to_string(),
+            "size_um": pt_um(&p.tech, m.size),
+            "pins": pins,
+            "obs_shapes": m.obs.len(),
+            "warnings": warnings,
+        }))
+    }
+
+    fn import_lef(&mut self, a: &Args) -> Result<Value, String> {
+        let path = PathBuf::from(a.str("path")?);
+        let hint = match a.opt_str("lib")? {
+            Some(l) => l.to_string(),
+            None => path.file_stem().map_or("lef".into(), |s| s.to_string_lossy().to_string()),
+        };
+        let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let imp = ics_core::lefdef::import_lef(self.project_mut()?, &text, &hint)?;
+        self.dirty = true;
+        Ok(json!({
+            "library": imp.lib,
+            "cells": imp.cells.iter().map(|c| c.to_string()).collect::<Vec<_>>(),
+            "warnings": imp.warnings,
+        }))
+    }
+
+    fn export_def(&self, a: &Args) -> Result<Value, String> {
+        let (p, r) = self.cell_arg(a)?;
+        let path = PathBuf::from(a.str("path")?);
+        let (text, d, mut warnings) = ics_core::lefdef::export_def(p, &r)?;
+        std::fs::write(&path, &text).map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut out = json!({
+            "path": path.display().to_string(),
+            "components": d.components.len(),
+            "pins": d.pins.iter().map(|p| p.name.clone()).collect::<Vec<_>>(),
+            "nets": d.nets.len(),
+        });
+        if let Some(lp) = a.opt_str("lef_path")? {
+            let macros = ics_core::lefdef::def_macros(p, &r);
+            let (lef, w) = ics_core::lefdef::export_lef(p, &macros, &Default::default())?;
+            std::fs::write(lp, lef).map_err(|e| format!("{lp}: {e}"))?;
+            warnings.extend(w);
+            out["lef_path"] = json!(lp);
+            out["macros"] = json!(macros.iter().map(|c| c.to_string()).collect::<Vec<_>>());
+        }
+        out["warnings"] = json!(warnings);
+        Ok(out)
+    }
+
+    fn import_def(&mut self, a: &Args) -> Result<Value, String> {
+        let path = PathBuf::from(a.str("path")?);
+        let lib = a.opt_str("lib")?.map(str::to_string);
+        let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let imp = ics_core::lefdef::import_def(self.project_mut()?, &text, lib.as_deref())?;
+        self.dirty = true;
+        Ok(json!({
+            "cell": imp.cell.to_string(),
+            "placed": imp.placed,
+            "unplaced": imp.unplaced,
+            "missing_macros": imp.missing,
+            "pins": imp.pins,
+            "nets": imp.nets,
+            "warnings": imp.warnings,
         }))
     }
 

@@ -136,6 +136,11 @@ pub enum Command {
     RouteFlylines,
     /// Import a GDSII or OASIS file (detected from its contents); `None` asks for the file.
     ImportGds(Option<PathBuf>),
+    /// Export the active cell's LEF abstract (`false`) or DEF placement (`true`).
+    ExportLefDef(bool),
+    /// Import a LEF file's macros as a new library (`false`) or a DEF file as a new top cell
+    /// (`true`); `None` asks for the file.
+    ImportLefDef(bool, Option<PathBuf>),
     ImportTech,
     /// Show the CIW (SKILL command interpreter) tab and focus its prompt.
     Ciw,
@@ -269,7 +274,7 @@ type McpArgs = serde_json::Map<String, serde_json::Value>;
 type McpSnapshot = (Project, McpArgs, Option<CellRef>);
 
 /// MCP tools that change layouts or the project; their edits invalidate editor state.
-const MCP_EDITS: [&str; 11] = [
+const MCP_EDITS: [&str; 13] = [
     "add_rect",
     "load_pdk",
     "add_path",
@@ -279,6 +284,8 @@ const MCP_EDITS: [&str; 11] = [
     "delete_items",
     "generate_layout",
     "import_gds",
+    "import_lef",
+    "import_def",
     "open_project",
     "new_project",
 ];
@@ -310,7 +317,8 @@ fn mcp_summary(tool: &str, res: &ToolResult) -> String {
         "write_schematic" => format!("{} device(s), {} net(s)", n("devices"), len("nets")),
         "add_rect" | "add_path" | "add_label" | "place_instance" | "place_pcell" => format!("id {}", v["id"]),
         "open_project" | "new_project" | "project_info" => format!("project '{}'", v["name"].as_str().unwrap_or("?")),
-        "import_gds" => format!("library '{}'", v["library"].as_str().unwrap_or("?")),
+        "import_gds" | "import_lef" => format!("library '{}'", v["library"].as_str().unwrap_or("?")),
+        "import_def" => format!("cell '{}'", v["cell"].as_str().unwrap_or("?")),
         "run_skill" => format!("{} cell(s) modified", len("modified")),
         _ => "ok".into(),
     }
@@ -905,6 +913,8 @@ impl IcStudio {
             Command::ExportOasis => self.export_stream(false, StreamFormat::Oasis),
             Command::ExportLibraryOasis => self.export_stream(true, StreamFormat::Oasis),
             Command::ImportGds(path) => self.import_gds(path),
+            Command::ExportLefDef(def) => self.export_lef_def(def),
+            Command::ImportLefDef(def, path) => self.import_lef_def(def, path),
             Command::ImportTech => self.import_tech(),
             Command::LoadSkill(path) => self.load_skill(path),
             Command::Ciw => {
@@ -1430,6 +1440,77 @@ impl IcStudio {
         }
     }
 
+    fn export_lef_def(&mut self, def: bool) {
+        let Some(p) = &self.project else { return };
+        let (label, ext) = if def { ("DEF", "def") } else { ("LEF", "lef") };
+        let Some(r) = self.active.clone().filter(|_| self.active_cell().is_some_and(|c| c.layout.is_some())) else {
+            self.warn("Active cell has no layout".into());
+            return;
+        };
+        let Some(path) = rfd::FileDialog::new().set_file_name(format!("{}.{ext}", r.cell)).add_filter(label, &[ext]).save_file()
+        else {
+            return;
+        };
+        let res = if def {
+            ics_core::lefdef::export_def(p, &r).map(|(text, d, w)| {
+                (text, format!("{} component(s), {} pin(s), {} net(s)", d.components.len(), d.pins.len(), d.nets.len()), w)
+            })
+        } else {
+            ics_core::lefdef::export_lef(p, std::slice::from_ref(&r), &Default::default())
+                .map(|(text, w)| (text, format!("the abstract of {}", r.cell), w))
+        };
+        match res.and_then(|(text, what, w)| std::fs::write(&path, text).map(|_| (what, w)).map_err(|e| e.to_string())) {
+            Ok((what, warnings)) => {
+                self.ok(format!("Exported {what} to {}", path.display()));
+                for w in warnings {
+                    self.warn(format!("{label}: {w}"));
+                }
+            }
+            Err(e) => self.error(format!("{label} export failed: {e}")),
+        }
+    }
+
+    fn import_lef_def(&mut self, def: bool, path: Option<PathBuf>) {
+        let Some(p) = self.project.as_mut() else { return };
+        let (label, ext) = if def { ("DEF", "def") } else { ("LEF", "lef") };
+        let Some(path) = path.or_else(|| rfd::FileDialog::new().add_filter(label, &[ext]).pick_file()) else {
+            return;
+        };
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                self.error(format!("Cannot read {}: {e}", path.display()));
+                return;
+            }
+        };
+        let res = if def {
+            ics_core::lefdef::import_def(p, &text, None).map(|i| {
+                let msg = format!("Imported {} from {} ({} component(s) placed)", i.cell, path.display(), i.placed);
+                (Some(i.cell), msg, i.warnings)
+            })
+        } else {
+            let stem = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+            ics_core::lefdef::import_lef(p, &text, &stem).map(|i| {
+                let msg = format!("Imported {} macro(s) from {} into library '{}'", i.cells.len(), path.display(), i.lib);
+                (i.cells.first().cloned(), msg, i.warnings)
+            })
+        };
+        match res {
+            Ok((open, msg, warnings)) => {
+                self.hier.clear();
+                self.mark_dirty();
+                self.ok(msg);
+                for w in warnings {
+                    self.warn(format!("{label}: {w}"));
+                }
+                if let Some(r) = open {
+                    self.queue.push(Command::OpenCell(r, Some(Workspace::Layout)));
+                }
+            }
+            Err(e) => self.error(format!("{label} import failed: {e}")),
+        }
+    }
+
     fn load_pdk(&mut self, path: &Path) {
         let Some(p) = self.project.as_mut() else { return };
         let loaded = ics_core::pdk::load(path).and_then(|pdk| {
@@ -1646,6 +1727,12 @@ impl IcStudio {
                     if ui.add_enabled(has_project, egui::Button::new("GDSII / OASIS…")).clicked() {
                         q.push(Command::ImportGds(None));
                     }
+                    if ui.add_enabled(has_project, egui::Button::new("LEF abstracts…")).clicked() {
+                        q.push(Command::ImportLefDef(false, None));
+                    }
+                    if ui.add_enabled(has_project, egui::Button::new("DEF placement…")).clicked() {
+                        q.push(Command::ImportLefDef(true, None));
+                    }
                     if ui.add_enabled(has_project, egui::Button::new("KLayout layer properties…")).clicked() {
                         q.push(Command::ImportTech);
                     }
@@ -1668,6 +1755,12 @@ impl IcStudio {
                     }
                     if ui.add_enabled(has_project, egui::Button::new("Library OASIS…")).clicked() {
                         q.push(Command::ExportLibraryOasis);
+                    }
+                    if ui.add_enabled(has_project, egui::Button::new("Cell LEF abstract…")).clicked() {
+                        q.push(Command::ExportLefDef(false));
+                    }
+                    if ui.add_enabled(has_project, egui::Button::new("Cell DEF…")).clicked() {
+                        q.push(Command::ExportLefDef(true));
                     }
                 });
                 ui.separator();
@@ -2686,6 +2779,10 @@ impl IcStudio {
             ("Export cell OASIS…".into(), "", Command::ExportOasis),
             ("Export library OASIS…".into(), "", Command::ExportLibraryOasis),
             ("Import GDSII / OASIS…".into(), "", Command::ImportGds(None)),
+            ("Export cell LEF abstract…".into(), "", Command::ExportLefDef(false)),
+            ("Export cell DEF…".into(), "", Command::ExportLefDef(true)),
+            ("Import LEF abstracts…".into(), "", Command::ImportLefDef(false, None)),
+            ("Import DEF placement…".into(), "", Command::ImportLefDef(true, None)),
             ("Import technology (KLayout .lyp)…".into(), "", Command::ImportTech),
             ("Load PDK…".into(), "", Command::LoadPdk(None)),
             ("Load SKILL (.il)…".into(), "", Command::LoadSkill(None)),

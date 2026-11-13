@@ -87,6 +87,16 @@ enum Cmd {
         #[arg(short, long)]
         out: PathBuf,
     },
+    /// LEF abstracts: export cells as LEF macros, import LEF macros as layout cells.
+    Lef {
+        #[command(subcommand)]
+        cmd: LefCmd,
+    },
+    /// DEF placements: export a top cell's components, pins and nets, import a DEF as a top cell.
+    Def {
+        #[command(subcommand)]
+        cmd: DefCmd,
+    },
     /// Route a cell's flylines on the metal stack and save the project (non-zero exit when some
     /// nets stay unrouted).
     Route {
@@ -215,6 +225,73 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum ObsArg {
+    Detailed,
+    Block,
+    None,
+}
+
+#[derive(Subcommand)]
+enum LefCmd {
+    /// Write the abstracts of cells (pins from labelled nets, OBS from the other metal) with a
+    /// technology header; to stdout without `--out`.
+    Export {
+        project: PathBuf,
+        #[arg(required = true)]
+        cells: Vec<String>,
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+        /// Obstructions: merged shapes, per-layer blocks around the pins, or none.
+        #[arg(long, value_enum, default_value = "detailed")]
+        obs: ObsArg,
+        /// Macro CLASS.
+        #[arg(long, default_value = "BLOCK")]
+        class: String,
+    },
+    /// Import the macros of a LEF file as layout cells of a new library and save the project.
+    Import {
+        project: PathBuf,
+        file: PathBuf,
+        /// Library name (defaults to the file name; made unique).
+        #[arg(long)]
+        lib: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum DefCmd {
+    /// Write a top cell as DEF (die area, components, pins, nets); to stdout without `--out`.
+    Export {
+        project: PathBuf,
+        cell: String,
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+        /// Also write the LEF abstracts of the placed cells to this file.
+        #[arg(long)]
+        lef: Option<PathBuf>,
+    },
+    /// Import a DEF file as a new top cell placing the project cells named by its components'
+    /// macros, and save the project.
+    Import {
+        project: PathBuf,
+        file: PathBuf,
+        /// Library of the new cell, searched first for macros (default `work`).
+        #[arg(long)]
+        lib: Option<String>,
+    },
+}
+
+fn write_out(out: Option<&PathBuf>, text: &str) -> Result<(), String> {
+    match out {
+        Some(f) => std::fs::write(f, text).map_err(|e| format!("{}: {e}", f.display())),
+        None => {
+            print!("{text}");
+            Ok(())
+        }
+    }
 }
 
 fn resolve(p: &Project, cell: &str) -> Result<CellRef, String> {
@@ -738,6 +815,73 @@ fn run(cli: Cli) -> Result<(), String> {
                 t_parse.as_secs_f64(),
                 t1.elapsed().as_secs_f64()
             );
+        }
+        Cmd::Lef { cmd: LefCmd::Export { project, cells, out, obs, class } } => {
+            let p = Project::open(&project).map_err(|e| e.to_string())?;
+            let refs = cells.iter().map(|c| resolve(&p, c)).collect::<Result<Vec<_>, _>>()?;
+            let obs = match obs {
+                ObsArg::Detailed => ics_core::lefdef::ObsMode::Detailed,
+                ObsArg::Block => ics_core::lefdef::ObsMode::Block,
+                ObsArg::None => ics_core::lefdef::ObsMode::None,
+            };
+            let (text, warnings) = ics_core::lefdef::export_lef(&p, &refs, &ics_core::lefdef::AbstractOptions { obs, class })?;
+            write_out(out.as_ref(), &text)?;
+            if let Some(f) = &out {
+                eprintln!("wrote {} ({} macro(s))", f.display(), refs.len());
+            }
+            for w in &warnings {
+                eprintln!("warning: {w}");
+            }
+        }
+        Cmd::Lef { cmd: LefCmd::Import { project, file, lib } } => {
+            let mut p = Project::open(&project).map_err(|e| e.to_string())?;
+            let text = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+            let hint = lib.unwrap_or_else(|| file.file_stem().map_or("lef".into(), |s| s.to_string_lossy().to_string()));
+            let imp = ics_core::lefdef::import_lef(&mut p, &text, &hint)?;
+            p.save().map_err(|e| e.to_string())?;
+            let cells: Vec<&str> = imp.cells.iter().map(|c| c.cell.as_str()).collect();
+            println!("library {}: {} cells ({})", imp.lib, cells.len(), cells.join(", "));
+            for w in &imp.warnings {
+                eprintln!("warning: {w}");
+            }
+        }
+        Cmd::Def { cmd: DefCmd::Export { project, cell, out, lef } } => {
+            let p = Project::open(&project).map_err(|e| e.to_string())?;
+            let r = resolve(&p, &cell)?;
+            let (text, d, mut warnings) = ics_core::lefdef::export_def(&p, &r)?;
+            write_out(out.as_ref(), &text)?;
+            if let Some(f) = &out {
+                eprintln!(
+                    "wrote {} ({} components, {} pins, {} nets)",
+                    f.display(),
+                    d.components.len(),
+                    d.pins.len(),
+                    d.nets.len()
+                );
+            }
+            if let Some(f) = &lef {
+                let macros = ics_core::lefdef::def_macros(&p, &r);
+                let (text, w) = ics_core::lefdef::export_lef(&p, &macros, &Default::default())?;
+                std::fs::write(f, text).map_err(|e| format!("{}: {e}", f.display()))?;
+                eprintln!("wrote {} ({} macro(s))", f.display(), macros.len());
+                warnings.extend(w);
+            }
+            for w in &warnings {
+                eprintln!("warning: {w}");
+            }
+        }
+        Cmd::Def { cmd: DefCmd::Import { project, file, lib } } => {
+            let mut p = Project::open(&project).map_err(|e| e.to_string())?;
+            let text = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+            let imp = ics_core::lefdef::import_def(&mut p, &text, lib.as_deref())?;
+            p.save().map_err(|e| e.to_string())?;
+            println!("cell {}: {} components placed, {} pins, {} nets", imp.cell, imp.placed, imp.pins, imp.nets);
+            if imp.unplaced > 0 {
+                eprintln!("warning: {} unplaced component(s) skipped", imp.unplaced);
+            }
+            for w in &imp.warnings {
+                eprintln!("warning: {w}");
+            }
         }
         Cmd::ImportGds { project, file, lib, skip_unknown_layers, json } => {
             let mut p = Project::open(&project).map_err(|e| e.to_string())?;

@@ -235,6 +235,10 @@ mod tests {
             "post_layout_parasitics",
             "export_gds",
             "import_gds",
+            "export_lef",
+            "import_lef",
+            "export_def",
+            "import_def",
             "run_skill",
             "gui_status",
         ];
@@ -347,6 +351,16 @@ mod tests {
         assert!(std::fs::read(&oas).unwrap().starts_with(ics_core::oasis::MAGIC));
         let imp = call(&mut s, "import_gds", json!({"path": oas, "lib": "from_oasis"})).unwrap();
         assert_eq!(imp["top_cells"], json!(["from_oasis/top"]));
+
+        let (lef, def) = (dir.join("chain.lef"), dir.join("chain.def"));
+        let ex = call(&mut s, "export_def", json!({"cell": "inv_chain", "path": def, "lef_path": lef})).unwrap();
+        assert_eq!((ex["components"].as_u64(), ex["macros"].clone()), (Some(4), json!(["work/cmos_inverter"])), "{ex}");
+        let ex = call(&mut s, "export_lef", json!({"cell": "cmos_inverter", "path": lef, "obs": "block"})).unwrap();
+        assert_eq!(ex["pins"].as_array().unwrap().len(), 4, "{ex}");
+        let imp = call(&mut s, "import_lef", json!({"path": lef, "lib": "abstracts"})).unwrap();
+        assert_eq!(imp["cells"], json!(["abstracts/cmos_inverter"]));
+        let imp = call(&mut s, "import_def", json!({"path": def, "lib": "abstracts"})).unwrap();
+        assert_eq!((imp["cell"].as_str(), imp["placed"].as_u64()), (Some("abstracts/inv_chain"), Some(4)), "{imp}");
 
         assert_eq!(call(&mut s, "project_info", json!({})).unwrap()["unsaved_changes"], true);
         call(&mut s, "save_project", json!({})).unwrap();
