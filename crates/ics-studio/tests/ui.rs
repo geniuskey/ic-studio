@@ -1525,3 +1525,61 @@ fn layout_compact() {
     h.run_steps(2);
     assert_eq!(get(&h), before);
 }
+
+/// A scripted model standing in for Gemini: answers each request with the next canned reply.
+struct Scripted(std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>);
+
+impl ics_studio::copilot::Llm for Scripted {
+    fn generate(&mut self, _: &serde_json::Value) -> Result<serde_json::Value, String> {
+        let mut q = self.0.lock().unwrap();
+        if q.is_empty() { Err("script exhausted".into()) } else { Ok(q.remove(0)) }
+    }
+}
+
+/// The copilot runs the model's tool calls on the open project (here: sizing R1 of the RC
+/// filter for a 10 kHz bandwidth with the optimizer); the Optimizer window then re-runs it.
+#[test]
+fn copilot_optimizes_rc_filter() {
+    use serde_json::json;
+    let mut h = app(demo_args("rc_lowpass", "schematic", false));
+    let call = json!({"candidates": [{"content": {"role": "model", "parts": [{"functionCall": {"name": "optimize", "args": {
+        "cell": "rc_lowpass",
+        "vars": [{"target": "R1.r", "min": "100", "max": "1meg", "log": true}],
+        "specs": [{"name": "bw", "analysis": "ac", "expr": "bandwidth(v(out))", "min": "9k", "max": "11k"}],
+        "apply": true
+    }}}]}}]});
+    let answer = json!({"candidates": [{"content": {"role": "model", "parts": [{"text": "R1 is sized for 10 kHz."}]}}]});
+    let script = std::sync::Arc::new(std::sync::Mutex::new(vec![call, answer]));
+    let s2 = script.clone();
+    let cp = h.state_mut().copilot_mut();
+    cp.key = "test".into();
+    cp.set_llm(Box::new(move |_, _| Box::new(Scripted(s2.clone()))));
+    h.state_mut().command(Command::CopilotAsk("Size R1 for a 10 kHz bandwidth".into()));
+    h.run_steps(2);
+    settle(&mut h, "copilot");
+    let log = h.state_mut().copilot_mut().log.clone();
+    use ics_studio::copilot::Entry;
+    assert!(
+        log.iter().any(|e| matches!(e, Entry::Tool { name, error: false, result, .. } if name == "optimize" && result.contains("\"passed\":true"))),
+        "{log:?}"
+    );
+    assert_eq!(log.last(), Some(&Entry::Assistant("R1 is sized for 10 kHz.".into())));
+    let r = h.state().active_ref().cloned().unwrap();
+    let rv = {
+        let p = h.state().project().unwrap();
+        let sch = p.cell(&r).unwrap().schematic.as_ref().unwrap();
+        sch.instances.iter().find(|i| i.name == "R1").unwrap().param("r").to_string()
+    };
+    let ohms = ics_core::units::parse_spice(&rv).unwrap();
+    assert!((14e3..18e3).contains(&ohms), "R1 = {rv}");
+    shot(&mut h, "44_copilot");
+
+    h.state_mut().command(Command::Optimizer);
+    h.state_mut().command(Command::RunOptimizer);
+    h.run_steps(2);
+    settle(&mut h, "optimizer");
+    let opt = h.state_mut().optimizer();
+    let best = opt.best().expect("evaluated");
+    assert!(opt.evals[best].passed);
+    shot(&mut h, "45_optimizer");
+}

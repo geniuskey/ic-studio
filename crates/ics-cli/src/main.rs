@@ -129,6 +129,19 @@ enum Cmd {
         #[arg(long)]
         against: Option<PathBuf>,
     },
+    /// Size the cell's devices to meet its specs (`sim.sweep.specs`) with the variables of its
+    /// optimizer setup (`sim.optimize`); `--apply` writes the best values into the schematic.
+    Optimize {
+        project: PathBuf,
+        cell: String,
+        /// Evaluate every candidate after layout generation, routing and extraction.
+        #[arg(long)]
+        post_layout: bool,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Extract nets and transistors from a cell layout and print them as SPICE.
     Extract { project: PathBuf, cell: String },
     /// Compare a cell's layout with its schematic (non-zero exit on differences).
@@ -510,6 +523,72 @@ fn run(cli: Cli) -> Result<(), String> {
                 return Err(format!("{r} differs from {what}"));
             }
             println!("{r}: no layout differences against {what}");
+        }
+        Cmd::Optimize { project, cell, post_layout, apply, json } => {
+            let mut p = Project::open(&project).map_err(|e| e.to_string())?;
+            let r = resolve(&p, &cell)?;
+            if post_layout {
+                p.cell_mut(&r).unwrap().sim.optimize.post_layout = true;
+            }
+            let mut opts = SimOptions::default();
+            if let Some(exe) = &p.settings.ngspice_path {
+                opts.ngspice_exe = exe.clone();
+            }
+            let mut progress = |e: &ics_sim::optimize::OptEval, k: usize| {
+                if !json {
+                    let vals: Vec<String> = e.values.iter().map(|v| format_eng(*v, "")).collect();
+                    eprintln!(
+                        "#{:<3} {:<40} objective {:.4}{}",
+                        k + 1,
+                        vals.join(" "),
+                        e.objective,
+                        if e.passed { "  pass" } else { "" }
+                    );
+                }
+                true
+            };
+            let rep = ics_sim::optimize::run(&p, &r, &opts, &mut progress)?;
+            let c = p.cell(&r).unwrap();
+            let setup = c.sim.optimize.clone();
+            let best = rep.best().ok_or("nothing evaluated")?.clone();
+            if json {
+                let specs: Vec<serde_json::Value> = c
+                    .sim
+                    .sweep
+                    .specs
+                    .iter()
+                    .zip(&best.specs)
+                    .map(|(s, v)| serde_json::json!({"name": s.name, "value": v.as_ref().ok(), "pass": v.as_ref().ok().and_then(|x| s.check(*x))}))
+                    .collect();
+                let vars: Vec<serde_json::Value> = setup
+                    .vars
+                    .iter()
+                    .zip(&best.values)
+                    .map(|(v, x)| serde_json::json!({"target": v.target, "value": x}))
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::json!({"passed": best.passed, "evaluations": rep.evals.len(), "vars": vars, "specs": specs})
+                );
+            } else {
+                for (v, x) in setup.vars.iter().zip(&best.values) {
+                    println!("{} = {}", v.target, format_eng(*x, ""));
+                }
+                for (s, v) in c.sim.sweep.specs.iter().zip(&best.specs) {
+                    match v {
+                        Ok(x) => println!("{}: {}", s.name, format_eng(*x, "")),
+                        Err(e) => println!("{}: error: {e}", s.name),
+                    }
+                }
+            }
+            if apply {
+                let sch = c.schematic.clone().ok_or("cell has no schematic")?;
+                p.cell_mut(&r).unwrap().schematic = Some(ics_sim::optimize::apply_values(&sch, &setup, &best.values));
+                p.save().map_err(|e| e.to_string())?;
+            }
+            if !best.passed {
+                return Err("no evaluated point meets every spec".into());
+            }
         }
         Cmd::Extract { project, cell } => {
             let p = Project::open(&project).map_err(|e| e.to_string())?;

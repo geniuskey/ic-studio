@@ -140,6 +140,14 @@ pub enum Command {
     Ciw,
     /// Evaluate SKILL in the CIW session, as if typed at its prompt.
     CiwEval(String),
+    /// Open the spec-driven optimizer for the active cell.
+    Optimizer,
+    /// Run the optimizer with the cell's saved setup.
+    RunOptimizer,
+    /// Show or hide the design copilot chat.
+    Copilot,
+    /// Ask the copilot a question.
+    CopilotAsk(String),
     /// Run a Cadence SKILL (.il) script on the project; `None` asks for the file.
     LoadSkill(Option<PathBuf>),
     /// Replace the technology with a PDK file (see `ics_core::pdk`); `None` asks for the file.
@@ -445,6 +453,8 @@ pub struct IcStudio {
     last_title: String,
     bridge: Option<Bridge>,
     rule_designer: RuleDesigner,
+    copilot: crate::copilot::Copilot,
+    optimizer: crate::optimizer_view::Optimizer,
     stream_map: StreamMapEditor,
     fill: FillTool,
     calc: Calculator,
@@ -492,6 +502,8 @@ impl IcStudio {
             last_title: String::new(),
             bridge: None,
             rule_designer: RuleDesigner::default(),
+            copilot: Default::default(),
+            optimizer: Default::default(),
             stream_map: StreamMapEditor::default(),
             fill: FillTool::default(),
             calc: Calculator::default(),
@@ -778,6 +790,27 @@ impl IcStudio {
                 _ => self.warn("Open a cell with a schematic to sweep".into()),
             },
             Command::RunSweep => self.run_sweep(ctx),
+            Command::Optimizer => match (self.active.clone(), self.active_cell()) {
+                (Some(r), Some(c)) if c.schematic.is_some() => {
+                    let setup = c.sim.optimize.clone();
+                    self.optimizer.show(&r, &setup);
+                }
+                _ => self.warn("Open a cell with a schematic to optimize".into()),
+            },
+            Command::RunOptimizer => {
+                if self.optimizer.cell.is_none()
+                    && let Some(r) = self.active.clone()
+                {
+                    let setup = self.active_cell().map(|c| c.sim.optimize.clone()).unwrap_or_default();
+                    self.optimizer.show(&r, &setup);
+                }
+                if let (Some(p), Some(r)) = (self.project.as_ref(), self.optimizer.cell.clone()) {
+                    let backend = p.cell(&r).map(|c| c.sim.backend).unwrap_or_default();
+                    let opts = self.sim_options(backend);
+                    self.optimizer.start(ctx, p, opts);
+                    self.info(format!("Optimizer: running on {r}"));
+                }
+            }
             Command::ResultsBrowser => self.results_open = true,
             Command::CheckSchematic(save) => self.check_schematic(save),
             Command::NetBrowser => {
@@ -852,6 +885,12 @@ impl IcStudio {
                 self.show_console = true;
                 self.bottom_tab = BottomTab::Ciw;
                 self.ciw.request_focus();
+            }
+            Command::Copilot => self.copilot.open = !self.copilot.open,
+            Command::CopilotAsk(q) => {
+                self.copilot.open = true;
+                let context = self.copilot_context();
+                self.copilot.ask(ctx, &q, &context);
             }
             Command::CiwEval(src) => {
                 self.ciw.push(CiwKind::Input, src.clone());
@@ -1663,6 +1702,12 @@ impl IcStudio {
                 }
             });
             ui.menu_button("Tools", |ui| {
+                if ui.button("Design Copilot…").clicked() {
+                    q.push(Command::Copilot);
+                }
+                if ui.button("Optimizer…").clicked() {
+                    q.push(Command::Optimizer);
+                }
                 if ui.button("Waveform Calculator…").clicked() {
                     q.push(Command::Calculator);
                 }
@@ -2117,6 +2162,8 @@ impl IcStudio {
                             ui.checkbox(&mut ed.drd, "DRD").on_hover_text(
                                 "Design-rule-driven editing: show spacing and width violations while drawing and moving",
                             );
+                            ui.checkbox(&mut ed.show_constraints, "Constraints")
+                                .on_hover_text("Show symmetry axes, alignments and fixed items");
                             ui.checkbox(&mut ed.magnet, "Magnet").on_hover_text(
                                 "Pull drawn and moved shapes to exactly the minimum spacing from their neighbours",
                             );
@@ -2547,6 +2594,7 @@ impl IcStudio {
             ("Dummy fill (metal density)".into(), "", Command::DummyFill),
             ("Waveform calculator".into(), "", Command::Calculator),
             ("Corner / sweep manager".into(), "", Command::SweepManager),
+            ("Optimizer (size devices to meet specs)".into(), "", Command::Optimizer),
             ("Results browser (compare runs)".into(), "", Command::ResultsBrowser),
             ("Check schematic".into(), "", Command::CheckSchematic(false)),
             ("Check and save".into(), "", Command::CheckSchematic(true)),
@@ -2568,6 +2616,7 @@ impl IcStudio {
             ("Load PDK…".into(), "", Command::LoadPdk(None)),
             ("Load SKILL (.il)…".into(), "", Command::LoadSkill(None)),
             ("SKILL command interpreter (CIW)".into(), "", Command::Ciw),
+            ("Design copilot (AI chat)".into(), "", Command::Copilot),
             ("Export SPICE netlist…".into(), "", Command::ExportNetlist),
             ("Toggle light / dark theme".into(), "", Command::ToggleTheme),
             ("Toggle console".into(), "⌘J", Command::ToggleConsole),
@@ -3245,6 +3294,8 @@ impl IcStudio {
             || self.bridge.as_ref().is_some_and(|b| b.job.is_some() || !b.waiting.is_empty())
             || self.rule_designer.is_checking()
             || self.sweep.is_running()
+            || self.copilot.busy()
+            || self.optimizer.is_running()
     }
 
     fn rule_designer_window(&mut self, ctx: &egui::Context) {
@@ -3540,6 +3591,62 @@ impl IcStudio {
         &self.rule_designer
     }
 
+    fn optimizer_window(&mut self, ctx: &egui::Context) {
+        use crate::optimizer_view::OptAction;
+        let (action, run) = self.optimizer.window(ctx, self.project.as_ref());
+        match action {
+            Some(OptAction::Changed(s)) => {
+                if let Some(c) = self.optimizer.cell.clone().and_then(|r| self.project.as_mut()?.cell_mut(&r)) {
+                    c.sim.optimize = s;
+                    self.mark_dirty();
+                }
+            }
+            Some(OptAction::Apply(r, values)) => {
+                let setup = self.optimizer.setup.clone();
+                if let Some(c) = self.project.as_mut().and_then(|p| p.cell_mut(&r))
+                    && let Some(sch) = c.schematic.as_ref()
+                {
+                    c.schematic = Some(ics_sim::optimize::apply_values(sch, &setup, &values));
+                    self.mark_dirty();
+                    let text: Vec<String> = setup
+                        .vars
+                        .iter()
+                        .zip(&values)
+                        .map(|(v, x)| format!("{}={}", v.target, ics_core::units::format_eng(*x, "")))
+                        .collect();
+                    self.ok(format!("Optimizer: applied {} to {r}", text.join(" ")));
+                }
+            }
+            None => {}
+        }
+        if run {
+            self.queue.push(Command::RunOptimizer);
+        }
+    }
+
+    pub fn optimizer(&mut self) -> &mut crate::optimizer_view::Optimizer {
+        &mut self.optimizer
+    }
+
+    pub fn copilot_mut(&mut self) -> &mut crate::copilot::Copilot {
+        &mut self.copilot
+    }
+
+    /// What the copilot is told about the session.
+    fn copilot_context(&self) -> String {
+        let mut s = String::new();
+        match &self.project {
+            Some(p) => {
+                s += &format!("Open project: {} ({} cells).", p.name, p.all_cells().count());
+                if let Some(r) = &self.active {
+                    s += &format!(" Active cell: {r} in the {} workspace.", self.workspace.name());
+                }
+            }
+            None => s += "No project is open.",
+        }
+        s
+    }
+
     pub fn ciw(&self) -> &Ciw {
         &self.ciw
     }
@@ -3595,6 +3702,23 @@ impl eframe::App for IcStudio {
                 self.ok(format!("Sweep {cell}: {m}"))
             } else {
                 self.warn(format!("Sweep {cell}: {m}"))
+            }
+        }
+        if let Some((ok, m)) = self.optimizer.poll() {
+            if ok { self.ok(m) } else { self.warn(m) }
+        }
+        self.copilot.poll();
+        if let Some(rx) = &self.copilot.calls {
+            let calls: Vec<Pending> = rx.try_iter().collect();
+            if !calls.is_empty() {
+                let b = self.bridge.get_or_insert_with(|| Bridge {
+                    rx: std::sync::mpsc::channel().1,
+                    calls: 0,
+                    last: None,
+                    waiting: VecDeque::new(),
+                    job: None,
+                });
+                b.waiting.extend(calls);
             }
         }
         self.serve_bridge(ctx);
@@ -3657,6 +3781,11 @@ impl eframe::App for IcStudio {
         self.command_palette(&ctx);
         self.dialogs(&ctx);
         self.rule_designer_window(&ctx);
+        self.optimizer_window(&ctx);
+        if let Some(q) = self.copilot.window(&ctx) {
+            let context = self.copilot_context();
+            self.copilot.ask(&ctx, &q, &context);
+        }
         self.stream_map_window(&ctx);
         self.fill_window(&ctx);
         let active = self.active.clone();

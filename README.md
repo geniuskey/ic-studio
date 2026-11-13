@@ -88,6 +88,19 @@ Linux needs the usual windowing libraries:
   Fix All repairs the cell as one undoable edit (`ics drc --fix`, MCP `fix_drc`)
 - Spacing magnet: drawn boxes, wire points and moved or pasted geometry snap to exactly the
   minimum spacing from (or abutting) same-layer neighbours, with the gap shown
+- Placement constraints stored with the layout: symmetry about an axis, shared edges or
+  centre lines and fixed items; moving one member moves its partners, and symmetry is
+  inferred from the schematic's differential pairs, current mirrors and `match` groups
+- Compaction: top-level items slide toward a side until the rules stop them, connected
+  geometry and constrained groups move together, and moves that would add DRC violations
+  are undone (`ics compact`, MCP `compact`)
+- Layout compare: the cell XOR-ed per layer against its saved version or any git revision,
+  added and removed geometry drawn on the canvas (`ics diff --rev HEAD~1`, MCP `diff_layout`)
+- Optimizer: a pattern search sizes device parameters until the specs pass, optionally
+  placing, routing and extracting every candidate so they pass after layout
+  (`ics optimize --post-layout --apply`, MCP `optimize`)
+- Design copilot (Tools > Design Copilot, `GEMINI_API_KEY`): a Gemini chat that works on
+  the open project through the MCP tools, every edit visible and undoable in the window
 
 **Verification**
 - DRC with a text rule deck (`width`, `space`, `separation`, `enclosure`, `extension`,
@@ -151,6 +164,9 @@ ics import-gds myproj chip.gds                           # new library, unknown 
 ics import-tech myproj sky130A.lyp --lyt sky130A.lyt
 ics drc myproj cmos_inverter [--deck rules.drc]         # non-zero exit on violations
 ics drc myproj cmos_inverter --fix                      # apply verified quick fixes, save
+ics compact myproj full_adder --dir left,down           # compact, keep constraints, save
+ics diff myproj cmos_inverter --rev HEAD~1              # XOR against a git revision
+ics optimize myproj ota2s --post-layout --apply         # size devices to meet the specs
 ics route myproj nand2 --place                          # place devices, route flylines, save
 ics extract myproj inv_chain                            # extracted SPICE netlist
 ics lvs myproj cmos_inverter                            # non-zero exit on differences

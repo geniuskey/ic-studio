@@ -571,6 +571,29 @@ pub fn definitions() -> Vec<Value> {
             &["cell"],
         ),
         tool(
+            "optimize",
+            &format!(
+                "Size device parameters to meet specs: a deterministic pattern search over the variables, each candidate simulated with the cell's simulation setup (and, with post_layout, placed, routed and extracted first so the specs hold after layout). Specs are waveform-calculator expressions on an analysis dataset with min / max limits (e.g. analysis \"ac\", expr \"bandwidth(v(out))\", min \"9k\"). Given specs / vars replace the cell's saved ones. Returns the best point, its spec values and whether every spec passes; apply writes the values into the schematic. {NOT_SAVED}"
+            ),
+            json!({
+                "cell": cell(),
+                "vars": {"type": "array", "items": {"type": "object", "properties": {
+                    "target": {"type": "string", "description": "INST.param (e.g. M1.w) or a design variable name"},
+                    "min": {"type": "string"}, "max": {"type": "string"},
+                    "log": {"type": "boolean"}, "step": {"type": "string", "description": "Grid, e.g. 10n (optional)"}
+                }, "required": ["target", "min", "max"]}},
+                "specs": {"type": "array", "items": {"type": "object", "properties": {
+                    "name": {"type": "string"}, "analysis": {"type": "string", "enum": ["op", "dc", "ac", "tran"]},
+                    "expr": {"type": "string"}, "min": {"type": "string"}, "max": {"type": "string"}
+                }, "required": ["name", "analysis", "expr"]}},
+                "max_evals": {"type": "integer", "minimum": 4, "description": "Simulation budget (default 60)."},
+                "post_layout": {"type": "boolean", "description": "Evaluate every candidate after layout and extraction."},
+                "goal": {"type": "string", "enum": ["margin", "min_area"], "description": "Once all specs pass: widest margin (default) or least gate area."},
+                "apply": {"type": "boolean", "description": "Write the best values into the schematic (default false)."}
+            }),
+            &["cell"],
+        ),
+        tool(
             "diff_layout",
             "Compare a cell's layout with the version committed at a git revision of the project (default HEAD) or saved on disk: the flattened geometry XOR-ed per layer, as added / removed pieces with their boxes (µm), and placements added, removed or moved.",
             json!({"cell": cell(), "rev": {"type": "string", "description": "Git revision (default HEAD); \"saved\" compares with the project files on disk."}}),
@@ -692,6 +715,7 @@ impl State {
             "fix_drc" => self.fix_drc(a),
             "compact" => self.compact(a),
             "diff_layout" => self.diff_layout(a),
+            "optimize" => self.optimize(a),
             "extract" => self.extract(a),
             "run_lvs" => self.run_lvs(a),
             "run_signoff" => self.run_signoff(a),
@@ -1326,6 +1350,88 @@ impl State {
             "moves": moved,
             "extent_before_um": first.map(|b| rect_um(t, b)),
             "extent_after_um": last.map(|b| rect_um(t, b)),
+        }))
+    }
+
+    fn optimize(&mut self, a: &Args) -> Result<Value, String> {
+        use ics_core::optimize::{Goal, OptVar};
+        use ics_core::sweep::Spec;
+        let (_, r) = self.cell_arg(a)?;
+        let get = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
+        let p = self.project_mut()?;
+        let c = p.cell_mut(&r).expect("resolved");
+        if let Some(vs) = a.0.get("vars").and_then(Value::as_array) {
+            c.sim.optimize.vars = vs
+                .iter()
+                .map(|v| OptVar {
+                    target: get(v, "target"),
+                    min: get(v, "min"),
+                    max: get(v, "max"),
+                    log: v.get("log").and_then(Value::as_bool).unwrap_or(false),
+                    step: get(v, "step"),
+                })
+                .collect();
+        }
+        if let Some(ss) = a.0.get("specs").and_then(Value::as_array) {
+            c.sim.sweep.specs = ss
+                .iter()
+                .map(|s| Spec {
+                    name: get(s, "name"),
+                    analysis: get(s, "analysis"),
+                    expr: get(s, "expr"),
+                    min: get(s, "min"),
+                    max: get(s, "max"),
+                })
+                .collect();
+        }
+        if let Some(n) = a.0.get("max_evals").and_then(Value::as_u64) {
+            c.sim.optimize.max_evals = n as usize;
+        }
+        if let Some(b) = a.0.get("post_layout").and_then(Value::as_bool) {
+            c.sim.optimize.post_layout = b;
+        }
+        match a.0.get("goal").and_then(Value::as_str) {
+            Some("min_area") => c.sim.optimize.goal = Goal::MinArea,
+            Some("margin") => c.sim.optimize.goal = Goal::Margin,
+            _ => {}
+        }
+        self.dirty = true;
+        let p = self.project()?;
+        let mut opts = ics_sim::SimOptions::default();
+        if let Some(exe) = &p.settings.ngspice_path {
+            opts.ngspice_exe = exe.clone();
+        }
+        let rep = ics_sim::optimize::run(p, &r, &opts, &mut |_, _| true)?;
+        let best = rep.best().ok_or("nothing evaluated")?.clone();
+        let c = p.cell(&r).expect("resolved");
+        let setup = c.sim.optimize.clone();
+        let specs: Vec<Value> = c
+            .sim
+            .sweep
+            .specs
+            .iter()
+            .zip(&best.specs)
+            .map(|(s, v)| match v {
+                Ok(x) => json!({"name": s.name, "value": sig(*x), "pass": s.check(*x)}),
+                Err(e) => json!({"name": s.name, "error": e}),
+            })
+            .collect();
+        let vars: Vec<Value> =
+            setup.vars.iter().zip(&best.values).map(|(v, x)| json!({"target": v.target, "value": sig(*x)})).collect();
+        let apply = a.0.get("apply").and_then(Value::as_bool).unwrap_or(false);
+        if apply {
+            let sch = c.schematic.clone().ok_or("cell has no schematic")?;
+            let new = ics_sim::optimize::apply_values(&sch, &setup, &best.values);
+            self.project_mut()?.cell_mut(&r).expect("resolved").schematic = Some(new);
+        }
+        Ok(json!({
+            "cell": r.to_string(),
+            "passed": best.passed,
+            "evaluations": rep.evals.len(),
+            "vars": vars,
+            "specs": specs,
+            "note": best.note,
+            "applied": apply,
         }))
     }
 
