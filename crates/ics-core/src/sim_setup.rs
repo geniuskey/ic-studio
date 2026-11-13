@@ -125,6 +125,9 @@ pub struct SimSetup {
     /// Corner / parametric sweep of the Sweep Manager.
     #[serde(default, skip_serializing_if = "crate::sweep::SweepSetup::is_empty")]
     pub sweep: crate::sweep::SweepSetup,
+    /// Spec-driven optimizer setup (variables, budget, goal).
+    #[serde(default, skip_serializing_if = "crate::optimize::OptSetup::is_empty")]
+    pub optimize: crate::optimize::OptSetup,
 }
 
 fn default_temp() -> f64 {
@@ -152,6 +155,7 @@ impl Default for SimSetup {
             parasitics: false,
             corner: String::new(),
             sweep: Default::default(),
+            optimize: Default::default(),
         }
     }
 }

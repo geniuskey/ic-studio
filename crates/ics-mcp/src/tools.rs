@@ -559,6 +559,24 @@ pub fn definitions() -> Vec<Value> {
             &["cell"],
         ),
         tool(
+            "compact",
+            &format!(
+                "Compact a cell's layout: slide its top-level items (or only the given ones) toward each direction in turn until the design rules stop them. Geometry that touches on a layer moves together, fixed items stay, symmetry and alignment constraints keep holding, and a move that would add DRC violations is undone. Returns the moves and the extent before and after (µm). {NOT_SAVED}"
+            ),
+            json!({
+                "cell": cell(),
+                "directions": {"type": "array", "items": {"type": "string", "enum": ["left", "right", "down", "up"]}, "description": "Directions in order (default [\"left\", \"down\"])."},
+                "infer_constraints": {"type": "boolean", "description": "First add symmetry constraints for the schematic's matched devices (default true)."}
+            }),
+            &["cell"],
+        ),
+        tool(
+            "diff_layout",
+            "Compare a cell's layout with the version committed at a git revision of the project (default HEAD) or saved on disk: the flattened geometry XOR-ed per layer, as added / removed pieces with their boxes (µm), and placements added, removed or moved.",
+            json!({"cell": cell(), "rev": {"type": "string", "description": "Git revision (default HEAD); \"saved\" compares with the project files on disk."}}),
+            &["cell"],
+        ),
+        tool(
             "extract",
             "Extract connectivity and transistors from a cell layout: nets (name, bbox µm), MOS devices (W/L µm, terminal nets) and the extracted circuit as SPICE.",
             json!({"cell": cell()}),
@@ -672,6 +690,8 @@ impl State {
             "route" => self.route(a),
             "run_drc" => self.run_drc(a),
             "fix_drc" => self.fix_drc(a),
+            "compact" => self.compact(a),
+            "diff_layout" => self.diff_layout(a),
             "extract" => self.extract(a),
             "run_lvs" => self.run_lvs(a),
             "run_signoff" => self.run_signoff(a),
@@ -1260,6 +1280,93 @@ impl State {
             self.dirty = true;
         }
         Ok(json!({"cell": r.to_string(), "fixed": done.len(), "fixes": done, "violations_left": left}))
+    }
+
+    fn compact(&mut self, a: &Args) -> Result<Value, String> {
+        use ics_core::compact::Dir;
+        let (_, r) = self.cell_arg(a)?;
+        let dirs: Vec<Dir> = match a.0.get("directions").and_then(Value::as_array) {
+            Some(v) => v
+                .iter()
+                .map(|d| match d.as_str() {
+                    Some("left") => Ok(Dir::Left),
+                    Some("right") => Ok(Dir::Right),
+                    Some("down") => Ok(Dir::Down),
+                    Some("up") => Ok(Dir::Up),
+                    _ => Err(format!("unknown direction {d}")),
+                })
+                .collect::<Result<_, _>>()?,
+            None => vec![Dir::Left, Dir::Down],
+        };
+        let infer = a.0.get("infer_constraints").and_then(Value::as_bool).unwrap_or(true);
+        let p = self.project_mut()?;
+        let deck = parse_any(&p.tech.deck_text(), &p.tech).ok().map(|d| d.deck);
+        let mut layout = p.cell_mut(&r).expect("resolved").layout.take().ok_or("cell has no layout view")?;
+        let inferred = match p.cell(&r).and_then(|c| c.schematic.as_ref()) {
+            Some(sch) if infer => ics_core::constraints::infer(&mut layout, p, sch),
+            _ => 0,
+        };
+        let before_layout = layout.clone();
+        let (mut moved, mut first, mut last) = (0, None, None);
+        for d in dirs {
+            let rep = ics_core::compact::compact(&mut layout, p, &p.tech, deck.as_ref(), d, &Default::default());
+            moved += rep.moved;
+            first = first.or(rep.before);
+            last = rep.after.or(last);
+        }
+        let changed = layout != before_layout || inferred > 0;
+        p.cell_mut(&r).expect("resolved").layout = Some(layout);
+        if changed {
+            self.dirty = true;
+        }
+        let t = &self.project()?.tech;
+        Ok(json!({
+            "cell": r.to_string(),
+            "constraints_inferred": inferred,
+            "moves": moved,
+            "extent_before_um": first.map(|b| rect_um(t, b)),
+            "extent_after_um": last.map(|b| rect_um(t, b)),
+        }))
+    }
+
+    fn diff_layout(&self, a: &Args) -> Result<Value, String> {
+        let (p, r) = self.cell_arg(a)?;
+        let root = p.root.clone().ok_or("the project has not been saved")?;
+        let rev = a.0.get("rev").and_then(Value::as_str).unwrap_or("HEAD");
+        let old = if rev == "saved" {
+            Project::open(&root).map_err(|e| e.to_string())?
+        } else {
+            ics_core::layout_diff::open_revision(&root, rev)?
+        };
+        let empty = ics_core::Layout::default();
+        let d = ics_core::layout_diff::diff(old.layout(&r).unwrap_or(&empty), &old, layout_of(p, &r)?, p);
+        let t = &p.tech;
+        let um2 = |v: i128| sig(v as f64 / (t.dbu_per_um.max(1) as f64).powi(2));
+        let layers: Vec<Value> = d
+            .layers
+            .iter()
+            .map(|l| {
+                let boxes = |reg: &ics_core::region::Region| -> Vec<Value> {
+                    reg.parts().iter().take(MAX_LISTED).filter_map(|p| p.bbox()).map(|b| rect_um(t, b)).collect()
+                };
+                json!({
+                    "layer": t.layers.get(l.layer).map_or(format!("#{}", l.layer), |d| d.name.clone()),
+                    "added_um2": um2(l.added.area()),
+                    "removed_um2": um2(l.removed.area()),
+                    "added": boxes(&l.added),
+                    "removed": boxes(&l.removed),
+                })
+            })
+            .collect();
+        Ok(json!({
+            "cell": r.to_string(),
+            "against": rev,
+            "identical": d.is_empty(),
+            "layers": layers,
+            "placed": d.placed,
+            "removed_placements": d.unplaced,
+            "moved": d.moved,
+        }))
     }
 
     fn run_signoff(&mut self, a: &Args) -> Result<Value, String> {

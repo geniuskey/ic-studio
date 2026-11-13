@@ -15,8 +15,10 @@ use crate::theme::{self, Palette};
 
 mod assist;
 mod commands;
+mod compare;
 mod edit;
 mod live;
+mod smart;
 mod verify;
 pub use assist::Clip;
 pub use commands::{LayAction, Partial};
@@ -223,6 +225,10 @@ pub struct LayoutEditor {
     /// Pull drawn and moved geometry to exactly the minimum spacing from its neighbours.
     pub magnet: bool,
     magnet_gaps: Vec<(IRect, i64)>,
+    /// Draw symmetry axes, alignments and fixed items.
+    pub show_constraints: bool,
+    /// Differences against a saved or committed version.
+    pub compare: Option<compare::CompareView>,
     /// First corner of a box entered with two clicks.
     box_start: Option<(i64, i64)>,
     /// Next box zooms the view (Z).
@@ -302,6 +308,8 @@ impl Default for LayoutEditor {
             drd: true,
             magnet: true,
             magnet_gaps: vec![],
+            show_constraints: true,
+            compare: None,
             box_start: None,
             zoom_box: false,
             xfer: None,
@@ -2218,9 +2226,12 @@ impl LayoutEditor {
         );
 
         if out.changed {
+            self.keep_constraints(l, cx);
             self.layout_changed();
         }
         self.live_tick(ui.ctx(), l, cx);
+        self.draw_constraints(&painter, &self.view, rect, &pal, l, cx);
+        self.draw_compare(&painter, &self.view, rect, &pal);
         self.draw_verify(&painter, &self.view, rect, &pal);
         self.draw_live(&painter, &self.view, rect, &pal, hover);
         if self.show_flylines {
@@ -2909,9 +2920,14 @@ impl LayoutEditor {
             changed = true;
             cx.touched();
         }
+        if self.constraints_panel(ui, l, cx) {
+            changed = true;
+            cx.touched();
+        }
         if changed {
             self.layout_changed();
         }
+        self.compare_panel(ui, cx);
         self.verify_panel(ui, l, cx);
         (changed, open)
     }

@@ -12,6 +12,7 @@ pub mod circuit;
 pub mod engine;
 pub mod linalg;
 pub mod ngspice;
+pub mod optimize;
 pub mod results;
 
 use std::time::Instant;

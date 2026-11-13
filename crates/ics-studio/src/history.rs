@@ -46,6 +46,11 @@ impl<T: Clone + PartialEq> History<T> {
         }
     }
 
+    /// The state before the last modification.
+    pub fn last(&self) -> Option<&T> {
+        self.undo.last()
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }

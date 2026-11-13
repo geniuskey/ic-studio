@@ -355,6 +355,9 @@ pub struct Layout {
     pub instances: Vec<CellInst>,
     #[serde(default)]
     pub next_id: u64,
+    /// Placement constraints between this cell's items (symmetry, alignment, fixed).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constraints: Vec<crate::constraints::Constraint>,
 }
 
 impl Layout {
@@ -399,6 +402,9 @@ impl Layout {
     pub fn remove(&mut self, id: u64) {
         self.shapes.retain(|s| s.id != id);
         self.instances.retain(|s| s.id != id);
+        if !self.constraints.is_empty() {
+            crate::constraints::forget(&mut self.constraints, id);
+        }
     }
 
     /// Move a shape or an instance.

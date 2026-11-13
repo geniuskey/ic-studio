@@ -105,6 +105,30 @@ enum Cmd {
         #[arg(long)]
         fix: bool,
     },
+    /// Compact a cell's layout toward the given directions (fixed items stay, constraints hold,
+    /// no new DRC violations) and save the project.
+    Compact {
+        project: PathBuf,
+        cell: String,
+        /// Directions in order: left, right, down, up.
+        #[arg(long, value_delimiter = ',', default_value = "left,down")]
+        dir: Vec<String>,
+        /// Do not infer symmetry constraints from the schematic's matched devices first.
+        #[arg(long)]
+        no_infer: bool,
+    },
+    /// Compare a cell's layout geometry (flattened, XOR per layer) with a git revision of the
+    /// project or with another project directory. Non-zero exit when they differ.
+    Diff {
+        project: PathBuf,
+        cell: String,
+        /// Git revision to compare with.
+        #[arg(long, default_value = "HEAD")]
+        rev: String,
+        /// Another project directory to compare with instead of a revision.
+        #[arg(long)]
+        against: Option<PathBuf>,
+    },
     /// Extract nets and transistors from a cell layout and print them as SPICE.
     Extract { project: PathBuf, cell: String },
     /// Compare a cell's layout with its schematic (non-zero exit on differences).
@@ -429,6 +453,63 @@ fn run(cli: Cli) -> Result<(), String> {
             if !rep.violations.is_empty() {
                 return Err("DRC failed".into());
             }
+        }
+        Cmd::Compact { project, cell, dir, no_infer } => {
+            use ics_core::compact::Dir;
+            let mut p = Project::open(&project).map_err(|e| e.to_string())?;
+            let r = resolve(&p, &cell)?;
+            let dirs = dir
+                .iter()
+                .map(|d| match d.as_str() {
+                    "left" => Ok(Dir::Left),
+                    "right" => Ok(Dir::Right),
+                    "down" => Ok(Dir::Down),
+                    "up" => Ok(Dir::Up),
+                    _ => Err(format!("unknown direction '{d}' (left, right, down, up)")),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let deck = ics_core::drc::parse_any(&p.tech.deck_text(), &p.tech).ok().map(|d| d.deck);
+            let mut lay = p.cell_mut(&r).unwrap().layout.take().ok_or("cell has no layout")?;
+            if !no_infer && let Some(sch) = p.cell(&r).and_then(|c| c.schematic.as_ref()) {
+                let n = ics_core::constraints::infer(&mut lay, &p, sch);
+                if n > 0 {
+                    println!("inferred {n} symmetry constraint(s)");
+                }
+            }
+            let um = |v: i64| v as f64 / p.tech.dbu_per_um.max(1) as f64;
+            for d in dirs {
+                let rep = ics_core::compact::compact(&mut lay, &p, &p.tech, deck.as_ref(), d, &Default::default());
+                if let (Some(b), Some(a)) = (rep.before, rep.after) {
+                    println!(
+                        "{d:?}: {} move(s), extent {} x {} -> {} x {} um",
+                        rep.moved,
+                        um(b.width()),
+                        um(b.height()),
+                        um(a.width()),
+                        um(a.height())
+                    );
+                }
+            }
+            p.cell_mut(&r).unwrap().layout = Some(lay);
+            p.save().map_err(|e| e.to_string())?;
+        }
+        Cmd::Diff { project, cell, rev, against } => {
+            let p = Project::open(&project).map_err(|e| e.to_string())?;
+            let r = resolve(&p, &cell)?;
+            let (old, what) = match &against {
+                Some(dir) => (Project::open(dir).map_err(|e| e.to_string())?, dir.display().to_string()),
+                None => (ics_core::layout_diff::open_revision(&project, &rev)?, rev.clone()),
+            };
+            let empty = ics_core::Layout::default();
+            let d = ics_core::layout_diff::diff(old.layout(&r).unwrap_or(&empty), &old, p.layout(&r).unwrap_or(&empty), &p);
+            let names = |l: usize| p.tech.layers.get(l).map_or(format!("#{l}"), |d| d.name.clone());
+            for line in d.summary(&names, p.tech.dbu_per_um) {
+                println!("{line}");
+            }
+            if !d.is_empty() {
+                return Err(format!("{r} differs from {what}"));
+            }
+            println!("{r}: no layout differences against {what}");
         }
         Cmd::Extract { project, cell } => {
             let p = Project::open(&project).map_err(|e| e.to_string())?;

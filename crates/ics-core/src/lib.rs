@@ -3,7 +3,9 @@
 //! This crate is UI-independent so it can back the desktop app, the CLI and future
 //! Python / MCP automation interfaces.
 
+pub mod compact;
 pub mod connectivity;
+pub mod constraints;
 pub mod drc;
 pub mod drc_fix;
 pub mod examples;
@@ -13,11 +15,13 @@ pub mod gds;
 pub mod geom;
 pub mod hier;
 pub mod layout;
+pub mod layout_diff;
 pub mod layout_gen;
 pub mod lvs;
 pub mod matching;
 pub mod netlist;
 pub mod oasis;
+pub mod optimize;
 pub mod pcell;
 pub mod pdk;
 pub mod pex;

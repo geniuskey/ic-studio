@@ -161,7 +161,7 @@ impl LayoutEditor {
         }
     }
 
-    fn zoom_to(&mut self, a: IRect) {
+    pub(super) fn zoom_to(&mut self, a: IRect) {
         self.push_view();
         self.view.center_on((a.x0 + a.x1) as f64 / 2.0, (a.y0 + a.y1) as f64 / 2.0);
         let size = a.width().max(a.height()).max(200) as f64;

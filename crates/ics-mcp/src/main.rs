@@ -223,6 +223,8 @@ mod tests {
             "route",
             "run_drc",
             "fix_drc",
+            "compact",
+            "diff_layout",
             "extract",
             "run_lvs",
             "run_signoff",

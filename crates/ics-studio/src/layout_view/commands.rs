@@ -5,6 +5,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use eframe::egui::{self, Pos2, Rect, Stroke, StrokeKind, Vec2};
+use ics_core::compact::Dir;
+use ics_core::constraints::{Axis, Edge};
 use ics_core::geom::IRect;
 use ics_core::layout::{Geometry, Layout, Trans};
 use ics_core::tech::Tech;
@@ -51,6 +53,23 @@ pub enum LayAction {
     LiveDrc,
     QuickFix,
     FixAll,
+    SymmetryV,
+    SymmetryH,
+    AlignLeft,
+    AlignBottom,
+    AlignCenterX,
+    AlignCenterY,
+    FixInPlace,
+    InferConstraints,
+    ClearConstraints,
+    CompactLeft,
+    CompactRight,
+    CompactDown,
+    CompactUp,
+    Compact,
+    CompareSaved,
+    CompareHead,
+    NextDifference,
 }
 
 impl LayAction {
@@ -103,6 +122,23 @@ impl LayAction {
             LayAction::LiveDrc => "Toggle Live DRC",
             LayAction::QuickFix => "Quick Fix",
             LayAction::FixAll => "Fix All Violations",
+            LayAction::SymmetryV => "Symmetric About Vertical Axis",
+            LayAction::SymmetryH => "Symmetric About Horizontal Axis",
+            LayAction::AlignLeft => "Keep Left Edges Aligned",
+            LayAction::AlignBottom => "Keep Bottom Edges Aligned",
+            LayAction::AlignCenterX => "Keep Centres Aligned Vertically",
+            LayAction::AlignCenterY => "Keep Centres Aligned Horizontally",
+            LayAction::FixInPlace => "Fix In Place",
+            LayAction::InferConstraints => "Infer Constraints From Schematic",
+            LayAction::ClearConstraints => "Remove Constraints",
+            LayAction::CompactLeft => "Compact Left",
+            LayAction::CompactRight => "Compact Right",
+            LayAction::CompactDown => "Compact Down",
+            LayAction::CompactUp => "Compact Up",
+            LayAction::Compact => "Compact (Left, Then Down)",
+            LayAction::CompareSaved => "Compare With Saved",
+            LayAction::CompareHead => "Compare With Git HEAD",
+            LayAction::NextDifference => "Next Difference",
         }
     }
 
@@ -145,6 +181,23 @@ impl LayAction {
             LayAction::LiveDrc => "",
             LayAction::QuickFix => "Ctrl+.",
             LayAction::FixAll => "",
+            LayAction::SymmetryV
+            | LayAction::SymmetryH
+            | LayAction::AlignLeft
+            | LayAction::AlignBottom
+            | LayAction::AlignCenterX
+            | LayAction::AlignCenterY
+            | LayAction::FixInPlace
+            | LayAction::InferConstraints
+            | LayAction::ClearConstraints
+            | LayAction::CompactLeft
+            | LayAction::CompactRight
+            | LayAction::CompactDown
+            | LayAction::CompactUp
+            | LayAction::Compact
+            | LayAction::CompareSaved
+            | LayAction::CompareHead
+            | LayAction::NextDifference => "",
         }
     }
 
@@ -218,7 +271,34 @@ impl LayAction {
                 Some(LayAction::MarkNet),
             ],
         ),
-        ("Assist", &[Some(LayAction::LiveDrc), Some(LayAction::QuickFix), Some(LayAction::FixAll)]),
+        (
+            "Assist",
+            &[
+                Some(LayAction::LiveDrc),
+                Some(LayAction::QuickFix),
+                Some(LayAction::FixAll),
+                None,
+                Some(LayAction::SymmetryV),
+                Some(LayAction::SymmetryH),
+                Some(LayAction::AlignLeft),
+                Some(LayAction::AlignBottom),
+                Some(LayAction::AlignCenterX),
+                Some(LayAction::AlignCenterY),
+                Some(LayAction::FixInPlace),
+                Some(LayAction::InferConstraints),
+                Some(LayAction::ClearConstraints),
+                None,
+                Some(LayAction::Compact),
+                Some(LayAction::CompactLeft),
+                Some(LayAction::CompactRight),
+                Some(LayAction::CompactDown),
+                Some(LayAction::CompactUp),
+                None,
+                Some(LayAction::CompareSaved),
+                Some(LayAction::CompareHead),
+                Some(LayAction::NextDifference),
+            ],
+        ),
     ];
 
     /// The canvas pop-up menu (middle click, or right click with no command running).
@@ -355,6 +435,23 @@ impl LayoutEditor {
                 self.open_quick_fix(l, cx, at, hover);
             }
             LayAction::FixAll => return self.fix_all(l, cx) > 0,
+            LayAction::SymmetryV => return self.constrain_symmetry(l, cx, Axis::Vertical),
+            LayAction::SymmetryH => return self.constrain_symmetry(l, cx, Axis::Horizontal),
+            LayAction::AlignLeft => return self.constrain_align(l, cx, Edge::Left),
+            LayAction::AlignBottom => return self.constrain_align(l, cx, Edge::Bottom),
+            LayAction::AlignCenterX => return self.constrain_align(l, cx, Edge::CenterX),
+            LayAction::AlignCenterY => return self.constrain_align(l, cx, Edge::CenterY),
+            LayAction::FixInPlace => return self.constrain_fixed(l),
+            LayAction::InferConstraints => return self.infer_constraints(l, cx),
+            LayAction::ClearConstraints => return self.clear_constraints(l),
+            LayAction::CompactLeft => return self.compact(l, cx, &[Dir::Left]),
+            LayAction::CompactRight => return self.compact(l, cx, &[Dir::Right]),
+            LayAction::CompactDown => return self.compact(l, cx, &[Dir::Down]),
+            LayAction::CompactUp => return self.compact(l, cx, &[Dir::Up]),
+            LayAction::Compact => return self.compact(l, cx, &[Dir::Left, Dir::Down]),
+            LayAction::CompareSaved => self.compare_with(l, cx, None),
+            LayAction::CompareHead => self.compare_with(l, cx, Some("HEAD")),
+            LayAction::NextDifference => self.next_difference(),
         }
         false
     }

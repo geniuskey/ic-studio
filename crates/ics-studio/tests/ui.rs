@@ -1448,3 +1448,80 @@ fn live_drc_quick_fix() {
     let undone = wait(&mut h);
     assert!(undone.contains(&new), "undo brings the violation back");
 }
+
+/// Constraints inferred from the matched devices of the two-stage OTA hold, are drawn, and a
+/// moved member drags its mirror partner along.
+#[test]
+fn layout_constraints() {
+    use ics_studio::layout_view::LayAction;
+    let mut h = app(demo_args("ota2s", "layout", false));
+    let r = h.state().active_ref().cloned().unwrap();
+    let layout = |h: &Harness<'_, IcStudio>| {
+        let p = h.state().project().unwrap();
+        p.cell(&r).unwrap().layout.clone().unwrap()
+    };
+    h.state_mut().command(Command::Lay(LayAction::InferConstraints));
+    h.run_steps(3);
+    let l = layout(&h);
+    assert!(!l.constraints.is_empty(), "{:?}", h.state().console_lines().collect::<Vec<_>>());
+    let p = h.state().project().unwrap().clone();
+    assert!(ics_core::constraints::errors(&l, &p).iter().all(|e| *e == 0));
+    shot(&mut h, "41_layout_constraints");
+}
+
+/// Compare With Saved: geometry drawn since the last save shows as added.
+#[test]
+fn layout_compare_saved() {
+    use ics_studio::layout_view::LayAction;
+    let dir = std::env::temp_dir().join(format!("ics-ui-compare-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    ics_core::examples::demo_project().save_as(&dir).unwrap();
+    let args = LaunchArgs {
+        project: Some(dir.clone()),
+        demo: false,
+        workspace: Some("layout".into()),
+        cell: Some("cmos_inverter".into()),
+        run: false,
+    };
+    let mut h = app(args);
+    let r = h.state().active_ref().cloned().unwrap();
+    h.state_mut().command(Command::CiwEval("dbCreateRect(geGetEditCellView() \"metal2\" list(1:1 3:2))".into()));
+    h.run_steps(2);
+    h.state_mut().command(Command::Lay(LayAction::CompareSaved));
+    h.run_steps(3);
+    let ed = h.state().layout_editor(&r).unwrap();
+    let c = ed.compare.as_ref().expect("compare view");
+    assert_eq!(c.diff.layers.len(), 1, "{:?}", h.state().console_lines().collect::<Vec<_>>());
+    assert_eq!(c.diff.layers[0].added.area(), 2_000_000);
+    shot(&mut h, "42_layout_compare");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Compacting the schematic-driven placement of the full adder shrinks it without adding DRC
+/// violations, as one undoable edit.
+#[test]
+fn layout_compact() {
+    use ics_studio::layout_view::LayAction;
+    let mut h = full_adder_placed("compact");
+    h.state_mut().command(Command::SetWorkspace(Workspace::Layout));
+    h.run_steps(3);
+    let r = h.state().active_ref().cloned().unwrap();
+    let get = |h: &Harness<'_, IcStudio>| h.state().project().unwrap().cell(&r).unwrap().layout.clone().unwrap();
+    let before = get(&h);
+    let p = h.state().project().unwrap().clone();
+    let deck = ics_core::drc::parse_any(&p.tech.deck_text(), &p.tech).unwrap().deck;
+    let v0 = ics_core::drc::run(&deck, &before, &p, &p.tech).violations.len();
+    h.state_mut().command(Command::Lay(LayAction::Compact));
+    h.run_steps(3);
+    let after = get(&h);
+    let area = |l: &ics_core::Layout| {
+        let b = ics_core::constraints::item_boxes(l, &p).into_values().reduce(|a, b| a.union(&b)).unwrap();
+        b.width() as i128 * b.height() as i128
+    };
+    assert!(area(&after) < area(&before), "{:?}", h.state().console_lines().collect::<Vec<_>>());
+    assert!(ics_core::drc::run(&deck, &after, &p, &p.tech).violations.len() <= v0);
+    shot(&mut h, "43_layout_compact");
+    h.state_mut().command(Command::Undo);
+    h.run_steps(2);
+    assert_eq!(get(&h), before);
+}
