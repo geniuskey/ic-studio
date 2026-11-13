@@ -19,6 +19,7 @@ pub mod hier;
 pub mod layout;
 pub mod layout_diff;
 pub mod layout_gen;
+pub mod lefdef;
 pub mod lvs;
 pub mod matching;
 pub mod netlist;
