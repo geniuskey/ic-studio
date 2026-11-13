@@ -88,8 +88,25 @@ pub const LIGHT: Palette = Palette {
     highlight: Color32::from_rgb(0xe8, 0x6a, 0x10),
 };
 
+/// System fonts with Korean, Chinese and Japanese glyphs, most specific first. The first one
+/// found is the last fallback of both families, so names, labels and copilot answers in those
+/// scripts render instead of tofu.
+const CJK_FONTS: &[&str] = &[
+    "C:\\Windows\\Fonts\\malgun.ttf",
+    "C:\\Windows\\Fonts\\gulim.ttc",
+    "C:\\Windows\\Fonts\\msyh.ttc",
+    "C:\\Windows\\Fonts\\YuGothR.ttc",
+    "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+    "/System/Library/Fonts/Supplemental/AppleGothic.ttf",
+    "/System/Library/Fonts/PingFang.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+];
+
 /// Use the monospace font (Hack) as a fallback for UI text so arrows and geometric
-/// symbols render instead of tofu.
+/// symbols render instead of tofu, and a system CJK font after it when there is one.
 pub fn setup_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     let mono: Vec<String> = fonts.families.get(&FontFamily::Monospace).cloned().unwrap_or_default();
@@ -98,6 +115,12 @@ pub fn setup_fonts(ctx: &egui::Context) {
             if !prop.contains(&f) {
                 prop.push(f);
             }
+        }
+    }
+    if let Some(bytes) = CJK_FONTS.iter().find_map(|p| std::fs::read(p).ok()) {
+        fonts.font_data.insert("system-cjk".into(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
+        for fam in [FontFamily::Proportional, FontFamily::Monospace] {
+            fonts.families.entry(fam).or_default().push("system-cjk".into());
         }
     }
     ctx.set_fonts(fonts);

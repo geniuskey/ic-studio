@@ -13,7 +13,7 @@ use serde_json::{Map, Value, json};
 /// Model turns per question before the copilot gives up.
 const MAX_TURNS: usize = 16;
 const TOOL_TIMEOUT: Duration = Duration::from_secs(600);
-pub const DEFAULT_MODEL: &str = "gemini-2.5-flash";
+pub const DEFAULT_MODEL: &str = "gemini-flash-latest";
 /// Tools the copilot does not get: it works on the project already open in the window.
 const HIDDEN: [&str; 3] = ["new_project", "open_project", "gui_status"];
 
@@ -94,8 +94,37 @@ impl Default for Copilot {
     }
 }
 
+const KEY_VARS: [&str; 2] = ["GEMINI_API_KEY", "GOOGLE_API_KEY"];
+
+/// `KEY=value` lines of a `.env` file (quotes and `export ` stripped).
+fn dotenv(path: &std::path::Path) -> Vec<(String, String)> {
+    let Ok(text) = std::fs::read_to_string(path) else { return vec![] };
+    text.lines()
+        .filter_map(|l| {
+            let l = l.trim();
+            let l = l.strip_prefix("export ").unwrap_or(l);
+            let (k, v) = l.split_once('=').filter(|_| !l.starts_with('#'))?;
+            Some((k.trim().to_string(), v.trim().trim_matches(['"', '\'']).to_string()))
+        })
+        .collect()
+}
+
+/// The API key from a `.env` file in one of `dirs` (e.g. the project folder) or the working
+/// directory, or their parents; else from the environment. A `.env` next to the work wins
+/// over a key set globally.
+fn env_key_in(dirs: &[std::path::PathBuf]) -> Option<String> {
+    let cwd = std::env::current_dir().ok();
+    let from_file = dirs.iter().chain(&cwd).flat_map(|d| d.ancestors().take(4)).find_map(|d| {
+        let vars = dotenv(&d.join(".env"));
+        KEY_VARS.iter().find_map(|k| vars.iter().find(|(n, v)| n == k && !v.is_empty()).map(|(_, v)| v.clone()))
+    });
+    from_file.or_else(|| {
+        KEY_VARS.iter().find_map(|k| std::env::var(k).ok().filter(|v| !v.trim().is_empty())).map(|k| k.trim().to_string())
+    })
+}
+
 fn env_key() -> Option<String> {
-    ["GEMINI_API_KEY", "GOOGLE_API_KEY"].iter().find_map(|k| std::env::var(k).ok().filter(|v| !v.trim().is_empty()))
+    env_key_in(&[])
 }
 
 /// The MCP tools as Gemini function declarations.
@@ -113,7 +142,7 @@ fn system_prompt(context: &str) -> String {
          layout, DRC/LVS). You act on the project open in the user's window through the tools; the user sees every \
          change live. Layout coordinates are in µm with y up. Work in small verified steps: inspect first \
          (project_info, layout_summary, get_netlist), make the change, then check it (run_drc, fix_drc, run_lvs, \
-         simulate). Never invent results: report what the tools return. Answer briefly, in the user's language.\n\n{context}"
+         simulate). Never invent results: report what the tools return. Do not call save_project unless the user asks to save; edits stay in the window, where the user can undo them. Answer briefly, in the user's language, as plain text without Markdown.\n\n{context}"
     )
 }
 
@@ -198,16 +227,21 @@ impl Copilot {
 
     /// Ask a question; `context` describes the open project and cell for the model.
     pub fn ask(&mut self, ctx: &egui::Context, question: &str, context: &str) {
+        self.ask_in(ctx, question, context, &[]);
+    }
+
+    /// [`Self::ask`], also looking for a `.env` with the key in `dirs`.
+    pub fn ask_in(&mut self, ctx: &egui::Context, question: &str, context: &str, dirs: &[std::path::PathBuf]) {
         let question = question.trim();
         if question.is_empty() || self.busy() {
             return;
         }
         self.log.push(Entry::User(question.to_string()));
-        let key = Some(self.key.trim().to_string()).filter(|k| !k.is_empty()).or_else(env_key);
+        let key = Some(self.key.trim().to_string()).filter(|k| !k.is_empty()).or_else(|| env_key_in(dirs));
         let key = match key {
             Some(k) => k,
             None => {
-                self.log.push(Entry::Error("Set GEMINI_API_KEY or enter an API key above.".into()));
+                self.log.push(Entry::Error("Set GEMINI_API_KEY (environment or .env) or enter an API key above.".into()));
                 return;
             }
         };
@@ -263,7 +297,7 @@ impl Copilot {
                     egui::TextEdit::singleline(&mut self.key)
                         .password(true)
                         .desired_width(120.0)
-                        .hint_text(if env_key().is_some() { "from environment" } else { "GEMINI_API_KEY" }),
+                        .hint_text(if env_key().is_some() { "from environment / .env" } else { "GEMINI_API_KEY" }),
                 )
                 .labelled_by(k.id);
                 if ui.add_enabled(!self.busy(), egui::Button::new("Clear")).clicked() {
@@ -288,7 +322,7 @@ impl Copilot {
                             ui.label(egui::RichText::new(format!("You: {t}")).strong());
                         }
                         Entry::Assistant(t) => {
-                            ui.label(t);
+                            ui.label(t.replace("**", "").replace('`', ""));
                         }
                         Entry::Tool { name, args, result, error } => {
                             let color = if *error { pal.danger } else { pal.text_weak };
@@ -330,6 +364,16 @@ impl Copilot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_dotenv_lines() {
+        let d = std::env::temp_dir().join(format!("ics-dotenv-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join(".env"), "# c\r\nexport A = \"x y\"\r\nGEMINI_API_KEY='k1'\r\n").unwrap();
+        let v = dotenv(&d.join(".env"));
+        assert_eq!(v, [("A".to_string(), "x y".to_string()), ("GEMINI_API_KEY".to_string(), "k1".to_string())]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     #[test]
     fn declarations_are_gemini_functions() {

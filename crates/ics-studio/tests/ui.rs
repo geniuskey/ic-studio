@@ -1623,3 +1623,46 @@ fn layout_by_example() {
     shot(&mut h, "46_layout_by_example");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The copilot against the real Gemini API (needs GEMINI_API_KEY in the environment or a .env):
+/// `cargo test -p ics-studio --test ui copilot_live -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn copilot_live() {
+    let dir = demo_without_layout("copilot-live", "nand2");
+    let args =
+        LaunchArgs { project: Some(dir), demo: false, workspace: Some("layout".into()), cell: Some("nand2".into()), run: false };
+    let mut h = app(args);
+    let custom = std::env::var("ICS_COPILOT_PROMPT").ok();
+    let q = custom.clone().unwrap_or_else(|| {
+        "Build the layout of nand2 from its schematic: place the devices, route all flylines, run DRC and fix any \
+         violations, then run LVS. Report the result in two sentences."
+            .into()
+    });
+    h.state_mut().command(Command::CopilotAsk(q));
+    let t = std::time::Instant::now();
+    h.run_steps(2);
+    while h.state().is_busy() && t.elapsed() < Duration::from_secs(300) {
+        std::thread::sleep(Duration::from_millis(20));
+        h.step();
+    }
+    h.run_steps(3);
+    use ics_studio::copilot::Entry;
+    let log = h.state_mut().copilot_mut().log.clone();
+    for e in &log {
+        match e {
+            Entry::Tool { name, args, result, error } => {
+                let r: String = result.chars().take(300).collect();
+                eprintln!("TOOL {name} {args}\n  -> {}{r}", if *error { "ERROR " } else { "" });
+            }
+            other => eprintln!("{other:?}"),
+        }
+    }
+    eprintln!("took {:.1} s", t.elapsed().as_secs_f64());
+    shot(&mut h, "47_copilot_live");
+    assert!(!log.iter().any(|e| matches!(e, Entry::Error(_))), "copilot error");
+    assert!(matches!(log.last(), Some(Entry::Assistant(_))), "no final answer");
+    if custom.is_none() {
+        assert_eq!(flylines(&h, "nand2"), 0, "unrouted flylines left");
+    }
+}

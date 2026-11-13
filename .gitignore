@@ -2,3 +2,5 @@
 **/*.json.tmp
 .DS_Store
 /examples/
+
+.env

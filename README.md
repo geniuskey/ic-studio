@@ -102,7 +102,8 @@ Linux needs the usual windowing libraries:
 - Layout by example (Layout Generators > By Example): a cell with the same circuit as a
   finished one is matched device for device by topology and placed like it, sized from its
   own schematic, then routed (`ics place-like`, MCP `place_like`)
-- Design copilot (Tools > Design Copilot, `GEMINI_API_KEY`): a Gemini chat that works on
+- Design copilot (Tools > Design Copilot; `GEMINI_API_KEY` from a `.env` in the project or working
+  folder, else the environment; model `gemini-flash-latest`): a Gemini chat that works on
   the open project through the MCP tools, every edit visible and undoable in the window
 
 **Verification**

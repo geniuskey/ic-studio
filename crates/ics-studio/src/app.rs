@@ -890,7 +890,8 @@ impl IcStudio {
             Command::CopilotAsk(q) => {
                 self.copilot.open = true;
                 let context = self.copilot_context();
-                self.copilot.ask(ctx, &q, &context);
+                let dirs: Vec<PathBuf> = self.project.as_ref().and_then(|p| p.root.clone()).into_iter().collect();
+                self.copilot.ask_in(ctx, &q, &context, &dirs);
             }
             Command::CiwEval(src) => {
                 self.ciw.push(CiwKind::Input, src.clone());
@@ -3785,7 +3786,8 @@ impl eframe::App for IcStudio {
         self.optimizer_window(&ctx);
         if let Some(q) = self.copilot.window(&ctx) {
             let context = self.copilot_context();
-            self.copilot.ask(&ctx, &q, &context);
+            let dirs: Vec<PathBuf> = self.project.as_ref().and_then(|p| p.root.clone()).into_iter().collect();
+            self.copilot.ask_in(&ctx, &q, &context, &dirs);
         }
         self.stream_map_window(&ctx);
         self.fill_window(&ctx);
