@@ -368,6 +368,27 @@ fn rule_designer() {
 }
 
 #[test]
+fn rule_designer_without_project() {
+    let args = LaunchArgs { project: None, demo: false, workspace: None, cell: None, run: false };
+    let mut h = app(args);
+    assert!(h.state().project().is_none());
+    h.state_mut().command(Command::RuleDesigner);
+    h.run_steps(6);
+    assert!(h.state().rule_designer().open);
+    let tech = ics_core::Tech::generic();
+    let text = h.state().rule_designer().deck_text(&tech);
+    assert!(!ics_core::drc::parse_deck(&text, &tech).unwrap().rules.is_empty());
+    shot(&mut h, "31_rule_designer_standalone");
+    let dir = std::env::temp_dir().join(format!("ics_rd_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("rules.deck");
+    h.state_mut().rule_designer_mut().save_file(&tech, &path, true).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+    assert_eq!(h.state().rule_designer().file(), Some(path.as_path()));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn ciw_console() {
     let args = LaunchArgs {
         project: None,

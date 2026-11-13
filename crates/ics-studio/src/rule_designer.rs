@@ -2,8 +2,10 @@
 //! layers are edited as forms, every rule is self-tested on generated pass / fail patterns
 //! with the real DRC engine, a coverage matrix shows which checks each layer has, and the
 //! deck can be linted, checked on the active cell and written back to the technology.
+//! Without a project it edits deck files against a generic or PDK technology.
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, channel};
 
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
@@ -296,6 +298,10 @@ pub struct RuleDesigner {
     status: Option<(bool, String)>,
     /// Layer picked in the add-rule gallery.
     add_layer: usize,
+    /// Technology used when no project is open.
+    own_tech: Option<Tech>,
+    /// Deck file the draft was opened from or saved to.
+    file: Option<PathBuf>,
 }
 
 /// A designer action that the toolbar and the guide share.
@@ -308,6 +314,11 @@ enum Act {
     Check,
     Apply,
     ApplyRun,
+    OpenDeck,
+    SaveDeck,
+    SaveDeckAs,
+    LoadPdk,
+    GenericTech,
 }
 
 impl Default for RuleDesigner {
@@ -334,6 +345,8 @@ impl Default for RuleDesigner {
             job: None,
             status: None,
             add_layer: 0,
+            own_tech: None,
+            file: None,
         }
     }
 }
@@ -513,6 +526,24 @@ impl RuleDesigner {
         self.open = true;
     }
 
+    /// Open the window without a project, on the last standalone technology or the generic one.
+    pub fn show_standalone(&mut self) {
+        let tech = self.own_tech.take().unwrap_or_else(Tech::generic);
+        if !self.open || self.tech_sig != sig(&tech) {
+            match self.file.clone() {
+                Some(path) => self.open_file(&tech, &path, true),
+                None => self.load(&tech, &tech.deck_text()),
+            }
+        }
+        self.own_tech = Some(tech);
+        self.open = true;
+    }
+
+    /// Path of the deck file the draft was opened from or saved to.
+    pub fn file(&self) -> Option<&Path> {
+        self.file.as_deref()
+    }
+
     pub fn is_checking(&self) -> bool {
         self.job.is_some()
     }
@@ -523,25 +554,85 @@ impl RuleDesigner {
     }
 
     fn load(&mut self, tech: &Tech, text: &str) {
-        self.notes.clear();
-        match drc::parse_any(text, tech) {
-            Ok(p) => {
-                self.deck = p.deck;
-                self.notes = p.notes;
-            }
+        let (deck, notes) = match drc::parse_any(text, tech) {
+            Ok(p) => (p.deck, p.notes),
             Err(errs) => {
-                self.deck = drc::parse_deck(&drc::default_deck_text(tech), tech).unwrap_or_default();
-                self.notes.push("The technology deck has errors; started from the rules derived from the layers:".into());
-                self.notes.extend(errs.iter().map(|e| e.to_string()));
+                let mut notes =
+                    vec!["The technology deck has errors; started from the rules derived from the layers:".to_string()];
+                notes.extend(errs.iter().map(|e| e.to_string()));
+                (drc::parse_deck(&drc::default_deck_text(tech), tech).unwrap_or_default(), notes)
             }
-        }
+        };
+        self.set_deck(tech, deck, notes);
         self.baseline = rule_design::deck_text(&self.deck, tech);
+    }
+
+    fn set_deck(&mut self, tech: &Tech, deck: Deck, notes: Vec<String>) {
+        self.deck = deck;
+        self.notes = notes;
         self.tech_sig = sig(tech);
         self.sel = if self.deck.rules.is_empty() { Sel::None } else { Sel::Rule(0) };
         self.check = None;
         self.text_edited = false;
         self.text_errors.clear();
         self.touch();
+    }
+
+    /// Load deck file `path`. An SVRF deck is translated and not kept as the save target.
+    fn open_file(&mut self, tech: &Tech, path: &Path, standalone: bool) {
+        match drc::load_deck(path, tech) {
+            Ok(p) => {
+                let svrf = p.notes.iter().any(|n| n.starts_with("SVRF"));
+                self.set_deck(tech, p.deck, p.notes);
+                if standalone {
+                    self.baseline = rule_design::deck_text(&self.deck, tech);
+                }
+                self.file = (!svrf).then(|| path.to_path_buf());
+                let how = if svrf { " (translated from SVRF; Save as writes an IC Studio deck)" } else { "" };
+                self.status = Some((true, format!("Opened {}{how}", path.display())));
+            }
+            Err(e) => self.status = Some((false, format!("Cannot open deck: {e}"))),
+        }
+    }
+
+    /// Write the draft to deck file `path`.
+    pub fn save_file(&mut self, tech: &Tech, path: &Path, standalone: bool) -> Result<(), String> {
+        let text = rule_design::deck_text(&self.deck, tech);
+        if let Err(errs) = drc::parse_deck(&text, tech) {
+            self.tab = Tab::Issues;
+            return Err(format!("Not saved: {}", errs[0]));
+        }
+        std::fs::write(path, &text).map_err(|e| format!("Cannot write {}: {e}", path.display()))?;
+        if standalone {
+            self.baseline = text;
+            self.touch();
+        }
+        self.file = Some(path.to_path_buf());
+        Ok(())
+    }
+
+    fn save_as(&mut self, tech: &Tech, standalone: bool) {
+        let name =
+            self.file.as_ref().and_then(|f| f.file_name()).map_or("rules.deck".into(), |f| f.to_string_lossy().into_owned());
+        if let Some(path) = rfd::FileDialog::new().add_filter("DRC deck", &["deck", "drc"]).set_file_name(name).save_file() {
+            self.save(tech, &path, standalone);
+        }
+    }
+
+    fn save(&mut self, tech: &Tech, path: &Path, standalone: bool) {
+        self.status = Some(match self.save_file(tech, path, standalone) {
+            Ok(()) => (true, format!("Saved {}", path.display())),
+            Err(e) => (false, e),
+        });
+    }
+
+    /// Use `tech` for the standalone designer, starting from its deck.
+    fn use_tech(&mut self, tech: Tech, file: Option<PathBuf>, notes: Vec<String>) {
+        self.load(&tech, &tech.deck_text());
+        self.notes.extend(notes);
+        self.file = file.filter(|_| !self.notes.iter().any(|n| n.starts_with("SVRF")));
+        self.status = Some((true, format!("Technology {} ({} layers)", tech.name, tech.layers.len())));
+        self.own_tech = Some(tech);
     }
 
     fn touch(&mut self) {
@@ -621,21 +712,38 @@ impl RuleDesigner {
         if !self.open {
             return None;
         }
-        let Some(project) = project else {
+        let own = if project.is_none() { self.own_tech.take() } else { None };
+        let Some(tech) = project.map(|p| &p.tech).or(own.as_ref()) else {
             self.open = false;
             return None;
         };
+        if self.tech_sig != sig(tech) {
+            let draft = self.text.clone();
+            self.load(tech, &draft);
+            self.baseline.clear();
+            self.notes.push(format!("Re-read the draft for technology {}", tech.name));
+        }
         self.poll();
         let mut open = true;
         let r = crate::float::tool_window(ctx, "rule_designer", "DRC Rule Designer", [1220.0, 780.0], &mut open, |ui| {
-            self.ui(ui, project, active)
+            self.ui(ui, tech, project, active)
         });
+        if self.own_tech.is_none() {
+            self.own_tech = own;
+        }
         self.open &= open;
         r.unwrap_or_default()
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, project: &Project, active: Option<&CellRef>) -> Option<DesignerAction> {
-        let tech = &project.tech;
+    fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        tech: &Tech,
+        project: Option<&Project>,
+        active: Option<&CellRef>,
+    ) -> Option<DesignerAction> {
+        let active = active.filter(|_| project.is_some());
+        let standalone = project.is_none();
         let pal = theme::palette(ui.ctx());
         if self.job.is_some() {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
@@ -644,7 +752,7 @@ impl RuleDesigner {
         let mut act = None;
         egui::Panel::top("rd_toolbar")
             .frame(egui::Frame::new().fill(pal.bg_sidebar).inner_margin(egui::Margin::symmetric(10, 6)))
-            .show(ui, |ui| act = self.toolbar(ui, active, tech, &pal));
+            .show(ui, |ui| act = self.toolbar(ui, active, tech, standalone, &pal));
         egui::Panel::left("rd_list")
             .resizable(true)
             .default_size(290.0)
@@ -672,7 +780,7 @@ impl RuleDesigner {
             }
             egui::ScrollArea::vertical().id_salt("rd_main").auto_shrink([false, false]).show(ui, |ui| match self.tab {
                 Tab::Guide => {
-                    if let Some(a) = self.guide(ui, tech, active, &pal) {
+                    if let Some(a) = self.guide(ui, tech, active, standalone, &pal) {
                         act = Some(a);
                     }
                 }
@@ -699,13 +807,23 @@ impl RuleDesigner {
                 Tab::Issues => self.issues(ui, tech, &pal),
             });
         });
-        act.and_then(|a| self.run(a, ui.ctx(), project, active))
+        act.and_then(|a| self.run(a, ui.ctx(), tech, project, active))
     }
 
-    fn run(&mut self, a: Act, ctx: &egui::Context, project: &Project, active: Option<&CellRef>) -> Option<DesignerAction> {
-        let tech = &project.tech;
+    fn run(
+        &mut self,
+        a: Act,
+        ctx: &egui::Context,
+        tech: &Tech,
+        project: Option<&Project>,
+        active: Option<&CellRef>,
+    ) -> Option<DesignerAction> {
+        let standalone = project.is_none();
         match a {
-            Act::Reload => self.load(tech, &tech.deck_text()),
+            Act::Reload => match self.file.clone().filter(|_| standalone) {
+                Some(path) => self.open_file(tech, &path, true),
+                None => self.load(tech, &tech.deck_text()),
+            },
             Act::Defaults => {
                 self.load(tech, &drc::default_deck_text(tech));
                 self.notes.push("Started from the layer defaults (not applied yet)".into());
@@ -722,12 +840,39 @@ impl RuleDesigner {
                 }
             }
             Act::Check => {
-                if let Some(c) = active {
-                    self.start_check(ctx, project, c);
+                if let (Some(p), Some(c)) = (project, active) {
+                    self.start_check(ctx, p, c);
                 }
+            }
+            Act::Apply | Act::ApplyRun if standalone => {
+                self.status = Some((false, "Open a project to apply the deck to its technology".into()));
             }
             Act::Apply => return self.apply_text(tech).map(DesignerAction::Apply),
             Act::ApplyRun => return self.apply_text(tech).map(DesignerAction::ApplyAndRun),
+            Act::OpenDeck => {
+                let pick =
+                    rfd::FileDialog::new().add_filter("DRC deck", &["deck", "drc", "svrf", "rul", "cal", "txt"]).pick_file();
+                if let Some(path) = pick {
+                    self.open_file(tech, &path, standalone);
+                }
+            }
+            Act::SaveDeck => match self.file.clone() {
+                Some(path) => self.save(tech, &path, standalone),
+                None => self.save_as(tech, standalone),
+            },
+            Act::SaveDeckAs => self.save_as(tech, standalone),
+            Act::LoadPdk => {
+                if let Some(path) = rfd::FileDialog::new().add_filter("IC Studio PDK", &["toml"]).pick_file() {
+                    match ics_core::pdk::load(&path) {
+                        Ok(pdk) => {
+                            let notes = pdk.warnings.iter().map(|w| format!("PDK: {w}")).collect();
+                            self.use_tech(pdk.tech, pdk.drc_deck, notes);
+                        }
+                        Err(e) => self.status = Some((false, format!("Cannot load PDK: {e}"))),
+                    }
+                }
+            }
+            Act::GenericTech => self.use_tech(Tech::generic(), None, vec![]),
         }
         None
     }
@@ -742,17 +887,66 @@ impl RuleDesigner {
         self.tab = Tab::Design;
     }
 
-    fn toolbar(&mut self, ui: &mut egui::Ui, active: Option<&CellRef>, tech: &Tech, pal: &Palette) -> Option<Act> {
+    fn toolbar(
+        &mut self,
+        ui: &mut egui::Ui,
+        active: Option<&CellRef>,
+        tech: &Tech,
+        standalone: bool,
+        pal: &Palette,
+    ) -> Option<Act> {
         let mut act = None;
         ui.horizontal(|ui| {
             ui.label(RichText::new("DRC Rule Designer").strong().color(pal.text_strong));
-            ui.label(RichText::new(format!("· {}", tech.name)).color(pal.text_weak));
+            if standalone {
+                ui.menu_button(format!("Technology: {}", tech.name), |ui| {
+                    if ui.button("Generic technology").clicked() {
+                        act = Some(Act::GenericTech);
+                        ui.close();
+                    }
+                    if ui.button("Load PDK…").clicked() {
+                        act = Some(Act::LoadPdk);
+                        ui.close();
+                    }
+                })
+                .response
+                .on_hover_text("Technology the rules are written for (no project is open)");
+            } else {
+                ui.label(RichText::new(format!("· {}", tech.name)).color(pal.text_weak));
+            }
+            if let Some(f) = &self.file {
+                let name = f.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                ui.label(RichText::new(name).monospace().color(pal.text_weak)).on_hover_text(f.display().to_string());
+            }
             if self.dirty {
-                ui.label(RichText::new("● not applied").color(pal.warning))
-                    .on_hover_text("The draft differs from the technology deck. Apply it to use it for DRC.");
+                let (t, h) = if standalone {
+                    ("● unsaved", "The draft differs from the deck file. Save it to keep it.")
+                } else {
+                    ("● not applied", "The draft differs from the technology deck. Apply it to use it for DRC.")
+                };
+                ui.label(RichText::new(t).color(pal.warning)).on_hover_text(h);
             }
             ui.separator();
-            if ui.button("Reload").on_hover_text("Discard the draft and load the technology's deck").clicked() {
+            if ui.button("Open…").on_hover_text("Open a deck file (IC Studio or SVRF)").clicked() {
+                act = Some(Act::OpenDeck);
+            }
+            let save_hover = match &self.file {
+                Some(f) => format!("Write the draft to {}", f.display()),
+                None => "Write the draft to a deck file".into(),
+            };
+            if ui.button("Save").on_hover_text(save_hover).clicked() {
+                act = Some(Act::SaveDeck);
+            }
+            if ui.button("Save as…").on_hover_text("Write the draft to a new deck file").clicked() {
+                act = Some(Act::SaveDeckAs);
+            }
+            ui.separator();
+            let reload = if standalone && self.file.is_some() {
+                "Discard the draft and reopen the deck file"
+            } else {
+                "Discard the draft and load the technology's deck"
+            };
+            if ui.button("Reload").on_hover_text(reload).clicked() {
                 act = Some(Act::Reload);
             }
             if ui.button("Layer defaults").on_hover_text("Start from the rules derived from the layer and via definitions").clicked() {
@@ -764,6 +958,17 @@ impl RuleDesigner {
                 .clicked()
             {
                 act = Some(Act::FillGaps);
+            }
+            if standalone {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Close").clicked() {
+                        self.open = false;
+                    }
+                    if let Some((ok, s)) = &self.status {
+                        ui.label(RichText::new(s).small().color(if *ok { pal.text_weak } else { pal.danger }));
+                    }
+                });
+                return;
             }
             ui.separator();
             let busy = self.job.is_some();
@@ -802,7 +1007,14 @@ impl RuleDesigner {
         act
     }
 
-    fn guide(&mut self, ui: &mut egui::Ui, tech: &Tech, active: Option<&CellRef>, pal: &Palette) -> Option<Act> {
+    fn guide(
+        &mut self,
+        ui: &mut egui::Ui,
+        tech: &Tech,
+        active: Option<&CellRef>,
+        standalone: bool,
+        pal: &Palette,
+    ) -> Option<Act> {
         let mut act = None;
         ui.set_max_width(ui.available_width().min(780.0));
         ui.label(RichText::new("Designing DRC rules").heading().color(pal.text_strong));
@@ -873,21 +1085,41 @@ impl RuleDesigner {
                 self.open_gallery(tech);
             }
         });
-        step(ui, 5, "Try it on your layout", pal, |ui| {
-            ui.label(match active {
-                Some(c) => format!("Count the violations of each rule in {c}. Nothing is changed."),
-                None => "Open a layout cell to try the deck on it.".to_string(),
+        if standalone {
+            step(ui, 5, "Save the deck", pal, |ui| {
+                ui.label(
+                    "No project is open, so the deck is kept in a file. Point a PDK's drc_deck at it to share it with \
+                     every project that loads the PDK, or open it here from a project and apply it.",
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("Save").clicked() {
+                        act = Some(Act::SaveDeck);
+                    }
+                    if ui.button("Save as…").clicked() {
+                        act = Some(Act::SaveDeckAs);
+                    }
+                });
             });
-            if ui.add_enabled(active.is_some() && self.job.is_none(), egui::Button::new("Check active cell")).clicked() {
-                act = Some(Act::Check);
-            }
-        });
-        step(ui, 6, "Apply", pal, |ui| {
-            ui.label("Store the deck as the technology's DRC deck so DRC uses it. Save the project to keep it.");
-            if ui.button("Apply to technology").clicked() {
-                act = Some(Act::Apply);
-            }
-        });
+        } else {
+            step(ui, 5, "Try it on your layout", pal, |ui| {
+                ui.label(match active {
+                    Some(c) => format!("Count the violations of each rule in {c}. Nothing is changed."),
+                    None => "Open a layout cell to try the deck on it.".to_string(),
+                });
+                if ui.add_enabled(active.is_some() && self.job.is_none(), egui::Button::new("Check active cell")).clicked() {
+                    act = Some(Act::Check);
+                }
+            });
+            step(ui, 6, "Apply", pal, |ui| {
+                ui.label(
+                    "Store the deck as the technology's DRC deck so DRC uses it. Save the project to keep it, or save \
+                     the deck to a file to share it.",
+                );
+                if ui.button("Apply to technology").clicked() {
+                    act = Some(Act::Apply);
+                }
+            });
+        }
         ui.add_space(12.0);
         theme::section(ui, "Words you will see");
         let grid = um(tech.grid.max(1), tech);

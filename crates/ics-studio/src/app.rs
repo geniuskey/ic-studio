@@ -902,7 +902,7 @@ impl IcStudio {
             }
             Command::RuleDesigner => match &self.project {
                 Some(p) => self.rule_designer.show(&p.tech),
-                None => self.warn("Open a project to design DRC rules".into()),
+                None => self.rule_designer.show_standalone(),
             },
             Command::StreamMap => match &self.project {
                 Some(p) => self.stream_map.show(&p.tech),
@@ -1902,7 +1902,7 @@ impl IcStudio {
                     }
                 });
                 ui.separator();
-                if ui.add_enabled(has_project, egui::Button::new("DRC Rule Designer…")).clicked() {
+                if ui.button("DRC Rule Designer…").clicked() {
                     q.push(Command::RuleDesigner);
                 }
                 if ui.add_enabled(has_project, egui::Button::new("Stream Layer Map…")).clicked() {
@@ -3866,6 +3866,10 @@ impl IcStudio {
 
     pub fn rule_designer(&self) -> &RuleDesigner {
         &self.rule_designer
+    }
+
+    pub fn rule_designer_mut(&mut self) -> &mut RuleDesigner {
+        &mut self.rule_designer
     }
 
     fn optimizer_window(&mut self, ctx: &egui::Context) {

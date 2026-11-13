@@ -231,6 +231,8 @@ struct ModelsEntry {
 pub struct Pdk {
     pub tech: Tech,
     pub warnings: Vec<String>,
+    /// The resolved path of the PDK's `drc_deck` file, if it names one.
+    pub drc_deck: Option<PathBuf>,
 }
 
 /// Load the PDK file at `path` with the process environment.
@@ -359,11 +361,11 @@ pub fn parse(text: &str, base: &Path, env: &dyn Fn(&str) -> Option<String>) -> R
     tech.drc_extra = f.drc_extra;
     tech.pin_labels = f.pin_label;
     tech.caps = f.cap;
-    tech.drc_deck = match f.drc_deck.as_deref() {
-        Some(p) => {
-            let path = resolve(p, base, env)?;
-            let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-            let (text, failed) = crate::drc::deck_file_text(&text, &path)?;
+    let deck_path = f.drc_deck.as_deref().map(|p| resolve(p, base, env)).transpose()?;
+    tech.drc_deck = match &deck_path {
+        Some(path) => {
+            let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            let (text, failed) = crate::drc::deck_file_text(&text, path)?;
             warnings.extend(failed);
             Some(text)
         }
@@ -406,7 +408,7 @@ pub fn parse(text: &str, base: &Path, env: &dyn Fn(&str) -> Option<String>) -> R
         })
         .collect();
     warnings.extend(check(&tech));
-    Ok(Pdk { tech, warnings })
+    Ok(Pdk { tech, warnings, drc_deck: deck_path })
 }
 
 /// Consistency problems of a technology's vias, roles and devices.
