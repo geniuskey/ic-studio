@@ -33,7 +33,9 @@ pub enum LayAction {
     FlipX,
     FlipY,
     Descend,
+    EditInPlace,
     Return,
+    HierarchyTree,
     MarkNet,
     LayerTap,
     Gravity,
@@ -80,6 +82,8 @@ impl LayAction {
             LayAction::FlipX => "Flip Sideways",
             LayAction::FlipY => "Flip Upside Down",
             LayAction::Descend => "Descend Edit",
+            LayAction::EditInPlace => "Edit In Place",
+            LayAction::HierarchyTree => "Hierarchy Tree",
             LayAction::Return => "Return",
             LayAction::MarkNet => "Mark Net",
             LayAction::LayerTap => "Layer Tap",
@@ -114,13 +118,16 @@ impl LayAction {
             LayAction::PartialSelect => "F4",
             LayAction::Merge => "Shift+M",
             LayAction::Rotate => "Shift+O",
-            LayAction::FlipX | LayAction::FlipY => "",
+            LayAction::FlipX => "Ctrl+J",
+            LayAction::FlipY => "",
+            LayAction::EditInPlace => "x",
+            LayAction::HierarchyTree => "Shift+T",
             LayAction::Descend => "Shift+X",
             LayAction::Return => "Shift+B",
             LayAction::MarkNet => "Shift+N",
             LayAction::LayerTap => "t",
             LayAction::Gravity => "g",
-            LayAction::ZoomIn => "]",
+            LayAction::ZoomIn => "[",
             LayAction::ZoomOut => "Shift+Z",
             LayAction::ZoomBox => "z",
             LayAction::PrevView => "w",
@@ -166,7 +173,9 @@ impl LayAction {
                 Some(LayAction::FlipY),
                 None,
                 Some(LayAction::Descend),
+                Some(LayAction::EditInPlace),
                 Some(LayAction::Return),
+                Some(LayAction::HierarchyTree),
                 None,
                 Some(LayAction::SelectAll),
                 Some(LayAction::DeselectAll),
@@ -195,6 +204,7 @@ impl LayAction {
                 Some(LayAction::Options),
                 None,
                 Some(LayAction::Gravity),
+                Some(LayAction::PartialSelect),
                 Some(LayAction::LayerTap),
                 Some(LayAction::MarkNet),
             ],
@@ -215,6 +225,7 @@ impl LayAction {
         Some(LayAction::Paste),
         None,
         Some(LayAction::Descend),
+        Some(LayAction::EditInPlace),
         Some(LayAction::Return),
         None,
         Some(LayAction::Fit),
@@ -288,7 +299,9 @@ impl LayoutEditor {
             LayAction::Rotate => return self.transform_selection(l, cx, 0),
             LayAction::FlipX => return self.transform_selection(l, cx, 1),
             LayAction::FlipY => return self.transform_selection(l, cx, 2),
-            LayAction::Descend => self.descend(l, cx, at, tol),
+            LayAction::Descend => self.descend(l, cx, at, tol, false),
+            LayAction::EditInPlace => self.descend(l, cx, at, tol, true),
+            LayAction::HierarchyTree => self.show_tree = !self.show_tree,
             LayAction::Return => self.requests.push(LayRequest::Return),
             LayAction::MarkNet => {
                 self.verify.pick_nets = !self.verify.pick_nets;
@@ -681,6 +694,22 @@ impl LayoutEditor {
                 });
             rects.extend(shown.map(|r| r.response.rect));
             self.show_editor = open;
+        }
+        if self.show_tree {
+            let mut open = true;
+            let mut pick = None;
+            let shown = window("Hierarchy Tree", "lay_form_tree", rect.right_top() + Vec2::new(-300.0, 48.0))
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    egui::ScrollArea::vertical().max_height(480.0).show(ui, |ui| {
+                        super::hier_node(ui, cx.src, cx.cell, Some(&*l), None, 0, &mut pick);
+                    });
+                });
+            rects.extend(shown.map(|r| r.response.rect));
+            if let Some(c) = pick {
+                self.requests.push(LayRequest::Open(c));
+            }
+            self.show_tree = open;
         }
         self.form_rects = rects;
         changed

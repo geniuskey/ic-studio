@@ -255,7 +255,7 @@ const SHORTCUTS: &[ShortcutGroup] = &[
             ("Mod+Z / Mod+Y", "Undo / redo"),
             ("Mod+1 … Mod+4", "Home, Schematic, Simulation, Layout"),
             ("F5 / Mod+Enter", "Run simulation"),
-            ("Mod+J", "Toggle console"),
+            ("Mod+J", "Toggle console (layout: flip)"),
             ("Mod+,", "Settings"),
             ("F1", "Keyboard shortcuts"),
             ("F2", "Save"),
@@ -305,7 +305,9 @@ const SHORTCUTS: &[ShortcutGroup] = &[
             ("T", "Layer tap: activate the layer under the cursor"),
             ("G", "Toggle gravity"),
             ("Mod+A / Mod+D", "Select all, deselect all"),
-            ("Shift+X / Shift+B", "Edit an instance in place, return"),
+            ("Shift+X / x / Shift+B", "Descend into an instance, edit it in place, return"),
+            ("Shift+T", "Hierarchy tree"),
+            ("Ctrl+J", "Flip sideways (also while moving)"),
             ("Shift+N", "Mark net mode"),
             ("q", "Edit object properties"),
             ("F3", "Options of the current command"),
@@ -315,7 +317,7 @@ const SHORTCUTS: &[ShortcutGroup] = &[
             ("Enter / Backspace", "Finish, remove last point while drawing"),
             ("Arrows / Shift+arrows", "Pan, nudge the selection 10 snap steps"),
             ("Z / Shift+Z", "Zoom box, zoom out"),
-            ("[ / ]", "Zoom out, in at the cursor"),
+            ("[ / ]", "Zoom in, out at the cursor"),
             ("W / Shift+W", "Previous, next view"),
             ("F", "Fit"),
             ("Shift+K", "Clear rulers"),
@@ -375,7 +377,7 @@ pub struct IcStudio {
     active: Option<CellRef>,
     sch_eds: HashMap<CellRef, SchematicEditor>,
     lay_eds: HashMap<CellRef, LayoutEditor>,
-    /// Cells edited in place with Shift+X, for Shift+B (return).
+    /// Cells descended into (Shift+X) or edited in place (x), for Shift+B (return).
     lay_return: Vec<Descent>,
     hier: Hier,
     /// Device names last selected in either editor, for cross-probing.
@@ -1156,7 +1158,10 @@ impl IcStudio {
         fire(cmd, Key::N, Command::NewCellDialog, q);
         fire(cmd, Key::K, Command::CommandPalette, q);
         fire(cs, Key::P, Command::CommandPalette, q);
-        fire(cmd, Key::J, Command::ToggleConsole, q);
+        // In the layout, Ctrl+J flips (Virtuoso); the console stays on the status bar and the View menu.
+        if self.workspace != Workspace::Layout {
+            fire(cmd, Key::J, Command::ToggleConsole, q);
+        }
         fire(cmd, Key::Enter, Command::RunSimulation, q);
         fire(Modifiers::NONE, Key::F5, Command::RunSimulation, q);
         fire(cmd, Key::Num1, Command::SetWorkspace(Workspace::Home), q);
@@ -1754,10 +1759,11 @@ impl IcStudio {
                 let mut log: Vec<(bool, String)> = vec![];
                 let mut touched = false;
                 let mut handoff: Option<(CellRef, View2D)> = None;
+                let mut refit: Option<CellRef> = None;
                 for req in std::mem::take(&mut ed.requests) {
                     match req {
                         LayRequest::Open(c) => open = Some(c),
-                        LayRequest::Descend { cell, inst, elem, trans } => {
+                        LayRequest::Descend { cell, inst, elem, trans, in_place: true } => {
                             handoff = Some((cell.clone(), View2D { orient: ed.view.orient.compose(&trans), ..ed.view }));
                             self.lay_return.push(Descent {
                                 parent: r.clone(),
@@ -1765,6 +1771,12 @@ impl IcStudio {
                                 at: Some((inst, elem, trans)),
                             });
                             log.push((true, format!("Editing {cell} in place (Shift+B returns)")));
+                            open = Some(cell);
+                        }
+                        LayRequest::Descend { cell, in_place: false, .. } => {
+                            self.lay_return.push(Descent { parent: r.clone(), child: cell.clone(), at: None });
+                            log.push((true, format!("Descended into {cell} (Shift+B returns)")));
+                            refit = Some(cell.clone());
                             open = Some(cell);
                         }
                         LayRequest::Return => match self.lay_return.pop() {
@@ -1837,6 +1849,9 @@ impl IcStudio {
                 }
                 if let Some((c, v)) = handoff {
                     self.lay_eds.entry(c).or_default().adopt_view(v);
+                }
+                if let Some(c) = refit {
+                    self.lay_eds.entry(c).or_default().request_fit();
                 }
                 if let Some(c) = project.cell_mut(&r) {
                     c.layout = Some(lay);

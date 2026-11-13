@@ -104,7 +104,9 @@ While drawing a polygon or path, `Backspace` removes the last point and `Esc` ca
 | Deselect all | `Ctrl+D` |
 | Delete | `Del` or `Backspace` |
 | Undo / redo | `u` / `Shift+U`, or `Ctrl+Z` / `Ctrl+Shift+Z` or `Ctrl+Y` |
-| Edit in place | `Shift+X` over an instance (or with one selected) edits its cell, or the array element under the cursor, inside the parent: the surroundings stay visible, dimmed, in the parent's orientation, and DRD checks against them. `Shift+B` or **Return** in the toolbar goes back |
+| Descend | `Shift+X` over an instance (or with one selected) opens its cell on its own; `Shift+B` returns. `Shift+T` shows the hierarchy tree |
+| Flip | `Ctrl+J` flips the selection sideways, or what is being moved or copied |
+| Edit in place | `x` over an instance (or with one selected) edits its cell, or the array element under the cursor, inside the parent: the surroundings stay visible, dimmed, in the parent's orientation, and DRD checks against them. `Shift+B` or **Return** in the toolbar goes back |
 | Open a placed cell | Double-click the instance, or **Open** in the inspector |
 | Pop-up menu | Middle-click, or right-click when no command point is pending: Move, Copy, Stretch, Delete, Properties, Rotate 90°, Merge, Yank, Paste, Descend Edit, Return, Fit All, Previous View. With nothing selected, the item under the cursor is selected first |
 
@@ -143,7 +145,7 @@ The **Edit** section of the right panel (shown when something is selected) also 
 
 | Action | How |
 |---|---|
-| Zoom | `Ctrl`+wheel or pinch, `[` / `]` at the cursor, `Shift+Z` out (Conventional profile: the wheel) |
+| Zoom | `Ctrl`+wheel or pinch, `[` in / `]` out at the cursor, `Shift+Z` out (Conventional profile: the wheel) |
 | Zoom box | Right drag, or `Z` (or **Zoom box**), then drag or click two corners |
 | Previous / next view | `W` / `Shift+W` (or **Prev view**) |
 | Fit | `F` |

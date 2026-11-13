@@ -16,7 +16,7 @@ Canvas keys work while the mouse is over the canvas and no text field has focus.
 | `Ctrl+Shift+Z`, `Ctrl+Y` | Redo |
 | `Ctrl+1` ... `Ctrl+4` | Home, Schematic, Simulation, Layout workspace |
 | `F5`, `Ctrl+Enter` | Run simulation |
-| `Ctrl+J` | Toggle console |
+| `Ctrl+J` | Toggle console (in the layout editor, `Ctrl+J` flips) |
 | `Ctrl+,` | Settings |
 | `F1` | Keyboard shortcuts |
 
@@ -83,7 +83,9 @@ Layout keys follow the Cadence Virtuoso (IC6) default bindkeys.
 | `T` | Layer tap: make the layer under the cursor active |
 | `G` | Toggle gravity snapping |
 | `Ctrl+A` / `Ctrl+D` | Select all / deselect all |
-| `Shift+X` / `Shift+B` | Edit the instance under the cursor in place / return |
+| `Shift+X` / `x` / `Shift+B` | Descend into the instance under the cursor / edit it in place / return |
+| `Shift+T` | Hierarchy tree |
+| `Ctrl+J` | Flip sideways (also while moving or copying) |
 | `Shift+N` | Mark net mode (click a shape to highlight its net after **Extract**) |
 | `Enter` | Finish a path or polygon |
 | `Backspace` | Remove the last point while drawing |
@@ -91,7 +93,7 @@ Layout keys follow the Cadence Virtuoso (IC6) default bindkeys.
 | Arrow keys | Pan |
 | `Shift`+arrow keys | Nudge the selection 10 snap steps |
 | `Z` / `Shift+Z` | Zoom box / zoom out |
-| `[` / `]` | Zoom out / in at the cursor |
+| `[` / `]` | Zoom in / out at the cursor |
 | `W` / `Shift+W` | Previous / next view |
 | `F` | Fit |
 | `Shift+K` | Clear all rulers |

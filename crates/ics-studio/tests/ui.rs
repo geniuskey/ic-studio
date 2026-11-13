@@ -909,7 +909,7 @@ fn layout_descend_and_return() {
     h.hover_at(egui::pos2(865.0, 440.0));
     h.run_steps(2);
     let before = h.state().layout_editor(&top).unwrap().view;
-    h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::X);
+    h.key_press(egui::Key::X);
     h.run_steps(4);
     let child = h.state().active_ref().cloned().unwrap();
     assert_ne!(child, top, "descended into a placed cell");
@@ -924,6 +924,18 @@ fn layout_descend_and_return() {
     assert_eq!(h.state().active_ref(), Some(&top), "returned to the top cell");
     let after = h.state().layout_editor(&top).unwrap().view;
     assert_eq!((after.center, after.scale, after.orient), (before.center, before.scale, before.orient));
+
+    // Shift+X descends: the cell opens on its own, Shift+B returns.
+    h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::X);
+    h.run_steps(4);
+    let child = h.state().active_ref().cloned().unwrap();
+    assert_ne!(child, top, "descended");
+    assert!(h.state().layout_editor(&child).unwrap().view.orient.is_identity(), "not in place");
+    h.hover_at(egui::pos2(865.0, 440.0));
+    h.run_steps(2);
+    h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::B);
+    h.run_steps(4);
+    assert_eq!(h.state().active_ref(), Some(&top), "returned again");
 }
 
 fn drag(h: &mut Harness<'_, IcStudio>, button: egui::PointerButton, a: egui::Pos2, b: egui::Pos2) {

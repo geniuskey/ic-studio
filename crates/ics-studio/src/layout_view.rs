@@ -252,6 +252,7 @@ pub struct LayoutEditor {
     pub show_opts: bool,
     pub show_display: bool,
     pub show_editor: bool,
+    pub show_tree: bool,
 }
 
 impl Default for LayoutEditor {
@@ -314,6 +315,7 @@ impl Default for LayoutEditor {
             show_opts: false,
             show_display: false,
             show_editor: false,
+            show_tree: false,
         }
     }
 }
@@ -1312,6 +1314,11 @@ impl LayoutEditor {
                     Key::A => Some(LayAction::SelectAll),
                     Key::D => Some(LayAction::DeselectAll),
                     Key::F => Some(LayAction::TopLevel),
+                    Key::J if self.xfer.is_some() => {
+                        self.xfer_t = self.on_screen_linear(Trans::flip_x_about((0, 0))).compose(&self.xfer_t);
+                        None
+                    }
+                    Key::J => Some(LayAction::FlipX),
                     Key::C | Key::X if !did_clip => {
                         if let Some(text) = self.yank(l, cx) {
                             ui.ctx().copy_text(text);
@@ -1344,6 +1351,7 @@ impl LayoutEditor {
                     Key::X => Some(LayAction::Descend),
                     Key::B => Some(LayAction::Return),
                     Key::N => Some(LayAction::MarkNet),
+                    Key::T => Some(LayAction::HierarchyTree),
                     Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp | Key::ArrowDown => {
                         let (dx, dy) = match k {
                             Key::ArrowLeft => (-g, 0),
@@ -1392,6 +1400,7 @@ impl LayoutEditor {
                     Key::U => Some(LayAction::Undo),
                     Key::Y => Some(LayAction::Yank),
                     Key::T => Some(LayAction::LayerTap),
+                    Key::X => Some(LayAction::EditInPlace),
                     Key::G => Some(LayAction::Gravity),
                     Key::Q => Some(LayAction::Properties),
                     Key::E => Some(LayAction::DisplayOptions),
@@ -1400,8 +1409,8 @@ impl LayoutEditor {
                     Key::Z => Some(LayAction::ZoomBox),
                     Key::W => Some(LayAction::PrevView),
                     Key::F => Some(LayAction::Fit),
-                    Key::CloseBracket => Some(LayAction::ZoomIn),
-                    Key::OpenBracket => Some(LayAction::ZoomOut),
+                    Key::OpenBracket => Some(LayAction::ZoomIn),
+                    Key::CloseBracket => Some(LayAction::ZoomOut),
                     Key::Plus | Key::Equals | Key::PageUp if self.tool == LayTool::Path => {
                         changed |= self.switch_wire_layer(l, tech, true);
                         None
@@ -1476,8 +1485,8 @@ impl LayoutEditor {
         }
     }
 
-    /// Edit in place (Shift+X) the selected instance or the one under the cursor.
-    fn descend(&mut self, l: &Layout, cx: &mut LayCtx, at: Option<(i64, i64)>, tol: i64) {
+    /// Descend into (Shift+X) or edit in place (x) the selected instance or the one under the cursor.
+    fn descend(&mut self, l: &Layout, cx: &mut LayCtx, at: Option<(i64, i64)>, tol: i64, in_place: bool) {
         let sel = (self.selection.len() == 1).then(|| l.instance(*self.selection.first().unwrap())).flatten();
         let under = || {
             let p = at?;
@@ -1485,7 +1494,7 @@ impl LayoutEditor {
             hits(l, &idx, &[], true, p.0, p.1, tol).into_iter().find_map(|id| l.instance(id))
         };
         let Some(i) = sel.or_else(under) else {
-            self.note(false, "Edit in place: select an instance or point at one");
+            self.note(false, "Descend: select an instance or point at one");
             return;
         };
         let child = cx.src.layout(&i.cell).and_then(|c| cx.hier.get_for(&i.cell, c, cx.src).bbox);
@@ -1498,7 +1507,7 @@ impl LayoutEditor {
             _ => (0, 0),
         };
         let trans = i.element_trans(elem.0, elem.1);
-        self.requests.push(LayRequest::Descend { cell: i.cell.clone(), inst: i.id, elem, trans });
+        self.requests.push(LayRequest::Descend { cell: i.cell.clone(), inst: i.id, elem, trans, in_place });
     }
 
     /// Box entry for box tools and zoom: drag it, or click two corners.
