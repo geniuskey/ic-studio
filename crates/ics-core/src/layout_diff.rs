@@ -10,6 +10,7 @@ use std::process::Command;
 use crate::geom::IRect;
 use crate::hier::{LayoutSource, flatten};
 use crate::layout::{Geometry, Layout};
+use crate::polybool::PolySet;
 use crate::project::Project;
 use crate::region::{BoolOp, Region};
 
@@ -30,7 +31,9 @@ pub struct LayoutDiff {
     pub placed: Vec<String>,
     pub unplaced: Vec<String>,
     pub moved: Vec<String>,
-    /// Shapes skipped because they are not Manhattan.
+    /// Non-Manhattan shapes on layers whose difference is not Manhattan either (left out of
+    /// `layers`). Any-angle geometry is compared exactly, so identical non-Manhattan shapes, or
+    /// changes with a Manhattan difference, are not counted.
     pub skipped: usize,
 }
 
@@ -77,19 +80,37 @@ impl LayoutDiff {
     }
 }
 
-fn layer_regions(top: &Layout, src: &dyn LayoutSource, skipped: &mut usize) -> BTreeMap<usize, Vec<IRect>> {
-    let mut out: BTreeMap<usize, Vec<IRect>> = BTreeMap::new();
+/// Per layer: rectangles of the Manhattan shapes, and the other shapes.
+type LayerShapes = BTreeMap<usize, (Vec<IRect>, Vec<Geometry>)>;
+
+fn layer_shapes(top: &Layout, src: &dyn LayoutSource) -> LayerShapes {
+    let mut out = LayerShapes::new();
     for f in flatten(top, src, 64) {
-        match &f.geom {
+        match f.geom {
             Geometry::Label { .. } => {}
-            Geometry::Rect(r) => out.entry(f.layer).or_default().push(*r),
-            g => match Region::from_geometry(g) {
-                Ok(r) => out.entry(f.layer).or_default().extend_from_slice(r.rects()),
-                Err(_) => *skipped += 1,
+            Geometry::Rect(r) => out.entry(f.layer).or_default().0.push(r),
+            g => match Region::from_geometry(&g) {
+                Ok(r) => out.entry(f.layer).or_default().0.extend_from_slice(r.rects()),
+                Err(_) => out.entry(f.layer).or_default().1.push(g),
             },
         }
     }
     out
+}
+
+/// `(added, removed)` of one layer, compared exactly; `None` when non-Manhattan shapes leave a
+/// difference that is not Manhattan.
+fn any_angle_diff(
+    old: Option<&(Vec<IRect>, Vec<Geometry>)>,
+    new: Option<&(Vec<IRect>, Vec<Geometry>)>,
+) -> Option<(Region, Region)> {
+    let set = |s: Option<&(Vec<IRect>, Vec<Geometry>)>| {
+        s.map_or_else(PolySet::default, |(rects, other)| {
+            PolySet::from_geometries(rects.iter().map(|r| Geometry::Rect(*r)).collect::<Vec<_>>().iter().chain(other))
+        })
+    };
+    let (a, b) = (set(old), set(new));
+    Some((b.boolean(&a, BoolOp::Not).to_region()?, a.boolean(&b, BoolOp::Not).to_region()?))
 }
 
 fn inst_key(i: &crate::layout::CellInst) -> String {
@@ -99,14 +120,19 @@ fn inst_key(i: &crate::layout::CellInst) -> String {
 /// Compare two versions of a cell (each with the source its instances resolve through).
 pub fn diff(old: &Layout, old_src: &dyn LayoutSource, new: &Layout, new_src: &dyn LayoutSource) -> LayoutDiff {
     let mut out = LayoutDiff::default();
-    let a = layer_regions(old, old_src, &mut out.skipped);
-    let b = layer_regions(new, new_src, &mut out.skipped);
+    let a = layer_shapes(old, old_src);
+    let b = layer_shapes(new, new_src);
     let layers: std::collections::BTreeSet<usize> = a.keys().chain(b.keys()).copied().collect();
     for l in layers {
-        let ra = Region::from_rects(a.get(&l).into_iter().flatten().copied());
-        let rb = Region::from_rects(b.get(&l).into_iter().flatten().copied());
-        let added = rb.boolean(&ra, BoolOp::Not);
-        let removed = ra.boolean(&rb, BoolOp::Not);
+        let (sa, sb) = (a.get(&l), b.get(&l));
+        let other = sa.map_or(0, |s| s.1.len()) + sb.map_or(0, |s| s.1.len());
+        let exact = if other > 0 { any_angle_diff(sa, sb) } else { None };
+        let (added, removed) = exact.unwrap_or_else(|| {
+            out.skipped += other;
+            let ra = Region::from_rects(sa.into_iter().flat_map(|s| s.0.iter().copied()));
+            let rb = Region::from_rects(sb.into_iter().flat_map(|s| s.0.iter().copied()));
+            (rb.boolean(&ra, BoolOp::Not), ra.boolean(&rb, BoolOp::Not))
+        });
         if !added.is_empty() || !removed.is_empty() {
             out.layers.push(LayerDiff { layer: l, added, removed });
         }
@@ -218,6 +244,27 @@ mod tests {
         c.add_rect(1, 60, 0, 100, 100);
         c.add_rect(2, 0, 0, 50, 50);
         assert!(diff(&a, &NoCells, &c, &NoCells).is_empty());
+    }
+
+    #[test]
+    fn any_angle_layers() {
+        let tri = |l: &mut Layout, layer: usize, pts: Vec<(i64, i64)>| l.add(layer, Geometry::Polygon { points: pts });
+        let mut a = Layout::default();
+        tri(&mut a, 1, vec![(0, 0), (100, 0), (0, 100)]);
+        a.add_rect(1, 0, 0, 50, 50);
+        let mut b = Layout::default();
+        tri(&mut b, 1, vec![(100, 0), (0, 100), (0, 0)]);
+        b.add_rect(1, 10, 10, 40, 40);
+        let d = diff(&a, &NoCells, &b, &NoCells);
+        assert!(d.is_empty() && d.skipped == 0, "{d:?}");
+        b.add_rect(1, 100, 0, 150, 50);
+        let d = diff(&a, &NoCells, &b, &NoCells);
+        assert_eq!((d.layers.len(), d.skipped), (1, 0));
+        assert_eq!(d.layers[0].added.bbox(), Some(IRect::new(100, 0, 150, 50)));
+        tri(&mut b, 1, vec![(200, 0), (300, 0), (200, 100)]);
+        let d = diff(&a, &NoCells, &b, &NoCells);
+        assert_eq!(d.skipped, 3);
+        assert_eq!(d.layers[0].added.bbox(), Some(IRect::new(100, 0, 150, 50)));
     }
 
     #[test]

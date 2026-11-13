@@ -7,6 +7,7 @@ use eframe::egui::{self, Rect, Stroke, StrokeKind};
 use ics_core::geom::IRect;
 use ics_core::hier::{CellIndex, Hier, LayoutSource};
 use ics_core::layout::{CellInst, Geometry, Layout, Shape, Trans};
+use ics_core::polybool;
 use ics_core::project::CellRef;
 use ics_core::region::{BoolOp, Region};
 use ics_core::tech::Tech;
@@ -543,30 +544,21 @@ impl LayoutEditor {
             return false;
         }
         self.history.push(l);
-        let cut = Region::from_rects([b]);
-        let (mut done, mut skipped) = (0, 0);
+        let cut = [Geometry::Rect(b)];
         let mut sel = BTreeSet::new();
+        let done = targets.len();
         for s in targets {
-            let Ok(r) = Region::from_geometry(&s.geom) else {
-                skipped += 1;
-                continue;
-            };
             l.remove(s.id);
             self.selection.remove(&s.id);
-            for g in r.boolean(&cut, BoolOp::Not).to_geometry() {
+            for g in polybool::boolean_geometry(std::slice::from_ref(&s.geom), &cut, BoolOp::Not) {
                 sel.insert(l.add(s.layer, g));
             }
-            done += 1;
         }
         if sel_shapes {
             self.selection.extend(sel);
         }
         cx.touched();
-        let mut m = format!("Chopped {done} shape(s)");
-        if skipped > 0 {
-            m.push_str(&format!(" · {skipped} non-Manhattan shape(s) left unchanged"));
-        }
-        self.note(skipped == 0, m);
+        self.note(true, format!("Chopped {done} shape(s)"));
         done > 0
     }
 

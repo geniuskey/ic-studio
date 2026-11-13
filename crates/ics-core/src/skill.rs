@@ -15,7 +15,10 @@
 //!   and cells are created on demand), `dbCreateRect`, `dbCreatePolygon`, `dbCreatePath`,
 //!   `dbCreateLabel`, `dbCreateInst`, `dbCreateInstByMasterName`, `dbCreateSimpleMosaic`,
 //!   `dbDeleteObject`, `dbMoveFig`, `dbCopyFig`, `dbFindAnyInstByName`, `dbSave` / `dbClose`
-//!   (no-ops: the caller saves the project) and `geGetEditCellView` for the cell open in the editor.
+//!   (no-ops: the caller saves the project) and `geGetEditCellView` for the cell open in the editor;
+//!   layer Boolean operations `dbLayerAnd` / `dbLayerOr` / `dbLayerXor` / `dbLayerAndNot`
+//!   `(cv layer shapes1 shapes2)` and `dbLayerSize(cv layer shapes size)`, exact for any-angle
+//!   geometry (see [`crate::polybool`]).
 //!
 //! Coordinates are user units (µm), converted to database units with the technology's
 //! `dbu_per_um`. A layer-purpose pair is a layer name, `list("metal1" "drawing")` or a layer index;
@@ -28,7 +31,9 @@ use std::rc::Rc;
 
 use crate::geom::IRect;
 use crate::layout::{ArraySpec, CellInst, Geometry, Layout, Trans};
+use crate::polybool;
 use crate::project::{Cell, CellRef, Project};
+use crate::region::BoolOp;
 
 /// Result of a SKILL run.
 #[derive(Debug, Clone, Default)]
@@ -2669,6 +2674,30 @@ impl<'p> Interp<'p> {
                 let b = self.bbox(&v[0])?;
                 Ok(self.box_val(t.apply_rect(b)))
             }
+            "dbLayerAnd" | "dbLayerOr" | "dbLayerXor" | "dbLayerAndNot" | "dbLayerSize" => {
+                need(if f == "dbLayerOr" { 3 } else { 4 })?;
+                let cv = self.cv(&v[0])?;
+                let layer = self.layer(&v[1])?;
+                let a = self.shape_geoms(f, &v[2])?;
+                let res = if f == "dbLayerSize" {
+                    let d = match &v[3] {
+                        x @ (Value::Int(_) | Value::Float(_)) => self.to_dbu(as_f64(x)),
+                        x => return fail(format!("{f}: size must be a number, got {}", self.repr(x))),
+                    };
+                    polybool::sized_geometry(&a, d)
+                } else {
+                    let b = self.shape_geoms(f, &arg(3))?;
+                    let op = match f {
+                        "dbLayerAnd" => BoolOp::And,
+                        "dbLayerOr" => BoolOp::Or,
+                        "dbLayerXor" => BoolOp::Xor,
+                        _ => BoolOp::Not,
+                    };
+                    polybool::boolean_geometry(&a, &b, op)
+                };
+                let l = self.layout_mut(cv)?;
+                Ok(list(res.into_iter().map(|g| Value::Obj(Obj::Shape(cv, l.add(layer, g)))).collect()))
+            }
             "dbGetTrueOverlaps" | "dbGetOverlaps" => {
                 need(2)?;
                 let cv = self.cv(&v[0])?;
@@ -2695,6 +2724,25 @@ impl<'p> Interp<'p> {
             }
             _ => fail(format!("undefined function {f}")),
         }
+    }
+
+    /// Geometry of a shape or a list of shapes (`nil`: none).
+    fn shape_geoms(&self, f: &str, v: &Value) -> R<Vec<Geometry>> {
+        let one = std::slice::from_ref(v);
+        let figs = match v {
+            Value::Nil => &[][..],
+            Value::List(l) => l.as_slice(),
+            _ => one,
+        };
+        figs.iter()
+            .map(|x| match x {
+                Value::Obj(Obj::Shape(cv, id)) => match self.layout(*cv).and_then(|l| l.shape(*id)) {
+                    Some(s) => Ok(s.geom.clone()),
+                    None => fail(format!("{f}: shape no longer exists")),
+                },
+                x => fail(format!("{f}: shape expected, got {}", self.repr(x))),
+            })
+            .collect()
     }
 
     fn int_arg(&self, f: &str, v: &Value) -> R<i64> {
@@ -3186,6 +3234,30 @@ mod tests {
             None,
         );
         assert!(e.unwrap_err().message.contains("unknown layer 'nolayer'"));
+    }
+
+    #[test]
+    fn layer_booleans() {
+        let mut p = Project::new("t");
+        let src = r#"
+            cv = dbOpenCellViewByType("lib" "b" "layout" "maskLayout" "w")
+            tri = dbCreatePolygon(cv "metal1" list(0:0 2:0 0:2))
+            box = dbCreateRect(cv "metal1" list(0:0 1:2))
+            a = dbLayerAnd(cv "metal2" list(tri) list(box))
+            o = dbLayerOr(cv "metal2" list(tri box))
+            n = dbLayerAndNot(cv "metal3" tri box)
+            x = dbLayerXor(cv "metal3" list(tri) list(box))
+            s = dbLayerSize(cv "poly" list(box) 0.1)
+            list(length(a) car(a)~>nPoints length(o) length(n) car(n)~>nPoints length(x) car(s)~>bBox dbLayerAnd(cv "metal2" tri nil))
+        "#;
+        let r = run(&mut p, src, None).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(r.value, "(1 4 1 1 3 2 ((-0.1 -0.1) (1.1 2.1)) nil)");
+        let l = p.cell(&CellRef::new("lib", "b")).unwrap().layout.as_ref().unwrap();
+        let m2 = p.tech.layer_index("metal2").unwrap();
+        let and: Vec<&Geometry> = l.shapes.iter().filter(|s| s.layer == m2).map(|s| &s.geom).collect();
+        assert_eq!(and[0], &Geometry::Polygon { points: vec![(0, 0), (1000, 0), (1000, 1000), (0, 2000)] });
+        let e = run(&mut p, "cv = dbOpenCellViewByType(\"lib\" \"b\" \"layout\" \"\" \"a\") dbLayerAnd(cv \"metal2\" 1 2)", None);
+        assert!(e.unwrap_err().message.contains("shape expected"));
     }
 
     #[test]

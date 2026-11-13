@@ -8,8 +8,9 @@ use ics_core::geom::IRect;
 use ics_core::hier::{self, LayoutSource};
 use ics_core::layout::{ArraySpec, Geometry, Layout, Shape, Trans};
 use ics_core::pcell::{self, PCell};
+use ics_core::polybool;
 use ics_core::project::CellRef;
-use ics_core::region::{BoolOp, Region};
+use ics_core::region::BoolOp;
 use ics_core::tech::Tech;
 
 use super::{LayCtx, LayoutEditor, um};
@@ -330,19 +331,6 @@ pub(super) fn constrain(prev: Option<(i64, i64)>, c: (i64, i64), free: bool) -> 
     }
 }
 
-/// Merge a set of geometries into a region, reporting how many are not Manhattan.
-fn region_of<'a>(geoms: impl IntoIterator<Item = &'a Geometry>) -> (Region, usize) {
-    let mut rects = vec![];
-    let mut skipped = 0;
-    for g in geoms {
-        match Region::from_geometry(g) {
-            Ok(r) => rects.extend_from_slice(r.rects()),
-            Err(_) => skipped += 1,
-        }
-    }
-    (Region::from_rects(rects), skipped)
-}
-
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum LayerOp {
     And,
@@ -453,40 +441,31 @@ impl LayoutEditor {
 
     /// Merge (Shift+M): union of the selected shapes, per layer.
     pub(super) fn merge_selection(&mut self, l: &mut Layout) -> bool {
-        self.rewrite_selection(l, |r| r.clone())
+        self.rewrite_selection(l, 0)
     }
 
-    /// Replace the selected shapes of each layer by `f(union of them)`.
-    fn rewrite_selection(&mut self, l: &mut Layout, f: impl Fn(&Region) -> Region) -> bool {
+    /// Replace the selected shapes of each layer by their union sized by `d` (0: merged).
+    fn rewrite_selection(&mut self, l: &mut Layout, d: i64) -> bool {
         let groups = self.selected_shapes_by_layer(l);
         if groups.is_empty() {
             return false;
         }
         self.history.push(l);
-        let mut skipped = 0;
         let mut sel = BTreeSet::new();
         let (mut before, mut after) = (0, 0);
         for (layer, ids) in groups {
             let geoms: Vec<Geometry> = ids.iter().filter_map(|id| l.shape(*id)).map(|s| s.geom.clone()).collect();
-            let manhattan: Vec<(u64, Geometry)> =
-                ids.iter().zip(geoms).filter(|(_, g)| Region::from_geometry(g).is_ok()).map(|(i, g)| (*i, g)).collect();
-            skipped += ids.len() - manhattan.len();
-            let (region, _) = region_of(manhattan.iter().map(|(_, g)| g));
-            for (id, _) in &manhattan {
+            for id in &ids {
                 l.remove(*id);
             }
-            before += manhattan.len();
-            for g in f(&region).to_geometry() {
+            before += ids.len();
+            for g in polybool::sized_geometry(&geoms, d) {
                 sel.insert(l.add(layer, g));
                 after += 1;
             }
         }
         self.selection = sel;
-        let mut m = format!("{before} shape(s) -> {after}");
-        if skipped > 0 {
-            m.push_str(&format!(" · {skipped} non-Manhattan shape(s) left unchanged"));
-        }
-        self.note(skipped == 0, m);
+        self.note(true, format!("{before} shape(s) -> {after}"));
         true
     }
 
@@ -512,32 +491,27 @@ impl LayoutEditor {
                 l.shapes.iter().filter(|s| s.layer == layer).map(|s| s.geom.clone()).collect()
             }
         };
-        let (ra, sa) = region_of(geoms(a).iter());
-        let (rb, sb) = if op == LayerOp::Size { (Region::default(), 0) } else { region_of(geoms(b).iter()) };
         let d = (self.ed.size_um * cx.tech.dbu_per_um as f64).round() as i64;
-        let res = match op {
-            LayerOp::And => ra.boolean(&rb, BoolOp::And),
-            LayerOp::Or => ra.boolean(&rb, BoolOp::Or),
-            LayerOp::Not => ra.boolean(&rb, BoolOp::Not),
-            LayerOp::Xor => ra.boolean(&rb, BoolOp::Xor),
-            LayerOp::Size => ra.sized(d),
+        let bool_op = |op| polybool::boolean_geometry(&geoms(a), &geoms(b), op);
+        let geoms = match op {
+            LayerOp::And => bool_op(BoolOp::And),
+            LayerOp::Or => bool_op(BoolOp::Or),
+            LayerOp::Not => bool_op(BoolOp::Not),
+            LayerOp::Xor => bool_op(BoolOp::Xor),
+            LayerOp::Size => polybool::sized_geometry(&geoms(a), d),
         };
-        let geoms = res.to_geometry();
         let names = |i: usize| cx.tech.layer(i).map_or("?", |d| d.name.as_str());
-        let mut m = match op {
+        let m = match op {
             LayerOp::Size => format!("SIZE {} by {} µm -> {}: {} shape(s)", names(a), um(d, cx.tech), names(out), geoms.len()),
             _ => format!("{} {} {} -> {}: {} shape(s)", names(a), op.name(), names(b), names(out), geoms.len()),
         };
-        if sa + sb > 0 {
-            m.push_str(&format!(" · {} non-Manhattan shape(s) ignored", sa + sb));
-        }
         if geoms.is_empty() {
-            self.note(sa + sb == 0, m);
+            self.note(true, m);
             return false;
         }
         self.history.push(l);
         self.selection = geoms.into_iter().map(|g| l.add(out, g)).collect();
-        self.note(sa + sb == 0, m);
+        self.note(true, m);
         true
     }
 
@@ -613,7 +587,7 @@ impl LayoutEditor {
                 ui.add(egui::DragValue::new(&mut self.ed.size_um).speed(0.01).max_decimals(3).suffix(" µm")).labelled_by(lb.id);
                 if ui.button("Apply").on_hover_text("Grow (positive) or shrink (negative) the selected shapes").clicked() {
                     let d = (self.ed.size_um * cx.tech.dbu_per_um as f64).round() as i64;
-                    changed |= self.rewrite_selection(l, |r| r.sized(d));
+                    changed |= self.rewrite_selection(l, d);
                 }
             });
         }

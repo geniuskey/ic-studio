@@ -174,7 +174,11 @@ With nothing selected, **Layer operations** computes Boolean results:
 3. Keep **Include hierarchy (flattened)** checked to include placed cells.
 4. Press **Run**. The result shapes are added to the output layer and selected.
 
-Boolean operations work on Manhattan geometry; other shapes are skipped and reported.
+Boolean operations, **Merge**, **Size** and **Chop** handle any-angle geometry (45° and
+arbitrary edges, from GDS / OASIS or the polygon tool) exactly. Crossings that fall between
+grid points snap to the nearest database unit. When sizing, horizontal, vertical and 45° edges
+move by the given distance and corners of 90° or more stay sharp. Results with holes are cut
+into hole-free polygons.
 
 ## Constraints, compaction and compare
 
@@ -304,7 +308,10 @@ Supported:
   cells are created on demand), `dbCreateRect`, `dbCreatePolygon`, `dbCreatePath`,
   `dbCreateLabel`, `dbCreateInst`, `dbCreateInstByMasterName`, `dbCreateSimpleMosaic`,
   `dbDeleteObject`, `dbMoveFig`, `dbCopyFig`, `dbFindAnyInstByName`, `dbGetOverlaps`,
-  `dbTransformPoint` / `dbTransformBBox`; `dbSave` and `dbClose` do nothing (save the project).
+  `dbTransformPoint` / `dbTransformBBox`; layer Boolean operations `dbLayerAnd`, `dbLayerOr`,
+  `dbLayerXor`, `dbLayerAndNot` (`cv layer shapes1 shapes2`) and `dbLayerSize`
+  (`cv layer shapes size`), which add the result to `layer` and return the new shapes (any-angle
+  geometry included); `dbSave` and `dbClose` do nothing (save the project).
   Shape, instance and cellview properties (`bBox`, `points`, `layerName`, `xy`, `orient`,
   `shapes`, `instances`, ...) can be read, and the geometric ones set.
 
