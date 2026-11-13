@@ -506,6 +506,159 @@ fn dummy_fill() {
     assert_eq!(shape_count(&h, "inv_chain"), before);
 }
 
+/// Monte Carlo on the RC filter: spread of the bandwidth, yield and the HTML datasheet.
+#[test]
+fn monte_carlo_sweep() {
+    let mut h = app(demo_args("rc_lowpass", "simulation", false));
+    h.state_mut().command(Command::SweepManager);
+    h.run_steps(2);
+    {
+        let sw = h.state_mut().sweep_manager();
+        sw.setup.monte_carlo.runs = 40;
+        sw.setup.monte_carlo.seed = 3;
+        sw.setup.monte_carlo.vars.push(ics_core::sweep::McVar {
+            target: "R1.r".into(),
+            sigma: "10%".into(),
+            ..Default::default()
+        });
+        sw.setup.specs.push(ics_core::sweep::Spec {
+            name: "bw".into(),
+            analysis: "ac".into(),
+            expr: "bandwidth(v(out))".into(),
+            min: "150k".into(),
+            max: String::new(),
+        });
+    }
+    h.state_mut().command(Command::RunSweep);
+    h.run_steps(2);
+    settle(&mut h, "monte carlo");
+    let sw = h.state_mut().sweep_manager();
+    assert_eq!(sw.results.len(), 40);
+    assert!(sw.is_monte_carlo());
+    let st = ics_core::sweep::stats(&sw.spec_values(0));
+    assert!((st.mean - 159e3).abs() < 15e3 && st.std > 5e3, "{st:?}");
+    let (pass, n) = sw.spec_yield(0);
+    assert!(n == 40 && pass > 5 && pass < 40, "{pass}/{n}");
+    let html = sw.datasheet();
+    assert!(html.contains("<h2>Specs</h2>") && html.contains("mc#40"), "{html}");
+    h.run_steps(4);
+    shot(&mut h, "36_monte_carlo");
+}
+
+/// Results Browser: the previous run is kept and can be overlaid.
+#[test]
+fn results_compare() {
+    let mut h = app(demo_args("rc_lowpass", "simulation", true));
+    settle(&mut h, "first run");
+    h.state_mut().command(Command::RunSimulation);
+    h.run_steps(2);
+    settle(&mut h, "second run");
+    let r = ics_core::CellRef::new("work", "rc_lowpass");
+    let s = h.state().sim_state(&r).unwrap();
+    assert_eq!(s.label, "Run 2");
+    assert_eq!(s.history.len(), 1);
+    assert_eq!(s.history[0].label, "Run 1");
+    h.state_mut().command(Command::ResultsBrowser);
+    h.run_steps(4);
+    shot(&mut h, "37_results_browser");
+}
+
+#[test]
+fn check_schematic() {
+    let mut h = app(demo_args("cmos_inverter", "schematic", false));
+    h.state_mut().command(Command::CheckSchematic(false));
+    h.run_steps(3);
+    assert!(h.state().last_check().is_empty(), "{:?}", h.state().last_check());
+    assert!(h.state().console_lines().any(|l| l == "Check work/cmos_inverter: 0 error(s), 0 warning(s)"));
+}
+
+#[test]
+fn net_browser() {
+    let mut h = app(demo_args("inv_chain", "layout", false));
+    h.state_mut().command(Command::NetBrowser);
+    h.run_steps(2);
+    settle(&mut h, "net browser");
+    h.run_steps(2);
+    let rows = h.state().net_browser().rows();
+    assert!(rows.len() > 3 && rows.iter().any(|r| r.labelled && r.terminals > 0), "{}", rows.len());
+    shot(&mut h, "38_net_browser");
+}
+
+#[test]
+fn hierarchy_browser() {
+    let mut h = app(demo_args("inv_chain", "layout", false));
+    h.state_mut().command(Command::HierarchyBrowser);
+    h.run_steps(3);
+    let p = h.state().project().unwrap();
+    let u = ics_studio::hier_view::usage(p);
+    let chain = ics_core::CellRef::new("work", "inv_chain");
+    assert!(u.tops.contains(&chain));
+    assert!(!ics_studio::hier_view::flat_counts(&u, &chain).is_empty());
+    shot(&mut h, "39_hierarchy_browser");
+}
+
+/// Guard ring, via array and matched placement, each undoable.
+#[test]
+fn layout_generators() {
+    use ics_studio::gen_view::GenAction;
+    let mut h = app(demo_args("inv_chain", "layout", false));
+    h.state_mut().command(Command::GuardRing);
+    h.run_steps(2);
+    let before = shape_count(&h, "inv_chain");
+    let area = {
+        let p = h.state().project().unwrap();
+        let (_, c) = p.all_cells().find(|(_, c)| c.name == "inv_chain").unwrap();
+        let flat = ics_core::hier::flatten(c.layout.as_ref().unwrap(), p, 8);
+        flat.iter()
+            .filter(|s| !matches!(s.geom, ics_core::Geometry::Label { .. }))
+            .map(|s| s.geom.bbox())
+            .reduce(|a, b| ics_core::IRect::new(a.x0.min(b.x0), a.y0.min(b.y0), a.x1.max(b.x1), a.y1.max(b.y1)))
+            .unwrap()
+    };
+    h.state_mut().layout_generators().set_area(area, &ics_core::Tech::generic());
+    let ring = ics_core::layout_gen::GuardRing {
+        area,
+        well: false,
+        width: 0,
+        gap: 0,
+        contacts: true,
+        metal: true,
+    };
+    h.state_mut().apply_gen(GenAction::GuardRing(ring));
+    h.run_steps(2);
+    let ringed = shape_count(&h, "inv_chain");
+    assert!(ringed > before + 8, "{ringed}");
+    h.state_mut().command(Command::FitView);
+    h.run_steps(3);
+    shot(&mut h, "40_layout_generators");
+    let via =
+        ics_core::layout_gen::ViaArray { area: ics_core::IRect::new(-60_000, -60_000, -58_000, -58_000), via: "via1".into() };
+    h.state_mut().apply_gen(GenAction::ViaArray(via));
+    h.run_steps(2);
+    assert!(shape_count(&h, "inv_chain") > ringed);
+    h.state_mut().command(Command::Undo);
+    h.state_mut().command(Command::Undo);
+    h.run_steps(2);
+    assert_eq!(shape_count(&h, "inv_chain"), before);
+
+    let mut h = app(demo_args("ota5t", "layout", false));
+    let spec = ics_core::matching::MatchSpec {
+        devices: vec!["M1".into(), "M2".into()],
+        pattern: ics_core::matching::Pattern::Interdigitated,
+        ..Default::default()
+    };
+    h.state_mut().apply_gen(GenAction::Match(spec));
+    h.run_steps(2);
+    assert!(
+        h.state().console_lines().any(|l| l.starts_with("Layout generator on work/ota5t: placed")),
+        "{:?}",
+        h.state().console_lines().collect::<Vec<_>>()
+    );
+    h.state_mut().command(Command::MatchedPlacement);
+    h.run_steps(4);
+    shot(&mut h, "41_matched_placement");
+}
+
 #[test]
 fn glyph_coverage() {
     let sources = [
@@ -522,6 +675,9 @@ fn glyph_coverage() {
         include_str!("../src/sweep_view.rs"),
         include_str!("../src/stream_map_view.rs"),
         include_str!("../src/fill_view.rs"),
+        include_str!("../src/net_view.rs"),
+        include_str!("../src/hier_view.rs"),
+        include_str!("../src/gen_view.rs"),
         include_str!("../../ics-core/src/sweep.rs"),
         include_str!("../src/theme.rs"),
         include_str!("../../ics-core/src/units.rs"),

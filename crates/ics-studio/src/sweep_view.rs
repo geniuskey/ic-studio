@@ -7,8 +7,8 @@ use std::sync::mpsc::{Receiver, channel};
 use std::time::Instant;
 
 use eframe::egui::{self, Color32, RichText};
-use egui_plot::{Legend, Line, Plot, PlotPoints};
-use ics_core::sweep::{Spec, SweepPoint, SweepSetup, SweepVar};
+use egui_plot::{Bar, BarChart, Legend, Line, Plot, PlotPoints, VLine};
+use ics_core::sweep::{Dist, McVar, Spec, SweepPoint, SweepSetup, SweepVar, stats};
 use ics_core::units::format_eng;
 use ics_core::{Analysis, CellRef, Project};
 use ics_sim::calc::{self, CalcValue};
@@ -52,6 +52,8 @@ pub struct SweepManager {
     plot_analysis: String,
     plot_expr: String,
     selected: Option<usize>,
+    /// Spec shown in the Monte Carlo histogram.
+    hist_spec: usize,
 }
 
 impl SweepManager {
@@ -195,7 +197,8 @@ impl SweepManager {
         }
         let before = self.setup.clone();
         let base = self.cell.as_ref().and_then(|r| project.cell(r)).map(|c| c.sim.clone()).unwrap_or_default();
-        let points = self.setup.points(&base);
+        let runs = self.setup.monte_carlo.runs.max(1) as usize;
+        let points = self.setup.points(&base).map(|p| p.len() * runs);
         let mut action = None;
         egui::Panel::top("sw_toolbar")
             .frame(egui::Frame::new().fill(pal.bg_sidebar).inner_margin(egui::Margin::symmetric(10, 6)))
@@ -207,7 +210,7 @@ impl SweepManager {
                     }
                     ui.separator();
                     match &points {
-                        Ok(p) => ui.label(format!("{} point(s)", p.len())),
+                        Ok(n) => ui.label(format!("{n} point(s)")),
                         Err(e) => ui.label(RichText::new(e).color(pal.danger)),
                     };
                     let running = self.job.is_some();
@@ -226,6 +229,22 @@ impl SweepManager {
                             .fill(pal.simulation);
                         if ui.add_enabled(points.is_ok() && self.cell.is_some(), b).clicked() {
                             action = Some(SweepAction::Run);
+                        }
+                    }
+                    if !running
+                        && !self.results.is_empty()
+                        && ui.button("Export datasheet…").on_hover_text("Specs, statistics and every point as HTML").clicked()
+                    {
+                        let name = self.cell.as_ref().map_or("sweep".into(), |c| c.cell.clone());
+                        if let Some(path) = rfd::FileDialog::new()
+                            .set_file_name(format!("{name}_datasheet.html"))
+                            .add_filter("HTML", &["html"])
+                            .save_file()
+                        {
+                            self.status = Some(match std::fs::write(&path, self.datasheet()) {
+                                Ok(()) => (true, format!("Wrote {}", path.display())),
+                                Err(e) => (false, format!("Cannot write {}: {e}", path.display())),
+                            });
                         }
                     }
                     if let Some((ok, s)) = &self.status {
@@ -251,7 +270,10 @@ impl SweepManager {
                 });
                 return;
             }
-            egui::Panel::bottom("sw_plot").resizable(true).default_size(320.0).show(ui, |ui| self.overlay(ui, &pal));
+            egui::Panel::bottom("sw_plot").resizable(true).default_size(300.0).show(ui, |ui| self.overlay(ui, &pal));
+            if self.is_monte_carlo() && !self.run_specs.is_empty() {
+                egui::Panel::top("sw_stats").resizable(true).default_size(230.0).show(ui, |ui| self.statistics(ui, &pal));
+            }
             egui::CentralPanel::default().show(ui, |ui| self.table(ui, &pal));
         });
         if action.is_none() && self.setup != before {
@@ -372,6 +394,223 @@ impl SweepManager {
         if ui.button("+ Spec").clicked() {
             self.setup.specs.push(Spec { name: format!("spec{}", self.setup.specs.len() + 1), ..Default::default() });
         }
+        self.monte_carlo_ui(ui, pal);
+    }
+
+    fn monte_carlo_ui(&mut self, ui: &mut egui::Ui, pal: &Palette) {
+        theme::section(ui, "Monte Carlo");
+        let mc = &mut self.setup.monte_carlo;
+        ui.horizontal(|ui| {
+            let l = ui.label("Runs");
+            ui.add(egui::DragValue::new(&mut mc.runs).range(0..=1000)).labelled_by(l.id);
+            let l = ui.label("Seed");
+            ui.add(egui::DragValue::new(&mut mc.seed)).labelled_by(l.id);
+        });
+        ui.label(
+            RichText::new(
+                "0 runs = off. Targets: INST.param with wildcards (M*.w, R?.r) or a design variable. Sigma: 5% or a value.",
+            )
+            .small()
+            .color(pal.text_weak),
+        );
+        let mut remove = None;
+        for (i, v) in mc.vars.iter_mut().enumerate() {
+            egui::Frame::new().fill(pal.bg_widget).corner_radius(6).inner_margin(6).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                egui::Grid::new(("sw_mc", i)).num_columns(4).spacing([6.0, 4.0]).show(ui, |ui| {
+                    let l = ui.label("Target");
+                    ui.add_sized([140.0, 20.0], egui::TextEdit::singleline(&mut v.target).hint_text("R*.r")).labelled_by(l.id);
+                    let l = ui.label("Sigma");
+                    ui.add_sized([90.0, 20.0], egui::TextEdit::singleline(&mut v.sigma).hint_text("5%")).labelled_by(l.id);
+                    ui.end_row();
+                    let l = ui.label("Nominal");
+                    ui.add_enabled(
+                        !v.target.contains('.'),
+                        egui::TextEdit::singleline(&mut v.nominal).desired_width(140.0).hint_text("design variables only"),
+                    )
+                    .labelled_by(l.id);
+                    let l = ui.label("Dist");
+                    egui::ComboBox::from_id_salt(("sw_mc_dist", i))
+                        .selected_text(if v.dist == Dist::Gauss { "Gauss" } else { "Uniform" })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut v.dist, Dist::Gauss, "Gauss");
+                            ui.selectable_value(&mut v.dist, Dist::Uniform, "Uniform");
+                        })
+                        .response
+                        .labelled_by(l.id);
+                    ui.end_row();
+                    ui.checkbox(&mut v.mismatch, "Mismatch")
+                        .on_hover_text("Independent draw per instance (else shared: process)");
+                    if ui.small_button("Remove").clicked() {
+                        remove = Some(i);
+                    }
+                    ui.end_row();
+                });
+            });
+            ui.add_space(4.0);
+        }
+        if let Some(i) = remove {
+            mc.vars.remove(i);
+        }
+        if ui.button("+ Varied parameter").clicked() {
+            mc.vars.push(McVar { sigma: "5%".into(), ..Default::default() });
+            if mc.runs == 0 {
+                mc.runs = 50;
+            }
+        }
+    }
+
+    pub fn is_monte_carlo(&self) -> bool {
+        self.results.iter().flatten().any(|r| r.point.run.is_some())
+    }
+
+    /// Values of spec `k` over the finished points.
+    pub fn spec_values(&self, k: usize) -> Vec<f64> {
+        self.results.iter().flatten().filter_map(|r| r.specs.get(k)?.as_ref().ok().copied()).collect()
+    }
+
+    /// (passing, checked) points of spec `k`; failed evaluations count as failing.
+    pub fn spec_yield(&self, k: usize) -> (usize, usize) {
+        let Some(s) = self.run_specs.get(k) else { return (0, 0) };
+        let mut out = (0, 0);
+        for r in self.results.iter().flatten() {
+            let v = match r.specs.get(k) {
+                Some(Ok(x)) => s.check(*x),
+                Some(Err(_)) => Some(false),
+                None => None,
+            };
+            if let Some(ok) = v {
+                out.1 += 1;
+                out.0 += usize::from(ok);
+            }
+        }
+        out
+    }
+
+    fn statistics(&mut self, ui: &mut egui::Ui, pal: &Palette) {
+        ui.columns(2, |cols| {
+            let ui = &mut cols[0];
+            theme::section(ui, "Statistics");
+            egui::Grid::new("sw_stats_grid").striped(true).num_columns(7).spacing([14.0, 4.0]).show(ui, |ui| {
+                for h in ["SPEC", "MEAN", "σ", "MIN", "MAX", "N", "YIELD"] {
+                    ui.label(RichText::new(h).small().strong().color(pal.text_weak));
+                }
+                ui.end_row();
+                for k in 0..self.run_specs.len() {
+                    let st = stats(&self.spec_values(k));
+                    if ui.selectable_label(self.hist_spec == k, &self.run_specs[k].name).clicked() {
+                        self.hist_spec = k;
+                    }
+                    for v in [st.mean, st.std, st.min, st.max] {
+                        ui.label(RichText::new(format_eng(v, "")).monospace());
+                    }
+                    ui.label(st.n.to_string());
+                    let (pass, n) = self.spec_yield(k);
+                    if n > 0 {
+                        let y = pass as f64 / n as f64 * 100.0;
+                        ui.label(RichText::new(format!("{y:.1}%")).strong().color(if pass == n { pal.ok } else { pal.warning }));
+                    } else {
+                        ui.label("—");
+                    }
+                    ui.end_row();
+                }
+            });
+            let ui = &mut cols[1];
+            let k = self.hist_spec.min(self.run_specs.len() - 1);
+            let spec = &self.run_specs[k];
+            theme::section(ui, &format!("Histogram · {}", spec.name));
+            let vals = self.spec_values(k);
+            let st = stats(&vals);
+            let bins = 24usize;
+            let width = if st.max > st.min { (st.max - st.min) / bins as f64 } else { st.mean.abs().max(1e-30) * 0.01 };
+            let mut counts = vec![0u32; bins];
+            for v in &vals {
+                let i = (((v - st.min) / width) as usize).min(bins - 1);
+                counts[i] += 1;
+            }
+            let bars: Vec<Bar> = counts
+                .iter()
+                .enumerate()
+                .map(|(i, c)| {
+                    let x = st.min + (i as f64 + 0.5) * width;
+                    let fill = match spec.check(x) {
+                        Some(false) => pal.danger,
+                        _ => pal.simulation,
+                    };
+                    Bar::new(x, *c as f64).width(width * 0.9).fill(fill)
+                })
+                .collect();
+            let limits: Vec<f64> = [&spec.min, &spec.max].iter().filter_map(|v| ics_core::units::parse_spice(v)).collect();
+            Plot::new("sw_hist").x_axis_formatter(|m, _| format_eng(m.value, "")).allow_scroll(false).show(ui, |pu| {
+                pu.bar_chart(BarChart::new(spec.name.clone(), bars));
+                for l in limits {
+                    pu.vline(VLine::new("limit", l).color(pal.danger).width(1.5));
+                }
+            });
+        });
+    }
+
+    /// An HTML datasheet of the last run: setup, spec summary and every point.
+    pub fn datasheet(&self) -> String {
+        let esc = |t: &str| t.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+        let cell = self.cell.as_ref().map_or(String::new(), |c| c.to_string());
+        let mut h = format!(
+            "<!doctype html><html><head><meta charset=\"utf-8\"><title>{0} datasheet</title><style>\
+             body{{font-family:system-ui,sans-serif;margin:32px;color:#1d222b}}table{{border-collapse:collapse;margin:12px 0}}\
+             td,th{{border:1px solid #d3d7de;padding:4px 10px;text-align:right}}th{{background:#e9ebef}}td.l,th.l{{text-align:left}}\
+             .pass{{color:#0f7442}}.fail{{color:#c02a2a;font-weight:600}}</style></head><body><h1>{0}</h1>",
+            esc(&cell)
+        );
+        let (pass, checked) = self.pass_count();
+        h += &format!("<p>{} point(s); {pass} of {checked} meet every spec.</p>", self.results.iter().flatten().count());
+        h += "<h2>Specs</h2><table><tr><th class=l>Spec</th><th class=l>Expression</th><th>Min limit</th><th>Max limit</th>\
+              <th>Min</th><th>Mean</th><th>Max</th><th>σ</th><th>Yield</th></tr>";
+        for (k, s) in self.run_specs.iter().enumerate() {
+            let st = stats(&self.spec_values(k));
+            let (p, n) = self.spec_yield(k);
+            let y = if n > 0 { format!("{:.1}%", p as f64 / n as f64 * 100.0) } else { "—".into() };
+            let e = |v: f64| format_eng(v, "");
+            h += &format!(
+                "<tr><td class=l>{}</td><td class=l><code>{}</code></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{y}</td></tr>",
+                esc(&s.name),
+                esc(&s.expr),
+                esc(&s.min),
+                esc(&s.max),
+                e(st.min),
+                e(st.mean),
+                e(st.max),
+                e(st.std)
+            );
+        }
+        h += "</table><h2>Points</h2><table><tr><th>#</th><th class=l>Point</th><th class=l>Status</th>";
+        for s in &self.run_specs {
+            h += &format!("<th>{}</th>", esc(&s.name));
+        }
+        h += "</tr>";
+        for (i, r) in self.results.iter().enumerate() {
+            let Some(r) = r else { continue };
+            let status = match &r.results {
+                Ok(_) => "ok".to_string(),
+                Err(e) => format!("failed: {}", esc(e)),
+            };
+            h += &format!("<tr><td>{}</td><td class=l>{}</td><td class=l>{status}</td>", i + 1, esc(&r.point.label()));
+            for (s, v) in self.run_specs.iter().zip(&r.specs) {
+                h += &match v {
+                    Ok(x) => {
+                        let class = match s.check(*x) {
+                            Some(true) => " class=pass",
+                            Some(false) => " class=fail",
+                            None => "",
+                        };
+                        format!("<td{class}>{}</td>", format_eng(*x, ""))
+                    }
+                    Err(e) => format!("<td class=fail title=\"{}\">error</td>", esc(e)),
+                };
+            }
+            h += "</tr>";
+        }
+        h += "</table></body></html>\n";
+        h
     }
 
     fn table(&mut self, ui: &mut egui::Ui, pal: &Palette) {

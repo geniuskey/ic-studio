@@ -53,7 +53,22 @@ pub struct SimState {
     pub filter: String,
     /// Calculator expressions plotted per analysis, re-evaluated after every run.
     pub calc: BTreeMap<String, Vec<String>>,
+    /// Label of the current results.
+    pub label: String,
+    runs: u32,
+    /// Earlier runs kept for comparison, oldest first.
+    pub history: Vec<SavedRun>,
 }
+
+/// Results of an earlier run, overlaid on the plots when `shown`.
+pub struct SavedRun {
+    pub label: String,
+    pub results: SimResults,
+    pub shown: bool,
+}
+
+/// Earlier runs kept per cell.
+pub const MAX_HISTORY: usize = 12;
 
 pub enum SimEvent {
     Finished { ok: bool, message: String, log: String },
@@ -154,7 +169,15 @@ impl SimState {
                         .map(|d| d.analysis.clone())
                         .unwrap_or_default();
                 }
-                self.results = Some(res);
+                if let Some(prev) = self.results.replace(res) {
+                    let label = std::mem::take(&mut self.label);
+                    self.history.push(SavedRun { label, results: prev, shown: false });
+                    if self.history.len() > MAX_HISTORY {
+                        self.history.remove(0);
+                    }
+                }
+                self.runs += 1;
+                self.label = format!("Run {}", self.runs);
                 SimEvent::Finished { ok: true, message: msg, log }
             }
             Err(e) => {
@@ -369,7 +392,24 @@ fn x_formatter(kind: VecKind, log: bool) -> impl Fn(egui_plot::GridMark, &std::o
     }
 }
 
-fn plot_dataset(ui: &mut egui::Ui, d: &Dataset, sel: &BTreeSet<String>, colors: &BTreeMap<String, Color32>) {
+/// A shown earlier run's dataset of the same analysis.
+type Other<'a> = (&'a str, &'a Dataset);
+
+fn overlay_line(name: String, pts: PlotPoints<'static>, color: Color32) -> Line<'static> {
+    Line::new(name, pts).color(color.gamma_multiply(0.75)).width(1.4).style(egui_plot::LineStyle::dashed_loose())
+}
+
+fn xs_of(d: &Dataset, log: bool) -> Vec<f64> {
+    d.scale_vector().map_or(vec![], |s| if log { s.re.iter().map(|f| f.max(1e-30).log10()).collect() } else { s.re.clone() })
+}
+
+fn plot_dataset(
+    ui: &mut egui::Ui,
+    d: &Dataset,
+    sel: &BTreeSet<String>,
+    colors: &BTreeMap<String, Color32>,
+    others: &[Other<'_>],
+) {
     let Some(scale) = d.scale_vector() else { return };
     let log = d.analysis == "ac";
     let xs: Vec<f64> = if log { scale.re.iter().map(|f| f.max(1e-30).log10()).collect() } else { scale.re.clone() };
@@ -406,6 +446,13 @@ fn plot_dataset(ui: &mut egui::Ui, d: &Dataset, sel: &BTreeSet<String>, colors: 
                         let pts: PlotPoints = xs.iter().zip(ys).map(|(x, y)| [*x, y]).collect();
                         pu.line(Line::new(name.clone(), pts).color(colors[name]).width(1.8));
                     }
+                    for (label, o) in others {
+                        if let Some(v) = o.get(name) {
+                            let ys = if is_derived_real(v) { v.re.clone() } else { v.db() };
+                            let pts: PlotPoints = xs_of(o, true).into_iter().zip(ys).map(|(x, y)| [x, y]).collect();
+                            pu.line(overlay_line(format!("{label}: {name}"), pts, colors[name]));
+                        }
+                    }
                 }
             });
         Plot::new(("phase", &d.analysis))
@@ -421,6 +468,12 @@ fn plot_dataset(ui: &mut egui::Ui, d: &Dataset, sel: &BTreeSet<String>, colors: 
                     if let Some(v) = d.get(name).filter(|v| !is_derived_real(v)) {
                         let pts: PlotPoints = xs.iter().zip(v.phase_deg()).map(|(x, y)| [*x, y]).collect();
                         pu.line(Line::new(name.clone(), pts).color(colors[name]).width(1.8));
+                    }
+                    for (label, o) in others {
+                        if let Some(v) = o.get(name).filter(|v| !is_derived_real(v)) {
+                            let pts: PlotPoints = xs_of(o, true).into_iter().zip(v.phase_deg()).map(|(x, y)| [x, y]).collect();
+                            pu.line(overlay_line(format!("{label}: {name}"), pts, colors[name]));
+                        }
                     }
                 }
             });
@@ -438,14 +491,28 @@ fn plot_dataset(ui: &mut egui::Ui, d: &Dataset, sel: &BTreeSet<String>, colors: 
                         let pts: PlotPoints = xs.iter().zip(&v.re).map(|(x, y)| [*x, *y]).collect();
                         pu.line(Line::new(name.clone(), pts).color(colors[name]).width(1.8));
                     }
+                    for (label, o) in others {
+                        if let Some(v) = o.get(name) {
+                            let pts: PlotPoints = xs_of(o, false).into_iter().zip(&v.re).map(|(x, y)| [x, *y]).collect();
+                            pu.line(overlay_line(format!("{label}: {name}"), pts, colors[name]));
+                        }
+                    }
                 }
             });
     }
 }
 
-fn measurements(ui: &mut egui::Ui, d: &Dataset, sel: &BTreeSet<String>, colors: &BTreeMap<String, Color32>) {
+fn measurements(
+    ui: &mut egui::Ui,
+    d: &Dataset,
+    sel: &BTreeSet<String>,
+    colors: &BTreeMap<String, Color32>,
+    others: &[Other<'_>],
+) {
     let pal = theme::palette(ui.ctx());
-    let Some(scale) = d.scale_vector() else { return };
+    if d.scale_vector().is_none() {
+        return;
+    }
     egui::Grid::new(("meas", &d.analysis)).striped(true).num_columns(5).spacing([18.0, 3.0]).show(ui, |ui| {
         let head = |ui: &mut egui::Ui, t: &str| {
             ui.label(RichText::new(t).small().strong().color(pal.text_weak));
@@ -463,9 +530,14 @@ fn measurements(ui: &mut egui::Ui, d: &Dataset, sel: &BTreeSet<String>, colors: 
             head(ui, "FINAL");
         }
         ui.end_row();
-        for name in sel {
-            let Some(v) = d.get(name) else { continue };
-            ui.label(RichText::new(name).monospace().color(colors[name]));
+        let rows = sel.iter().flat_map(|name| {
+            std::iter::once((name.clone(), name, d, colors[name])).chain(
+                others.iter().map(move |(label, o)| (format!("{label}: {name}"), name, *o, colors[name].gamma_multiply(0.75))),
+            )
+        });
+        for (shown, name, ds, color) in rows {
+            let (Some(v), Some(scale)) = (ds.get(name), ds.scale_vector()) else { continue };
+            ui.label(RichText::new(&shown).monospace().color(color));
             if d.analysis == "ac" {
                 let db = if is_derived_real(v) { v.re.clone() } else { v.db() };
                 let g0 = db.first().copied().unwrap_or(f64::NAN);
@@ -662,6 +734,9 @@ pub fn results_panel(ui: &mut egui::Ui, state: &mut SimState) -> Option<String> 
                 sel.clear();
             }
         });
+        egui::CollapsingHeader::new(format!("Compare runs ({})", state.history.len()))
+            .default_open(state.history.iter().any(|r| r.shown))
+            .show(ui, |ui| runs_ui(ui, &mut state.label, &mut state.history));
         egui::ScrollArea::vertical().show(ui, |ui| {
             for v in d.signals() {
                 if !state.filter.is_empty() && !v.name.contains(&state.filter.to_ascii_lowercase()) {
@@ -682,12 +757,44 @@ pub fn results_panel(ui: &mut egui::Ui, state: &mut SimState) -> Option<String> 
             }
         });
     });
+    let others: Vec<Other<'_>> = state
+        .history
+        .iter()
+        .filter(|r| r.shown)
+        .filter_map(|r| Some((r.label.as_str(), r.results.dataset(&d.analysis)?)))
+        .collect();
     egui::Panel::bottom("meas").resizable(true).default_size(110.0).show(ui, |ui| {
         theme::section(ui, "Measurements");
-        egui::ScrollArea::vertical().show(ui, |ui| measurements(ui, d, sel, &colors));
+        egui::ScrollArea::vertical().show(ui, |ui| measurements(ui, d, sel, &colors, &others));
     });
     egui::CentralPanel::default().frame(egui::Frame::new().inner_margin(4)).show(ui, |ui| {
-        plot_dataset(ui, d, sel, &colors);
+        plot_dataset(ui, d, sel, &colors, &others);
     });
     msg
+}
+
+/// Results Browser: the current run and the earlier ones kept for comparison. Checked runs are
+/// overlaid (dashed) on the plots and listed in the measurements.
+pub fn runs_ui(ui: &mut egui::Ui, label: &mut String, history: &mut Vec<SavedRun>) {
+    let pal = theme::palette(ui.ctx());
+    let l = ui.label(RichText::new("Current").small().color(pal.text_weak));
+    ui.add(egui::TextEdit::singleline(label).desired_width(f32::INFINITY)).labelled_by(l.id);
+    if history.is_empty() {
+        ui.label(RichText::new("Earlier runs appear here after the next simulation.").small().color(pal.text_weak));
+        return;
+    }
+    let mut remove = None;
+    for (i, r) in history.iter_mut().enumerate().rev() {
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut r.shown, "").on_hover_text("Overlay on the plots");
+            let l = ui.label(RichText::new(format!("{} ms", r.results.elapsed_ms.round())).small().color(pal.text_weak));
+            ui.add(egui::TextEdit::singleline(&mut r.label).desired_width(110.0)).labelled_by(l.id);
+            if ui.small_button("Delete").clicked() {
+                remove = Some(i);
+            }
+        });
+    }
+    if let Some(i) = remove {
+        history.remove(i);
+    }
 }

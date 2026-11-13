@@ -17,9 +17,12 @@ use crate::canvas::Profile;
 use crate::canvas::View2D;
 use crate::ciw::{Ciw, CiwKind};
 use crate::fill_view::FillTool;
+use crate::gen_view::{GenAction, GenTab, LayoutGenerators};
+use crate::hier_view::{HierAction, HierBrowser};
 use crate::home_view;
 use crate::icons::{self, Icon};
 use crate::layout_view::{EipContext, LayAction, LayCtx, LayRequest, LayTool, LayoutEditor, Verify, fmt_count, um};
+use crate::net_view::{NetAction, NetBrowser};
 use crate::rule_designer::{DesignerAction, RuleDesigner};
 use crate::schematic_view::{SchTool, SchematicEditor, device_palette};
 use crate::sim_view::{self, SimEvent, SimState};
@@ -92,6 +95,20 @@ pub enum Command {
     SweepManager,
     /// Run the active cell's corner / parametric sweep.
     RunSweep,
+    /// Open the Results Browser (earlier runs of the active cell, for comparison).
+    ResultsBrowser,
+    /// Check the active schematic (Check and Save: `true` also saves when it has no errors).
+    CheckSchematic(bool),
+    /// Open the Net Browser on the active layout's extraction.
+    NetBrowser,
+    /// Open the Hierarchy Browser.
+    HierarchyBrowser,
+    /// Open the Layout Generators on the guard ring tab.
+    GuardRing,
+    /// Open the Layout Generators on the via array tab.
+    ViaArray,
+    /// Open the Layout Generators on the matched placement tab.
+    MatchedPlacement,
     Undo,
     Redo,
     Delete,
@@ -432,6 +449,11 @@ pub struct IcStudio {
     fill: FillTool,
     calc: Calculator,
     sweep: SweepManager,
+    results_open: bool,
+    checks: Vec<ics_core::sch_check::Finding>,
+    nets: NetBrowser,
+    hier_browser: HierBrowser,
+    gens: LayoutGenerators,
     ciw: Ciw,
 }
 
@@ -474,6 +496,11 @@ impl IcStudio {
             fill: FillTool::default(),
             calc: Calculator::default(),
             sweep: SweepManager::default(),
+            results_open: false,
+            checks: vec![],
+            nets: NetBrowser::default(),
+            hier_browser: HierBrowser::default(),
+            gens: LayoutGenerators::default(),
             ciw: Ciw::default(),
         };
         app.info(format!("IC Studio {} ready — renderer: wgpu", env!("CARGO_PKG_VERSION")));
@@ -751,6 +778,31 @@ impl IcStudio {
                 _ => self.warn("Open a cell with a schematic to sweep".into()),
             },
             Command::RunSweep => self.run_sweep(ctx),
+            Command::ResultsBrowser => self.results_open = true,
+            Command::CheckSchematic(save) => self.check_schematic(save),
+            Command::NetBrowser => {
+                self.nets.open = true;
+                if let Some(r) = self.active_layout()
+                    && self.lay_eds.get(&r).is_none_or(|e| e.verify.extraction.is_none())
+                {
+                    self.queue.push(Command::ExtractNets);
+                }
+            }
+            Command::HierarchyBrowser => {
+                self.hier_browser.open = true;
+                self.hier_browser.selected = self.active.clone();
+            }
+            Command::GuardRing | Command::ViaArray | Command::MatchedPlacement => {
+                let tab = match cmd {
+                    Command::GuardRing => GenTab::GuardRing,
+                    Command::ViaArray => GenTab::ViaArray,
+                    _ => GenTab::Matching,
+                };
+                let sel = self.selection_bbox();
+                if let Some(p) = &self.project {
+                    self.gens.show(tab, sel, &p.tech);
+                }
+            }
             Command::CalcPlot(expr) => {
                 let Some(r) = self.active.clone() else { return };
                 let Some(sim) = self.sims.get_mut(&r) else {
@@ -1134,7 +1186,7 @@ impl IcStudio {
         if analyses.is_empty() {
             return Err("no analyses enabled".into());
         }
-        let points = setup.sweep.points(&setup)?;
+        let points = setup.sweep.expand(&setup, sch)?;
         let pex = if setup.parasitics && cell.layout.is_some() {
             match ics_core::pex::post_layout(p, r) {
                 Ok(pl) => Some(pl),
@@ -1481,6 +1533,13 @@ impl IcStudio {
                 if ui.add_enabled(has_project, egui::Button::new("Save As…").shortcut_text("⇧⌘S")).clicked() {
                     q.push(Command::SaveAs);
                 }
+                if ui
+                    .add_enabled(has_project, egui::Button::new("Check and Save"))
+                    .on_hover_text("Check the active schematic, save if it has no errors")
+                    .clicked()
+                {
+                    q.push(Command::CheckSchematic(true));
+                }
                 ui.separator();
                 if ui.add_enabled(has_project, egui::Button::new("New Cell…").shortcut_text("⌘N")).clicked() {
                     q.push(Command::NewCellDialog);
@@ -1610,6 +1669,30 @@ impl IcStudio {
                 if ui.button("Corner / Sweep Manager…").clicked() {
                     q.push(Command::SweepManager);
                 }
+                if ui.button("Results Browser…").clicked() {
+                    q.push(Command::ResultsBrowser);
+                }
+                ui.separator();
+                if ui.add_enabled(has_project, egui::Button::new("Check Schematic")).clicked() {
+                    q.push(Command::CheckSchematic(false));
+                }
+                if ui.add_enabled(has_project, egui::Button::new("Hierarchy Browser…")).clicked() {
+                    q.push(Command::HierarchyBrowser);
+                }
+                if ui.add_enabled(has_project, egui::Button::new("Net Browser…")).clicked() {
+                    q.push(Command::NetBrowser);
+                }
+                ui.menu_button("Layout Generators", |ui| {
+                    if ui.add_enabled(has_project, egui::Button::new("Guard Ring…")).clicked() {
+                        q.push(Command::GuardRing);
+                    }
+                    if ui.add_enabled(has_project, egui::Button::new("Via Array…")).clicked() {
+                        q.push(Command::ViaArray);
+                    }
+                    if ui.add_enabled(has_project, egui::Button::new("Matched Placement…")).clicked() {
+                        q.push(Command::MatchedPlacement);
+                    }
+                });
                 ui.separator();
                 if ui.add_enabled(has_project, egui::Button::new("DRC Rule Designer…")).clicked() {
                     q.push(Command::RuleDesigner);
@@ -2333,7 +2416,15 @@ impl IcStudio {
 
     fn console(&mut self, ui: &mut egui::Ui) {
         let pal = theme::palette(ui.ctx());
-        let problems = self.netlist_active().map(|(_, w)| w).unwrap_or_default();
+        let findings = self.active_findings();
+        let problems: Vec<String> = self
+            .netlist_active()
+            .map(|(_, w)| w)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|w| !w.starts_with("Unconnected pin") && !w.starts_with("Duplicate instance name"))
+            .collect();
+        let count = problems.len() + findings.iter().filter(|f| f.severity != ics_core::sch_check::Severity::Info).count();
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.bottom_tab, BottomTab::Console, "Console");
             if ui
@@ -2343,7 +2434,7 @@ impl IcStudio {
             {
                 self.ciw.request_focus();
             }
-            let ptxt = if problems.is_empty() { "Problems".to_string() } else { format!("Problems ({})", problems.len()) };
+            let ptxt = if count == 0 { "Problems".to_string() } else { format!("Problems ({count})") };
             ui.selectable_value(&mut self.bottom_tab, BottomTab::Problems, ptxt);
             ui.selectable_value(&mut self.bottom_tab, BottomTab::Netlist, "Netlist");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -2388,14 +2479,37 @@ impl IcStudio {
                 });
             }
             BottomTab::Problems => {
+                let mut pick = None;
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    if problems.is_empty() {
+                    if problems.is_empty() && findings.is_empty() {
                         ui.label(RichText::new("No problems detected in the active schematic.").color(pal.text_weak));
+                    }
+                    for f in &findings {
+                        use ics_core::sch_check::Severity;
+                        let (tag, c) = match f.severity {
+                            Severity::Error => ("ERROR", pal.danger),
+                            Severity::Warning => ("WARN", pal.warning),
+                            Severity::Info => ("INFO", pal.text_weak),
+                        };
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(tag).monospace().small().color(c));
+                            ui.label(RichText::new(f.code).monospace().small().color(pal.text_weak));
+                            let r = ui.add(egui::Label::new(RichText::new(&f.message).color(c)).sense(egui::Sense::click()));
+                            if r.on_hover_text("Select in the schematic").clicked() {
+                                pick = Some(f.instances.clone());
+                            }
+                        });
                     }
                     for w in problems {
                         ui.label(RichText::new(format!("⚠ {w}")).color(pal.warning));
                     }
                 });
+                if let Some(ids) = pick
+                    && let Some(r) = self.active.clone()
+                {
+                    self.sch_eds.entry(r).or_default().selection = ids.into_iter().map(SchObj::Instance).collect();
+                    self.workspace = Workspace::Schematic;
+                }
             }
             BottomTab::Netlist => {
                 let deck = self.netlist_active().map(|d| d.0).unwrap_or_else(|| "* active cell has no schematic".into());
@@ -2423,6 +2537,14 @@ impl IcStudio {
             ("Dummy fill (metal density)".into(), "", Command::DummyFill),
             ("Waveform calculator".into(), "", Command::Calculator),
             ("Corner / sweep manager".into(), "", Command::SweepManager),
+            ("Results browser (compare runs)".into(), "", Command::ResultsBrowser),
+            ("Check schematic".into(), "", Command::CheckSchematic(false)),
+            ("Check and save".into(), "", Command::CheckSchematic(true)),
+            ("Net browser".into(), "", Command::NetBrowser),
+            ("Hierarchy browser".into(), "", Command::HierarchyBrowser),
+            ("Create guard ring".into(), "", Command::GuardRing),
+            ("Create via array".into(), "", Command::ViaArray),
+            ("Matched placement (common centroid / interdigitated)".into(), "", Command::MatchedPlacement),
             ("Run corner / parametric sweep".into(), "", Command::RunSweep),
             ("Run sign-off runset (KLayout / Calibre / netgen)".into(), "", Command::RunSignoff(None)),
             ("Generate layout from schematic".into(), "", Command::GenerateLayout),
@@ -3145,6 +3267,203 @@ impl IcStudio {
         }
     }
 
+    /// Checker findings of the active schematic.
+    fn active_findings(&self) -> Vec<ics_core::sch_check::Finding> {
+        self.active_cell().and_then(|c| c.schematic.as_ref()).map_or(vec![], ics_core::sch_check::check)
+    }
+
+    fn check_schematic(&mut self, save: bool) {
+        let Some(r) = self.active.clone() else { return };
+        if self.active_cell().is_none_or(|c| c.schematic.is_none()) {
+            self.warn(format!("{r} has no schematic to check"));
+            return;
+        }
+        use ics_core::sch_check::Severity;
+        self.checks = self.active_findings();
+        let n = |s: Severity| self.checks.iter().filter(|f| f.severity == s).count();
+        let (e, w) = (n(Severity::Error), n(Severity::Warning));
+        let msg = format!("Check {r}: {e} error(s), {w} warning(s)");
+        if e > 0 {
+            self.error(msg);
+            self.bottom_tab = BottomTab::Problems;
+        } else if w > 0 {
+            self.warn(msg);
+        } else {
+            self.ok(msg);
+        }
+        if e + w > 0 {
+            self.show_console = true;
+            self.bottom_tab = BottomTab::Problems;
+        }
+        if save && e == 0 {
+            self.queue.push(Command::Save);
+        } else if save {
+            self.warn("Not saved: fix the schematic errors first".into());
+        }
+    }
+
+    pub fn last_check(&self) -> &[ics_core::sch_check::Finding] {
+        &self.checks
+    }
+
+    /// Bounding box of the selection in the active layout.
+    fn selection_bbox(&mut self) -> Option<ics_core::IRect> {
+        let r = self.active_layout()?;
+        let p = self.project.as_ref()?;
+        let l = p.cell(&r)?.layout.as_ref()?;
+        let sel = &self.lay_eds.get(&r)?.selection;
+        if sel.is_empty() {
+            return None;
+        }
+        let idx = self.hier.get_for(&r, l, p);
+        let shapes = l.shapes.iter().filter(|s| sel.contains(&s.id)).map(|s| s.bbox());
+        let insts =
+            l.instances.iter().enumerate().filter(|(_, i)| sel.contains(&i.id)).filter_map(|(k, _)| idx.instance_bbox(l, k));
+        shapes.chain(insts).reduce(|a, b| ics_core::IRect::new(a.x0.min(b.x0), a.y0.min(b.y0), a.x1.max(b.x1), a.y1.max(b.y1)))
+    }
+
+    fn results_window(&mut self, ctx: &egui::Context) {
+        if !self.results_open {
+            return;
+        }
+        let active = self.active.clone();
+        let mut sim = active.as_ref().and_then(|r| self.sims.get_mut(r));
+        let mut open = true;
+        let builder = egui::ViewportBuilder::default().with_title("Results Browser").with_inner_size([420.0, 520.0]);
+        ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("results_browser"), builder, |ui, _class| {
+            if ui.ctx().input(|i| i.viewport().close_requested()) {
+                open = false;
+            }
+            let pal = theme::palette(ui.ctx());
+            egui::CentralPanel::default().frame(egui::Frame::new().fill(pal.bg_panel).inner_margin(12)).show(ui, |ui| {
+                ui.label(RichText::new("Results Browser").strong().color(pal.text_strong));
+                ui.label(
+                    RichText::new("Checked runs are overlaid (dashed) on the Simulation plots and listed in the measurements.")
+                        .small()
+                        .color(pal.text_weak),
+                );
+                ui.separator();
+                match sim.as_deref_mut() {
+                    Some(s) if s.results.is_some() => {
+                        let res = s.results.as_ref().unwrap();
+                        ui.label(
+                            RichText::new(format!("{} · {} analyses", res.backend, res.datasets.len()))
+                                .small()
+                                .color(pal.text_weak),
+                        );
+                        crate::sim_view::runs_ui(ui, &mut s.label, &mut s.history);
+                    }
+                    _ => {
+                        ui.label(RichText::new("Simulate the active cell first.").color(pal.text_weak));
+                    }
+                }
+            });
+        });
+        self.results_open = open;
+    }
+
+    fn net_window(&mut self, ctx: &egui::Context) {
+        let active = self.active_layout();
+        let ed = active.as_ref().and_then(|r| self.lay_eds.get_mut(r));
+        if let Some(NetAction::Extract) = self.nets.window(ctx, self.project.as_ref(), active.as_ref(), ed) {
+            self.queue.push(Command::ExtractNets);
+        }
+    }
+
+    fn hier_window(&mut self, ctx: &egui::Context) {
+        if let Some(HierAction::Open(r, ws)) = self.hier_browser.window(ctx, self.project.as_ref(), self.active.as_ref()) {
+            self.queue.push(Command::OpenCell(r, Some(ws)));
+        }
+    }
+
+    /// MOS devices placed in the active layout, by schematic device name.
+    fn layout_devices(&self) -> Vec<String> {
+        let (Some(r), Some(p)) = (self.active_layout(), self.project.as_ref()) else { return vec![] };
+        let Some(l) = p.cell(&r).and_then(|c| c.layout.as_ref()) else { return vec![] };
+        let mut out: Vec<String> = l
+            .instances
+            .iter()
+            .filter(|i| matches!(p.cell(&i.cell).and_then(|c| c.pcell.as_ref()), Some(ics_core::pcell::PCell::Mos { .. })))
+            .filter_map(|i| i.name.as_deref())
+            .filter(|n| !n.starts_with(ics_core::sdl::DUMMY))
+            .map(|n| ics_core::sdl::device_of(n).to_string())
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    fn gen_window(&mut self, ctx: &egui::Context) {
+        if !self.gens.open {
+            return;
+        }
+        let active = self.active_layout();
+        let sel = self.selection_bbox();
+        let devices = self.layout_devices();
+        if let Some(a) = self.gens.window(ctx, self.project.as_ref(), active.as_ref(), sel, &devices) {
+            self.apply_gen(a);
+        }
+    }
+
+    /// Run a layout generator on the active layout (undoable).
+    pub fn apply_gen(&mut self, a: GenAction) {
+        let Some(r) = self.active_layout() else {
+            self.warn("Open a layout cell first".into());
+            return;
+        };
+        let Some(p) = self.project.as_mut() else { return };
+        let before = p.cell(&r).and_then(|c| c.layout.clone()).unwrap_or_default();
+        let res: Result<String, String> = match a {
+            GenAction::Match(spec) => {
+                ics_core::matching::apply(p, &r, &spec).map(|names| format!("placed {} unit(s)", names.len()))
+            }
+            other => {
+                let shapes = match other {
+                    GenAction::GuardRing(g) => ics_core::layout_gen::guard_ring(&p.tech, &g),
+                    GenAction::ViaArray(v) => ics_core::layout_gen::via_array(&p.tech, &v),
+                    GenAction::ViaOverlaps { via, area } => {
+                        ics_core::layout_gen::via_arrays_at_overlaps(&before, &*p, &p.tech, &via, area)
+                    }
+                    GenAction::Match(_) => unreachable!(),
+                };
+                shapes.and_then(|shapes| {
+                    if shapes.is_empty() {
+                        return Err("nothing to create (no overlap of the via's layers)".into());
+                    }
+                    let n = shapes.len();
+                    let l = p.cell_mut(&r).and_then(|c| c.layout.as_mut()).ok_or("no layout")?;
+                    for (layer, g) in shapes {
+                        l.add(layer, g);
+                    }
+                    Ok(format!("added {n} shape(s)"))
+                })
+            }
+        };
+        match res {
+            Ok(m) => {
+                let ed = self.lay_eds.entry(r.clone()).or_default();
+                ed.history.push(&before);
+                ed.layout_changed();
+                self.hier.invalidate(&r);
+                self.mark_dirty();
+                self.ok(format!("Layout generator on {r}: {m}"));
+            }
+            Err(e) => self.error(format!("Layout generator: {e}")),
+        }
+    }
+
+    pub fn layout_generators(&mut self) -> &mut LayoutGenerators {
+        &mut self.gens
+    }
+
+    pub fn net_browser(&self) -> &NetBrowser {
+        &self.nets
+    }
+
+    pub fn hierarchy_browser(&mut self) -> &mut HierBrowser {
+        &mut self.hier_browser
+    }
+
     fn fill_window(&mut self, ctx: &egui::Context) {
         let active = self.active_layout();
         if self.fill.window(ctx, self.project.as_ref(), active.as_ref()) {
@@ -3334,6 +3653,10 @@ impl eframe::App for IcStudio {
         let sim = active.as_ref().and_then(|r| self.sims.get_mut(r));
         self.calc.window(&ctx, active.as_ref(), sim);
         self.sweep_window(&ctx);
+        self.results_window(&ctx);
+        self.net_window(&ctx);
+        self.hier_window(&ctx);
+        self.gen_window(&ctx);
 
         let cmds = std::mem::take(&mut self.queue);
         for c in cmds {

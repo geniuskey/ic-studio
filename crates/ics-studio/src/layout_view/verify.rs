@@ -153,6 +153,14 @@ fn deck_errors(errs: &[drc::DeckError]) -> Vec<String> {
 }
 
 impl LayoutEditor {
+    /// Highlight extracted net `k` and zoom to it.
+    pub fn show_net(&mut self, k: usize) {
+        self.verify.highlight = Some(k);
+        if let Some(b) = self.verify.extraction.as_ref().and_then(|x| x.nets.get(k)?.bbox) {
+            self.zoom_to(b);
+        }
+    }
+
     fn zoom_to(&mut self, a: IRect) {
         self.push_view();
         self.view.center_on((a.x0 + a.x1) as f64 / 2.0, (a.y0 + a.y1) as f64 / 2.0);
