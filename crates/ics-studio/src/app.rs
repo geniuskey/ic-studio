@@ -100,6 +100,8 @@ pub enum Command {
     /// Import a GDSII or OASIS file (detected from its contents); `None` asks for the file.
     ImportGds(Option<PathBuf>),
     ImportTech,
+    /// Run a Cadence SKILL (.il) script on the project; `None` asks for the file.
+    LoadSkill(Option<PathBuf>),
     /// Replace the technology with a PDK file (see `ics_core::pdk`); `None` asks for the file.
     LoadPdk(Option<PathBuf>),
     ExportNetlist,
@@ -210,6 +212,11 @@ const MCP_EDITS: [&str; 11] = [
     "new_project",
 ];
 
+/// Every cell layout, to tell afterwards which ones a SKILL script changed.
+fn layout_snapshot(p: &Project) -> HashMap<CellRef, Layout> {
+    p.all_cells().filter_map(|(r, c)| Some((r, c.layout.clone()?))).collect()
+}
+
 /// One-line console summary of an MCP tool result.
 fn mcp_summary(tool: &str, res: &ToolResult) -> String {
     let Some(v) = res.value().filter(|_| !res.is_error) else {
@@ -233,6 +240,7 @@ fn mcp_summary(tool: &str, res: &ToolResult) -> String {
         "add_rect" | "add_path" | "add_label" | "place_instance" | "place_pcell" => format!("id {}", v["id"]),
         "open_project" | "new_project" | "project_info" => format!("project '{}'", v["name"].as_str().unwrap_or("?")),
         "import_gds" => format!("library '{}'", v["library"].as_str().unwrap_or("?")),
+        "run_skill" => format!("{} cell(s) modified", len("modified")),
         _ => "ok".into(),
     }
 }
@@ -721,6 +729,7 @@ impl IcStudio {
             Command::ExportLibraryOasis => self.export_stream(true, StreamFormat::Oasis),
             Command::ImportGds(path) => self.import_gds(path),
             Command::ImportTech => self.import_tech(),
+            Command::LoadSkill(path) => self.load_skill(path),
             Command::LoadPdk(path) => {
                 if let Some(path) = path.or_else(|| rfd::FileDialog::new().add_filter("IC Studio PDK", &["toml"]).pick_file()) {
                     self.load_pdk(&path);
@@ -1142,6 +1151,64 @@ impl IcStudio {
         }
     }
 
+    fn load_skill(&mut self, path: Option<PathBuf>) {
+        let current = self.active.clone();
+        let Some(p) = self.project.as_mut() else { return };
+        let Some(path) = path.or_else(|| rfd::FileDialog::new().add_filter("Cadence SKILL", &["il", "ils"]).pick_file()) else {
+            return;
+        };
+        let before = layout_snapshot(p);
+        let res = ics_core::skill::run_file_with(p, &path, current.as_ref());
+        let (output, err) = match &res {
+            Ok(r) => (r.output.clone(), None),
+            Err(e) => (e.output.clone(), Some(e.to_string())),
+        };
+        for line in output.lines() {
+            self.info(format!("SKILL: {line}"));
+        }
+        let changed = self.layouts_edited(before);
+        match err {
+            None => self.ok(format!("Loaded {}: {} cell(s) modified", path.display(), changed.len())),
+            Some(e) => {
+                self.error(format!("SKILL error: {e}"));
+                if !changed.is_empty() {
+                    self.warn(format!("Edits made before the error are kept in {} cell(s)", changed.len()));
+                }
+            }
+        }
+        if self.active.is_none()
+            && let Some(r) = changed.into_iter().next()
+        {
+            self.queue.push(Command::OpenCell(r, Some(Workspace::Layout)));
+        }
+    }
+
+    /// After an external edit of any number of layouts (a SKILL script): record undo history
+    /// for each changed cell that had a layout, refresh the editors and mark the project dirty.
+    /// Returns the changed cells.
+    fn layouts_edited(&mut self, before: HashMap<CellRef, Layout>) -> Vec<CellRef> {
+        let Some(p) = &self.project else { return vec![] };
+        let mut changed: Vec<CellRef> =
+            p.all_cells().filter(|(r, c)| c.layout.is_some() && c.layout.as_ref() != before.get(r)).map(|(r, _)| r).collect();
+        changed.sort();
+        if changed.is_empty() {
+            return changed;
+        }
+        for r in &changed {
+            if let Some(lay) = before.get(r) {
+                self.lay_eds.entry(r.clone()).or_default().history.push(lay);
+            }
+        }
+        for (r, ed) in self.lay_eds.iter_mut() {
+            ed.layout_changed();
+            let lay = p.cell(r).and_then(|c| c.layout.as_ref());
+            ed.selection.retain(|id| lay.is_some_and(|l| l.ids().any(|i| i == *id)));
+        }
+        self.hier.clear();
+        self.mark_dirty();
+        changed
+    }
+
     // ----- shortcuts -----
     fn shortcuts(&mut self, ctx: &egui::Context) {
         let cmd = Modifiers::COMMAND;
@@ -1233,6 +1300,9 @@ impl IcStudio {
                     }
                     if ui.add_enabled(has_project, egui::Button::new("PDK…")).clicked() {
                         q.push(Command::LoadPdk(None));
+                    }
+                    if ui.add_enabled(has_project, egui::Button::new("Load SKILL (.il)…")).clicked() {
+                        q.push(Command::LoadSkill(None));
                     }
                 });
                 ui.menu_button("Export", |ui| {
@@ -2117,6 +2187,7 @@ impl IcStudio {
             ("Import GDSII / OASIS…".into(), "", Command::ImportGds(None)),
             ("Import technology (KLayout .lyp)…".into(), "", Command::ImportTech),
             ("Load PDK…".into(), "", Command::LoadPdk(None)),
+            ("Load SKILL (.il)…".into(), "", Command::LoadSkill(None)),
             ("Export SPICE netlist…".into(), "", Command::ExportNetlist),
             ("Toggle light / dark theme".into(), "", Command::ToggleTheme),
             ("Toggle console".into(), "⌘J", Command::ToggleConsole),
@@ -2672,6 +2743,7 @@ impl IcStudio {
             let r = tools::find(p, c)?;
             Some((p.cell(&r)?.schematic.clone().unwrap_or_default(), r))
         });
+        let skill_before = self.project.as_ref().filter(|_| tool == "run_skill").map(layout_snapshot);
         let mut state = tools::State::in_gui(self.project.take(), self.dirty);
         let res = ics_mcp::call_tool(&mut state, tool, args);
         let (project, dirty) = state.into_parts();
@@ -2710,7 +2782,10 @@ impl IcStudio {
             ed.selection.clear();
             ed.request_fit();
         }
-        let target = cell.as_deref().and_then(|c| self.project.as_ref().and_then(|p| tools::find(p, c)));
+        let mut target = cell.as_deref().and_then(|c| self.project.as_ref().and_then(|p| tools::find(p, c)));
+        if let Some(before) = skill_before {
+            target = self.layouts_edited(before).into_iter().next().filter(|_| self.active.is_none());
+        }
         self.mcp_done(tool, target, &res, None);
         res
     }

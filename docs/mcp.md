@@ -63,7 +63,23 @@ or copy `skills/ic-studio` into `~/.claude/skills/`.
 | `post_layout_parasitics` | Extracted parasitics and the largest net and coupling capacitances |
 | `load_pdk` | Replace the technology with a PDK file |
 | `export_gds`, `import_gds` | GDSII export and import (import skips layers the technology lacks) |
+| `run_skill` | Run Cadence SKILL code (`code`) or a `.il` file (`file`); returns `output`, `value` and the `modified` cells |
 | `gui_status` | Whether a desktop app is connected, and its project |
+
+### run_skill
+
+`run_skill` takes either `code` (SKILL source) or `file` (a `.il` path, also the base of
+relative `load()` paths) and returns the following. The optional `cell` names the cell that
+`geGetEditCellView()` returns.
+
+```json
+{ "output": "what the script printed", "value": "value of the last form", "modified": ["work/pads"] }
+```
+
+On a SKILL error the tool fails with `SKILL error: <file or line>: <message>`, followed by
+the cells already modified (their edits are kept) and the output printed so far. In live
+mode the app records undo history for every changed layout and opens the first one when no
+cell is open.
 
 ## Live mode
 

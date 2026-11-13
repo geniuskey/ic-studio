@@ -228,6 +228,7 @@ mod tests {
             "post_layout_parasitics",
             "export_gds",
             "import_gds",
+            "run_skill",
             "gui_status",
         ];
         assert_eq!(names, expected);

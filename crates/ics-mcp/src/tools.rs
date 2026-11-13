@@ -596,6 +596,18 @@ pub fn definitions() -> Vec<Value> {
             &["path"],
         ),
         tool(
+            "run_skill",
+            &format!(
+                "Run Cadence SKILL (.il) code on the project, e.g. dbOpenCellViewByType / dbCreateRect / dbCreateInst (coordinates in µm). Give 'code' or 'file'. Returns what the script printed, the value of its last form and the cells whose layout it created or changed (lib/cell). On an error the edits made before it are kept. {NOT_SAVED}"
+            ),
+            json!({
+                "code": {"type": "string", "description": "SKILL source to run."},
+                "file": {"type": "string", "description": "SKILL file (.il) to run instead of 'code'; base directory of relative load() paths."},
+                "cell": {"type": "string", "description": "Cell returned by geGetEditCellView() (cell or lib/cell)."},
+            }),
+            &[],
+        ),
+        tool(
             "gui_status",
             "Whether the IC Studio desktop app is connected (live mode: every tool runs on the project open in its window and the user sees edits, DRC/LVS markers and waveforms there immediately) and which project is open.",
             json!({}),
@@ -657,6 +669,7 @@ impl State {
             "post_layout_parasitics" => self.post_layout_parasitics(a),
             "export_gds" => self.export_gds(a),
             "import_gds" => self.import_gds(a),
+            "run_skill" => self.run_skill(a),
             "gui_status" => Ok(self.gui_status()),
             _ => return None,
         })
@@ -1357,6 +1370,38 @@ impl State {
             "skipped_unknown_layer_shapes": skipped,
             "warnings": warnings,
         }))
+    }
+
+    fn run_skill(&mut self, a: &Args) -> Result<Value, String> {
+        let (code, file) = (a.opt_str("code")?, a.opt_str("file")?);
+        let current = match a.opt_str("cell")? {
+            Some(c) => Some(find(self.project()?, c).ok_or_else(|| format!("no cell '{c}'"))?),
+            None => None,
+        };
+        let p = self.project_mut()?;
+        let res = match (code, file) {
+            (Some(code), None) => ics_core::skill::run_with(p, code, None, current.as_ref()),
+            (None, Some(file)) => ics_core::skill::run_file_with(p, Path::new(file), current.as_ref()),
+            _ => return Err("give exactly one of 'code' or 'file'".into()),
+        };
+        let names = |m: &[CellRef]| m.iter().map(CellRef::to_string).collect::<Vec<_>>();
+        match res {
+            Ok(r) => {
+                self.dirty |= !r.modified.is_empty();
+                Ok(json!({"output": r.output, "value": r.value, "modified": names(&r.modified)}))
+            }
+            Err(e) => {
+                self.dirty |= !e.modified.is_empty();
+                let mut msg = format!("SKILL error: {e}");
+                if !e.modified.is_empty() {
+                    msg += &format!("\nmodified (edits kept): {}", names(&e.modified).join(", "));
+                }
+                if !e.output.is_empty() {
+                    msg += &format!("\noutput:\n{}", e.output);
+                }
+                Err(msg)
+            }
+        }
     }
 }
 

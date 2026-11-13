@@ -226,6 +226,47 @@ inspector and press **Apply**. Well and substrate taps (`ntap`, `ptap`) are crea
 [schematic-driven layout](schematic-driven-layout.md); their parameters can be edited in
 the inspector the same way.
 
+## SKILL scripts
+
+File > Import > Load SKILL (.il) runs a Cadence SKILL file on the project; `ics skill` and
+the MCP tool `run_skill` do the same from the command line and from agents. Printed output
+goes to the log, every changed layout can be undone, and `geGetEditCellView()` returns the
+cell open in the editor.
+
+```lisp
+cv = dbOpenCellViewByType("work" "pad" "layout" "maskLayout" "w")
+for(i 0 3
+  dbCreateRect(cv list("metal1" "drawing") list(i*2:0 i*2+1:1)))
+dbCreateInstByMasterName(cv "work" "via_cell" "layout" "I0" 0:5 "R90")
+printf("%d shapes
+" length(cv~>shapes))
+```
+
+Supported:
+
+- syntax: C style `f(a b)` and Lisp `(f a b)` calls, infix operators, `x:y` points,
+  `obj~>prop`, `tbl[key]`, `'quote`, `?key` arguments, `;` and `/* */` comments, scale
+  factors such as `1.5u`;
+- control: `if` / `then` / `else`, `when`, `unless`, `cond`, `case`, `while`, `for`,
+  `foreach` (also `mapcar` and tables), `let`, `prog` / `return`, `setof`, `exists`,
+  `errset`, `error`;
+- `procedure` / `defun` with `@optional`, `@key`, `@rest`, `lambda`, `funcall`, `apply`,
+  `mapcar`, `load`; list, string, math and `printf` / `sprintf` built-ins, `makeTable` tables
+  and disembodied property lists;
+- layout: `dbOpenCellViewByType` (`"r"`, `"w"` clears the layout, `"a"` appends; libraries and
+  cells are created on demand), `dbCreateRect`, `dbCreatePolygon`, `dbCreatePath`,
+  `dbCreateLabel`, `dbCreateInst`, `dbCreateInstByMasterName`, `dbCreateSimpleMosaic`,
+  `dbDeleteObject`, `dbMoveFig`, `dbCopyFig`, `dbFindAnyInstByName`, `dbGetOverlaps`,
+  `dbTransformPoint` / `dbTransformBBox`; `dbSave` and `dbClose` do nothing (save the project).
+  Shape, instance and cellview properties (`bBox`, `points`, `layerName`, `xy`, `orient`,
+  `shapes`, `instances`, ...) can be read, and the geometric ones set.
+
+Coordinates are in µm. A layer is a name, `list(name purpose)` or a layer index; a purpose
+other than `drawing` first looks for a layer named `name.purpose` or `name_purpose`.
+Variables are dynamically scoped as in `.il` files. Not supported: schematic views, PCell
+definitions (`pcDefinePCell`), interactive `hi*` / `le*` forms and SKILL++ (`.ils`) lexical
+scoping.
+
 ## GDSII
 
 - **File > Import > GDSII...** reads a GDS file into a new library with full hierarchy.

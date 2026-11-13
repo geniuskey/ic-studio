@@ -29,6 +29,7 @@ runs and CI. Build it with `cargo build --release -p ics-cli` (binary
 | `ics lvs <PROJECT> <CELL>` | Compare layout and schematic; exit 1 on differences |
 | `ics signoff <PROJECT> <CELL> [RUNSET]` | Run an external KLayout / Calibre / netgen runset (list them without RUNSET); exit 1 on violations or a mismatch |
 | `ics route <PROJECT> <CELL> [--place]` | Route flylines and save; exit 1 if nets stay unrouted |
+| `ics skill <PROJECT> <FILE.il> [--no-save] [--json]` | Run a Cadence SKILL script on the project and save; exit 1 on a SKILL error |
 
 ## Details
 
@@ -88,6 +89,20 @@ AC vectors are `{ "re": [...], "im": [...] }`.
 - `ics route --place` first places the schematic devices missing from the layout
   (schematic-driven layout), then routes, then saves the project.
 
+### SKILL scripts
+
+`ics skill` runs a Cadence SKILL (`.il`) file against the project (layout calls such as
+`dbOpenCellViewByType`, `dbCreateRect` and `dbCreateInst`, coordinates in µm). It prints
+what the script printed, lists the modified cells on stderr, and saves the project unless
+`--no-save` is given. With `--json`, stdout is one object:
+
+```json
+{ "output": "...", "value": "t", "modified": ["work/inv_layout"] }
+```
+
+On a SKILL error it prints the script output, then `error: <file>:<line>: <message>`, exits
+with 1 and does not save.
+
 ## Examples
 
 ```sh
@@ -102,6 +117,7 @@ ics extract demo inv_chain
 ics gds demo inv_tiles -o tiles.gds
 ics import-gds demo chip.gds --lib chip
 ics import-tech demo sky130A.lyp --lyt sky130A.lyt
+ics skill demo make_pads.il --json
 ```
 
 A CI check of a cell:

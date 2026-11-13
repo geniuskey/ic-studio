@@ -150,6 +150,18 @@ enum Cmd {
     /// Replace the technology with a PDK file (TOML: layers, vias, devices, models; see
     /// `pdks/sky130A.toml`). Variables like ${PDK_ROOT} in its paths come from the environment.
     LoadPdk { project: PathBuf, pdk: PathBuf },
+    /// Run a Cadence SKILL (.il) script on the project and save it. Prints what the script
+    /// printed; non-zero exit on a SKILL error (the project is then not saved).
+    Skill {
+        project: PathBuf,
+        file: PathBuf,
+        /// Do not save the project afterwards.
+        #[arg(long)]
+        no_save: bool,
+        /// Print {output, value, modified} as JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn resolve(p: &Project, cell: &str) -> Result<CellRef, String> {
@@ -580,6 +592,31 @@ fn run(cli: Cli) -> Result<(), String> {
             println!("technology {}: {} layers, {} dbu per µm", p.tech.name, p.tech.layers.len(), p.tech.dbu_per_um);
             for w in &warnings {
                 eprintln!("warning: {w}");
+            }
+        }
+        Cmd::Skill { project, file, no_save, json } => {
+            let mut p = Project::open(&project).map_err(|e| e.to_string())?;
+            let res = match ics_core::skill::run_file(&mut p, &file) {
+                Ok(r) => r,
+                Err(e) => {
+                    print!("{}", e.output);
+                    return Err(e.to_string());
+                }
+            };
+            if !no_save {
+                p.save().map_err(|e| e.to_string())?;
+            }
+            let modified: Vec<String> = res.modified.iter().map(CellRef::to_string).collect();
+            if json {
+                println!("{}", serde_json::json!({"output": res.output, "value": res.value, "modified": modified}));
+            } else {
+                print!("{}", res.output);
+                if !res.output.is_empty() && !res.output.ends_with('\n') {
+                    println!();
+                }
+                if !modified.is_empty() {
+                    eprintln!("modified {} cell(s): {}", modified.len(), modified.join(", "));
+                }
             }
         }
     }
