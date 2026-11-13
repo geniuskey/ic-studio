@@ -47,7 +47,9 @@ AC signals are complex, so `v(out)/v(in)` is the transfer function.
 | Timing | `cross(w, level [, n [, edge]])` `delay(w1, l1, w2, l2 [, e1 [, e2]])` `risetime(w [, lo%, hi%])` `falltime(w [, hi%, lo%])` `overshoot(w)` `settling(w [, pct])` |
 | Frequency | `bandwidth(w [, db])` `ugf(w)` `phasemargin(w)` `gainmargin(w)` |
 
-`edge` is `rise`, `fall` or `either`; `n < 0` counts crossings from the end. In the
+`edge` is `rise`, `fall` or `either`; `n < 0` counts crossings from the end. `bandwidth`
+drops `db` below the first point, by default the half-power 3.0103 dB, the same point as the
+f -3 dB column of the Simulation measurements (for one pole it is exactly the pole frequency). In the
 Simulation plot, a real-valued result on an AC dataset (such as `db(v(out))`) is drawn as
 it is rather than converted to dB again.
 

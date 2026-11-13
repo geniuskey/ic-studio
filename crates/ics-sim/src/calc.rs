@@ -49,7 +49,7 @@ pub fn functions() -> &'static [(&'static str, &'static str)] {
         ("falltime(w [, hi%, lo%])", "Fall time between hi% and lo% of min..max (default 90/10)"),
         ("overshoot(w)", "Overshoot in percent of the initial-to-final step"),
         ("settling(w [, pct])", "Scale value after which w stays within pct% of the step around its final value (default 2)"),
-        ("bandwidth(w [, db])", "Frequency where |w| drops db (default 3) dB below its first point"),
+        ("bandwidth(w [, db])", "Frequency where |w| drops db dB below its first point (default: half power, 3.0103 dB)"),
         ("ugf(w)", "Unity-gain frequency (|w| crosses 0 dB)"),
         ("phasemargin(w)", "180 + phase(w) at the unity-gain frequency, in degrees"),
         ("gainmargin(w)", "-db(w) at the frequency where the phase crosses -180 degrees"),
@@ -411,6 +411,23 @@ fn edge(f: &str, v: &Val) -> Result<Edge, String> {
 
 fn interp_x(x0: f64, x1: f64, t: f64, logx: bool) -> f64 {
     if logx && x0 > 0.0 && x1 > 0.0 { 10f64.powf(x0.log10() + t * (x1.log10() - x0.log10())) } else { x0 + t * (x1 - x0) }
+}
+
+/// The half-power drop, 20·log10(√2) ≈ 3.0103 dB: the -3 dB point of a response.
+pub const HALF_POWER_DB: f64 = 3.010_299_956_639_812;
+
+/// Frequency where the gain `gain_db` (dB over `freq`) first falls `drop` dB below its first
+/// point, interpolated on a log frequency axis. The calculator's `bandwidth()` and the waveform
+/// viewer's f -3 dB column both use this.
+pub fn bandwidth_at(freq: &[f64], gain_db: &[f64], drop: f64) -> Option<f64> {
+    let g0 = *gain_db.first()?;
+    crossings(freq, gain_db, g0 - drop, Edge::Fall, true).first().copied()
+}
+
+/// First frequency where the gain `gain_db` crosses 0 dB (either way), log-interpolated: `ugf()`
+/// and the viewer's unity-gain column.
+pub fn unity_gain_at(freq: &[f64], gain_db: &[f64]) -> Option<f64> {
+    crossings(freq, gain_db, 0.0, Edge::Either, true).first().copied()
 }
 
 fn crossings(x: &[f64], y: &[f64], level: f64, edge: Edge, logx: bool) -> Vec<f64> {
@@ -802,20 +819,13 @@ impl Ctx<'_> {
                 arity(f, &args, 1, if f == "bandwidth" { 2 } else { 1 })?;
                 let w = self.wave(f, &args[0])?;
                 let g = db(&self.samples(f, &args[0])?);
-                let ugf = || {
-                    crossings(x, &g, 0.0, Edge::Either, logx)
-                        .first()
-                        .copied()
-                        .ok_or_else(|| format!("{f}(): gain never crosses 0 dB"))
-                };
+                let ugf = || unity_gain_at(x, &g).ok_or_else(|| format!("{f}(): gain never crosses 0 dB"));
                 match f {
                     "bandwidth" => {
-                        let drop = args.get(1).map(|v| num(f, v, "db")).transpose()?.unwrap_or(3.0);
-                        let target = g[0] - drop;
-                        crossings(x, &g, target, Edge::Fall, logx)
-                            .first()
-                            .map(|v| Val::Num(*v))
-                            .ok_or_else(|| format!("bandwidth(): response never drops {drop} dB below its first point"))
+                        let drop = args.get(1).map(|v| num(f, v, "db")).transpose()?.unwrap_or(HALF_POWER_DB);
+                        bandwidth_at(x, &g, drop)
+                            .map(Val::Num)
+                            .ok_or_else(|| format!("bandwidth(): response never drops {drop:.4} dB below its first point"))
                     }
                     "ugf" => ugf().map(Val::Num),
                     "phasemargin" => {
@@ -1028,7 +1038,9 @@ mod tests {
         let d = ac(|f| C::new(a, 0.0) / C::new(1.0, f / fp));
         let h = "v(out)/v(in)";
         let bw = s(&format!("bandwidth({h})"), &d);
-        close(bw / (fp * (10f64.powf(0.3) - 1.0).sqrt()), 1.0, 0.01);
+        close(bw / fp, 1.0, 0.002);
+        let bw3 = s(&format!("bandwidth({h}, 3)"), &d);
+        close(bw3 / (fp * (10f64.powf(0.3) - 1.0).sqrt()), 1.0, 0.002);
         close(s(&format!("ugf({h})"), &d) / (fp * (a * a - 1.0f64).sqrt()), 1.0, 0.01);
         let pm = s(&format!("phasemargin({h})"), &d);
         close(pm, 180.0 - (a * a - 1.0f64).sqrt().atan().to_degrees(), 0.1);

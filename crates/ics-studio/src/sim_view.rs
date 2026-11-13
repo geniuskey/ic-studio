@@ -542,17 +542,11 @@ fn measurements(
                 let db = if is_derived_real(v) { v.re.clone() } else { v.db() };
                 let g0 = db.first().copied().unwrap_or(f64::NAN);
                 let peak = db.iter().cloned().fold(f64::MIN, f64::max);
-                let cross = |lvl: f64| -> Option<f64> {
-                    (1..db.len()).find(|&i| db[i - 1] >= lvl && db[i] < lvl).map(|i| {
-                        let t = (lvl - db[i - 1]) / (db[i] - db[i - 1]);
-                        let (f0, f1) = (scale.re[i - 1].log10(), scale.re[i].log10());
-                        10f64.powf(f0 + t * (f1 - f0))
-                    })
-                };
+                let hz = |f: Option<f64>| f.map(|f| format_eng(f, "Hz")).unwrap_or("—".into());
                 ui.label(format!("{g0:.2} dB"));
                 ui.label(format!("{peak:.2} dB"));
-                ui.label(cross(g0 - 3.0103).map(|f| format_eng(f, "Hz")).unwrap_or("—".into()));
-                ui.label(if g0 > 0.0 { cross(0.0).map(|f| format_eng(f, "Hz")).unwrap_or("—".into()) } else { "—".into() });
+                ui.label(hz(ics_sim::calc::bandwidth_at(&scale.re, &db, ics_sim::calc::HALF_POWER_DB)));
+                ui.label(if g0 > 0.0 { hz(ics_sim::calc::unity_gain_at(&scale.re, &db)) } else { "—".into() });
             } else {
                 let u = v.kind.unit();
                 let mn = v.re.iter().cloned().fold(f64::MAX, f64::min);
