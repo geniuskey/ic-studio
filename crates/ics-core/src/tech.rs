@@ -93,6 +93,13 @@ pub struct ViaDef {
     /// Resistance of one cut in Ω (0 = none).
     #[serde(default)]
     pub resistance: f64,
+    /// Electromigration limit: maximum DC current per cut in A (0 = unchecked).
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub em: f64,
+}
+
+fn is_zero_f64(v: &f64) -> bool {
+    *v == 0.0
 }
 
 /// Wire capacitance to substrate of a conducting layer, used by parasitic extraction (`pex`).
@@ -110,6 +117,9 @@ pub struct LayerCap {
     /// Sheet resistance in Ω per square (0 = no wire resistance).
     #[serde(default)]
     pub resistance: f64,
+    /// Electromigration limit: maximum DC current per µm of wire width in A (0 = unchecked).
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub em: f64,
 }
 
 /// Which technology layers and vias play the fixed roles of device recognition and the PCells.
@@ -494,16 +504,19 @@ impl Tech {
             routing,
             min_area: 0,
         };
-        let v = |name: &str, bottom: &str, cut: &str, top: &str, size: i64, space: i64, eb: i64, et: i64, ohms: f64| ViaDef {
-            name: name.into(),
-            bottom: bottom.into(),
-            cut: cut.into(),
-            top: top.into(),
-            cut_size: size,
-            cut_spacing: space,
-            enc_bottom: eb,
-            enc_top: et,
-            resistance: ohms,
+        let v = |name: &str, bottom: &str, cut: &str, top: &str, size: i64, space: i64, eb: i64, et: i64, ohms: f64, em: f64| {
+            ViaDef {
+                name: name.into(),
+                bottom: bottom.into(),
+                cut: cut.into(),
+                top: top.into(),
+                cut_size: size,
+                cut_spacing: space,
+                enc_bottom: eb,
+                enc_top: et,
+                resistance: ohms,
+                em,
+            }
         };
         Tech {
             name: "generic180".into(),
@@ -525,25 +538,26 @@ impl Tech {
                 l("boundary", 62, [160, 160, 170, 255], FillStyle::Outline, 0, 0, false),
             ],
             vias: vec![
-                v("contact", "active", "contact", "metal1", 220, 250, 100, 60, 10.0),
-                v("polycon", "poly", "contact", "metal1", 220, 250, 100, 60, 10.0),
-                v("via1", "metal1", "via1", "metal2", 260, 260, 60, 60, 5.0),
-                v("via2", "metal2", "via2", "metal3", 260, 260, 60, 60, 5.0),
+                v("contact", "active", "contact", "metal1", 220, 250, 100, 60, 10.0, 0.1e-3),
+                v("polycon", "poly", "contact", "metal1", 220, 250, 100, 60, 10.0, 0.1e-3),
+                v("via1", "metal1", "via1", "metal2", 260, 260, 60, 60, 5.0, 0.2e-3),
+                v("via2", "metal2", "via2", "metal3", 260, 260, 60, 60, 5.0, 0.2e-3),
             ],
             drc_deck: None,
             // Illustrative 180nm-class values (field oxide to substrate), not foundry data.
             caps: [
-                ("poly", 100.0, 45.0, 7.0, 7.5),
-                ("metal1", 38.0, 40.0, 17.0, 0.08),
-                ("metal2", 16.0, 32.0, 20.0, 0.08),
-                ("metal3", 10.0, 28.0, 20.0, 0.06),
+                ("poly", 100.0, 45.0, 7.0, 7.5, 0.05e-3),
+                ("metal1", 38.0, 40.0, 17.0, 0.08, 1.0e-3),
+                ("metal2", 16.0, 32.0, 20.0, 0.08, 1.0e-3),
+                ("metal3", 10.0, 28.0, 20.0, 0.06, 1.5e-3),
             ]
-            .map(|(layer, area, fringe, coupling, resistance)| LayerCap {
+            .map(|(layer, area, fringe, coupling, resistance, em)| LayerCap {
                 layer: layer.into(),
                 area,
                 fringe,
                 coupling,
                 resistance,
+                em,
             })
             .into(),
             roles: LayerRoles::default(),

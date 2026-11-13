@@ -233,6 +233,7 @@ mod tests {
             "run_lvs",
             "run_signoff",
             "post_layout_parasitics",
+            "emir",
             "export_gds",
             "import_gds",
             "run_skill",
@@ -293,6 +294,12 @@ mod tests {
         assert_eq!(x["device_count"], 2);
         let pex = call(&mut s, "post_layout_parasitics", json!({"cell": "cmos_inverter"})).unwrap();
         assert!(pex["summary"].as_str().unwrap().starts_with("post-layout"), "{pex}");
+        let ir = call(&mut s, "emir", json!({"cell": "cmos_inverter", "net": "vdd"})).unwrap();
+        assert_eq!(ir["loads"].as_array().unwrap().len(), 1, "{ir}");
+        assert!(ir["worst"]["drop_v"].as_f64().unwrap() > 0.0, "{ir}");
+        let ir = call(&mut s, "emir", json!({"cell": "cmos_inverter", "net": "gnd", "currents": {"M1": 0.05}})).unwrap();
+        assert!(ir["em_violations"].as_u64().unwrap() > 0, "{ir}");
+        assert!(call(&mut s, "emir", json!({"cell": "cmos_inverter", "net": "nope"})).is_err());
 
         let m1 = call(
             &mut s,

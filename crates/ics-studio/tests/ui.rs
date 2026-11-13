@@ -879,6 +879,22 @@ fn open_layout(dir: &std::path::Path, cell: &str) -> Harness<'static, IcStudio> 
     h
 }
 
+/// IR drop / EM of a supply from the schematic's operating point, drawn as a heatmap.
+#[test]
+fn ir_drop_heatmap() {
+    let args =
+        LaunchArgs { project: None, demo: true, workspace: Some("layout".into()), cell: Some("ring_osc5".into()), run: false };
+    let mut h = app(args);
+    let r = h.state().active_ref().cloned().unwrap();
+    h.state_mut().command(Command::IrDrop(Some("vdd".into())));
+    h.run_steps(2);
+    settle(&mut h, "ir_drop");
+    let ed = h.state().layout_editor(&r).expect("editor");
+    let rep = ed.verify.emir.as_ref().expect("IR drop report").as_ref().expect("IR drop ran");
+    assert!(!rep.loads.is_empty() && rep.worst_drop > 0.0, "{rep:?}");
+    shot(&mut h, "ir_drop");
+}
+
 /// Step while the app is busy; returns (frames, slowest frame).
 fn frames_while_busy(h: &mut Harness<'_, IcStudio>) -> (usize, Duration) {
     let (mut frames, mut slowest, t) = (0, Duration::ZERO, std::time::Instant::now());

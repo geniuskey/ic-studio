@@ -159,6 +159,20 @@ enum Cmd {
     Extract { project: PathBuf, cell: String },
     /// Compare a cell's layout with its schematic (non-zero exit on differences).
     Lvs { project: PathBuf, cell: String },
+    /// IR drop and electromigration of one net of a cell layout (non-zero exit on EM
+    /// violations). Pins labelled with the net name are the pads; device currents come from
+    /// `--currents` or else from an operating-point simulation of the schematic.
+    Emir {
+        project: PathBuf,
+        cell: String,
+        #[arg(long)]
+        net: String,
+        /// JSON object of amps per layout device name (as `ics extract` prints them).
+        #[arg(long)]
+        currents: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Run an external sign-off DRC / LVS runset of the technology (KLayout, Calibre or netgen)
     /// on a cell; without a runset, list them. Non-zero exit on violations or a mismatch.
     Signoff {
@@ -659,6 +673,59 @@ fn run(cli: Cli) -> Result<(), String> {
                 return Err(format!("LVS: {} difference(s)", rep.errors.len()));
             }
             println!("LVS: layout matches schematic");
+        }
+        Cmd::Emir { project, cell, net, currents, json } => {
+            let p = Project::open(&project).map_err(|e| e.to_string())?;
+            let r = resolve(&p, &cell)?;
+            let currents = match currents {
+                Some(f) => {
+                    let text = std::fs::read_to_string(&f).map_err(|e| format!("{}: {e}", f.display()))?;
+                    serde_json::from_str(&text).map_err(|e| format!("{}: expected {{\"M1\": 1e-3, ...}}: {e}", f.display()))?
+                }
+                None => ics_mcp::tools::op_device_currents(&p, &r)?,
+            };
+            let rep = ics_core::emir::analyze_cell(&p, &r, &net, &currents)?;
+            if json {
+                println!("{}", ics_mcp::tools::emir_json(&rep, &p.tech, 50));
+            } else {
+                for w in &rep.warnings {
+                    eprintln!("warning: {w}");
+                }
+                let um = |v: i64| v as f64 / p.tech.dbu_per_um.max(1) as f64;
+                for l in &rep.loads {
+                    println!(
+                        "  {:<8} {:>10}  drop {}",
+                        l.device,
+                        format_eng(l.amps, "A"),
+                        format_eng(rep.nodes[l.node].drop, "V")
+                    );
+                }
+                for v in rep.violations.iter().take(50) {
+                    let unit = if matches!(rep.branches[v.branch].kind, ics_core::emir::BranchKind::Via { .. }) {
+                        "A/cut"
+                    } else {
+                        "A/µm"
+                    };
+                    let a = v.at;
+                    println!(
+                        "  EM {}: {} > {} {unit} at ({}, {}) - ({}, {}) µm",
+                        v.layer,
+                        format_eng(v.density, ""),
+                        format_eng(v.limit, ""),
+                        um(a.x0),
+                        um(a.y0),
+                        um(a.x1),
+                        um(a.y1)
+                    );
+                }
+                if rep.violations.len() > 50 {
+                    println!("  ... {} more", rep.violations.len() - 50);
+                }
+                println!("{}", rep.summary(&p.tech));
+            }
+            if !rep.violations.is_empty() {
+                return Err(format!("{} EM violation(s)", rep.violations.len()));
+            }
         }
         Cmd::Signoff { project, cell, runset } => {
             let p = Project::open(&project).map_err(|e| e.to_string())?;

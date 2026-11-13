@@ -34,5 +34,5 @@ fn initialize_and_list_tools_over_pipes() {
     assert_eq!(lines[1]["id"], 2);
     let tools = lines[1]["result"]["tools"].as_array().unwrap();
     assert!(tools.iter().any(|t| t["name"] == "run_drc"));
-    assert_eq!(tools.len(), 34);
+    assert_eq!(tools.len(), 35);
 }

@@ -9,6 +9,7 @@ pub mod connectivity;
 pub mod constraints;
 pub mod drc;
 pub mod drc_fix;
+pub mod emir;
 pub mod examples;
 pub mod extract;
 pub mod fill;

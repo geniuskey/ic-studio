@@ -57,6 +57,7 @@
 //! enc_bottom = 0.06
 //! enc_top = 0.08
 //! resistance = 152
+//! em = 0.0001                  # optional EM limit in A per cut
 //!
 //! [[device]]                   # MOS devices, first match wins (see MosDef)
 //! name = "sky130_fd_pr__nfet_01v8_lvt"
@@ -100,6 +101,8 @@
 //! layer = "met1"
 //! area = 25.8
 //! fringe = 40
+//! resistance = 0.125           # optional Ω per square
+//! em = 0.001                   # optional EM limit in A per µm of width
 //! ```
 //!
 //! Relative paths are relative to the PDK file. `${VAR}` and `$VAR` expand environment
@@ -205,6 +208,8 @@ struct ViaEntry {
     enc_top: f64,
     #[serde(default)]
     resistance: f64,
+    #[serde(default)]
+    em: f64,
 }
 
 #[derive(Deserialize)]
@@ -325,6 +330,7 @@ pub fn parse(text: &str, base: &Path, env: &dyn Fn(&str) -> Option<String>) -> R
             enc_bottom: to_dbu(v.enc_bottom),
             enc_top: to_dbu(v.enc_top),
             resistance: v.resistance,
+            em: v.em,
         })
         .collect();
     tech.roles = f.roles;

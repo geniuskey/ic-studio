@@ -197,6 +197,7 @@ ics place-like myproj nand2_b --from nand2 --route      # reuse a finished place
 ics route myproj nand2 --place                          # place devices, route flylines, save
 ics extract myproj inv_chain                            # extracted SPICE netlist
 ics lvs myproj cmos_inverter                            # non-zero exit on differences
+ics emir myproj ring_osc5 --net vdd                     # IR drop / EM; non-zero exit on EM violations
 ics mcp                                                 # MCP server for AI agents (stdio)
 ```
 

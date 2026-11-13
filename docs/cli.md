@@ -30,6 +30,7 @@ it with `cargo build --release -p ics-cli` (binary `target/release/ics`) or run 
 | `ics drc <PROJECT> <CELL> [--deck FILE] [--fix]` | Run DRC (the deck may be SVRF); exit 1 on violations |
 | `ics extract <PROJECT> <CELL>` | Print the extracted netlist as SPICE |
 | `ics lvs <PROJECT> <CELL>` | Compare layout and schematic; exit 1 on differences |
+| `ics emir <PROJECT> <CELL> --net NET [--currents FILE] [--json]` | IR drop and electromigration of a net from its labelled pins; currents per layout device (JSON) or from the schematic's operating point; exit 1 on EM violations |
 | `ics signoff <PROJECT> <CELL> [RUNSET]` | Run an external KLayout / Calibre / netgen runset (list them without RUNSET); exit 1 on violations or a mismatch |
 | `ics route <PROJECT> <CELL> [--place]` | Route flylines and save; exit 1 if nets stay unrouted |
 | `ics compact <PROJECT> <CELL> [--dir left,down] [--no-infer]` | Compact the layout toward the given directions and save |

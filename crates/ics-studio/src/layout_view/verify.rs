@@ -6,11 +6,13 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, Rect, Stroke, StrokeKind};
 use ics_core::drc::{self, Deck, DrcReport};
+use ics_core::emir::{self, EmirReport};
 use ics_core::extract::{self, DevKind, Extraction};
 use ics_core::geom::IRect;
 use ics_core::layout::Layout;
 use ics_core::lvs::{self, LvsErrorKind, LvsReport};
 use ics_core::signoff::{self, Runset, SignoffReport};
+use ics_core::units::format_eng;
 use ics_core::{Project, Schematic};
 use ics_mcp::tools::{self, Verified};
 
@@ -43,6 +45,11 @@ pub struct VerifyState {
     pub lvs: Option<LvsReport>,
     /// Last external sign-off run, or why it could not run.
     pub signoff: Option<Result<SignoffReport, String>>,
+    pub emir: Option<Result<EmirReport, String>>,
+    /// Net of the IR drop / EM analysis.
+    pub emir_net: String,
+    /// Current per device in mA for IR drop / EM (0 = from an operating-point simulation).
+    pub emir_ma: f64,
     /// Selected runset of the technology.
     pub runset: usize,
     /// Results no longer reflect the layout.
@@ -65,6 +72,9 @@ impl Default for VerifyState {
             extraction: None,
             lvs: None,
             signoff: None,
+            emir: None,
+            emir_net: "vdd".into(),
+            emir_ma: 0.0,
             runset: 0,
             stale: false,
             highlight: None,
@@ -78,7 +88,8 @@ impl Default for VerifyState {
 
 impl VerifyState {
     pub fn layout_changed(&mut self) {
-        if self.drc.is_some() || self.extraction.is_some() || self.lvs.is_some() || self.signoff.is_some() {
+        if self.drc.is_some() || self.extraction.is_some() || self.lvs.is_some() || self.signoff.is_some() || self.emir.is_some()
+        {
             self.stale = true;
         }
         self.highlight = None;
@@ -103,6 +114,8 @@ pub enum Verify {
     Lvs,
     /// An external runset of the technology ([`VerifyState::runset`]).
     Signoff,
+    /// IR drop and electromigration of [`VerifyState::emir_net`].
+    Emir,
 }
 
 impl Verify {
@@ -112,6 +125,7 @@ impl Verify {
             Verify::Extract => "extraction",
             Verify::Lvs => "LVS",
             Verify::Signoff => "sign-off",
+            Verify::Emir => "IR drop / EM",
         }
     }
 }
@@ -121,6 +135,8 @@ enum Task {
     Extract,
     Lvs(Schematic),
     Signoff(Runset, ics_core::CellRef),
+    /// Cell, net and current per device in mA (0 = simulated).
+    Emir(ics_core::CellRef, String, f64),
 }
 
 impl Task {
@@ -139,6 +155,18 @@ impl Task {
                     c.layout = Some(top.clone());
                 }
                 Verified::Signoff(signoff::run(&p, &cell, &rs, &signoff::Tools::default()))
+            }
+            Task::Emir(cell, net, ma) => {
+                let mut p = src.clone();
+                if let Some(c) = p.cell_mut(&cell) {
+                    c.layout = Some(top.clone());
+                }
+                let currents = if ma > 0.0 {
+                    Ok(extract::extract(top, src, &src.tech).devices.into_iter().map(|d| (d.name, ma * 1e-3)).collect())
+                } else {
+                    tools::op_device_currents(&p, &cell)
+                };
+                Verified::Emir(currents.and_then(|c| emir::analyze_cell(&p, &cell, &net, &c)))
             }
         }
     }
@@ -200,6 +228,7 @@ impl LayoutEditor {
                 Some(rs) => Task::Signoff(rs.clone(), cx.cell.clone()),
                 None => return "The technology has no sign-off runsets".into(),
             },
+            Verify::Emir => Task::Emir(cx.cell.clone(), self.verify.emir_net.trim().to_string(), self.verify.emir_ma),
         };
         let mut snap = tools::snapshot(cx.src, Some(cx.cell), Some(l));
         let top = snap.cell_mut(cx.cell).and_then(|c| c.layout.take()).unwrap_or_default();
@@ -268,6 +297,19 @@ impl LayoutEditor {
                     Err(e) => format!("Sign-off failed: {}", e.lines().next().unwrap_or_default()),
                 };
                 self.verify.signoff = Some(r);
+                msg
+            }
+            Verified::Emir(r) => {
+                let msg = match &r {
+                    Ok(rep) => format!(
+                        "IR drop {}: worst {}, {} EM violation(s)",
+                        rep.net,
+                        format_eng(rep.worst_drop, "V"),
+                        rep.violations.len()
+                    ),
+                    Err(e) => format!("IR drop / EM: {e}"),
+                };
+                self.verify.emir = Some(r);
                 msg
             }
         };
@@ -508,6 +550,52 @@ impl LayoutEditor {
                 });
             }
         }
+        ui.add_space(12.0);
+        theme::section(ui, "IR Drop / EM");
+        ui.horizontal(|ui| {
+            let label = ui.label(egui::RichText::new("Net").small());
+            ui.add(egui::TextEdit::singleline(&mut self.verify.emir_net).desired_width(80.0)).labelled_by(label.id);
+            let label = ui.label(egui::RichText::new("mA / device").small());
+            ui.add(egui::DragValue::new(&mut self.verify.emir_ma).range(0.0..=1000.0).speed(0.01))
+                .labelled_by(label.id)
+                .on_hover_text("Current drawn by every device on the net; 0 simulates the schematic's operating point");
+        });
+        let run = ui.add_enabled(idle && !self.verify.emir_net.trim().is_empty(), egui::Button::new("▶ Run IR / EM"));
+        if run.on_hover_text("Solve the net's resistive mesh from its labelled pins and check current densities").clicked() {
+            self.start_verification(Verify::Emir, l, cx, ui.ctx());
+        }
+        self.job_row(ui, Verify::Emir);
+        match &self.verify.emir {
+            Some(Ok(rep)) => {
+                ui.label(egui::RichText::new(rep.summary(tech)).small().color(pal.text_weak));
+                for w in rep.warnings.iter().take(20) {
+                    ui.label(egui::RichText::new(w).small().color(pal.warning));
+                }
+                if !rep.violations.is_empty() {
+                    ui.colored_label(pal.danger, format!("{} EM violation(s)", rep.violations.len()));
+                    egui::ScrollArea::vertical().id_salt("em").max_height(160.0).show(ui, |ui| {
+                        for v in rep.violations.iter().take(500) {
+                            let m = v.at;
+                            let txt = format!(
+                                "{} {} > {} at {}, {} µm",
+                                v.layer,
+                                format_eng(v.density, ""),
+                                format_eng(v.limit, ""),
+                                um((m.x0 + m.x1) / 2, tech),
+                                um((m.y0 + m.y1) / 2, tech)
+                            );
+                            if ui.add(egui::Button::new(egui::RichText::new(txt).small()).frame(false)).clicked() {
+                                zoom = Some(m);
+                            }
+                        }
+                    });
+                }
+            }
+            Some(Err(e)) => {
+                ui.label(egui::RichText::new(e).small().color(pal.danger));
+            }
+            None => {}
+        }
         if !tech.signoff.is_empty() {
             ui.add_space(12.0);
             theme::section(ui, "Sign-off");
@@ -595,6 +683,37 @@ impl LayoutEditor {
                 format!("net {}", net.name),
                 egui::FontId::proportional(13.0),
                 fill,
+            );
+        }
+        if let Some(Ok(rep)) = &self.verify.emir {
+            let worst = rep.worst_drop.max(1e-30);
+            let mut mesh = egui::Mesh::default();
+            for n in rep.nodes.iter().filter(|n| !n.floating).take(50_000) {
+                let sr = screen_rect(view, rect, n.rect);
+                if sr.intersects(rect) {
+                    let t = (n.drop / worst).clamp(0.0, 1.0) as f32;
+                    let c = Color32::from(egui::ecolor::Hsva::new(0.66 * (1.0 - t), 0.85, 0.95, 1.0));
+                    mesh.add_colored_rect(sr.intersect(rect.expand(2.0)), c.gamma_multiply(0.6));
+                }
+            }
+            painter.add(egui::Shape::mesh(mesh));
+            for v in rep.violations.iter().take(20_000) {
+                let sr = screen_rect(view, rect, v.at).expand(1.0);
+                if sr.intersects(rect) {
+                    painter.rect_stroke(sr, 1.0, Stroke::new(2.0, pal.danger), StrokeKind::Outside);
+                }
+            }
+            painter.text(
+                rect.left_bottom() + egui::vec2(10.0, -30.0),
+                egui::Align2::LEFT_BOTTOM,
+                format!(
+                    "IR drop {}: blue 0 V to red {} · {} EM violation(s)",
+                    rep.net,
+                    format_eng(rep.worst_drop, "V"),
+                    rep.violations.len()
+                ),
+                egui::FontId::proportional(13.0),
+                pal.text,
             );
         }
         if let Some(r) = &self.verify.drc {

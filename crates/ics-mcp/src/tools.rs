@@ -18,7 +18,7 @@ const MAX_LISTED: usize = 500;
 
 /// Read-only tools that can take long on large designs. Live mode runs them on a worker
 /// thread against a [`snapshot`] so the window stays responsive.
-pub const BACKGROUND: [&str; 11] = [
+pub const BACKGROUND: [&str; 12] = [
     "get_netlist",
     "simulate",
     "run_spice",
@@ -29,6 +29,7 @@ pub const BACKGROUND: [&str; 11] = [
     "run_lvs",
     "run_signoff",
     "post_layout_parasitics",
+    "emir",
     "export_gds",
 ];
 
@@ -38,6 +39,7 @@ pub enum Verified {
     Extract(Extraction),
     Lvs(Extraction, LvsReport),
     Signoff(Result<ics_core::signoff::SignoffReport, String>),
+    Emir(Result<ics_core::emir::EmirReport, String>),
 }
 
 /// A copy of the part of `p` that `cell` depends on: the cell itself, every cell its layout
@@ -252,6 +254,81 @@ fn results_json(res: &SimResults) -> Value {
         "elapsed_ms": sig(res.elapsed_ms),
         "datasets": res.datasets.iter().map(dataset_json).collect::<Vec<_>>(),
         "log_tail": tail,
+    })
+}
+
+/// Currents per layout device name for [`ics_core::emir`]: the drain current magnitudes of an
+/// operating-point simulation of the cell's schematic (built-in engine), matched via LVS.
+pub fn op_device_currents(p: &Project, r: &CellRef) -> Result<BTreeMap<String, f64>, String> {
+    let c = p.cell(r).ok_or_else(|| format!("no cell '{r}'"))?;
+    let sch = c.schematic.as_ref().ok_or("cell has no schematic to simulate; give the device currents")?;
+    let deck = ics_core::netlist::netlist_for(sch, &p.tech, &c.sim.corner).deck(&r.to_string(), &c.sim);
+    let res = ics_sim::simulate(&deck, &[ics_core::Analysis::Op], &sim_options(Some(p), Backend::Builtin))
+        .map_err(|e| format!("operating point: {e}"))?;
+    let by_element: BTreeMap<String, f64> = res
+        .dataset("op")
+        .into_iter()
+        .flat_map(|d| &d.devices)
+        .filter_map(|d| d.values.iter().find(|(k, _)| k == "id").map(|(_, v)| (d.name.clone(), *v)))
+        .collect();
+    ics_core::emir::layout_currents(p, r, &by_element)
+}
+
+/// An IR drop / EM report as JSON, listing up to `max` branches and violations.
+pub fn emir_json(rep: &ics_core::emir::EmirReport, tech: &Tech, max: usize) -> Value {
+    use ics_core::emir::BranchKind;
+    let kind = |k: BranchKind| match k {
+        BranchKind::Wire { layer, .. } => layer_name(tech, layer),
+        BranchKind::Via { via } => tech.vias.get(via).map_or_else(String::new, |v| v.name.clone()),
+    };
+    let unit = |k: BranchKind| if matches!(k, BranchKind::Via { .. }) { "A/cut" } else { "A/um" };
+    let mut order: Vec<usize> = (0..rep.branches.len()).collect();
+    let ratio = |i: usize| {
+        let b = &rep.branches[i];
+        if b.limit > 0.0 { b.density / b.limit } else { 0.0 }
+    };
+    order.sort_by(|&i, &j| ratio(j).total_cmp(&ratio(i)).then(rep.branches[j].density.total_cmp(&rep.branches[i].density)));
+    let branches: Vec<Value> = order
+        .into_iter()
+        .take(max)
+        .map(|i| {
+            let b = &rep.branches[i];
+            json!({"layer": kind(b.kind), "at_um": rect_um(tech, b.at), "amps": sig(b.current.abs()), "density": sig(b.density),
+                   "limit": sig(b.limit), "unit": unit(b.kind)})
+        })
+        .collect();
+    let violations: Vec<Value> = rep
+        .violations
+        .iter()
+        .take(max)
+        .map(|v| {
+            json!({"layer": v.layer, "at_um": rect_um(tech, v.at), "density": sig(v.density), "limit": sig(v.limit),
+                        "unit": unit(rep.branches[v.branch].kind)})
+        })
+        .collect();
+    let loads: Vec<Value> = rep
+        .loads
+        .iter()
+        .take(MAX_LISTED)
+        .map(|l| json!({"device": l.device, "amps": sig(l.amps), "drop_v": sig(rep.nodes[l.node].drop)}))
+        .collect();
+    let worst = rep.worst.map(|w| {
+        let n = &rep.nodes[w];
+        json!({"drop_v": sig(n.drop), "layer": layer_name(tech, n.layer), "at_um": rect_um(tech, n.rect)})
+    });
+    json!({
+        "net": rep.net,
+        "summary": rep.summary(tech),
+        "worst": worst,
+        "total_current_a": sig(rep.total_current),
+        "nodes": rep.nodes.len(),
+        "resistors": rep.branches.len(),
+        "pads": rep.pads.len(),
+        "loads": loads,
+        "em_violations": rep.violations.len(),
+        "violations": violations,
+        "highest_density": branches,
+        "warnings": rep.warnings,
     })
 }
 
@@ -643,6 +720,17 @@ pub fn definitions() -> Vec<Value> {
             &["cell"],
         ),
         tool(
+            "emir",
+            "IR drop and electromigration of one net (e.g. a supply) of a cell layout. The net's wires on layers with a sheet resistance become a resistor mesh (each via cut a resistor), pins labelled with the net name are the pads, and every MOS with its source or drain on the net draws its current from the nearest wire. Currents come from 'currents' (layout device name as extract reports it -> amps), else from an operating-point simulation of the schematic (built-in engine) matched via LVS. Returns the worst IR drop and where (µm), the loads, the highest current densities and the EM violations against the technology limits (caps[].em in A per µm of width, vias[].em in A per cut).",
+            json!({
+                "cell": cell(),
+                "net": {"type": "string", "description": "Net name, e.g. vdd or gnd."},
+                "currents": {"type": "object", "additionalProperties": {"type": "number"}, "description": "Amps per layout device name (M1, M2, ...)."},
+                "max_items": {"type": "integer", "minimum": 0, "description": "Branches and violations listed (default 20)."},
+            }),
+            &["cell", "net"],
+        ),
+        tool(
             "export_gds",
             "Write a cell layout and every cell it places to a GDSII file, or to OASIS when the path ends in .oas / .oasis.",
             json!({"cell": cell(), "path": {"type": "string", "description": "Output .gds or .oas file path."}}),
@@ -736,6 +824,7 @@ impl State {
             "run_lvs" => self.run_lvs(a),
             "run_signoff" => self.run_signoff(a),
             "post_layout_parasitics" => self.post_layout_parasitics(a),
+            "emir" => self.emir(a),
             "export_gds" => self.export_gds(a),
             "import_gds" => self.import_gds(a),
             "run_skill" => self.run_skill(a),
@@ -1612,6 +1701,24 @@ impl State {
             "largest_net_caps": caps,
             "largest_coupling_caps": coupling,
         }))
+    }
+
+    fn emir(&mut self, a: &Args) -> Result<Value, String> {
+        let (p, r) = self.cell_arg(a)?;
+        layout_of(p, &r)?;
+        let currents = match a.get("currents") {
+            Some(v) => v
+                .as_object()
+                .and_then(|m| m.iter().map(|(k, v)| Some((k.clone(), v.as_f64()?))).collect::<Option<BTreeMap<_, _>>>())
+                .ok_or("argument 'currents' must map device names to numbers")?,
+            None => op_device_currents(p, &r)?,
+        };
+        let rep = ics_core::emir::analyze_cell(p, &r, a.str("net")?, &currents)?;
+        let max = a.opt_num("max_items")?.map_or(20, |v| v.max(0.0) as usize);
+        let mut out = emir_json(&rep, &p.tech, max);
+        out["cell"] = json!(r.to_string());
+        self.keep(Verified::Emir(Ok(rep)));
+        Ok(out)
     }
 
     fn export_gds(&self, a: &Args) -> Result<Value, String> {
