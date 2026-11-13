@@ -92,7 +92,9 @@ Linux needs the usual windowing libraries:
   detail (small cells collapse to boxes, tiny shapes to dots), bounded work per frame
 - Editing: rectangles, Manhattan or any-angle polygons, paths, labels, rulers; vertex and
   edge handles that keep Manhattan outlines Manhattan; rotate / flip; µm-accurate inspector
-- Manhattan Boolean engine: AND / OR / NOT / XOR, grow / shrink, merge, layer operations
+- Boolean engines: AND / OR / NOT / XOR, grow / shrink, merge, layer operations; a fast
+  Manhattan region engine and an exact any-angle polygon engine (45° sizing, holes) used
+  for non-Manhattan input by layer operations, SKILL `dbLayer*` and layout compare
 - Via generator (single cut or area fill) and PCells: NMOS / PMOS (W, L, fingers),
   poly resistor, MOM capacitor and well / substrate taps, stored as ordinary cells of a
   `pcells` library
@@ -286,7 +288,7 @@ own in-memory project.
 crates/
   ics-core    UI-free design database
               geom · schematic · connectivity · netlist · layout · hier (indices, LOD)
-              region (Booleans) · pcell · gds · oasis · stream_map · tech · tech_import
+              region / polybool (Booleans) · pcell · gds · oasis · stream_map · tech · tech_import
               drc · rule_design · extract · lvs · sdl (schematic-driven layout) · route
               matching · layout_gen · fill · pex · sch_check · sweep · skill
               project storage · examples
@@ -327,7 +329,7 @@ mouse input, and check accessibility labels and glyph coverage.
 - LEF / DEF and abstract generation
 - Python API (PyO3)
 - Resistor / capacitor recognition in LVS; incremental and hierarchical DRC
-- Non-Manhattan Boolean operations
+- Non-Manhattan DRC and extraction
 - EM / IR-drop estimation
 
 ## License

@@ -26,6 +26,7 @@ pub mod optimize;
 pub mod pcell;
 pub mod pdk;
 pub mod pex;
+pub mod polybool;
 pub mod project;
 pub mod region;
 pub mod route;

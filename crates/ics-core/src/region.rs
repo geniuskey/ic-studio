@@ -21,7 +21,7 @@ pub enum BoolOp {
 
 impl BoolOp {
     /// Bit `s` is set when state `s = in_a | in_b << 1` belongs to the result.
-    fn mask(self) -> u8 {
+    pub(crate) fn mask(self) -> u8 {
         match self {
             BoolOp::Or => 0b1110,
             BoolOp::And => 0b1000,
