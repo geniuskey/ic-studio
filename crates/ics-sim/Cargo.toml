@@ -1,10 +1,10 @@
 [package]
 name = "ics-sim"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license.workspace = true
 
 [dependencies]
-ics-core = { version = "0.1.0", path = "../ics-core" }
+ics-core = { version = "0.2.0", path = "../ics-core" }
 num-complex = "0.4.6"
 thiserror = "2.0.21"
