@@ -1,6 +1,6 @@
 //! Self-update from GitHub Releases: check the latest release, download this platform's
-//! binary next to the running one, swap it in and restart. The `ics` CLI and `ics-mcp`
-//! binaries are updated too when they sit next to the app (as the installers put them).
+//! binary next to the running one, swap it in and restart. The `ics` command line tool
+//! (CLI and MCP server) is updated too when it sits next to the app, as the installers put it.
 
 use serde::Deserialize;
 use std::io::{Read, Write};
@@ -13,7 +13,7 @@ pub const REPO: &str = "geniuskey/ic-studio";
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 
 /// Command-line binaries released and updated alongside the app.
-const TOOLS: [&str; 2] = ["ics", "ics-mcp"];
+const TOOLS: [&str; 1] = ["ics"];
 
 fn platform() -> Option<&'static str> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
@@ -219,15 +219,20 @@ pub fn relaunch(exe: &Path) -> Result<(), String> {
         .map_err(|e| format!("cannot restart: {e}"))
 }
 
-/// The running executable as a plain path (no `\\?\` prefix), for other programs to start.
-pub fn exe_path() -> Result<String, String> {
-    let exe = current_exe()?.display().to_string();
-    Ok(exe.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(exe))
+/// The `ics` command line tool next to the app as a plain path (no `\\?\` prefix), which
+/// runs the MCP server as `ics mcp`.
+fn ics_path() -> Result<String, String> {
+    let ics = current_exe()?.with_file_name(format!("ics{}", std::env::consts::EXE_SUFFIX));
+    if !ics.is_file() {
+        return Err(format!("{} not found next to IC Studio", ics.display()));
+    }
+    let s = ics.display().to_string();
+    Ok(s.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(s))
 }
 
-/// MCP client configuration that starts this executable as the MCP server.
+/// MCP client configuration that starts `ics mcp`.
 pub fn mcp_config() -> Result<String, String> {
-    let cfg = serde_json::json!({"mcpServers": {"ic-studio": {"command": exe_path()?, "args": ["--mcp"]}}});
+    let cfg = serde_json::json!({"mcpServers": {"ic-studio": {"command": ics_path()?, "args": ["mcp"]}}});
     Ok(serde_json::to_string_pretty(&cfg).unwrap_or_default())
 }
 
@@ -252,15 +257,15 @@ fn which(name: &str) -> Option<PathBuf> {
     std::env::split_paths(&std::env::var_os("PATH")?).map(|d| d.join(name)).find(|p| p.is_file())
 }
 
-/// Register this executable as the `ic-studio` MCP server of Claude Code (user scope),
-/// replacing an earlier registration.
+/// Register `ics mcp` as the `ic-studio` MCP server of Claude Code (user scope), replacing
+/// an earlier registration.
 pub fn add_to_claude_code() -> Result<String, String> {
-    let exe = exe_path()?;
+    let ics = ics_path()?;
     let _ = claude(&["mcp", "remove", "--scope", "user", "ic-studio"]);
-    let out = claude(&["mcp", "add", "--scope", "user", "ic-studio", "--", &exe, "--mcp"])
+    let out = claude(&["mcp", "add", "--scope", "user", "ic-studio", "--", &ics, "mcp"])
         .map_err(|e| format!("Claude Code (claude) not found: {e}"))?;
     if out.status.success() {
-        Ok(format!("Added the ic-studio MCP server to Claude Code ({exe} --mcp). Restart Claude Code sessions to use it."))
+        Ok(format!("Added the ic-studio MCP server to Claude Code ({ics} mcp). Restart Claude Code sessions to use it."))
     } else {
         let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
         let msg = if msg.is_empty() { String::from_utf8_lossy(&out.stdout).trim().to_string() } else { msg };

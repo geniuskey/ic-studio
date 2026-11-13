@@ -37,9 +37,10 @@ irm https://github.com/geniuskey/ic-studio/releases/latest/download/install.ps1 
 curl -fsSL https://github.com/geniuskey/ic-studio/releases/latest/download/install.sh | sh
 ```
 
-The installer puts `ic-studio`, `ics` and `ics-mcp` on the `PATH`, adds a launcher and
-registers the MCP server with Claude Code if it is installed. Options, uninstall and
-manual downloads: [Installation](https://geniuskey.github.io/ic-studio/install.html).
+The installer puts the app `ic-studio` and the command line tool `ics` (CLI and MCP
+server) in one folder on the `PATH`, adds a launcher (Start Menu on Windows, desktop entry
+on Linux) and registers the MCP server with Claude Code if `claude` is installed. Options,
+uninstall and manual downloads: [Installation](https://geniuskey.github.io/ic-studio/install.html).
 
 ## Build from source
 
@@ -49,6 +50,7 @@ cargo run --release                     # launch the desktop app
 cargo run --release -- --demo           # ... with the bundled demo designs
 cargo run --release -- --demo --cell inv_tiles --workspace layout
 cargo run --release -- path/to/project  # ... opening a project folder
+cargo build --release --workspace       # both programs into target/release/
 ```
 
 Optional: install [ngspice](https://ngspice.sourceforge.io/) (`brew install ngspice`,
@@ -118,9 +120,11 @@ Linux needs the usual windowing libraries:
 - Layout by example (Layout Generators > By Example): a cell with the same circuit as a
   finished one is matched device for device by topology and placed like it, sized from its
   own schematic, then routed (`ics place-like`, MCP `place_like`)
-- Design copilot (Tools > Design Copilot; `GEMINI_API_KEY` from a `.env` in the project or working
-  folder, else the environment; model `gemini-flash-latest`): a Gemini chat that works on
-  the open project through the MCP tools, every edit visible and undoable in the window. It
+- Design copilot (Tools > Design Copilot): an AI chat that works on the open project through
+  the MCP tools, every edit visible and undoable in the window. Models are set in
+  **Tools > AI Models...**: Google Gemini (default, `gemini-flash-latest`), OpenAI, Anthropic
+  Claude or an OpenAI-compatible server; API keys come from there, a `.env` in the project or
+  working folder, or the environment (e.g. `GEMINI_API_KEY`). It
   works as an agent: keeps a task list, asks when a request is unclear, and in plan mode
   investigates read-only and presents a plan for approval before editing; Stop cancels a run
 
@@ -181,8 +185,8 @@ ics netlist myproj cmos_inverter
 ics sim myproj cmos_inverter --backend ngspice --json   # machine-readable results
 ics sim myproj cmos_inverter --parasitics               # post-layout simulation
 ics spice deck.cir                                      # simulate any SPICE deck
-ics gds myproj inv_tiles -o tiles.gds                   # cell and everything it places
-ics import-gds myproj chip.gds                           # new library, unknown layers kept
+ics gds myproj inv_tiles -o tiles.gds                   # cell and everything it places (.oas: OASIS)
+ics import-gds myproj chip.gds                          # new library, unknown layers kept
 ics import-tech myproj sky130A.lyp --lyt sky130A.lyt
 ics drc myproj cmos_inverter [--deck rules.drc]         # non-zero exit on violations
 ics drc myproj cmos_inverter --fix                      # apply verified quick fixes, save
@@ -193,7 +197,10 @@ ics place-like myproj nand2_b --from nand2 --route      # reuse a finished place
 ics route myproj nand2 --place                          # place devices, route flylines, save
 ics extract myproj inv_chain                            # extracted SPICE netlist
 ics lvs myproj cmos_inverter                            # non-zero exit on differences
+ics mcp                                                 # MCP server for AI agents (stdio)
 ```
+
+All commands and options: [Command line](https://geniuskey.github.io/ic-studio/cli.html).
 
 ## Examples
 
@@ -245,34 +252,33 @@ use `target/release/ics` when it exists (otherwise `cargo run --release -p ics-c
 
 ## MCP server (AI agents)
 
-`ics-mcp` (or `ic-studio --mcp`) exposes an IC Studio project to AI agents over the Model
-Context Protocol (stdio). Its 22 tools cover projects, netlisting and simulation, layout editing (rects,
-paths, labels, instances, PCells, schematic-driven placement, flylines), DRC, extraction,
-LVS, parasitics and GDS import / export. Coordinates are in µm; edits stay in memory until
-`save_project`.
+`ics mcp` exposes an IC Studio project to AI agents over the Model Context Protocol
+(stdio). Its 34 tools cover projects and PDKs, schematics from SPICE netlists, netlisting
+and simulation, layout editing (rects, paths, labels, instances, PCells, schematic-driven
+placement, flylines, routing), DRC with quick fixes, compaction, layout compare, the
+optimizer, layout by example, extraction, LVS, sign-off runsets, parasitics, GDSII / OASIS
+import and export, and SKILL scripts. Coordinates are in µm; edits stay in memory until
+`save_project`. Tool list: [MCP server](https://geniuskey.github.io/ic-studio/mcp.html).
 
 The release installer registers it with Claude Code, as does **Add to Claude Code** in
-**File > Settings... > AI agents (MCP)** (**Copy MCP config** copies the JSON for other clients).
-By hand:
+**File > Settings... > AI agents (MCP)**; **Copy MCP config** there copies the JSON for
+other clients. By hand:
 
 ```sh
-claude mcp add --scope user ic-studio -- /path/to/ic-studio --mcp
-# from source: cargo build --release -p ics-mcp, then
-claude mcp add --scope user ic-studio -- /path/to/ic-studio/target/release/ics-mcp
+claude mcp add --scope user ic-studio -- /path/to/ics mcp
+# from source: cargo build --release -p ics-cli, then
+claude mcp add --scope user ic-studio -- /path/to/ic-studio/target/release/ics mcp
 ```
 
 Then ask, for example: "create a demo project in ./demo and run LVS on cmos_inverter".
 
 **Live mode.** While the desktop app (`ic-studio`) is running, the MCP server forwards every
 tool call to it (local TCP on 127.0.0.1 with a per-session token; discovery file
-`live.json` in `%LOCALAPPDATA%\ic-studio` or `~/.local/state/ic-studio`). The agent then
-works on the project open in the window: edits appear immediately and can be undone,
-DRC / LVS / simulation results open in their panels, and the status bar shows
-"MCP live". Without a running app, or with `ICS_MCP_STANDALONE=1`, the server works on its
+`live.json` in `%LOCALAPPDATA%\ic-studio`, `$XDG_RUNTIME_DIR/ic-studio` or
+`~/.local/state/ic-studio`). The agent then works on the project open in the window: edits
+appear immediately and can be undone, DRC / LVS / simulation results open in their panels,
+and the status bar shows "MCP live". Without a running app, or with `ICS_MCP_STANDALONE=1`, the server works on its
 own in-memory project.
-
-Binaries: `ic-studio` (desktop app; `--mcp` runs the MCP server), `ics` (CLI), `ics-mcp`
-(MCP server).
 
 ## Architecture
 
@@ -289,8 +295,8 @@ crates/
               app (shell, commands) · schematic_view · sim_view · layout_view (edit, verify)
               tool windows: calc_view · sweep_view · rule_designer · stream_map_view
               fill_view · gen_view · net_view · hier_view · ciw
-  ics-cli     `ics` command line
-  ics-mcp     MCP server for AI agents
+  ics-cli     `ics` command line and `ics mcp`
+  ics-mcp     MCP tools, stdio server and live-mode bridge (library)
 ```
 
 Design decisions:
@@ -322,7 +328,7 @@ mouse input, and check accessibility labels and glyph coverage.
 - Python API (PyO3)
 - Resistor / capacitor recognition in LVS; incremental and hierarchical DRC
 - Non-Manhattan Boolean operations
-- Optimisation loops over the sweep manager; EM / IR-drop estimation
+- EM / IR-drop estimation
 
 ## License
 

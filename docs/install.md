@@ -17,8 +17,9 @@ macOS (Apple silicon) and Linux (x86_64):
 curl -fsSL https://github.com/geniuskey/ic-studio/releases/latest/download/install.sh | sh
 ```
 
-The installer downloads the latest release and installs the desktop app `ic-studio`, the
-CLI `ics` and the MCP server `ics-mcp` into one folder:
+The installer downloads the latest release and installs two programs into one folder:
+the desktop app `ic-studio` and the command line tool `ics`, which is also the MCP server
+for AI agents (`ics mcp`).
 
 | | Windows | macOS / Linux |
 |---|---|---|
@@ -26,13 +27,18 @@ CLI `ics` and the MCP server `ics-mcp` into one folder:
 | On the PATH | folder added to the user `PATH` | links in `~/.local/bin` |
 | Launcher | Start Menu shortcut **IC Studio** | `~/.local/share/applications/ic-studio.desktop` (Linux) |
 
-If `claude` is on the `PATH`, the installer also registers the MCP server with Claude Code
-(`claude mcp add --scope user ic-studio -- <folder>/ic-studio --mcp`); otherwise it prints
-that command and the JSON config for other clients (see [MCP server](mcp.md)). On macOS it
-removes the download quarantine attribute. If `~/.local/bin` is not on the `PATH`, it
-prints the line to add to your shell profile. On Windows, open a new terminal to pick up
-the `PATH` change. Run the installer again to update; the app's own updater also replaces
-`ics` and `ics-mcp` when they are in the same folder.
+The installer also:
+
+- registers the MCP server with Claude Code if `claude` is on the `PATH`
+  (`claude mcp add --scope user ic-studio -- <folder>/ics mcp`); otherwise it prints that
+  command and the JSON config for other clients (see [MCP server](mcp.md));
+- on macOS, removes the download quarantine attribute;
+- on macOS / Linux, prints the line to add to your shell profile if `~/.local/bin` is not
+  on the `PATH`. On Windows, open a new terminal to pick up the `PATH` change.
+
+To update, run the installer again; this works while the app or an agent is running
+(restart them afterwards). The app's own updater (**Help > Check for Updates...**) also
+replaces `ics` together with the app.
 
 Options are environment variables:
 
@@ -54,11 +60,11 @@ Release builds exist for Windows x86_64, Linux x86_64 and macOS on Apple silicon
 Intel Mac, build from source.
 
 **Manual download.** Each [release](https://github.com/geniuskey/ic-studio/releases) has
-the archive `ic-studio-<platform>.zip` (Windows) or `.tar.gz` with all three binaries, and
-each binary on its own (`ic-studio-<platform>`, `ics-<platform>`, `ics-mcp-<platform>`),
-where `<platform>` is `windows-x86_64`, `linux-x86_64` or `macos-aarch64`. The single
-`ic-studio` binary is enough for the app and the MCP server (`ic-studio --mcp`); the
-archive adds the `ics` CLI.
+an archive with both programs, `ic-studio-<platform>.zip` (Windows) or
+`ic-studio-<platform>.tar.gz` (macOS, Linux), where `<platform>` is `windows-x86_64`,
+`linux-x86_64` or `macos-aarch64`. Unpack it into a folder of your choice and keep the two
+programs together: the updater and **Add to Claude Code** look for `ics` next to
+`ic-studio`. Put the folder on the `PATH` to use `ics` in a terminal.
 
 ## Build from source
 
@@ -82,7 +88,7 @@ cargo run --release -- --demo           # with the bundled demo designs
 cargo run --release -- path/to/project  # open a project folder
 ```
 
-To build all three binaries (`ic-studio`, `ics`, `ics-mcp`) into `target/release/`:
+To build both programs (`ic-studio`, `ics`) into `target/release/`:
 
 ```sh
 cargo build --release --workspace
@@ -92,7 +98,6 @@ cargo build --release --workspace
 
 ```text
 ic-studio [PROJECT_DIR] [--demo] [--cell NAME] [--workspace home|schematic|simulation|layout] [--run]
-ic-studio --mcp
 ```
 
 | Option | Effect |
@@ -102,7 +107,6 @@ ic-studio --mcp
 | `--cell NAME`, `-c NAME` | Open the cell with this name |
 | `--workspace W`, `-w W` | Start in this workspace |
 | `--run` | Run the cell's simulation on startup |
-| `--mcp` | Run the MCP server on stdio instead of the window (same as `ics-mcp`, see [MCP server](mcp.md)) |
 
 Example: `cargo run --release -- --demo --cell inv_tiles --workspace layout`.
 
@@ -129,14 +133,18 @@ the setting at the console binary `ngspice_con.exe` in the same folder.
 
 ## Settings
 
-**File > Settings...** (`Ctrl+,`, or the gear at the bottom of the activity bar):
+**File > Settings...** (`Ctrl+,`, also in the **Tools** menu, or the gear at the bottom of the
+activity bar):
 
 | Setting | Meaning |
 |---|---|
 | Theme | Dark or Light (also **View > Light Theme / Dark Theme**) |
 | UI scale | 0.75 to 1.75 |
 | ngspice | Path to the ngspice executable, with **Detect** |
-| Startup | **Reopen last project** |
+| Interaction | Mouse profile: **Virtuoso** (default) or **Conventional** (see [Keyboard shortcuts](shortcuts.md#canvas-schematic-and-layout)) |
+| Startup | **Reopen last project**; **Check for updates** on startup |
+| AI | **AI Models...**: provider, model and API key of the Design Copilot |
+| AI agents (MCP) | **Add to Claude Code** registers `ics mcp` with Claude Code; **Copy MCP config** copies the JSON for other clients (see [MCP server](mcp.md)) |
 
 Settings and the recent-projects list are stored by the app between sessions.
 

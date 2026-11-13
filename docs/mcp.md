@@ -1,6 +1,6 @@
 # MCP server for AI agents
 
-`ics-mcp`, or the desktop app started as `ic-studio --mcp`, exposes IC Studio to AI agents
+`ics mcp` (the `mcp` command of the `ics` command line tool) exposes IC Studio to AI agents
 through the Model Context Protocol (stdio). An agent can create and open projects, read
 netlists, simulate, edit layouts, generate and route layout from a schematic, and run DRC,
 extraction and LVS.
@@ -15,22 +15,18 @@ below for other clients.
 To register it by hand:
 
 ```sh
-claude mcp add --scope user ic-studio -- /path/to/ic-studio --mcp
+claude mcp add --scope user ic-studio -- /path/to/ics mcp
 ```
 
-For other MCP clients, add a stdio server whose command is the `ic-studio` binary with the
-argument `--mcp`:
+For other MCP clients, add a stdio server whose command is the `ics` binary with the
+argument `mcp`:
 
 ```json
-{ "mcpServers": { "ic-studio": { "command": "/path/to/ic-studio", "args": ["--mcp"] } } }
+{ "mcpServers": { "ic-studio": { "command": "/path/to/ics", "args": ["mcp"] } } }
 ```
 
-From source, the standalone `ics-mcp` binary works the same way without arguments:
-
-```sh
-cargo build --release -p ics-mcp
-claude mcp add --scope user ic-studio -- /path/to/ic-studio/target/release/ics-mcp
-```
+From source, build it with `cargo build --release -p ics-cli` and use
+`target/release/ics`.
 
 Then ask, for example: "create a demo project in ./demo and run LVS on cmos_inverter".
 
@@ -56,6 +52,8 @@ or copy `skills/ic-studio` into `~/.claude/skills/`.
 
 ## Tools
 
+The server has 34 tools:
+
 | Tool | Purpose |
 |---|---|
 | `open_project`, `new_project`, `save_project`, `project_info` | Project management; `project_info` lists the technology layers, vias and all cells |
@@ -72,12 +70,17 @@ or copy `skills/ic-studio` into `~/.claude/skills/`.
 | `flylines` | List unrouted connections |
 | `route` | Route the flylines on the metal layers |
 | `run_drc` | DRC with the technology deck |
+| `fix_drc` | Apply verified quick fixes to the cell's top-level geometry until nothing more can be fixed |
+| `compact` | Slide top-level items toward each direction until the rules stop them; constraints hold |
+| `optimize` | Size device parameters to meet specs (optionally after layout); `apply` writes the best values |
+| `place_like` | Layout by example: place a cell like a finished cell with the same circuit topology, optionally route |
+| `diff_layout` | XOR a cell's layout per layer against a git revision (default `HEAD`) or the saved files |
 | `extract` | Extracted nets and devices, plus SPICE |
 | `run_lvs` | Compare layout and schematic |
 | `run_signoff` | Run an external KLayout / Calibre / netgen runset of the technology |
 | `post_layout_parasitics` | Extracted parasitics and the largest net and coupling capacitances |
 | `load_pdk` | Replace the technology with a PDK file |
-| `export_gds`, `import_gds` | GDSII export and import (import skips layers the technology lacks); both apply the technology's stream layer map |
+| `export_gds`, `import_gds` | GDSII / OASIS export and import (import skips layers the technology lacks); both apply the technology's stream layer map |
 | `run_skill` | Run Cadence SKILL code (`code`) or a `.il` file (`file`); returns `output`, `value` and the `modified` cells |
 | `gui_status` | Whether a desktop app is connected, and its project |
 
@@ -98,9 +101,8 @@ cell is open.
 
 ## Live mode
 
-While the desktop app is running, the MCP server (`ic-studio --mcp` or `ics-mcp`) forwards
-every tool call to it, and the agent
-works on the project open in the window:
+While the desktop app is running, the MCP server (`ics mcp`) forwards every tool call to
+it, and the agent works on the project open in the window:
 
 - edits appear immediately and layout edits can be undone with `Ctrl+Z`,
 - the window opens the affected cell in the matching workspace; `simulate` shows the
@@ -110,7 +112,7 @@ works on the project open in the window:
 
 The app listens on 127.0.0.1 with a per-session token and writes the discovery file
 `live.json` to `%LOCALAPPDATA%\ic-studio` (Windows) or `$XDG_RUNTIME_DIR/ic-studio`, falling
-back to `~/.local/state/ic-studio` (Linux, macOS). `ics-mcp` checks for a running app on
+back to `~/.local/state/ic-studio` (Linux, macOS). `ics mcp` checks for a running app on
 every call, so you can start or close the app at any time.
 
 Without a running app, or with `ICS_MCP_STANDALONE=1`, the server works on its own

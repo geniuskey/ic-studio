@@ -1,5 +1,4 @@
-//! IC Studio MCP tool layer and stdio server, shared by `ics-mcp`, `ic-studio --mcp` and the
-//! desktop app (live mode).
+//! IC Studio MCP tool layer and stdio server, shared by `ics mcp` and the desktop app (live mode).
 
 pub mod bridge;
 pub mod server;

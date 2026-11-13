@@ -38,12 +38,12 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev
       - name: Build
-        run: cargo build --release -p ics-studio -p ics-cli -p ics-mcp
+        run: cargo build --release -p ics-studio -p ics-cli
       - name: Package
         shell: bash
         run: |
           mkdir -p dist pkg
-          for b in ic-studio ics ics-mcp; do
+          for b in ic-studio ics; do
             cp "target/release/$b${{ matrix.ext }}" pkg/
             cp "target/release/$b${{ matrix.ext }}" "dist/$b-${{ matrix.platform }}${{ matrix.ext }}"
           done

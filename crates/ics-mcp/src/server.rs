@@ -1,5 +1,5 @@
 //! Model Context Protocol server (stdio, newline-delimited JSON-RPC 2.0) exposing an IC Studio
-//! project to AI agents, run by `ics-mcp` and `ic-studio --mcp`. stdout carries protocol
+//! project to AI agents, run by `ics mcp`. stdout carries protocol
 //! messages only; logs go to stderr.
 //!
 //! Live mode: while the IC Studio app runs, every tool call is forwarded to it (see
@@ -68,7 +68,7 @@ impl Rpc {
             return id.filter(|_| !is_response).map(|id| error(id, -32600, "invalid request: missing method"));
         };
         let Some(id) = id else {
-            eprintln!("ics-mcp: notification {method}");
+            eprintln!("ics mcp: notification {method}");
             return None;
         };
         let params = msg.get("params").cloned().unwrap_or_else(|| json!({}));
@@ -96,10 +96,10 @@ impl Rpc {
         if !has_tool(name) {
             return Err((-32602, format!("unknown tool: {name}")));
         }
-        eprintln!("ics-mcp: tool {name}");
+        eprintln!("ics mcp: tool {name}");
         let ToolResult { text, is_error } = self.run(name, args);
         if is_error {
-            eprintln!("ics-mcp: {name} failed: {text}");
+            eprintln!("ics mcp: {name} failed: {text}");
         }
         Ok(json!({"content": [{"type": "text", "text": text}], "isError": is_error}))
     }
@@ -110,9 +110,9 @@ impl Rpc {
         let mode = client.as_ref().map(Client::pid);
         if self.live != Some(mode) {
             match mode {
-                Some(pid) => eprintln!("ics-mcp: live mode, forwarding tool calls to IC Studio (pid {pid})"),
-                None if self.live.is_some() => eprintln!("ics-mcp: IC Studio is gone; running tools locally"),
-                None => eprintln!("ics-mcp: no IC Studio window; running tools locally"),
+                Some(pid) => eprintln!("ics mcp: live mode, forwarding tool calls to IC Studio (pid {pid})"),
+                None if self.live.is_some() => eprintln!("ics mcp: IC Studio is gone; running tools locally"),
+                None => eprintln!("ics mcp: no IC Studio window; running tools locally"),
             }
             self.live = Some(mode);
         }
@@ -127,14 +127,14 @@ impl Rpc {
 
 /// Serve MCP requests on stdin / stdout until stdin closes.
 pub fn serve_stdio() {
-    eprintln!("ic-studio MCP server {} ready on stdio", env!("CARGO_PKG_VERSION"));
+    eprintln!("ics mcp {} ready on stdio", env!("CARGO_PKG_VERSION"));
     let mut server = Rpc::default();
     let mut out = std::io::stdout().lock();
     for line in std::io::stdin().lock().lines() {
         let line = match line {
             Ok(l) => l,
             Err(e) => {
-                eprintln!("ics-mcp: stdin: {e}");
+                eprintln!("ics mcp: stdin: {e}");
                 break;
             }
         };

@@ -43,10 +43,7 @@ pub fn parse_args() -> LaunchArgs {
             "--workspace" | "-w" => a.workspace = it.next(),
             "--cell" | "-c" => a.cell = it.next(),
             "--help" | "-h" => {
-                println!(
-                    "ic-studio [PROJECT_DIR] [--demo] [--cell NAME] [--workspace home|schematic|simulation|layout] [--run]\n\
-                     ic-studio --mcp    run the MCP server for AI agents on stdio"
-                );
+                println!("ic-studio [PROJECT_DIR] [--demo] [--cell NAME] [--workspace home|schematic|simulation|layout] [--run]");
                 std::process::exit(0);
             }
             other => a.project = Some(other.into()),

@@ -36,6 +36,8 @@ enum Template {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Run the MCP server for AI agents on stdio (`claude mcp add ic-studio -- ics mcp`).
+    Mcp,
     /// Create a new project directory.
     New {
         dir: PathBuf,
@@ -297,6 +299,7 @@ fn print_results(res: &SimResults, json: bool) {
 
 fn run(cli: Cli) -> Result<(), String> {
     match cli.cmd {
+        Cmd::Mcp => ics_mcp::server::serve_stdio(),
         Cmd::New { dir, template } => {
             let name = dir.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or("project".into());
             let mut p = match template {

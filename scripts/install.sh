@@ -3,9 +3,9 @@
 #
 #   curl -fsSL https://github.com/geniuskey/ic-studio/releases/latest/download/install.sh | sh
 #
-# Installs ic-studio, ics and ics-mcp from a GitHub release into one folder, links them
-# into ~/.local/bin, adds a desktop entry on Linux and registers the MCP server with
-# Claude Code when `claude` is on the PATH.
+# Installs the app (ic-studio) and the command line tool (ics, CLI and MCP server) from a
+# GitHub release into one folder, links them into ~/.local/bin, adds a desktop entry on
+# Linux and registers the MCP server (ics mcp) with Claude Code when `claude` is on the PATH.
 #
 # Options (environment variables):
 #   ICS_VERSION      release tag to install, e.g. v0.2.0 (default: latest)
@@ -15,7 +15,7 @@
 set -eu
 
 REPO="geniuskey/ic-studio"
-BINS="ic-studio ics ics-mcp"
+BINS="ic-studio ics"
 INSTALL_DIR="${ICS_INSTALL_DIR:-$HOME/.local/share/ic-studio}"
 BIN_DIR="$HOME/.local/bin"
 DESKTOP_FILE="$HOME/.local/share/applications/ic-studio.desktop"
@@ -128,12 +128,12 @@ EOF
         fi
     fi
 
-    app="$INSTALL_DIR/ic-studio"
+    ics="$INSTALL_DIR/ics"
     mcp_status=""
     if has claude; then
         say "Registering the MCP server with Claude Code"
         claude mcp remove --scope user ic-studio </dev/null >/dev/null 2>&1 || true
-        if claude mcp add --scope user ic-studio -- "$app" --mcp </dev/null >/dev/null 2>&1; then
+        if claude mcp add --scope user ic-studio -- "$ics" mcp </dev/null >/dev/null 2>&1; then
             mcp_status="registered with Claude Code as \"ic-studio\" (user scope)"
         else
             mcp_status="registration with Claude Code failed"
@@ -144,16 +144,16 @@ EOF
     echo "IC Studio is installed."
     echo "  Folder:   $INSTALL_DIR (linked into $BIN_DIR)"
     echo "  App:      ic-studio"
-    echo "  CLI:      ics --help"
+    echo "  CLI:      ics --help   (MCP server: ics mcp)"
     if [ -n "$mcp_status" ]; then
         echo "  MCP:      $mcp_status"
     fi
     case "$mcp_status" in
         "" | *failed*)
             echo "  MCP:      to register with Claude Code, run"
-            echo "              claude mcp add --scope user ic-studio -- \"$app\" --mcp"
+            echo "              claude mcp add --scope user ic-studio -- \"$ics\" mcp"
             echo "            for other MCP clients, add"
-            echo "              { \"mcpServers\": { \"ic-studio\": { \"command\": \"$app\", \"args\": [\"--mcp\"] } } }"
+            echo "              { \"mcpServers\": { \"ic-studio\": { \"command\": \"$ics\", \"args\": [\"mcp\"] } } }"
             ;;
     esac
     case ":$PATH:" in

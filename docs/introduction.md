@@ -103,20 +103,23 @@ cd ic-studio
 cargo run --release -- --demo --cell full_adder --workspace layout
 ```
 
-The demo project opens on an automatically placed and routed full adder. The
+With a [release installed](install.md#install-a-release), run
+`ic-studio --demo --cell full_adder --workspace layout` instead. The demo project opens on an automatically placed and routed full adder. The
 [demo gallery](demos.md) walks through every example and has ready-made scripts for
 presenting IC Studio live.
 
 ## What is in the box
 
-| Binary | Purpose |
+Two programs, installed together:
+
+| Program | Purpose |
 |---|---|
 | `ic-studio` | The desktop application |
 | `ics` | Command-line interface for scripting and CI |
-| `ics-mcp` | Model Context Protocol server for AI agents |
+| `ics mcp` | The same `ics` program run as a Model Context Protocol server for AI agents |
 
-All three use the same core library, so a project edited in the app can be simulated,
-checked or exported from the command line, or driven by an agent.
+All three front ends use the same core library, so a project edited in the app can be
+simulated, checked or exported from the command line, or driven by an agent.
 
 ## Main concepts
 

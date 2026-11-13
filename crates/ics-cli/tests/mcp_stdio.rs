@@ -5,13 +5,14 @@ use serde_json::{Value, json};
 
 #[test]
 fn initialize_and_list_tools_over_pipes() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_ics-mcp"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ics"))
+        .arg("mcp")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .env("ICS_MCP_STANDALONE", "1")
         .spawn()
-        .expect("spawn ics-mcp");
+        .expect("spawn ics mcp");
     let mut stdin = child.stdin.take().unwrap();
     for msg in [
         json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test", "version": "0"}}}),

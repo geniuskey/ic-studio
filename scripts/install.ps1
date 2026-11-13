@@ -2,9 +2,9 @@
 #
 #   irm https://github.com/geniuskey/ic-studio/releases/latest/download/install.ps1 | iex
 #
-# Installs ic-studio.exe, ics.exe and ics-mcp.exe from a GitHub release into one folder,
-# adds it to the user PATH, creates a Start Menu shortcut and registers the MCP server
-# with Claude Code when `claude` is on the PATH.
+# Installs the app (ic-studio.exe) and the command line tool (ics.exe, CLI and MCP server)
+# from a GitHub release into one folder, adds it to the user PATH, creates a Start Menu
+# shortcut and registers the MCP server (ics mcp) with Claude Code when `claude` is on the PATH.
 #
 # Options (environment variables):
 #   ICS_VERSION      release tag to install, e.g. v0.2.0 (default: latest)
@@ -15,11 +15,12 @@
     $ErrorActionPreference = 'Stop'
     $Repo = 'geniuskey/ic-studio'
     $Platform = 'windows-x86_64'
-    $Exes = @('ic-studio.exe', 'ics.exe', 'ics-mcp.exe')
+    $Exes = @('ic-studio.exe', 'ics.exe')
 
     $Dir = if ($env:ICS_INSTALL_DIR) { $env:ICS_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\IC Studio' }
     $Dir = [System.IO.Path]::GetFullPath($Dir)
     $AppExe = Join-Path $Dir 'ic-studio.exe'
+    $IcsExe = Join-Path $Dir 'ics.exe'
     $Shortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\IC Studio.lnk'
 
     function Write-Step([string]$Message) { Write-Host "==> $Message" -ForegroundColor Cyan }
@@ -41,7 +42,7 @@
 
     function Get-RunningApp {
         Get-Process -ErrorAction SilentlyContinue | Where-Object {
-            $_.ProcessName -in @('ic-studio', 'ics', 'ics-mcp') -and $_.Path -and
+            $_.ProcessName -in @('ic-studio', 'ics') -and $_.Path -and
             ([System.IO.Path]::GetDirectoryName($_.Path) -ieq $Dir)
         }
     }
@@ -157,7 +158,7 @@ public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wP
         Write-Step "Installing to $Dir"
         New-Item -ItemType Directory -Path $Dir -Force | Out-Null
         foreach ($exe in $Exes) {
-            # A running exe (the app, or an MCP client's ic-studio --mcp) cannot be overwritten but
+            # A running exe (the app, or an MCP client's ics mcp) cannot be overwritten but
             # can be renamed; IC Studio deletes the .old files on its next start.
             $target = Join-Path $Dir $exe
             if (Test-Path -LiteralPath $target) {
@@ -199,27 +200,27 @@ public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wP
     if (Test-Claude) {
         Write-Step 'Registering the MCP server with Claude Code'
         [void](Invoke-Claude @('mcp', 'remove', '--scope', 'user', 'ic-studio'))
-        if (Invoke-Claude @('mcp', 'add', '--scope', 'user', 'ic-studio', '--', $AppExe, '--mcp')) {
+        if (Invoke-Claude @('mcp', 'add', '--scope', 'user', 'ic-studio', '--', $IcsExe, 'mcp')) {
             $mcpStatus = 'registered with Claude Code as "ic-studio" (user scope)'
         } else {
             $mcpStatus = 'registration with Claude Code failed'
         }
     }
 
-    $jsonPath = $AppExe.Replace('\', '\\')
+    $jsonPath = $IcsExe.Replace('\', '\\')
     Write-Host ''
     Write-Host 'IC Studio is installed.' -ForegroundColor Green
     Write-Host "  Folder:   $Dir"
     Write-Host '  App:      ic-studio   (or Start Menu > IC Studio)'
-    Write-Host '  CLI:      ics --help'
+    Write-Host '  CLI:      ics --help   (MCP server: ics mcp)'
     if ($mcpStatus) {
         Write-Host "  MCP:      $mcpStatus"
     }
     if (-not $mcpStatus -or $mcpStatus -like '*failed*') {
         Write-Host '  MCP:      to register with Claude Code, run'
-        Write-Host "              claude mcp add --scope user ic-studio -- `"$AppExe`" --mcp"
+        Write-Host "              claude mcp add --scope user ic-studio -- `"$IcsExe`" mcp"
         Write-Host '            for other MCP clients, add'
-        Write-Host "              { `"mcpServers`": { `"ic-studio`": { `"command`": `"$jsonPath`", `"args`": [`"--mcp`"] } } }"
+        Write-Host "              { `"mcpServers`": { `"ic-studio`": { `"command`": `"$jsonPath`", `"args`": [`"mcp`"] } } }"
     }
     if ($pathAdded) {
         Write-Host "  PATH:     added $Dir to the user PATH; open a new terminal to use it there."

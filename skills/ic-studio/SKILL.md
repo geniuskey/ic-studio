@@ -1,6 +1,6 @@
 ---
 name: ic-studio
-description: Design and verify full-custom ICs with IC Studio through its MCP server (ic-studio tools) or its `ics` CLI. It covers writing schematics, SPICE simulation, layout from a schematic, routing, DRC, LVS, parasitic extraction and GDS/OASIS. Use it when the user works on an IC Studio project (a folder with ic-studio.json), asks to design, simulate, lay out or verify a transistor-level circuit (inverter, NAND, OTA, current mirror, SRAM cell, ...), or mentions IC Studio, ics-mcp or the `ics` command.
+description: Design and verify full-custom ICs with IC Studio through its MCP server (ic-studio tools) or its `ics` CLI. It covers writing schematics, SPICE simulation, layout from a schematic, routing, DRC, LVS, parasitic extraction and GDS/OASIS. Use it when the user works on an IC Studio project (a folder with ic-studio.json), asks to design, simulate, lay out or verify a transistor-level circuit (inverter, NAND, OTA, current mirror, SRAM cell, ...), or mentions IC Studio, `ics mcp` or the `ics` command.
 ---
 
 # IC Studio
@@ -8,7 +8,7 @@ description: Design and verify full-custom ICs with IC Studio through its MCP se
 IC Studio is a full-custom IC design environment covering schematic, SPICE simulation,
 layout, DRC, LVS and parasitic extraction. You can drive it in two ways:
 
-- **MCP tools** (`ic-studio` server, `ics-mcp`). Prefer these when they are connected.
+- **MCP tools** (`ic-studio` server, `ics mcp`). Prefer these when they are connected.
 - **`ics` CLI**. Use it for batch runs, when MCP is not connected, and for the full JSON
   waveforms that the MCP `simulate` tool does not return. See [references/cli.md](references/cli.md).
 

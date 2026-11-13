@@ -13,6 +13,3 @@ serde_json = "1.0.154"
 [lib]
 path = "src/lib.rs"
 
-[[bin]]
-name = "ics-mcp"
-path = "src/main.rs"

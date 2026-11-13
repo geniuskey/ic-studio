@@ -172,9 +172,9 @@ pub enum Command {
     InstallUpdate,
     /// Restart into the installed update.
     RestartToUpdate,
-    /// Register this executable (`--mcp`) as an MCP server of Claude Code.
+    /// Register `ics mcp` (next to this executable) as an MCP server of Claude Code.
     AddMcpToClaudeCode,
-    /// Copy an MCP client configuration that starts this executable.
+    /// Copy an MCP client configuration that starts `ics mcp`.
     CopyMcpConfig,
     CommandPalette,
     /// A layout editor action (Virtuoso menus and bindkeys) on the active layout.
@@ -244,7 +244,7 @@ enum BottomTab {
     Netlist,
 }
 
-/// Live-mode link to `ics-mcp`: tool calls arrive here and run on the open project.
+/// Live-mode link to `ics mcp`: tool calls arrive here and run on the open project.
 struct Bridge {
     rx: Receiver<Pending>,
     calls: u64,
@@ -973,12 +973,14 @@ impl IcStudio {
             }
             Command::AddMcpToClaudeCode => match update::add_to_claude_code() {
                 Ok(m) => self.ok(m),
-                Err(e) => self.error(format!("{e}. Use Copy MCP config and add it to your agent by hand.")),
+                Err(e) => {
+                    self.error(format!("{e}. Install IC Studio with the installer, or use Copy MCP config and add it by hand."))
+                }
             },
             Command::CopyMcpConfig => match update::mcp_config() {
                 Ok(c) => {
                     ctx.copy_text(c);
-                    self.ok("Copied the MCP server configuration (command: this executable, args: --mcp)".into());
+                    self.ok("Copied the MCP server configuration (ics mcp)".into());
                 }
                 Err(e) => self.error(e),
             },
@@ -2509,9 +2511,9 @@ impl IcStudio {
                 if let Some(b) = &self.bridge {
                     let hover = match &b.last {
                         Some((t, tool)) => {
-                            format!("{} tool call(s) from ics-mcp; last: {tool}, {:.0} s ago", b.calls, t.elapsed().as_secs_f64())
+                            format!("{} tool call(s) from ics mcp; last: {tool}, {:.0} s ago", b.calls, t.elapsed().as_secs_f64())
                         }
-                        None => "Waiting for tool calls from ics-mcp (Claude Code)".to_string(),
+                        None => "Waiting for tool calls from ics mcp (Claude Code)".to_string(),
                     };
                     ui.label(RichText::new("● MCP live").small().color(pal.ok)).on_hover_text(hover);
                     ui.separator();
@@ -3085,13 +3087,13 @@ impl IcStudio {
                         }
                         ui.end_row();
                         ui.label("AI agents (MCP)").on_hover_text(
-                            "Let AI agents such as Claude Code drive IC Studio. They start this program with --mcp; \
+                            "Let AI agents such as Claude Code drive IC Studio. They start the ics command line tool with ics mcp; \
                              while this window is open they work on its project.",
                         );
                         ui.horizontal(|ui| {
                             if ui
                                 .button("Add to Claude Code")
-                                .on_hover_text("Runs: claude mcp add --scope user ic-studio -- <this program> --mcp")
+                                .on_hover_text("Runs: claude mcp add --scope user ic-studio -- <folder>/ics mcp")
                                 .clicked()
                             {
                                 self.queue.push(Command::AddMcpToClaudeCode);
@@ -3246,10 +3248,10 @@ impl IcStudio {
         self.queue.push(c);
     }
 
-    /// Serve MCP tool calls from `ics-mcp` (live mode) on this window's project.
+    /// Serve MCP tool calls from `ics mcp` (live mode) on this window's project.
     pub fn attach_bridge(&mut self, rx: Receiver<Pending>) {
         self.bridge = Some(Bridge { rx, calls: 0, last: None, waiting: VecDeque::new(), job: None });
-        self.info("MCP live mode: tool calls from ics-mcp run on the open project".into());
+        self.info("MCP live mode: tool calls from ics mcp run on the open project".into());
     }
 
     /// Answer bridge requests in arrival order. Tools in [`tools::BACKGROUND`] run one at a

@@ -1760,6 +1760,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "ics-core",
+ "ics-mcp",
  "ics-sim",
  "serde_json",
 ]

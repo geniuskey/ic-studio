@@ -1,4 +1,4 @@
-//! Live-mode bridge between `ics-mcp` and a running IC Studio window.
+//! Live-mode bridge between `ics mcp` and a running IC Studio window.
 //!
 //! The app listens on 127.0.0.1 (ephemeral port) and advertises `{port, token, pid}` in
 //! `live.json` in a per-user directory (`ICS_LIVE_DIR` overrides it). The protocol is
@@ -165,7 +165,7 @@ fn serve(stream: TcpStream, token: &str, tx: &Sender<Pending>, wake: &dyn Fn()) 
     }
 }
 
-/// The `ics-mcp` side: a connection to a running IC Studio window.
+/// The `ics mcp` side: a connection to a running IC Studio window.
 pub struct Client {
     reader: BufReader<TcpStream>,
     writer: TcpStream,
