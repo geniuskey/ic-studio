@@ -1,6 +1,6 @@
 [package]
 name = "ics-studio"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 license.workspace = true
 
@@ -12,9 +12,9 @@ path = "src/main.rs"
 eframe = { version = "0.37.0", features = ["persistence"] }
 egui = { version = "0.37.0", features = ["monochrome_emoji_fonts"] }
 egui_plot = "0.38.0"
-ics-core = { version = "0.2.0", path = "../ics-core" }
-ics-mcp = { version = "0.2.0", path = "../ics-mcp" }
-ics-sim = { version = "0.2.0", path = "../ics-sim" }
+ics-core = { version = "0.2.1", path = "../ics-core" }
+ics-mcp = { version = "0.2.1", path = "../ics-mcp" }
+ics-sim = { version = "0.2.1", path = "../ics-sim" }
 rfd = "0.18.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

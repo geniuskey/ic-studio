@@ -1,13 +1,13 @@
 [package]
 name = "ics-mcp"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 license.workspace = true
 description = "Model Context Protocol server for IC Studio projects"
 
 [dependencies]
-ics-core = { version = "0.2.0", path = "../ics-core" }
-ics-sim = { version = "0.2.0", path = "../ics-sim" }
+ics-core = { version = "0.2.1", path = "../ics-core" }
+ics-sim = { version = "0.2.1", path = "../ics-sim" }
 serde_json = "1.0.154"
 
 [lib]
