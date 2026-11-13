@@ -327,11 +327,9 @@ mouse input, and check accessibility labels and glyph coverage.
 
 ## Roadmap
 
-- LEF / DEF and abstract generation
 - Python API (PyO3)
-- Resistor / capacitor recognition in LVS; incremental and hierarchical DRC
 - Non-Manhattan DRC and extraction
-- EM / IR-drop estimation
+- Resistor / capacitor definitions in the bundled PDKs
 
 ## License
 
