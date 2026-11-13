@@ -283,6 +283,41 @@ fn logical_lines(deck: &str) -> Vec<(usize, String)> {
     out
 }
 
+/// The analysis of a `.op` / `.dc` / `.ac` / `.tran` line.
+fn dot_analysis(l: &str) -> Option<Analysis> {
+    let t: Vec<&str> = l.split_whitespace().collect();
+    let num = |k: usize| t.get(k).map(|s| s.to_string()).unwrap_or_default();
+    Some(match t.first()?.to_ascii_lowercase().as_str() {
+        ".op" => Analysis::Op,
+        ".dc" => Analysis::Dc { source: num(1), start: num(2), stop: num(3), step: num(4) },
+        ".ac" => {
+            Analysis::Ac { points_per_decade: t.get(2).and_then(|s| s.parse().ok()).unwrap_or(10), fstart: num(3), fstop: num(4) }
+        }
+        ".tran" => Analysis::Tran { tstep: num(1), tstop: num(2) },
+        _ => return None,
+    })
+}
+
+/// The deck's own analyses, without parsing its elements (for backends that read the deck
+/// themselves, such as ngspice with PDK subcircuits and model libraries).
+pub fn deck_analyses(deck: &str) -> Vec<Analysis> {
+    let mut out = vec![];
+    let mut in_control = false;
+    for (_, l) in logical_lines(deck) {
+        let lower = l.to_ascii_lowercase();
+        if lower.starts_with(".control") {
+            in_control = true;
+        } else if lower.starts_with(".endc") {
+            in_control = false;
+        } else if lower.split_whitespace().next() == Some(".end") {
+            break;
+        } else if !in_control && let Some(a) = dot_analysis(&l) {
+            out.push(a);
+        }
+    }
+    out
+}
+
 pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
     let mut c = Circuit { nodes: vec!["0".into()], temp: 27.0, ..Default::default() };
     c.title = deck.lines().next().unwrap_or("").trim_start_matches('*').trim().to_string();
@@ -368,20 +403,13 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
             continue;
         }
         if lower.starts_with('.') {
-            let t: Vec<&str> = l.split_whitespace().collect();
-            let num = |k: usize| t.get(k).map(|s| s.to_string()).unwrap_or_default();
-            match t[0].to_ascii_lowercase().as_str() {
-                ".op" => c.analyses.push(Analysis::Op),
-                ".dc" => c.analyses.push(Analysis::Dc { source: num(1), start: num(2), stop: num(3), step: num(4) }),
-                ".ac" => c.analyses.push(Analysis::Ac {
-                    points_per_decade: t.get(2).and_then(|s| s.parse().ok()).unwrap_or(10),
-                    fstart: num(3),
-                    fstop: num(4),
-                }),
-                ".tran" => c.analyses.push(Analysis::Tran { tstep: num(1), tstop: num(2) }),
-                ".temp" => c.temp = t.get(1).and_then(|s| parse_spice(s)).unwrap_or(27.0),
-                ".end" => break,
-                _ => {}
+            if lower.split_whitespace().next() == Some(".end") {
+                break;
+            }
+            if let Some(a) = dot_analysis(l) {
+                c.analyses.push(a);
+            } else if lower.starts_with(".temp") {
+                c.temp = l.split_whitespace().nth(1).and_then(parse_spice).unwrap_or(27.0);
             }
             continue;
         }

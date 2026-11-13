@@ -58,8 +58,17 @@ pub fn simulate(deck: &str, analyses: &[Analysis], opts: &SimOptions) -> Result<
             "the built-in engine cannot load model libraries ('{l}'); select ngspice for PDK models"
         )));
     }
-    let mut circuit = circuit::parse_deck(deck)?;
-    let analyses: Vec<Analysis> = if analyses.is_empty() { std::mem::take(&mut circuit.analyses) } else { analyses.to_vec() };
+    // ngspice reads the deck itself (PDK subcircuits, model libraries); only the built-in
+    // engine needs the parsed circuit.
+    let mut circuit = match opts.backend {
+        Backend::Builtin => Some(circuit::parse_deck(deck)?),
+        Backend::Ngspice => None,
+    };
+    let analyses: Vec<Analysis> = match (&mut circuit, analyses.is_empty()) {
+        (_, false) => analyses.to_vec(),
+        (Some(c), true) => std::mem::take(&mut c.analyses),
+        (None, true) => circuit::deck_analyses(deck),
+    };
     if analyses.is_empty() {
         return Err(SimError::Engine("no analyses to run".into()));
     }
@@ -67,8 +76,8 @@ pub fn simulate(deck: &str, analyses: &[Analysis], opts: &SimOptions) -> Result<
         a.validate().map_err(SimError::Engine)?;
     }
     let mut res = SimResults::default();
-    match opts.backend {
-        Backend::Builtin => {
+    match (opts.backend, circuit) {
+        (Backend::Builtin, Some(circuit)) => {
             res.backend = "built-in".into();
             let mut log = vec![format!("ics-sim: {} nodes, {} elements", circuit.node_count(), circuit.elements.len())];
             let mut eng = engine::Engine::new(circuit)?;
@@ -81,7 +90,7 @@ pub fn simulate(deck: &str, analyses: &[Analysis], opts: &SimOptions) -> Result<
             }
             res.log = log.join("\n");
         }
-        Backend::Ngspice => {
+        _ => {
             res.backend = ngspice::detect(&opts.ngspice_exe).unwrap_or_else(|| "ngspice".into());
             let (ds, log) = ngspice::run(&opts.ngspice_exe, deck, &analyses)?;
             res.datasets = ds;
@@ -101,5 +110,18 @@ mod tests {
         let deck = "* t\n.lib \"/pdk/models.lib\" tt\nV1 a 0 1\nR1 a 0 1k\n.op\n.end\n";
         let e = simulate(deck, &[], &SimOptions::default()).unwrap_err().to_string();
         assert!(e.contains("select ngspice"), "{e}");
+    }
+
+    #[test]
+    fn ngspice_decks_are_not_parsed_by_the_builtin_engine() {
+        let deck = "* pdk\n.lib \"/pdk/models.lib\" tt\nXM1 d g 0 0 sky130_fd_pr__nfet_01v8 w=1 l=0.15\n\
+                    V1 d 0 1.8\nV2 g 0 0.9\n.control\n.tran 1n 2n\n.endc\n.op\n.dc V2 0 1.8 0.1\n.end\n.tran 1 2\n";
+        assert_eq!(
+            circuit::deck_analyses(deck),
+            vec![Analysis::Op, Analysis::Dc { source: "V2".into(), start: "0".into(), stop: "1.8".into(), step: "0.1".into() }]
+        );
+        let opts = SimOptions { backend: Backend::Ngspice, ngspice_exe: "/nonexistent/ngspice".into() };
+        let e = simulate(deck, &[], &opts).unwrap_err();
+        assert!(!matches!(e, SimError::Parse { .. }), "{e}");
     }
 }
