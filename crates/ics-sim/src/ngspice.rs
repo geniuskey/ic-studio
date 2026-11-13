@@ -11,7 +11,7 @@ use crate::results::{Dataset, VecKind, Vector};
 
 /// Returns the version banner if ngspice can be executed.
 pub fn detect(exe: &str) -> Option<String> {
-    let out = Command::new(exe).arg("--version").output().ok()?;
+    let out = command(exe).arg("--version").output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
     text.lines().find(|l| l.to_lowercase().contains("ngspice")).map(|l| {
         let l = l.trim().trim_matches('*').trim();
@@ -58,15 +58,16 @@ pub fn run(exe: &str, deck: &str, analyses: &[Analysis]) -> Result<(Vec<Dataset>
     text += ".control\nset filetype=ascii\nset noaskquit\n";
     let mut files = vec![];
     for (i, a) in analyses.iter().enumerate() {
-        let f = dir.join(format!("a{i}_{}.raw", a.kind_name()));
-        text += &format!("{}\nwrite {} all\n", a.spice_command(), f.display());
-        files.push((a, a.kind_name(), f));
+        // Relative to the working directory: Windows paths would need escaping in .control.
+        let name = format!("a{i}_{}.raw", a.kind_name());
+        text += &format!("{}\nwrite {name} all\n", a.spice_command());
+        files.push((a, a.kind_name(), dir.join(name)));
     }
     text += "quit\n.endc\n.end\n";
     let cir = dir.join("deck.cir");
     std::fs::write(&cir, &text).map_err(|e| SimError::Backend(e.to_string()))?;
     let out =
-        Command::new(exe).arg("-b").arg(&cir).current_dir(&dir).output().map_err(|e| {
+        command(exe).arg("-b").arg("deck.cir").current_dir(&dir).output().map_err(|e| {
             SimError::Backend(format!("failed to launch '{exe}': {e}. Install ngspice or set its path in Settings."))
         })?;
     let mut log = String::from_utf8_lossy(&out.stdout).to_string();
@@ -189,9 +190,41 @@ pub fn parse_raw(raw: &str) -> Result<Vec<Dataset>, SimError> {
     Ok(out)
 }
 
+/// On Windows `ngspice.exe` is the GUI build, which opens a window and does not write to
+/// stdout; batch mode needs the console build `ngspice_con.exe` next to it.
+fn console_exe(exe: &str) -> PathBuf {
+    let p = PathBuf::from(exe);
+    if cfg!(windows)
+        && p.file_stem().is_some_and(|s| s.eq_ignore_ascii_case("ngspice"))
+        && let Some(con) = p.parent().map(|d| d.join("ngspice_con.exe"))
+        && con.exists()
+    {
+        return con;
+    }
+    p
+}
+
+fn command(exe: &str) -> Command {
+    #[allow(unused_mut)]
+    let mut c = Command::new(console_exe(exe));
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        c.creation_flags(CREATE_NO_WINDOW);
+    }
+    c
+}
+
 pub fn default_exe() -> String {
     // Common install locations, falling back to PATH lookup.
-    let candidates = ["/opt/homebrew/bin/ngspice", "/usr/local/bin/ngspice", "/usr/bin/ngspice", "C:\\Spice64\\bin\\ngspice.exe"];
+    let candidates = [
+        "/opt/homebrew/bin/ngspice",
+        "/usr/local/bin/ngspice",
+        "/usr/bin/ngspice",
+        "C:\\Spice64\\bin\\ngspice_con.exe",
+        "C:\\Spice64\\bin\\ngspice.exe",
+    ];
     for c in candidates {
         if Path::new(c).exists() {
             return c.to_string();
