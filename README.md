@@ -80,6 +80,15 @@ Linux needs the usual windowing libraries:
   `pcells` library
 - GDSII and OASIS import and export with full hierarchy; unknown GDS layers are kept
 
+**Design assistance**
+- Live DRC: the rule deck re-runs around every edit on a worker thread (only the geometry
+  within the deck's reach of the change is read), violations appear on the canvas as you draw
+- Quick fixes (Ctrl+.): widen, grow, extend, move apart, shrink, fill a notch or add an
+  enclosure, each candidate verified with DRC and ranked by the new violations it would cause;
+  Fix All repairs the cell as one undoable edit (`ics drc --fix`, MCP `fix_drc`)
+- Spacing magnet: drawn boxes, wire points and moved or pasted geometry snap to exactly the
+  minimum spacing from (or abutting) same-layer neighbours, with the gap shown
+
 **Verification**
 - DRC with a text rule deck (`width`, `space`, `separation`, `enclosure`, `extension`,
   `area`, `antenna`, `density`) over technology layers and derived layers
@@ -141,6 +150,7 @@ ics gds myproj inv_tiles -o tiles.gds                   # cell and everything it
 ics import-gds myproj chip.gds                           # new library, unknown layers kept
 ics import-tech myproj sky130A.lyp --lyt sky130A.lyt
 ics drc myproj cmos_inverter [--deck rules.drc]         # non-zero exit on violations
+ics drc myproj cmos_inverter --fix                      # apply verified quick fixes, save
 ics route myproj nand2 --place                          # place devices, route flylines, save
 ics extract myproj inv_chain                            # extracted SPICE netlist
 ics lvs myproj cmos_inverter                            # non-zero exit on differences

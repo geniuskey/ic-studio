@@ -797,6 +797,72 @@ pub fn flatten(top: &Layout, src: &dyn LayoutSource, max_depth: u32) -> Vec<Flat
     out
 }
 
+/// [`flatten`] restricted to the shapes whose bounding box touches `area`; instances and
+/// array elements outside it are not descended into.
+pub fn flatten_in(top: &Layout, src: &dyn LayoutSource, max_depth: u32, area: IRect) -> Vec<FlatShape> {
+    type Boxes = HashMap<CellRef, Option<IRect>>;
+    fn cell_bbox(src: &dyn LayoutSource, cell: &CellRef, depth: u32, max: u32, cache: &mut Boxes) -> Option<IRect> {
+        if let Some(b) = cache.get(cell) {
+            return *b;
+        }
+        cache.insert(cell.clone(), None);
+        let l = src.layout(cell)?;
+        let b = layout_bbox(l, src, depth, max, cache);
+        cache.insert(cell.clone(), b);
+        b
+    }
+    fn layout_bbox(l: &Layout, src: &dyn LayoutSource, depth: u32, max: u32, cache: &mut Boxes) -> Option<IRect> {
+        let mut b = l.shapes_bbox();
+        if depth < max {
+            for inst in &l.instances {
+                if let Some(c) = cell_bbox(src, &inst.cell, depth + 1, max, cache) {
+                    let ib = inst.bbox(c);
+                    b = Some(b.map_or(ib, |x| x.union(&ib)));
+                }
+            }
+        }
+        b
+    }
+    fn touches(a: &IRect, b: &IRect) -> bool {
+        a.x0 <= b.x1 && b.x0 <= a.x1 && a.y0 <= b.y1 && b.y0 <= a.y1
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn rec(
+        l: &Layout,
+        src: &dyn LayoutSource,
+        t: Trans,
+        depth: u32,
+        max: u32,
+        top: bool,
+        area: IRect,
+        cache: &mut Boxes,
+        out: &mut Vec<FlatShape>,
+    ) {
+        for s in &l.shapes {
+            let geom = if t.is_identity() { s.geom.clone() } else { s.geom.transformed(&t) };
+            if touches(&geom.bbox(), &area) {
+                out.push(FlatShape { layer: s.layer, geom, id: top.then_some(s.id) });
+            }
+        }
+        if depth >= max {
+            return;
+        }
+        let local = t.inverse().apply_rect(area);
+        let grown = IRect::new(local.x0 - 1, local.y0 - 1, local.x1 + 1, local.y1 + 1);
+        for inst in &l.instances {
+            let Some(child) = src.layout(&inst.cell) else { continue };
+            let Some(cb) = cell_bbox(src, &inst.cell, depth + 1, max, cache) else { continue };
+            for (i, j) in inst.visible_elements(cb, grown) {
+                rec(child, src, t.compose(&inst.element_trans(i, j)), depth + 1, max, false, area, cache, out);
+            }
+        }
+    }
+    let mut cache = HashMap::new();
+    let mut out = vec![];
+    rec(top, src, Trans::IDENTITY, 0, max_depth, true, area, &mut cache, &mut out);
+    out
+}
+
 /// `top` followed by every cell it places, directly or indirectly (each once, cycle safe).
 pub fn descendants(src: &dyn LayoutSource, top: &CellRef) -> Vec<CellRef> {
     let mut out = vec![top.clone()];

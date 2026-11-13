@@ -101,6 +101,9 @@ enum Cmd {
         /// Rule deck file to use instead of the technology deck.
         #[arg(long)]
         deck: Option<PathBuf>,
+        /// Apply verified quick fixes (top-level geometry only) and save the project first.
+        #[arg(long)]
+        fix: bool,
     },
     /// Extract nets and transistors from a cell layout and print them as SPICE.
     Extract { project: PathBuf, cell: String },
@@ -395,10 +398,10 @@ fn run(cli: Cli) -> Result<(), String> {
                 return Err("some nets could not be routed".into());
             }
         }
-        Cmd::Drc { project, cell, deck } => {
-            let p = Project::open(&project).map_err(|e| e.to_string())?;
+        Cmd::Drc { project, cell, deck, fix } => {
+            let mut p = Project::open(&project).map_err(|e| e.to_string())?;
             let r = resolve(&p, &cell)?;
-            let lay = p.cell(&r).unwrap().layout.as_ref().ok_or("cell has no layout")?;
+            p.cell(&r).unwrap().layout.as_ref().ok_or("cell has no layout")?;
             let parsed = match &deck {
                 Some(f) => ics_core::drc::load_deck(f, &p.tech)?,
                 None => ics_core::drc::parse_any(&p.tech.deck_text(), &p.tech).map_err(|errs| {
@@ -409,6 +412,18 @@ fn run(cli: Cli) -> Result<(), String> {
                 eprintln!("note: {n}");
             }
             let d = parsed.deck;
+            if fix {
+                let mut lay = p.cell_mut(&r).unwrap().layout.take().unwrap_or_default();
+                let done = ics_core::drc_fix::fix_all(&d, &mut lay, &p, &p.tech, 1000);
+                p.cell_mut(&r).unwrap().layout = Some(lay);
+                for t in &done {
+                    println!("fixed: {t}");
+                }
+                if !done.is_empty() {
+                    p.save().map_err(|e| e.to_string())?;
+                }
+            }
+            let lay = p.cell(&r).unwrap().layout.as_ref().ok_or("cell has no layout")?;
             let rep = ics_core::drc::run(&d, lay, &p, &p.tech);
             print_drc(&rep, &d, p.tech.dbu_per_um);
             if !rep.violations.is_empty() {

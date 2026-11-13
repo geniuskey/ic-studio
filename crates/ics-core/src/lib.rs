@@ -5,6 +5,7 @@
 
 pub mod connectivity;
 pub mod drc;
+pub mod drc_fix;
 pub mod examples;
 pub mod extract;
 pub mod fill;

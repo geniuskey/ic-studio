@@ -144,7 +144,7 @@ impl Task {
     }
 }
 
-fn deck_source(cx: &LayCtx) -> String {
+pub(super) fn deck_source(cx: &LayCtx) -> String {
     cx.tech.drc_deck.clone().unwrap_or_else(|| drc::default_deck_text(cx.tech))
 }
 

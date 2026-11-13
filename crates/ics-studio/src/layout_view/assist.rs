@@ -211,6 +211,100 @@ pub(super) fn drd_marks(l: &Layout, cx: &mut LayCtx, cands: &[(usize, IRect)], s
     out
 }
 
+/// Edges of a magnet candidate that follow the cursor; `None` moves both edges of that axis.
+#[derive(Clone, Copy, Default)]
+pub(super) struct Edges {
+    pub x: Option<i64>,
+    pub y: Option<i64>,
+}
+
+/// Spacing magnet: the smallest shift (at most `tol` per axis) that puts a candidate exactly
+/// at the minimum spacing from a same-layer neighbour, or abutting it. Returns the shift and
+/// the gaps at exactly the minimum spacing after it (for display).
+pub(super) fn magnet(
+    l: &Layout,
+    cx: &mut LayCtx,
+    cands: &[(usize, IRect)],
+    skip: &BTreeSet<u64>,
+    edges: Edges,
+    tol: i64,
+) -> ((i64, i64), Vec<(IRect, i64)>) {
+    let tech = cx.tech;
+    let live = Live { src: cx.src, cell: cx.cell, layout: l };
+    let root = cx.context.and_then(|c| Some((c, live.layout(&c.root)?)));
+    let none = BTreeSet::new();
+    let mut near: Vec<(usize, i64, IRect)> = vec![];
+    let mut buf = vec![];
+    let (mut bx, mut by): (Option<i64>, Option<i64>) = (None, None);
+    let better = |b: Option<i64>, d: i64| d.abs() <= tol && b.is_none_or(|b| d.abs() < b.abs());
+    for &(layer, r) in cands.iter().take(64) {
+        let Some(def) = tech.layer(layer) else { continue };
+        let sp = def.min_spacing;
+        if sp <= 0 {
+            continue;
+        }
+        let g = sp + tol;
+        let area = IRect::new(r.x0 - g, r.y0 - g, r.x1 + g, r.y1 + g);
+        buf.clear();
+        neighbours(&live, cx.hier, cx.cell, l, Trans::IDENTITY, 0, skip, None, layer, area, &mut buf);
+        if let Some((c, rl)) = root {
+            let path = Some(c.path.as_slice());
+            neighbours(&live, cx.hier, &c.root, rl, c.to_root.inverse(), 0, &none, path, layer, area, &mut buf);
+        }
+        for &o in &buf {
+            if r.intersects(&o) {
+                continue;
+            }
+            near.push((layer, sp, o));
+            if r.y0 < o.y1 && o.y0 < r.y1 {
+                for (edge, d) in [(r.x0, o.x1 + sp - r.x0), (r.x1, o.x0 - sp - r.x1), (r.x0, o.x1 - r.x0), (r.x1, o.x0 - r.x1)] {
+                    if edges.x.is_none_or(|e| e == edge) && better(bx, d) {
+                        bx = Some(d);
+                    }
+                }
+            }
+            if r.x0 < o.x1 && o.x0 < r.x1 {
+                for (edge, d) in [(r.y0, o.y1 + sp - r.y0), (r.y1, o.y0 - sp - r.y1), (r.y0, o.y1 - r.y0), (r.y1, o.y0 - r.y1)] {
+                    if edges.y.is_none_or(|e| e == edge) && better(by, d) {
+                        by = Some(d);
+                    }
+                }
+            }
+        }
+    }
+    let d = (bx.unwrap_or(0), by.unwrap_or(0));
+    let mut gaps = vec![];
+    if d != (0, 0) {
+        for &(layer, r) in cands.iter().take(64) {
+            let mv = |v: i64, e: Option<i64>, dv: i64| if e.is_none_or(|e| e == v) { v + dv } else { v };
+            let r = IRect::new(mv(r.x0, edges.x, d.0), mv(r.y0, edges.y, d.1), mv(r.x1, edges.x, d.0), mv(r.y1, edges.y, d.1));
+            for &(_, sp, o) in near.iter().filter(|n| n.0 == layer) {
+                if !r.intersects(&o) && r.spacing(&o) == sp {
+                    gaps.push((gap_rect(r, o), sp));
+                }
+            }
+        }
+    }
+    gaps.sort_by_key(|(r, _)| (r.x0, r.y0, r.x1, r.y1));
+    gaps.dedup();
+    (d, gaps)
+}
+
+pub(super) fn draw_magnet(painter: &egui::Painter, view: &View2D, rect: Rect, pal: &Palette, gaps: &[(IRect, i64)], tech: &Tech) {
+    for &(g, d) in gaps.iter().take(16) {
+        let r = screen_rect(view, rect, g).expand(1.0);
+        painter.rect_filled(r, 0.0, pal.ok.gamma_multiply(0.25));
+        painter.rect_stroke(r, 0.0, Stroke::new(1.2, pal.ok), StrokeKind::Middle);
+        painter.text(
+            r.center_top() - egui::vec2(0.0, 2.0),
+            egui::Align2::CENTER_BOTTOM,
+            um(d, tech),
+            egui::FontId::monospace(10.0),
+            pal.ok,
+        );
+    }
+}
+
 /// DRD candidates of a placement moved by `t`: the shapes of its cell within the largest
 /// minimum spacing of its outline (only those can come close to its surroundings).
 pub(super) fn inst_cands(cx: &mut LayCtx, inst: &CellInst, t: Trans, out: &mut Vec<(usize, IRect)>) {

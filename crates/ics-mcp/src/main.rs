@@ -222,6 +222,7 @@ mod tests {
             "flylines",
             "route",
             "run_drc",
+            "fix_drc",
             "extract",
             "run_lvs",
             "run_signoff",

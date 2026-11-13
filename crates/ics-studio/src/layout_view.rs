@@ -16,6 +16,7 @@ use crate::theme::{self, Palette};
 mod assist;
 mod commands;
 mod edit;
+mod live;
 mod verify;
 pub use assist::Clip;
 pub use commands::{LayAction, Partial};
@@ -186,6 +187,7 @@ pub struct LayoutEditor {
     pub path_width: i64,
     pub label_text: String,
     pub verify: verify::VerifyState,
+    pub live: live::LiveDrc,
     pub cursor: Option<(i64, i64)>,
     pub show_grid: bool,
     /// Deepest hierarchy level drawn with its contents.
@@ -218,6 +220,9 @@ pub struct LayoutEditor {
     snapped: Option<bool>,
     /// Show spacing / width violations while drawing and moving.
     pub drd: bool,
+    /// Pull drawn and moved geometry to exactly the minimum spacing from its neighbours.
+    pub magnet: bool,
+    magnet_gaps: Vec<(IRect, i64)>,
     /// First corner of a box entered with two clicks.
     box_start: Option<(i64, i64)>,
     /// Next box zooms the view (Z).
@@ -270,6 +275,7 @@ impl Default for LayoutEditor {
             path_width: 0,
             label_text: "net".into(),
             verify: verify::VerifyState::default(),
+            live: live::LiveDrc::default(),
             cursor: None,
             show_grid: true,
             max_depth: 32,
@@ -294,6 +300,8 @@ impl Default for LayoutEditor {
             gravity: true,
             snapped: None,
             drd: true,
+            magnet: true,
+            magnet_gaps: vec![],
             box_start: None,
             zoom_box: false,
             xfer: None,
@@ -1209,6 +1217,7 @@ impl LayoutEditor {
     fn pick_point(&mut self, l: &Layout, cx: &mut LayCtx, w: (f64, f64)) -> (i64, i64) {
         let step = self.snap_step(cx.tech);
         self.snapped = None;
+        self.magnet_gaps.clear();
         if self.gravity && self.tool != LayTool::Select && !self.zoom_box {
             let idx = cx.index(l);
             if let Some((p, vertex)) = assist::gravity(l, &idx, &self.visible, w, 8.0 / self.view.scale, step) {
@@ -1216,7 +1225,67 @@ impl LayoutEditor {
                 return p;
             }
         }
-        self.snap(w, step)
+        let p = self.snap(w, step);
+        if !self.magnet || self.zoom_box {
+            return p;
+        }
+        let tol = ((8.0 / self.view.scale) as i64).max(step);
+        let (cands, skip, edges) = self.magnet_cands(l, cx, p);
+        if cands.is_empty() {
+            return p;
+        }
+        let ((dx, dy), gaps) = assist::magnet(l, cx, &cands, &skip, edges, tol);
+        self.magnet_gaps = gaps;
+        (p.0 + dx, p.1 + dy)
+    }
+
+    /// What the cursor at `p` would draw or move, for the spacing magnet.
+    fn magnet_cands(&self, l: &Layout, cx: &mut LayCtx, p: (i64, i64)) -> (Vec<(usize, IRect)>, BTreeSet<u64>, assist::Edges) {
+        let none = BTreeSet::new();
+        let both = assist::Edges::default();
+        if let Some(clip) = &self.paste {
+            let c: Vec<(usize, IRect)> = clip
+                .shapes
+                .iter()
+                .flat_map(|s| assist::shape_rects(&s.geom).into_iter().map(move |r| (s.layer, r.translate(p.0, p.1))))
+                .collect();
+            return (c, none, both);
+        }
+        match self.tool {
+            LayTool::Move | LayTool::Copy => {
+                let Some(t) = self.xfer_trans(p) else { return (vec![], none, both) };
+                let mut c: Vec<(usize, IRect)> = l
+                    .shapes
+                    .iter()
+                    .filter(|s| self.selection.contains(&s.id))
+                    .flat_map(|s| assist::shape_rects(&s.geom).into_iter().map(move |r| (s.layer, t.apply_rect(r))))
+                    .collect();
+                for inst in l.instances.iter().filter(|i| self.selection.contains(&i.id)) {
+                    assist::inst_cands(cx, inst, t, &mut c);
+                }
+                let skip = if self.tool == LayTool::Move { self.selection.clone() } else { none };
+                (c, skip, both)
+            }
+            LayTool::Rect => {
+                let start = match &self.drag {
+                    Some(LDrag::Create { start }) => Some(*start),
+                    _ => self.box_start,
+                };
+                match start {
+                    Some(s) => (
+                        vec![(self.active_layer, IRect::new(s.0, s.1, p.0, p.1))],
+                        none,
+                        assist::Edges { x: Some(p.0), y: Some(p.1) },
+                    ),
+                    None => (vec![(self.active_layer, IRect::new(p.0, p.1, p.0, p.1))], none, both),
+                }
+            }
+            LayTool::Path => {
+                let h = self.wire_width(cx.tech) / 2;
+                (vec![(self.active_layer, IRect::new(p.0 - h, p.1 - h, p.0 + h, p.1 + h))], none, both)
+            }
+            _ => (vec![], none, both),
+        }
     }
 
     fn finish_path(&mut self, l: &mut Layout, tech: &Tech) -> bool {
@@ -1329,6 +1398,7 @@ impl LayoutEditor {
                         None
                     }
                     Key::V if !did_clip => Some(LayAction::Paste),
+                    Key::Period => Some(LayAction::QuickFix),
                     _ => None,
                 }
             } else if m.shift {
@@ -1732,6 +1802,10 @@ impl LayoutEditor {
             }
         }
         if self.forms(ui.ctx(), rect, l, cx) {
+            out.changed = true;
+            cx.touched();
+        }
+        if self.quick_fix_form(ui.ctx(), rect, l, cx) {
             out.changed = true;
             cx.touched();
         }
@@ -2146,7 +2220,9 @@ impl LayoutEditor {
         if out.changed {
             self.layout_changed();
         }
+        self.live_tick(ui.ctx(), l, cx);
         self.draw_verify(&painter, &self.view, rect, &pal);
+        self.draw_live(&painter, &self.view, rect, &pal, hover);
         if self.show_flylines {
             if self.flylines.is_none()
                 && let Some(sch) = cx.src.cell(cx.cell).and_then(|c| c.schematic.as_ref())
@@ -2362,6 +2438,9 @@ impl LayoutEditor {
                 let marks = assist::drd_marks(l, cx, &cands, &BTreeSet::new(), false);
                 assist::draw_drd(&painter, &self.view, rect, &pal, &marks);
             }
+        }
+        if hover.is_some() {
+            assist::draw_magnet(&painter, &self.view, rect, &pal, &self.magnet_gaps, tech);
         }
         // Gravity marker: a diamond on a vertex, a circle on an edge.
         if let (Some(vertex), Some(c), Some(_)) = (self.snapped, self.cursor, hover) {

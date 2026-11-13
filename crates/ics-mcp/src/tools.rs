@@ -551,6 +551,14 @@ pub fn definitions() -> Vec<Value> {
             &["cell"],
         ),
         tool(
+            "fix_drc",
+            &format!(
+                "Repair DRC violations automatically: for each violation of the technology deck, candidate edits of the cell's top-level geometry (widen, grow, extend, move apart, shrink, fill notch, add enclosure) are each checked with DRC, and the best one that adds no new violation is applied; repeats until nothing more can be fixed. Geometry inside placed cells is not changed. Returns the fixes applied and the violations left. {NOT_SAVED}"
+            ),
+            json!({"cell": cell(), "max_fixes": {"type": "integer", "minimum": 1, "description": "Most fixes to apply (default 200)."}}),
+            &["cell"],
+        ),
+        tool(
             "extract",
             "Extract connectivity and transistors from a cell layout: nets (name, bbox µm), MOS devices (W/L µm, terminal nets) and the extracted circuit as SPICE.",
             json!({"cell": cell()}),
@@ -663,6 +671,7 @@ impl State {
             "flylines" => self.flylines(a),
             "route" => self.route(a),
             "run_drc" => self.run_drc(a),
+            "fix_drc" => self.fix_drc(a),
             "extract" => self.extract(a),
             "run_lvs" => self.run_lvs(a),
             "run_signoff" => self.run_signoff(a),
@@ -1233,6 +1242,24 @@ impl State {
         }
         self.keep(Verified::Drc(rep));
         Ok(out)
+    }
+
+    fn fix_drc(&mut self, a: &Args) -> Result<Value, String> {
+        let (_, r) = self.cell_arg(a)?;
+        let max = a.opt_num("max_fixes")?.map_or(200, |n| n.max(1.0) as usize);
+        let p = self.project_mut()?;
+        let deck = parse_any(&p.tech.deck_text(), &p.tech).map_err(|errs| {
+            let msgs: Vec<String> = errs.iter().map(|e| e.to_string()).collect();
+            format!("technology rule deck has errors: {}", msgs.join("; "))
+        })?;
+        let mut layout = p.cell_mut(&r).expect("resolved").layout.take().ok_or("cell has no layout view")?;
+        let done = ics_core::drc_fix::fix_all(&deck.deck, &mut layout, p, &p.tech, max);
+        p.cell_mut(&r).expect("resolved").layout = Some(layout);
+        let left = run_drc_deck(&deck.deck, layout_of(p, &r)?, p, &p.tech).violations.len();
+        if !done.is_empty() {
+            self.dirty = true;
+        }
+        Ok(json!({"cell": r.to_string(), "fixed": done.len(), "fixes": done, "violations_left": left}))
     }
 
     fn run_signoff(&mut self, a: &Args) -> Result<Value, String> {

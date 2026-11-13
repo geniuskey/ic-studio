@@ -616,14 +616,7 @@ fn layout_generators() {
             .unwrap()
     };
     h.state_mut().layout_generators().set_area(area, &ics_core::Tech::generic());
-    let ring = ics_core::layout_gen::GuardRing {
-        area,
-        well: false,
-        width: 0,
-        gap: 0,
-        contacts: true,
-        metal: true,
-    };
+    let ring = ics_core::layout_gen::GuardRing { area, well: false, width: 0, gap: 0, contacts: true, metal: true };
     h.state_mut().apply_gen(GenAction::GuardRing(ring));
     h.run_steps(2);
     let ringed = shape_count(&h, "inv_chain");
@@ -1411,4 +1404,47 @@ fn layout_interaction_profiles() {
     let v4 = view(&h);
     assert_eq!(v4.scale, v3.scale, "Conventional: right drag pans");
     assert!(v4.center != v3.center);
+}
+
+/// Live DRC flags a shape as soon as it is drawn; the quick-fix form offers verified fixes and
+/// Fix All repairs it as one undoable edit.
+#[test]
+fn live_drc_quick_fix() {
+    use ics_studio::layout_view::LayAction;
+    let mut h = app(demo_args("cmos_inverter", "layout", false));
+    let r = h.state().active_ref().cloned().unwrap();
+    let wait = |h: &mut Harness<'_, IcStudio>| {
+        let t = std::time::Instant::now();
+        h.run_steps(2);
+        loop {
+            h.step();
+            let ed = h.state().layout_editor(&r).unwrap();
+            if !ed.live.running() || t.elapsed() > Duration::from_secs(30) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        h.run_steps(2);
+        h.state().layout_editor(&r).unwrap().live.violations.clone()
+    };
+    let base = wait(&mut h);
+    h.state_mut().command(Command::CiwEval("dbCreateRect(geGetEditCellView() \"metal1\" list(30:0 30.1:2))".into()));
+    let after = wait(&mut h);
+    assert_eq!(after.len(), base.len() + 1, "{after:?}");
+    let new = after.iter().find(|v| !base.contains(v)).unwrap().clone();
+    assert!(new.rule.to_lowercase().contains("metal1"), "{new:?}");
+    h.state_mut().command(Command::Lay(LayAction::QuickFix));
+    h.run_steps(3);
+    let quick = h.state().layout_editor(&r).unwrap().live.quick.clone();
+    let (_, fixes) = quick.expect("quick-fix form open");
+    assert!(!fixes.is_empty(), "the narrow bar has a fix");
+    shot(&mut h, "40_live_drc_quick_fix");
+    h.state_mut().command(Command::Lay(LayAction::FixAll));
+    h.run_steps(2);
+    let fixed = wait(&mut h);
+    assert!(!fixed.contains(&new), "{fixed:?}");
+    assert!(fixed.len() <= base.len());
+    h.state_mut().command(Command::Undo);
+    let undone = wait(&mut h);
+    assert!(undone.contains(&new), "undo brings the violation back");
 }

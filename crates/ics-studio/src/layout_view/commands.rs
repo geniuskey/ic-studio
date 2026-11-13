@@ -48,6 +48,9 @@ pub enum LayAction {
     AllLevels,
     TopLevel,
     ClearRulers,
+    LiveDrc,
+    QuickFix,
+    FixAll,
 }
 
 impl LayAction {
@@ -97,6 +100,9 @@ impl LayAction {
             LayAction::AllLevels => "Show All Levels",
             LayAction::TopLevel => "Show Top Level Only",
             LayAction::ClearRulers => "Clear All Rulers",
+            LayAction::LiveDrc => "Toggle Live DRC",
+            LayAction::QuickFix => "Quick Fix",
+            LayAction::FixAll => "Fix All Violations",
         }
     }
 
@@ -136,6 +142,9 @@ impl LayAction {
             LayAction::AllLevels => "Shift+F",
             LayAction::TopLevel => "Ctrl+F",
             LayAction::ClearRulers => "Shift+K",
+            LayAction::LiveDrc => "",
+            LayAction::QuickFix => "Ctrl+.",
+            LayAction::FixAll => "",
         }
     }
 
@@ -209,6 +218,7 @@ impl LayAction {
                 Some(LayAction::MarkNet),
             ],
         ),
+        ("Assist", &[Some(LayAction::LiveDrc), Some(LayAction::QuickFix), Some(LayAction::FixAll)]),
     ];
 
     /// The canvas pop-up menu (middle click, or right click with no command running).
@@ -331,6 +341,20 @@ impl LayoutEditor {
             LayAction::AllLevels => self.max_depth = 32,
             LayAction::TopLevel => self.max_depth = 0,
             LayAction::ClearRulers => self.rulers.clear(),
+            LayAction::LiveDrc => {
+                self.live.enabled = !self.live.enabled;
+                self.live.reset();
+                self.note(true, if self.live.enabled { "Live DRC on" } else { "Live DRC off" });
+            }
+            LayAction::QuickFix => {
+                if !self.live.enabled {
+                    self.live.enabled = true;
+                    self.note(true, "Live DRC on");
+                    return false;
+                }
+                self.open_quick_fix(l, cx, at, hover);
+            }
+            LayAction::FixAll => return self.fix_all(l, cx) > 0,
         }
         false
     }

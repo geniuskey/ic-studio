@@ -2117,6 +2117,16 @@ impl IcStudio {
                             ui.checkbox(&mut ed.drd, "DRD").on_hover_text(
                                 "Design-rule-driven editing: show spacing and width violations while drawing and moving",
                             );
+                            ui.checkbox(&mut ed.magnet, "Magnet").on_hover_text(
+                                "Pull drawn and moved shapes to exactly the minimum spacing from their neighbours",
+                            );
+                            if ui
+                                .checkbox(&mut ed.live.enabled, "Live DRC")
+                                .on_hover_text("Check the rule deck around every edit; Ctrl+. offers quick fixes")
+                                .changed()
+                            {
+                                ed.live.reset();
+                            }
                             ui.checkbox(&mut ed.show_flylines, "Flylines")
                                 .on_hover_text("Unrouted connections from the schematic");
                             ui.separator();

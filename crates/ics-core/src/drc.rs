@@ -79,7 +79,7 @@ use std::time::Instant;
 use rstar::{AABB, RTree, RTreeObject};
 
 use crate::geom::IRect;
-use crate::hier::{LayoutSource, flatten};
+use crate::hier::{LayoutSource, flatten, flatten_in};
 use crate::layout::{Geometry, Layout};
 use crate::region::{BoolOp, Region};
 use crate::tech::Tech;
@@ -316,6 +316,24 @@ pub enum Rule {
 }
 
 impl Rule {
+    /// Rules that need the whole layout: `antenna` (nets) and `density` (windows).
+    pub fn is_global(&self) -> bool {
+        matches!(self, Rule::Antenna { .. } | Rule::Density { .. })
+    }
+
+    /// Distance the rule looks across (dbu); for `area`, the side of the minimum square.
+    pub fn reach(&self) -> i64 {
+        match *self {
+            Rule::Width { min, .. }
+            | Rule::Space { min, .. }
+            | Rule::Separation { min, .. }
+            | Rule::Enclosure { min, .. }
+            | Rule::Extension { min, .. } => min,
+            Rule::Area { min, .. } => (min.max(0) as f64).sqrt().ceil() as i64,
+            _ => 0,
+        }
+    }
+
     /// Layers the rule reads.
     pub fn layers(&self) -> Vec<usize> {
         match *self {
@@ -425,6 +443,20 @@ pub struct Deck {
 }
 
 impl Deck {
+    /// The farthest a check looks from a piece of geometry (dbu): the largest rule distance,
+    /// minimum area side and derived-layer sizing. Live DRC reads this far around an edit.
+    pub fn reach(&self, tech: &Tech) -> i64 {
+        let rules = self.rules.iter().map(|r| r.rule.reach());
+        let derived = self.derived.iter().map(|d| match d.expr {
+            LayerExpr::Size { by, .. } => by.abs(),
+            LayerExpr::Wide { min, .. } => min,
+            LayerExpr::Check(ref r) => r.reach(),
+            _ => 0,
+        });
+        let total: i64 = derived.sum();
+        rules.max().unwrap_or(0) + total + tech.grid.max(1)
+    }
+
     /// Every layer a rule can refer to: the technology layers, then the derived layers.
     pub fn layer_names(&self, tech: &Tech) -> Vec<String> {
         tech.layers.iter().map(|l| l.name.clone()).chain(self.derived.iter().map(|d| d.name.clone())).collect()
@@ -818,6 +850,24 @@ pub fn run_tech_deck(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Resul
 }
 
 pub fn run(deck: &Deck, top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> DrcReport {
+    run_shapes(deck, flatten(top, src, MAX_DEPTH), tech, None)
+}
+
+/// Live DRC of the area `window`: only the geometry within [`Deck::reach`] of it is read, the
+/// global rules (`antenna`, `density`) are skipped and only violations touching `window` are
+/// reported. Pieces that extend beyond the halo are cut, so piece-based checks (`area`,
+/// selections) are exact only for pieces near the window; sign-off is [`run`].
+pub fn run_window(deck: &Deck, top: &Layout, src: &dyn LayoutSource, tech: &Tech, window: IRect) -> DrcReport {
+    let h = 2 * deck.reach(tech) + tech.grid.max(1);
+    let halo = IRect::new(window.x0 - h, window.y0 - h, window.x1 + h, window.y1 + h);
+    let local =
+        Deck { derived: deck.derived.clone(), rules: deck.rules.iter().filter(|r| !r.rule.is_global()).cloned().collect() };
+    let mut rep = run_shapes(&local, flatten_in(top, src, MAX_DEPTH, halo), tech, Some(window));
+    rep.rules_run = deck.rules.len();
+    rep
+}
+
+fn run_shapes(deck: &Deck, flat: Vec<crate::hier::FlatShape>, tech: &Tech, window: Option<IRect>) -> DrcReport {
     let start = Instant::now();
     let n = tech.layers.len();
     let total = n + deck.derived.len();
@@ -837,7 +887,7 @@ pub fn run(deck: &Deck, top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Dr
     let mut rects: Vec<Vec<IRect>> = vec![Vec::new(); n];
     let (mut shapes, mut skipped) = (0, 0);
     let mut extent: Option<IRect> = None;
-    for f in flatten(top, src, MAX_DEPTH) {
+    for f in flat {
         if f.layer >= n || matches!(f.geom, Geometry::Label { .. }) {
             continue;
         }
@@ -873,6 +923,9 @@ pub fn run(deck: &Deck, top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Dr
         let checked = nr.rule.checked_layer();
         for p in parts.iter().take(MAX_VIOLATIONS_PER_RULE) {
             if let Some(marker) = p.bbox() {
+                if window.is_some_and(|w| !(marker.x0 <= w.x1 && w.x0 <= marker.x1 && marker.y0 <= w.y1 && w.y0 <= marker.y1)) {
+                    continue;
+                }
                 report.violations.push(Violation {
                     rule: nr.name.clone(),
                     description: description.clone(),
@@ -1282,6 +1335,33 @@ mod tests {
 
     fn r(x0: i64, y0: i64, x1: i64, y1: i64) -> IRect {
         IRect::new(x0, y0, x1, y1)
+    }
+
+    #[test]
+    fn window_matches_full_run_locally() {
+        let t = tech();
+        let deck = parse_deck("width metal1 0.23\nspace metal1 0.23\narea metal1 0.2\ndensity metal1 99 100 10", &t).unwrap();
+        // A long bar crossing the window must not look narrow or small where the halo cuts it.
+        let mut lay = layout(&[
+            ("metal1", (0, 0, 100_000, 1000)),
+            ("metal1", (2000, 2000, 2200, 4000)),
+            ("metal1", (2400, 2000, 3000, 4000)),
+            ("metal1", (90_000, 5000, 90_100, 9000)),
+        ]);
+        lay.add(li("metal1"), Geometry::Rect(r(50_000, 5000, 50_100, 5100)));
+        let full: Vec<IRect> =
+            run(&deck, &lay, &NoCells, &t).violations.into_iter().filter(|v| !v.rule.contains("DEN")).map(|v| v.marker).collect();
+        assert_eq!(full.len(), 5, "{full:?}");
+        let w = r(1000, 1000, 5000, 5000);
+        let local = run_window(&deck, &lay, &NoCells, &t, w);
+        assert!(local.violations.iter().all(|v| !v.rule.contains("DEN")), "density is global");
+        let mut got: Vec<IRect> = local.violations.into_iter().map(|v| v.marker).collect();
+        got.sort_by_key(|m| (m.x0, m.y0));
+        let mut want: Vec<IRect> =
+            full.into_iter().filter(|m| m.x0 <= w.x1 && w.x0 <= m.x1 && m.y0 <= w.y1 && w.y0 <= m.y1).collect();
+        want.sort_by_key(|m| (m.x0, m.y0));
+        assert_eq!(got, want);
+        assert_eq!(got.len(), 2, "narrow bar and its gap");
     }
 
     #[test]
