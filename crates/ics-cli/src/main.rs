@@ -155,7 +155,7 @@ enum Cmd {
         #[arg(long)]
         route: bool,
     },
-    /// Extract nets and transistors from a cell layout and print them as SPICE.
+    /// Extract nets, transistors, resistors and capacitors from a cell layout and print them as SPICE.
     Extract { project: PathBuf, cell: String },
     /// Compare a cell's layout with its schematic (non-zero exit on differences).
     Lvs { project: PathBuf, cell: String },
@@ -630,7 +630,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 eprintln!("warning: {w}");
             }
             print!("{}", x.spice(&r.to_string(), p.tech.dbu_per_um));
-            println!("* {} nets, {} transistors", x.nets.len(), x.devices.len());
+            println!("* {} nets, {} transistors, {} resistors/capacitors", x.nets.len(), x.devices.len(), x.passives.len());
         }
         Cmd::Lvs { project, cell } => {
             let p = Project::open(&project).map_err(|e| e.to_string())?;

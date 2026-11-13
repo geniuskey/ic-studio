@@ -492,6 +492,9 @@ pub fn layout_netlist(x: &Extraction, top: &str) -> String {
             len(d.l)
         );
     }
+    for p in &x.passives {
+        s += &format!("{} {} {} {}\n", p.name, net(p.a), net(p.b), p.spice_value());
+    }
     s += ".ends\n";
     s
 }

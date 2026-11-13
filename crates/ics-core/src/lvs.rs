@@ -1,10 +1,12 @@
 //! Layout versus schematic: compare an extracted layout circuit with a schematic.
 //!
-//! Both sides are reduced to MOS graphs (devices with gate, symmetric source / drain and
-//! optional bulk terminals). Parallel devices (same kind, gate, source / drain pair, bulk and L)
-//! are merged into one with their widths summed, and a schematic `m` multiplies W, so a
-//! multi-finger layout transistor matches a single wide schematic device. Merged devices are
-//! reported with their names joined by `+`.
+//! Both sides are reduced to device graphs: MOS devices with gate, symmetric source / drain and
+//! optional bulk terminals, resistors and capacitors with two symmetric terminals. Parallel
+//! devices (same kind, model, terminals and, for MOS, bulk and L) are merged into one: MOS widths
+//! and capacitances add, resistances combine as conductances. A schematic `m` multiplies W, so a
+//! multi-finger layout transistor matches a single wide schematic device. Resistors of one model
+//! in series through an unnamed net that nothing else touches merge into one as well. Merged
+//! devices are reported with their names joined by `+`.
 //!
 //! Matching: nets named alike on both sides (schematic labels / supplies, layout labels,
 //! case-insensitive, with "0" = "gnd" = "vss") are fixed anchors. Device and net classes are then
@@ -17,11 +19,11 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use crate::connectivity;
-use crate::extract::{DevKind, Extraction};
+use crate::extract::{DevKind, Extraction, PassiveKind};
 use crate::geom::IRect;
 use crate::schematic::{DeviceKind, Schematic};
 use crate::tech::{MosDef, Tech, mos_device_in};
-use crate::units::parse_spice;
+use crate::units::{format_eng, parse_spice};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LvsOptions {
@@ -29,7 +31,7 @@ pub struct LvsOptions {
     pub ignore_bulk: bool,
     /// Schematic device kinds that have no layout counterpart (test bench sources).
     pub ignore_kinds: Vec<DeviceKind>,
-    /// Relative tolerance for W / L comparison.
+    /// Relative tolerance for W / L and resistance / capacitance comparison.
     pub tolerance: f64,
     /// Drop MOS devices whose gate is on their bulk net (always off: dummies, tie-offs) from
     /// both sides.
@@ -64,7 +66,7 @@ pub enum LvsErrorKind {
     MissingDevice,
     /// Device only in the layout.
     ExtraDevice,
-    /// Matched devices whose W / L differ.
+    /// Matched devices whose W / L, value or model differ.
     Parameter,
     /// Nets that could not be matched, or labels whose connections differ.
     Net,
@@ -97,14 +99,41 @@ enum Role {
     Bulk,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Kind {
+    Nmos,
+    Pmos,
+    Res,
+    Cap,
+}
+
+impl Kind {
+    fn label(self) -> &'static str {
+        match self {
+            Kind::Nmos => "nmos",
+            Kind::Pmos => "pmos",
+            Kind::Res => "resistor",
+            Kind::Cap => "capacitor",
+        }
+    }
+
+    fn mos(self) -> bool {
+        matches!(self, Kind::Nmos | Kind::Pmos)
+    }
+}
+
 struct Dev {
-    kind: DevKind,
-    /// Model name, compared only when the technology defines devices.
+    kind: Kind,
+    /// Model name: for MOS compared only when the technology defines devices, for resistors and
+    /// capacitors when the schematic names one.
     model: Option<String>,
-    /// W and L in µm.
+    /// MOS W and L in µm.
     w: f64,
     l: f64,
-    g: usize,
+    /// Resistance in Ω or capacitance in F.
+    value: f64,
+    /// Gate (MOS only).
+    g: Option<usize>,
     s: usize,
     d: usize,
     b: Option<usize>,
@@ -138,24 +167,41 @@ impl Side {
         self.nets.len() - 1
     }
 
-    /// Merge parallel devices, then record every net's terminal connections.
+    /// Merge parallel devices and series resistors, then record every net's terminal connections.
     fn finish(&mut self) {
+        while self.merge_parallel() | self.merge_series() {}
+        for (i, d) in self.devs.iter().enumerate() {
+            if let Some(g) = d.g {
+                self.nets[g].conns.push((i, Role::Gate));
+            }
+            self.nets[d.s].conns.push((i, Role::SourceDrain));
+            self.nets[d.d].conns.push((i, Role::SourceDrain));
+            if let Some(b) = d.b {
+                self.nets[b].conns.push((i, Role::Bulk));
+            }
+        }
+    }
+
+    /// Merge parallel devices; whether any merged.
+    fn merge_parallel(&mut self) -> bool {
         let key = |d: &Dev| {
             let model = d.model.as_ref().map(|m| m.to_ascii_lowercase());
-            (d.kind == DevKind::Pmos, model, d.g, d.s.min(d.d), d.s.max(d.d), d.b, (d.l * 1e6).round() as i64)
+            let l = if d.kind.mos() { (d.l * 1e6).round() as i64 } else { 0 };
+            (d.kind, model, d.g, d.s.min(d.d), d.s.max(d.d), d.b, l)
         };
+        let before = self.devs.len();
         let mut groups: Vec<Dev> = Vec::new();
         let mut at: HashMap<_, usize> = HashMap::new();
         for d in std::mem::take(&mut self.devs) {
             match at.get(&key(&d)) {
                 Some(&i) => {
                     let m = &mut groups[i];
-                    m.w += d.w;
-                    m.name = format!("{}+{}", m.name, d.name);
-                    m.gate = match (m.gate, d.gate) {
-                        (Some(a), Some(b)) => Some(a.union(&b)),
-                        (a, b) => a.or(b),
-                    };
+                    match d.kind {
+                        Kind::Nmos | Kind::Pmos => m.w += d.w,
+                        Kind::Res => m.value = 1.0 / (1.0 / m.value + 1.0 / d.value),
+                        Kind::Cap => m.value += d.value,
+                    }
+                    m.absorb(&d);
                 }
                 None => {
                     at.insert(key(&d), groups.len());
@@ -164,14 +210,49 @@ impl Side {
             }
         }
         self.devs = groups;
+        self.devs.len() < before
+    }
+
+    /// Merge one pair of resistors in series through an unnamed net; whether any merged.
+    fn merge_series(&mut self) -> bool {
+        let mut uses: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
         for (i, d) in self.devs.iter().enumerate() {
-            self.nets[d.g].conns.push((i, Role::Gate));
-            self.nets[d.s].conns.push((i, Role::SourceDrain));
-            self.nets[d.d].conns.push((i, Role::SourceDrain));
-            if let Some(b) = d.b {
-                self.nets[b].conns.push((i, Role::Bulk));
+            for n in [d.g, Some(d.s), Some(d.d), d.b].into_iter().flatten() {
+                uses.entry(n).or_default().push(i);
             }
         }
+        let same_model =
+            |a: &Dev, b: &Dev| a.model.as_deref().map(str::to_ascii_lowercase) == b.model.as_deref().map(str::to_ascii_lowercase);
+        let found = uses.iter().find_map(|(&n, ds)| match ds[..] {
+            [i, j] if i != j && !self.nets[n].named => {
+                let (a, b) = (&self.devs[i], &self.devs[j]);
+                (a.kind == Kind::Res && b.kind == Kind::Res && same_model(a, b)).then_some((n, i, j))
+            }
+            _ => None,
+        });
+        let Some((n, i, j)) = found else { return false };
+        let d = self.devs.remove(j);
+        let i = if j < i { i - 1 } else { i };
+        let far = if d.s == n { d.d } else { d.s };
+        let m = &mut self.devs[i];
+        if m.s == n {
+            m.s = far;
+        } else {
+            m.d = far;
+        }
+        m.value += d.value;
+        m.absorb(&d);
+        true
+    }
+}
+
+impl Dev {
+    fn absorb(&mut self, d: &Dev) {
+        self.name = format!("{}+{}", self.name, d.name);
+        self.gate = match (self.gate, d.gate) {
+            (Some(a), Some(b)) => Some(a.union(&b)),
+            (a, b) => a.or(b),
+        };
     }
 }
 
@@ -192,8 +273,20 @@ fn um(v: f64) -> String {
     format!("{}µm", s.trim_end_matches('0').trim_end_matches('.'))
 }
 
+fn value(kind: Kind, v: f64) -> String {
+    match kind {
+        Kind::Res => format!("R={}", format_eng(v, " ohm")),
+        _ => format!("C={}", format_eng(v, "F")),
+    }
+}
+
 fn describe(d: &Dev) -> String {
-    format!("{} ({} W={} L={})", d.name, d.model.as_deref().unwrap_or(d.kind.model()), um(d.w), um(d.l))
+    let model = d.model.as_deref().unwrap_or(d.kind.label());
+    if d.kind.mos() {
+        format!("{} ({model} W={} L={})", d.name, um(d.w), um(d.l))
+    } else {
+        format!("{} ({model} {})", d.name, value(d.kind, d.value))
+    }
 }
 
 fn hash<T: Hash>(t: T) -> u64 {
@@ -214,7 +307,7 @@ struct State {
 impl State {
     fn new(side: &Side) -> State {
         State {
-            dev: side.devs.iter().map(|d| hash(("dev", d.kind == DevKind::Pmos))).collect(),
+            dev: side.devs.iter().map(|d| hash(("dev", d.kind))).collect(),
             net: side.nets.iter().map(|_| hash("net")).collect(),
             dev_fixed: vec![false; side.devs.len()],
             net_fixed: vec![false; side.nets.len()],
@@ -234,7 +327,7 @@ impl State {
                     return self.dev[i];
                 }
                 let (a, b) = (net[d.s], net[d.d]);
-                hash((self.dev[i], net[d.g], a.min(b), a.max(b), d.b.map(|b| net[b])))
+                hash((self.dev[i], d.g.map(|g| net[g]), a.min(b), a.max(b), d.b.map(|b| net[b])))
             })
             .collect();
         let net: Vec<u64> = side
@@ -291,13 +384,15 @@ fn schematic_side(sch: &Schematic, opts: &LvsOptions, errors: &mut Vec<LvsError>
         }
         *count += 1;
         let kind = match inst.kind {
-            DeviceKind::Nmos => DevKind::Nmos,
-            DeviceKind::Pmos => DevKind::Pmos,
+            DeviceKind::Nmos => Kind::Nmos,
+            DeviceKind::Pmos => Kind::Pmos,
+            DeviceKind::Resistor => Kind::Res,
+            DeviceKind::Capacitor => Kind::Cap,
             k => {
                 errors.push(LvsError {
                     kind: LvsErrorKind::MissingDevice,
                     message: format!(
-                        "{} ({}): not extracted from layout (only MOS transistors are recognised)",
+                        "{} ({}): not extracted from layout (only MOS transistors, resistors and capacitors are recognised)",
                         inst.name,
                         k.label().to_ascii_lowercase()
                     ),
@@ -311,6 +406,34 @@ fn schematic_side(sch: &Schematic, opts: &LvsOptions, errors: &mut Vec<LvsError>
             let seed = (!is_auto_name(&name) && name != "?").then(|| normalize(&name));
             side.net(&name, seed, None)
         };
+        if !kind.mos() {
+            let key = if kind == Kind::Res { "r" } else { "c" };
+            let v = parse_spice(inst.param(key));
+            if v.is_none() {
+                errors.push(LvsError {
+                    kind: LvsErrorKind::Parameter,
+                    message: format!("{}: cannot read {}='{}'", inst.name, key.to_ascii_uppercase(), inst.param(key)),
+                    marker: None,
+                });
+            }
+            let m = parse_spice(inst.param("m")).map_or(1.0, |m| m.round().max(1.0));
+            let model = inst.param("model").trim();
+            let (s, d) = (net("p"), net("n"));
+            side.devs.push(Dev {
+                kind,
+                model: (!model.is_empty()).then(|| model.to_string()),
+                w: f64::NAN,
+                l: f64::NAN,
+                value: v.map_or(f64::NAN, |v| if kind == Kind::Res { v / m } else { v * m }),
+                g: None,
+                s,
+                d,
+                b: None,
+                name: inst.name.clone(),
+                gate: None,
+            });
+            continue;
+        }
         let (g, s, d) = (net("g"), net("s"), net("d"));
         let b = if opts.ignore_bulk {
             None
@@ -329,7 +452,7 @@ fn schematic_side(sch: &Schematic, opts: &LvsOptions, errors: &mut Vec<LvsError>
         }
         let m = parse_spice(inst.param("m")).map_or(1.0, |m| m.round().max(1.0));
         let model = (!opts.devices.is_empty()).then(|| {
-            mos_device_in(&opts.devices, kind == DevKind::Pmos, inst.param("model"))
+            mos_device_in(&opts.devices, kind == Kind::Pmos, inst.param("model"))
                 .map_or_else(|| inst.param("model").trim().to_string(), |d| d.name.clone())
         });
         side.devs.push(Dev {
@@ -337,7 +460,8 @@ fn schematic_side(sch: &Schematic, opts: &LvsOptions, errors: &mut Vec<LvsError>
             model,
             w: w.unwrap_or(f64::NAN) * m,
             l: l.unwrap_or(f64::NAN),
-            g,
+            value: f64::NAN,
+            g: Some(g),
             s,
             d,
             b,
@@ -366,16 +490,33 @@ fn layout_side(lay: &Extraction, opts: &LvsOptions) -> Side {
         let (g, s, dd) = (net(&mut side, d.g), net(&mut side, d.s), net(&mut side, d.d));
         let b = (!opts.ignore_bulk).then(|| net(&mut side, d.b));
         side.devs.push(Dev {
-            kind: d.kind,
+            kind: if d.kind == DevKind::Pmos { Kind::Pmos } else { Kind::Nmos },
             model: (!opts.devices.is_empty()).then(|| d.model.clone()),
             w: d.w as f64 / dbu,
             l: d.l as f64 / dbu,
-            g,
+            value: f64::NAN,
+            g: Some(g),
             s,
             d: dd,
             b,
             name: d.name.clone(),
             gate: Some(d.gate),
+        });
+    }
+    for p in &lay.passives {
+        let (s, d) = (net(&mut side, p.a), net(&mut side, p.b));
+        side.devs.push(Dev {
+            kind: if p.kind == PassiveKind::Resistor { Kind::Res } else { Kind::Cap },
+            model: Some(p.model.clone()),
+            w: f64::NAN,
+            l: f64::NAN,
+            value: p.value,
+            g: None,
+            s,
+            d,
+            b: None,
+            name: p.name.clone(),
+            gate: Some(p.body),
         });
     }
     side
@@ -475,7 +616,7 @@ fn match_graphs(sa: &Side, sb: &Side, a: &mut State, b: &mut State) {
                 .filter(|(j, e)| b.dev_match[*j].is_none() && e.kind == d.kind)
                 .map(|(j, e)| {
                     let sd = [m(d.s), m(d.d)];
-                    let score = usize::from(m(d.g) == Some(e.g))
+                    let score = usize::from(d.g.is_some() && d.g.and_then(m) == e.g)
                         + usize::from(sd.contains(&Some(e.s)))
                         + usize::from(sd.contains(&Some(e.d)))
                         + usize::from(d.b.is_some() && d.b.and_then(m) == e.b);
@@ -538,14 +679,17 @@ pub fn compare(sch: &Schematic, lay: &Extraction, opts: &LvsOptions) -> LvsRepor
         devices.push((d.name.clone(), e.name.clone()));
         let who = format!("{} / {}", d.name, e.name);
         let m = |n: usize| a.net_match[n];
-        if m(d.g) != Some(e.g) {
-            let msg = format!("{who}: gate on {} in the schematic but {} in the layout", net_name(&sa, d.g), net_name(&sb, e.g));
+        if let (Some(x), Some(y)) = (d.g, e.g)
+            && m(x) != Some(y)
+        {
+            let msg = format!("{who}: gate on {} in the schematic but {} in the layout", net_name(&sa, x), net_name(&sb, y));
             errors.push(err(LvsErrorKind::Net, msg, e.gate));
         }
         let (ms, md) = (m(d.s), m(d.d));
         if !((ms == Some(e.s) && md == Some(e.d)) || (ms == Some(e.d) && md == Some(e.s))) {
             let msg = format!(
-                "{who}: source/drain on {}, {} in the schematic but {}, {} in the layout",
+                "{who}: {} on {}, {} in the schematic but {}, {} in the layout",
+                if d.kind.mos() { "source/drain" } else { "terminals" },
                 net_name(&sa, d.s),
                 net_name(&sa, d.d),
                 net_name(&sb, e.s),
@@ -564,11 +708,16 @@ pub fn compare(sch: &Schematic, lay: &Extraction, opts: &LvsOptions) -> LvsRepor
         {
             errors.push(err(LvsErrorKind::Parameter, format!("{who}: model {s} (schematic) vs {l} (layout)"), e.gate));
         }
-        for (what, s, l) in [("W", d.w, e.w), ("L", d.l, e.l)] {
-            if s.is_finite() && (s - l).abs() > opts.tolerance * s.abs() {
-                let msg = format!("{who}: {what} {} (schematic) vs {} (layout)", um(s), um(l));
-                errors.push(err(LvsErrorKind::Parameter, msg, e.gate));
+        if d.kind.mos() {
+            for (what, s, l) in [("W", d.w, e.w), ("L", d.l, e.l)] {
+                if s.is_finite() && (s - l).abs() > opts.tolerance * s.abs() {
+                    let msg = format!("{who}: {what} {} (schematic) vs {} (layout)", um(s), um(l));
+                    errors.push(err(LvsErrorKind::Parameter, msg, e.gate));
+                }
             }
+        } else if d.value.is_finite() && (d.value - e.value).abs() > opts.tolerance * d.value.abs() {
+            let msg = format!("{who}: {} (schematic) vs {} (layout)", value(d.kind, d.value), value(e.kind, e.value));
+            errors.push(err(LvsErrorKind::Parameter, msg, e.gate));
         }
     }
     for (j, e) in sb.devs.iter().enumerate() {
@@ -581,6 +730,7 @@ pub fn compare(sch: &Schematic, lay: &Extraction, opts: &LvsOptions) -> LvsRepor
     let mut nets = Vec::new();
     for (i, n) in sa.nets.iter().enumerate() {
         match a.net_match[i] {
+            Some(_) if n.conns.is_empty() => {}
             Some(j) => {
                 let o = &sb.nets[j];
                 nets.push((n.name.clone(), o.name.clone()));
@@ -602,7 +752,7 @@ pub fn compare(sch: &Schematic, lay: &Extraction, opts: &LvsOptions) -> LvsRepor
     }
     devices.sort();
     nets.sort();
-    let layout_devices = lay.devices.iter().filter(|d| !(opts.filter_off && d.g == d.b)).count();
+    let layout_devices = lay.devices.iter().filter(|d| !(opts.filter_off && d.g == d.b)).count() + lay.passives.len();
     LvsReport { matched: errors.is_empty(), devices, nets, errors, schematic_devices, layout_devices }
 }
 
@@ -713,7 +863,7 @@ mod tests {
         let nets: Vec<(&str, &str)> = r.nets.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
         assert_eq!(nets, [("0", "gnd"), ("in", "in"), ("out", "out"), ("vdd", "vdd")]);
         assert_eq!(kinds(&r), [LvsErrorKind::MissingDevice, LvsErrorKind::Parameter]);
-        assert!(r.errors[0].message.starts_with("C1 (capacitor)"), "{}", r.errors[0].message);
+        assert!(r.errors[0].message.starts_with("schematic device C1 (capacitor C="), "{}", r.errors[0].message);
         assert_eq!(r.errors[1].message, "M1 / M2: W 2µm (schematic) vs 1.2µm (layout)");
         assert_eq!(r.errors[1].marker, Some(x.devices[1].gate));
     }
@@ -811,6 +961,74 @@ mod tests {
         let mut m2 = schematic(&[(DeviceKind::Nmos, "1u", ["D", "G", "S"])]);
         m2.instances[0].params.insert("m".into(), "2".into());
         assert!(compare(&m2, &x, &LvsOptions::default()).matched);
+    }
+
+    /// Resistors / capacitors connected through labels on their pins: (kind, value, [p, n]).
+    fn two_pins(devs: &[(DeviceKind, &str, [&str; 2])]) -> Schematic {
+        let mut s = Schematic::default();
+        for (k, (kind, v, nets)) in devs.iter().enumerate() {
+            let id = s.add_instance(*kind, Pt::new(10 * k as i32, 0), Orient::default());
+            let key = if *kind == DeviceKind::Resistor { "r" } else { "c" };
+            s.instance_mut(id).unwrap().params.insert(key.into(), (*v).into());
+            let pins = s.instance(id).unwrap().pin_positions();
+            for (pin, net) in ["p", "n"].iter().zip(nets) {
+                let p = pins.iter().find(|(n, _)| n == pin).unwrap().1;
+                s.add_label(*net, p);
+            }
+        }
+        s
+    }
+
+    #[test]
+    fn resistor_value_and_reduction() {
+        let tech = crate::extract::rc_tech();
+        let x = extract(&PCell::PolyRes { w: 400, l: 5000 }.generate(&tech).unwrap(), &NoCells, &tech);
+        let opts = LvsOptions::for_tech(&tech);
+        let r = compare(&two_pins(&[(DeviceKind::Resistor, "93.75", ["B", "A"])]), &x, &opts);
+        assert!(r.matched, "{:#?}", r.errors);
+        assert_eq!(r.devices, [("R1".to_string(), "R1".to_string())]);
+        assert_eq!((r.schematic_devices, r.layout_devices), (1, 1));
+
+        let r = compare(&two_pins(&[(DeviceKind::Resistor, "100", ["A", "B"])]), &x, &opts);
+        assert_eq!(kinds(&r), [LvsErrorKind::Parameter]);
+        assert_eq!(r.errors[0].message, "R1 / R1: R=100 ohm (schematic) vs R=93.75 ohm (layout)");
+        assert_eq!(r.errors[0].marker, Some(x.passives[0].body));
+        assert!(
+            compare(&two_pins(&[(DeviceKind::Resistor, "100", ["A", "B"])]), &x, &LvsOptions { tolerance: 0.1, ..opts.clone() })
+                .matched
+        );
+
+        let series = two_pins(&[(DeviceKind::Resistor, "50", ["A", "net9"]), (DeviceKind::Resistor, "43.75", ["net9", "B"])]);
+        let r = compare(&series, &x, &opts);
+        assert!(r.matched, "{:#?}", r.errors);
+        assert_eq!(r.devices, [("R1+R2".to_string(), "R1".to_string())]);
+        let parallel = two_pins(&[(DeviceKind::Resistor, "187.5", ["A", "B"]), (DeviceKind::Resistor, "187.5", ["B", "A"])]);
+        assert!(compare(&parallel, &x, &opts).matched);
+        let tapped = two_pins(&[(DeviceKind::Resistor, "50", ["A", "mid"]), (DeviceKind::Resistor, "43.75", ["mid", "B"])]);
+        assert!(!compare(&tapped, &x, &opts).matched, "a named net stops series reduction");
+
+        let r = compare(&two_pins(&[(DeviceKind::Resistor, "93.75", ["A", "C"])]), &x, &opts);
+        assert!(!r.matched && r.errors.iter().all(|e| e.kind == LvsErrorKind::Net), "{:#?}", r.errors);
+    }
+
+    #[test]
+    fn capacitor_value_and_extra_device() {
+        let tech = crate::extract::rc_tech();
+        let x = extract(&PCell::MomCap { w: 5000, h: 5000 }.generate(&tech).unwrap(), &NoCells, &tech);
+        let opts = LvsOptions::for_tech(&tech);
+        assert!(compare(&two_pins(&[(DeviceKind::Capacitor, "25f", ["TOP", "BOT"])]), &x, &opts).matched);
+        let two =
+            two_pins(&[(DeviceKind::Capacitor, "12.51f", ["TOP", "BOT"]), (DeviceKind::Capacitor, "12.51f", ["BOT", "TOP"])]);
+        assert!(compare(&two, &x, &opts).matched);
+
+        let r = compare(&two_pins(&[(DeviceKind::Capacitor, "30f", ["TOP", "BOT"])]), &x, &opts);
+        assert_eq!(kinds(&r), [LvsErrorKind::Parameter]);
+        assert_eq!(r.errors[0].message, "C1 / C1: C=30fF (schematic) vs C=25.02fF (layout)");
+
+        let r = compare(&two_pins(&[(DeviceKind::Resistor, "1k", ["TOP", "BOT"])]), &x, &opts);
+        assert_eq!(kinds(&r), [LvsErrorKind::MissingDevice, LvsErrorKind::ExtraDevice], "{:#?}", r.errors);
+        assert_eq!(r.errors[0].message, "schematic device R1 (resistor R=1k ohm) has no layout counterpart");
+        assert_eq!(r.errors[1].message, "layout device C1 (cmom C=25.02fF) is not in the schematic");
     }
 
     #[test]

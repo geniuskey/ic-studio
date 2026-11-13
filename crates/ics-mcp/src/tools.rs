@@ -274,11 +274,18 @@ fn extraction_json(x: &Extraction, tech: &Tech, title: &str) -> Value {
             })
         })
         .collect();
+    let passives: Vec<Value> = x
+        .passives
+        .iter()
+        .take(MAX_LISTED)
+        .map(|p| json!({"name": p.name, "kind": p.kind.label(), "model": p.model, "value": sig(p.value), "a": net(p.a), "b": net(p.b)}))
+        .collect();
     json!({
         "net_count": x.nets.len(),
         "device_count": x.devices.len(),
         "nets": nets,
         "devices": devices,
+        "passives": passives,
         "warnings": x.warnings,
         "spice": x.spice(title, tech.dbu_per_um),
     })
@@ -609,7 +616,7 @@ pub fn definitions() -> Vec<Value> {
         ),
         tool(
             "extract",
-            "Extract connectivity and transistors from a cell layout: nets (name, bbox µm), MOS devices (W/L µm, terminal nets) and the extracted circuit as SPICE.",
+            "Extract connectivity and devices from a cell layout: nets (name, bbox µm), MOS devices (W/L µm, terminal nets), PDK resistors / capacitors (value in Ω / F, terminal nets) and the extracted circuit as SPICE.",
             json!({"cell": cell()}),
             &["cell"],
         ),

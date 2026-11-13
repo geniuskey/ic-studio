@@ -65,6 +65,21 @@
 //! exclude = []
 //! subckt = true
 //!
+//! [[resistor]]                 # resistors: marked body of a conducting layer (see ResDef)
+//! name = "rppoly"
+//! layer = "poly"
+//! layers = ["polyres"]         # marker layers
+//! exclude = []
+//! sheet = 7.5                  # Ω per square
+//!
+//! [[capacitor]]                # capacitors: marked overlap of two conducting layers (see CapDef)
+//! name = "cmim"
+//! bottom = "met4"
+//! top = "capm"
+//! layers = []
+//! area = 2.0                   # fF/µm²
+//! perimeter = 0.0              # fF/µm, optional
+//!
 //! [models]
 //! path = "${PDK_ROOT}/sky130A/libs.tech/ngspice/sky130.lib.spice"
 //! corners = ["tt", "ff", "ss", "sf", "fs"]
@@ -97,7 +112,8 @@ use serde::Deserialize;
 
 use crate::signoff::Runset;
 use crate::tech::{
-    DeviceRules, FillStyle, LayerCap, LayerDef, LayerRoles, LengthUnit, ModelLib, MosDef, PcellLayer, PinLabel, Tech, ViaDef,
+    CapDef, DeviceRules, FillStyle, LayerCap, LayerDef, LayerRoles, LengthUnit, ModelLib, MosDef, PcellLayer, PinLabel, ResDef,
+    Tech, ViaDef,
 };
 use crate::tech_import::{apply_lyt, from_lyp};
 
@@ -119,6 +135,10 @@ struct PdkFile {
     via: Vec<ViaEntry>,
     #[serde(default)]
     device: Vec<MosDef>,
+    #[serde(default)]
+    resistor: Vec<ResDef>,
+    #[serde(default)]
+    capacitor: Vec<CapDef>,
     models: Option<ModelsEntry>,
     drc_deck: Option<String>,
     #[serde(default)]
@@ -323,6 +343,8 @@ pub fn parse(text: &str, base: &Path, env: &dyn Fn(&str) -> Option<String>) -> R
         None => d,
     };
     tech.devices = f.device;
+    tech.resistors = f.resistor;
+    tech.capacitors = f.capacitor;
     tech.pcell_layers = f
         .pcell_layer
         .into_iter()
@@ -414,6 +436,20 @@ pub fn check(tech: &Tech) -> Vec<String> {
         for n in d.layers.iter().chain(&d.exclude) {
             if !has(n) {
                 w.push(format!("device '{}' uses unknown layer '{n}'", d.name));
+            }
+        }
+    }
+    for r in &tech.resistors {
+        for n in std::iter::once(&r.layer).chain(&r.layers).chain(&r.exclude) {
+            if !has(n) {
+                w.push(format!("resistor '{}' uses unknown layer '{n}'", r.name));
+            }
+        }
+    }
+    for c in &tech.capacitors {
+        for n in [&c.bottom, &c.top].into_iter().chain(&c.layers).chain(&c.exclude) {
+            if !has(n) {
+                w.push(format!("capacitor '{}' uses unknown layer '{n}'", c.name));
             }
         }
     }
@@ -534,6 +570,34 @@ mod tests {
         assert_eq!(parse_color("#102030"), Some([16, 32, 48, crate::tech_import::ALPHA]));
         assert_eq!(parse_color("#10203040"), Some([16, 32, 48, 64]));
         assert_eq!(parse_color("102030"), None);
+    }
+
+    #[test]
+    fn resistor_and_capacitor_tables() {
+        let text = r#"
+name = "t"
+grid = 0.005
+[[layer]]
+name = "poly"
+gds = 1
+[[layer]]
+name = "rmark"
+gds = 2
+[[resistor]]
+name = "rp"
+layer = "poly"
+layers = ["rmark"]
+sheet = 7.5
+[[capacitor]]
+name = "cm"
+bottom = "poly"
+top = "m9"
+area = 2.0
+"#;
+        let p = parse(text, Path::new("."), &|_| None).unwrap();
+        assert_eq!((p.tech.resistors[0].name.as_str(), p.tech.resistors[0].sheet), ("rp", 7.5));
+        assert_eq!((p.tech.capacitors[0].area, p.tech.capacitors[0].perimeter), (2.0, 0.0));
+        assert!(p.warnings.iter().any(|w| w == "capacitor 'cm' uses unknown layer 'm9'"), "{:?}", p.warnings);
     }
 
     /// The demo inverter in SKY130, placed and routed from its schematic.

@@ -173,6 +173,39 @@ pub struct MosDef {
     pub subckt: bool,
 }
 
+/// A resistor of the PDK. Its body is the conducting `layer` where every `layers` marker covers
+/// it and no `exclude` marker does; the body is cut out of the layer's conductor, so the pieces
+/// of `layer` touching the body at two opposite ends are its terminals. R = `sheet` · L / W.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ResDef {
+    pub name: String,
+    pub layer: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub layers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude: Vec<String>,
+    /// Sheet resistance in Ω per square.
+    pub sheet: f64,
+}
+
+/// A capacitor of the PDK: each overlap of conducting layers `bottom` and `top` where every
+/// `layers` marker covers it and no `exclude` marker does. C = `area` · A + `perimeter` · P.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CapDef {
+    pub name: String,
+    pub bottom: String,
+    pub top: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub layers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude: Vec<String>,
+    /// Area capacitance in fF per µm².
+    pub area: f64,
+    /// Perimeter capacitance in fF per µm.
+    #[serde(default)]
+    pub perimeter: f64,
+}
+
 /// SPICE model library of the PDK.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct ModelLib {
@@ -309,6 +342,12 @@ pub struct Tech {
     /// PDK MOS devices; empty means generic `nmos` / `pmos`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub devices: Vec<MosDef>,
+    /// PDK resistors recognised by extraction and LVS.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resistors: Vec<ResDef>,
+    /// PDK capacitors recognised by extraction and LVS.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capacitors: Vec<CapDef>,
     /// PDK model library; `None` uses the built-in generic models.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub models: Option<ModelLib>,
@@ -510,6 +549,8 @@ impl Tech {
             roles: LayerRoles::default(),
             rules: DeviceRules::default(),
             devices: vec![],
+            resistors: vec![],
+            capacitors: vec![],
             models: None,
             signoff: vec![],
             pcell_layers: vec![],

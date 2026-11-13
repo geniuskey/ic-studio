@@ -481,6 +481,12 @@ fn gen_poly_res(tech: &Tech, w: i64, l: i64) -> Result<Layout, String> {
     let head_h = pcon.cut_size + 2 * pcon.enc_bottom.max(pcon.enc_top);
     let mut lay = Layout::default();
     lay.add(poly, Geometry::Rect(IRect::new(0, 0, w, l)));
+    if let Some(rd) = tech.resistors.iter().find(|r| tech.layer_index(&r.layer) == Some(poly)) {
+        let e = snap_up(tech.rules.marker_enc, g);
+        for m in &rd.layers {
+            lay.add(layer(tech, m)?, Geometry::Rect(IRect::new(-e, 0, w + e, l)));
+        }
+    }
     for (name, area) in [("A", IRect::new(0, -head_h, w, 0)), ("B", IRect::new(0, l, w, l + head_h))] {
         let items = via_array(tech, pcon, area)?;
         let pad = items.last().map(|(_, g)| g.bbox()).unwrap_or(area);
@@ -512,6 +518,13 @@ fn gen_mom_cap(tech: &Tech, w: i64, h: i64) -> Result<Layout, String> {
     let top = IRect::new(w - inset, ty0, w + tab_len, ty1);
     lay.add(m1, Geometry::Rect(bot));
     lay.add(m2, Geometry::Rect(top));
+    let is = |n: &str, l: usize| tech.layer_index(n) == Some(l);
+    if let Some(cd) = tech.capacitors.iter().find(|c| is(&c.bottom, m1) && is(&c.top, m2)) {
+        let e = snap_up(tech.rules.marker_enc, g);
+        for m in &cd.layers {
+            lay.add(layer(tech, m)?, Geometry::Rect(grow(IRect::new(0, 0, w, h), e)));
+        }
+    }
     label(&mut lay, tech, "BOT", centre(bot));
     label(&mut lay, tech, "TOP", (top.x1 - tab_len / 2, cy));
     Ok(lay)

@@ -16,6 +16,10 @@
 //! - Junctions: each source / drain diffusion piece contributes its area and its perimeter
 //!   without the edges against the device gates; a piece shared by several terminals (fingers,
 //!   abutted devices) is split equally between them.
+//! - Resistors ([`Tech::resistors`]): the marked body is cut out of its conducting layer; the
+//!   pieces touching two opposite sides are the terminals, R = sheet · L / W with W = area / L.
+//! - Capacitors ([`Tech::capacitors`]): each marked overlap of the two plate layers, between
+//!   the bottom and top plate nets.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -92,10 +96,60 @@ pub struct Device {
     pub js: Junction,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PassiveKind {
+    Resistor,
+    Capacitor,
+}
+
+impl PassiveKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            PassiveKind::Resistor => "resistor",
+            PassiveKind::Capacitor => "capacitor",
+        }
+    }
+}
+
+/// An extracted resistor or capacitor.
+#[derive(Debug, Clone)]
+pub struct Passive {
+    pub kind: PassiveKind,
+    /// The PDK device ([`Tech::resistors`] / [`Tech::capacitors`]).
+    pub model: String,
+    /// "R1", "R2", ... and "C1", "C2", ... in a deterministic (position based) order.
+    pub name: String,
+    /// Resistance in Ω or capacitance in F.
+    pub value: f64,
+    /// Terminal nets: the resistor ends (left / bottom first), the bottom and top plates.
+    pub a: usize,
+    pub b: usize,
+    /// Resistor body width and length in dbu (0 for capacitors).
+    pub w: i64,
+    pub l: i64,
+    /// Body area in dbu² and perimeter in dbu.
+    pub area: i64,
+    pub perimeter: i64,
+    pub body: IRect,
+}
+
+impl Passive {
+    /// The value as a SPICE number (6 significant digits).
+    pub fn spice_value(&self) -> String {
+        let s = format!("{:.5e}", self.value);
+        match s.split_once('e') {
+            Some((m, e)) if m.contains('.') => format!("{}e{e}", m.trim_end_matches('0').trim_end_matches('.')),
+            _ => s,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Extraction {
     pub nets: Vec<Net>,
     pub devices: Vec<Device>,
+    /// Resistors and capacitors.
+    pub passives: Vec<Passive>,
     pub warnings: Vec<String>,
     /// Conducting layers, topmost first (the order `net_at_any` and labels use).
     pub layers: Vec<usize>,
@@ -132,6 +186,9 @@ impl Extraction {
                 um(d.w),
                 um(d.l)
             );
+        }
+        for p in &self.passives {
+            s += &format!("{} {} {} {}\n", p.name, net(p.a), net(p.b), p.spice_value());
         }
         s
     }
@@ -247,6 +304,33 @@ fn component_anchors(r: Region) -> Vec<(i64, i64)> {
     p.members.iter().map(|m| (p.region.rects()[m[0]].x0, p.region.rects()[m[0]].y0)).collect()
 }
 
+/// Components of `plane` on two opposite sides of `bb` (left / right first, else below / above)
+/// and the distance between them.
+fn ends(plane: &Plane, bb: IRect) -> Option<(usize, usize, i64)> {
+    let side = |r: IRect| plane.comps_overlapping(r).into_iter().next();
+    let (left, right) = (side(IRect::new(bb.x0 - 1, bb.y0, bb.x0, bb.y1)), side(IRect::new(bb.x1, bb.y0, bb.x1 + 1, bb.y1)));
+    let (below, above) = (side(IRect::new(bb.x0, bb.y0 - 1, bb.x1, bb.y0)), side(IRect::new(bb.x0, bb.y1, bb.x1, bb.y1 + 1)));
+    match (left, right, below, above) {
+        (Some(s), Some(d), _, _) => Some((s, d, bb.width())),
+        (_, _, Some(s), Some(d)) => Some((s, d, bb.height())),
+        _ => None,
+    }
+}
+
+/// A resistor or capacitor before net naming: terminals are (plane, component) pieces.
+struct PassiveProto {
+    kind: PassiveKind,
+    model: String,
+    value: f64,
+    a: usize,
+    b: usize,
+    w: i64,
+    l: i64,
+    area: i64,
+    perimeter: i64,
+    body: IRect,
+}
+
 struct Gate {
     kind: DevKind,
     model: String,
@@ -327,8 +411,34 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
     let poly_r = region(poly);
     let gate_r = active_r.boolean(&poly_r, BoolOp::And);
     let diff_r = active_r.boolean(&poly_r, BoolOp::Not);
-    let mut planes: Vec<Plane> =
-        conducting.iter().map(|&l| Plane::new(if Some(l) == active { diff_r.clone() } else { region(Some(l)) })).collect();
+    let conductor = |l: usize| if Some(l) == active { diff_r.clone() } else { region(Some(l)) };
+    let marked = |base: Region, layers: &[String], exclude: &[String]| {
+        let r = layers.iter().fold(base, |r, n| r.boolean(&region(lid(n)), BoolOp::And));
+        exclude.iter().fold(r, |r, n| r.boolean(&region(lid(n)), BoolOp::Not))
+    };
+    // Resistor bodies per definition, on their canonical conducting layer; earlier definitions win.
+    let mut res_bodies: Vec<(usize, usize, Region)> = Vec::new();
+    for (k, rd) in tech.resistors.iter().enumerate() {
+        let Some(l) = lid(&rd.layer).map(canon).filter(|l| conducting.contains(l)) else {
+            warnings.push(format!("resistor '{}': layer '{}' is not a conducting layer", rd.name, rd.layer));
+            continue;
+        };
+        if rd.layers.is_empty() {
+            warnings.push(format!("resistor '{}' has no marker layers; ignored", rd.name));
+            continue;
+        }
+        let body = res_bodies
+            .iter()
+            .filter(|b| b.1 == l)
+            .fold(marked(conductor(l), &rd.layers, &rd.exclude), |r, b| r.boolean(&b.2, BoolOp::Not));
+        if !body.is_empty() {
+            res_bodies.push((k, l, body));
+        }
+    }
+    let mut planes: Vec<Plane> = conducting
+        .iter()
+        .map(|&l| Plane::new(res_bodies.iter().filter(|b| b.1 == l).fold(conductor(l), |r, b| r.boolean(&b.2, BoolOp::Not))))
+        .collect();
     let nwell_r = region(nwell);
     let has_nwell = nwell.is_some() && !nwell_r.is_empty();
     planes.push(Plane::new(nwell_r.clone()));
@@ -411,15 +521,9 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
             let rs: Vec<IRect> = m.iter().map(|&i| gp.region.rects()[i]).collect();
             let Some(bb) = rs.iter().copied().reduce(|a, b| a.union(&b)) else { continue };
             let area: i64 = rs.iter().map(|r| r.width() * r.height()).sum();
-            let side = |r: IRect| planes[dp].comps_overlapping(r).into_iter().next();
-            let (left, right) =
-                (side(IRect::new(bb.x0 - 1, bb.y0, bb.x0, bb.y1)), side(IRect::new(bb.x1, bb.y0, bb.x1 + 1, bb.y1)));
-            let (below, above) =
-                (side(IRect::new(bb.x0, bb.y0 - 1, bb.x1, bb.y0)), side(IRect::new(bb.x0, bb.y1, bb.x1, bb.y1 + 1)));
-            let (s, d, l) = match (left, right, below, above) {
-                (Some(s), Some(d), _, _) => (s, d, bb.width()),
-                (_, _, Some(s), Some(d)) => (s, d, bb.height()),
-                _ => {
+            let (s, d, l) = match ends(&planes[dp], bb) {
+                Some(e) => e,
+                None => {
                     warnings.push(format!(
                         "gate at ({}, {})-({}, {}) lacks diffusion on two opposite sides; skipped",
                         bb.x0, bb.y0, bb.x1, bb.y1
@@ -483,6 +587,70 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
                 b,
             });
         }
+    }
+
+    let mut passives = Vec::new();
+    for (k, l, body) in &res_bodies {
+        let (rd, Some(pi)) = (&tech.resistors[*k], pi_of(Some(*l))) else { continue };
+        for part in body.parts() {
+            let Some(bb) = part.bbox() else { continue };
+            let Some((a, b, len)) = ends(&planes[pi], bb) else {
+                warnings.push(format!(
+                    "resistor '{}' at ({}, {})-({}, {}) lacks terminals on two opposite sides; skipped",
+                    rd.name, bb.x0, bb.y0, bb.x1, bb.y1
+                ));
+                continue;
+            };
+            let area = part.area() as i64;
+            passives.push(PassiveProto {
+                kind: PassiveKind::Resistor,
+                model: rd.name.clone(),
+                value: rd.sheet * (len as f64).powi(2) / area.max(1) as f64,
+                a: offset[pi] + a,
+                b: offset[pi] + b,
+                w: area / len.max(1),
+                l: len,
+                area,
+                perimeter: part.perimeter(),
+                body: bb,
+            });
+        }
+    }
+    let mut claimed = Region::default();
+    let dbu = tech.dbu_per_um.max(1) as f64;
+    for cd in &tech.capacitors {
+        let plane = |n: &str| lid(n).map(canon).and_then(|l| pi_of(Some(l)));
+        let (Some(bp), Some(tp)) = (plane(&cd.bottom), plane(&cd.top)) else {
+            warnings.push(format!("capacitor '{}': plates '{}' / '{}' are not conducting layers", cd.name, cd.bottom, cd.top));
+            continue;
+        };
+        if bp == tp {
+            warnings.push(format!("capacitor '{}': both plates are on '{}'; ignored", cd.name, cd.bottom));
+            continue;
+        }
+        let overlap = planes[bp].region.boolean(&planes[tp].region, BoolOp::And);
+        let body = marked(overlap, &cd.layers, &cd.exclude).boolean(&claimed, BoolOp::Not);
+        for part in body.parts() {
+            let (Some(bb), Some(r)) = (part.bbox(), part.rects().first()) else { continue };
+            let (Some(a), Some(b)) = (planes[bp].comp_at((r.x0, r.y0), false), planes[tp].comp_at((r.x0, r.y0), false)) else {
+                continue;
+            };
+            let (area, perimeter) = (part.area() as i64, part.perimeter());
+            let value = (cd.area * area as f64 / (dbu * dbu) + cd.perimeter * perimeter as f64 / dbu) * 1e-15;
+            passives.push(PassiveProto {
+                kind: PassiveKind::Capacitor,
+                model: cd.name.clone(),
+                value,
+                a: offset[bp] + a,
+                b: offset[tp] + b,
+                w: 0,
+                l: 0,
+                area,
+                perimeter,
+                body: bb,
+            });
+        }
+        claimed = claimed.boolean(&body, BoolOp::Or);
     }
 
     let mut junctions: HashMap<usize, Junction> = HashMap::new();
@@ -622,12 +790,67 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
             jd: junctions.get(&g.sd.1).copied().unwrap_or_default(),
         })
         .collect();
+    passives.sort_by_key(|p| (p.kind == PassiveKind::Capacitor, p.body.y0, p.body.x0));
+    let (mut nr, mut nc) = (0, 0);
+    let passives = passives
+        .into_iter()
+        .map(|p| {
+            let name = match p.kind {
+                PassiveKind::Resistor => {
+                    nr += 1;
+                    format!("R{nr}")
+                }
+                PassiveKind::Capacitor => {
+                    nc += 1;
+                    format!("C{nc}")
+                }
+            };
+            Passive {
+                kind: p.kind,
+                model: p.model,
+                name,
+                value: p.value,
+                a: net(p.a),
+                b: net(p.b),
+                w: p.w,
+                l: p.l,
+                area: p.area,
+                perimeter: p.perimeter,
+                body: p.body,
+            }
+        })
+        .collect();
 
     let mut layers = conducting;
     if has_nwell && let Some(nw) = nwell {
         layers.push(nw);
     }
-    Extraction { nets, devices, warnings, layers, dbu_per_um: tech.dbu_per_um }
+    Extraction { nets, devices, passives, warnings, layers, dbu_per_um: tech.dbu_per_um }
+}
+
+/// The generic technology with a marked poly resistor (7.5 Ω/sq) and a marked metal1 / metal2
+/// capacitor (1 fF/µm², 0.1 fF/µm).
+#[cfg(test)]
+pub(crate) fn rc_tech() -> Tech {
+    use crate::tech::{CapDef, LayerDef, ResDef};
+    let mut tech = Tech::generic();
+    for (k, name) in ["polyres", "capmark"].into_iter().enumerate() {
+        let mut l = LayerDef::generated(20 + k as u16, 0, tech.layers.len());
+        l.name = name.into();
+        tech.layers.push(l);
+    }
+    tech.resistors =
+        vec![ResDef { name: "rpoly".into(), layer: "poly".into(), layers: vec!["polyres".into()], exclude: vec![], sheet: 7.5 }];
+    tech.capacitors = vec![CapDef {
+        name: "cmom".into(),
+        bottom: "metal1".into(),
+        top: "metal2".into(),
+        layers: vec!["capmark".into()],
+        exclude: vec![],
+        area: 1.0,
+        perimeter: 0.1,
+    }];
+    tech
 }
 
 #[cfg(test)]
@@ -636,6 +859,60 @@ mod tests {
     use crate::hier::NoCells;
     use crate::pcell::PCell;
     use crate::project::CellRef;
+
+    #[test]
+    fn poly_resistor_pcell() {
+        let lay = PCell::PolyRes { w: 400, l: 5000 }.generate(&rc_tech()).unwrap();
+        let x = extract(&lay, &NoCells, &rc_tech());
+        assert!(x.warnings.is_empty(), "{:?}", x.warnings);
+        assert!(x.devices.is_empty());
+        let [r] = &x.passives[..] else { panic!("{:?}", x.passives) };
+        assert_eq!((r.kind, r.model.as_str(), r.name.as_str(), r.w, r.l), (PassiveKind::Resistor, "rpoly", "R1", 400, 5000));
+        assert!((r.value - 93.75).abs() < 1e-9, "{}", r.value);
+        assert_eq!([&x.nets[r.a].name, &x.nets[r.b].name], ["A", "B"]);
+        assert_eq!(x.spice("r", 1000), "* r\nR1 A B 9.375e1\n");
+
+        let plain = extract(&lay, &NoCells, &Tech::generic());
+        assert!(plain.passives.is_empty());
+        assert_eq!(plain.nets.len(), 1, "without the resistor definition the body shorts its ends");
+    }
+
+    #[test]
+    fn resistor_needs_two_ends() {
+        let tech = rc_tech();
+        let l = |n: &str| tech.layer_index(n).unwrap();
+        let mut lay = Layout::default();
+        lay.add_rect(l("poly"), 0, 0, 400, 3000);
+        lay.add_rect(l("polyres"), -200, 500, 600, 3000);
+        let x = extract(&lay, &NoCells, &tech);
+        assert!(x.passives.is_empty());
+        assert!(
+            x.warnings.iter().any(|w| w.contains("resistor 'rpoly' at (0, 500)-(400, 3000) lacks terminals")),
+            "{:?}",
+            x.warnings
+        );
+
+        lay.add_rect(l("poly"), 0, 3000, 400, 3500);
+        let x = extract(&lay, &NoCells, &tech);
+        let [r] = &x.passives[..] else { panic!("{:?}", x.warnings) };
+        assert_eq!((r.w, r.l), (400, 2500));
+        assert!((r.value - 7.5 * 2500.0 / 400.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn mom_capacitor_pcell() {
+        let tech = rc_tech();
+        let lay = PCell::MomCap { w: 5000, h: 5000 }.generate(&tech).unwrap();
+        let x = extract(&lay, &NoCells, &tech);
+        assert!(x.warnings.is_empty(), "{:?}", x.warnings);
+        let [c] = &x.passives[..] else { panic!("{:?}", x.passives) };
+        // The 4.8 µm square top plate plus the 0.1 x 0.4 µm of its tab over the bottom plate.
+        assert_eq!((c.kind, c.name.as_str(), c.area, c.perimeter), (PassiveKind::Capacitor, "C1", 23_080_000, 19_400));
+        assert!((c.value - 25.02e-15).abs() < 1e-20, "{}", c.value);
+        assert_eq!([&x.nets[c.a].name, &x.nets[c.b].name], ["BOT", "TOP"]);
+        assert_eq!(x.spice("c", 1000).lines().nth(1), Some("C1 BOT TOP 2.502e-14"));
+        assert!(extract(&lay, &NoCells, &Tech::generic()).passives.is_empty());
+    }
 
     fn names(x: &Extraction, d: &Device) -> [String; 4] {
         [d.d, d.g, d.s, d.b].map(|i| x.nets[i].name.clone())

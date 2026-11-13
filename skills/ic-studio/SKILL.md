@@ -96,8 +96,12 @@ or differences.
 
 ## Reading LVS results
 
-- `[missing] C1 (capacitor): not extracted`: only MOS transistors are extracted. A
-  schematic R, C or diode always shows up here. This is expected, not a layout bug.
+- `[missing] schematic device C1 (capacitor C=1pF) has no layout counterpart`: resistors
+  and capacitors are extracted only when the technology defines them (`resistors` /
+  `capacitors`, PDK `[[resistor]]` / `[[capacitor]]`); otherwise a schematic R or C always
+  shows up here, as does a diode (`not extracted`). This is expected, not a layout bug.
+- `[param] R=100 ohm (schematic) vs R=93.75 ohm (layout)`: an extracted resistor or
+  capacitor value differs beyond the tolerance (series / parallel resistors are reduced first).
 - `[param] W 2µm vs 1.2µm`: the layout device size differs. Delete the instance and
   regenerate it, or place a PCell with the right `w`/`l`/`fingers`.
 - `[net]` difference: a short or an open. Use the marker location, `extract` and
