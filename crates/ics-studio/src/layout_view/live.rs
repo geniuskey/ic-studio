@@ -7,7 +7,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Pos2, Rect, Stroke, StrokeKind, Vec2};
-use ics_core::drc::{self, Deck, DrcReport, Violation};
+use ics_core::drc::{self, Deck, DrcSession, Violation};
 use ics_core::drc_fix::{self, Fix};
 use ics_core::geom::IRect;
 use ics_core::layout::{CellInst, Layout, Shape};
@@ -23,14 +23,15 @@ const DEBOUNCE: Duration = Duration::from_millis(120);
 const FIX_ROUNDS: usize = 64;
 
 struct LiveJob {
-    window: IRect,
-    rx: Receiver<DrcReport>,
+    rx: Receiver<DrcSession>,
 }
 
 pub struct LiveDrc {
     pub enabled: bool,
     /// Violations of the layout as last checked (top-cell coordinates).
     pub violations: Vec<Violation>,
+    /// Incremental checker of the layout as last checked (out on the worker while it runs).
+    session: Option<DrcSession>,
     /// Layout the violations were computed for (diffed against the next edit).
     base: Option<Layout>,
     seen: u64,
@@ -50,6 +51,7 @@ impl Default for LiveDrc {
         Self {
             enabled: true,
             violations: vec![],
+            session: None,
             base: None,
             seen: 0,
             dirty: None,
@@ -65,10 +67,6 @@ impl Default for LiveDrc {
 
 fn union(a: Option<IRect>, b: IRect) -> Option<IRect> {
     Some(a.map_or(b, |a| a.union(&b)))
-}
-
-fn touches(a: &IRect, b: &IRect) -> bool {
-    a.x0 <= b.x1 && b.x0 <= a.x1 && a.y0 <= b.y1 && b.y0 <= a.y1
 }
 
 /// Area where `a` and `b` differ: every added, removed or changed shape and instance.
@@ -113,6 +111,7 @@ impl LiveDrc {
     /// Forget everything: the next frame checks the whole cell again.
     pub fn reset(&mut self) {
         self.violations.clear();
+        self.session = None;
         self.base = None;
         self.seen = 0;
         self.dirty = None;
@@ -124,11 +123,11 @@ impl LiveDrc {
         self.job.is_some() || self.dirty.is_some()
     }
 
-    /// Install a finished check: violations touching its window are replaced.
-    fn merge(&mut self, window: IRect, rep: DrcReport) {
-        self.violations.retain(|v| !touches(&v.marker, &window));
-        self.violations.extend(rep.violations);
-        self.millis = rep.millis;
+    /// Install a finished check.
+    fn install(&mut self, session: DrcSession) {
+        self.violations = session.report().violations.clone();
+        self.millis = session.report().millis;
+        self.session = Some(session);
     }
 
     /// Violation under the world point `p` (smallest marker first).
@@ -168,10 +167,9 @@ impl LayoutEditor {
         }
         if let Some(job) = &self.live.job {
             match job.rx.try_recv() {
-                Ok(rep) => {
-                    let w = job.window;
+                Ok(session) => {
                     self.live.job = None;
-                    self.live.merge(w, rep);
+                    self.live.install(session);
                 }
                 Err(TryRecvError::Disconnected) => self.live.job = None,
                 Err(TryRecvError::Empty) => {}
@@ -183,6 +181,8 @@ impl LayoutEditor {
             let changed = match &self.live.base {
                 None => {
                     self.live.violations.clear();
+                    self.live.session = None;
+                    self.live.job = None;
                     cx.index(l).bbox
                 }
                 Some(base) => {
@@ -215,11 +215,19 @@ impl LayoutEditor {
             let top = snap.cell_mut(cx.cell).and_then(|c| c.layout.take()).unwrap_or_default();
             let (tx, rx) = mpsc::channel();
             let ctx = ctx.clone();
+            let session = self.live.session.take();
             std::thread::spawn(move || {
-                let _ = tx.send(drc::run_window(&deck, &top, &snap, &snap.tech, window));
+                let session = match session {
+                    Some(mut s) => {
+                        s.update(&top, &snap, &snap.tech, &[window]);
+                        s
+                    }
+                    None => DrcSession::new(&deck.local(), &top, &snap, &snap.tech),
+                };
+                let _ = tx.send(session);
                 ctx.request_repaint();
             });
-            self.live.job = Some(LiveJob { window, rx });
+            self.live.job = Some(LiveJob { rx });
         }
     }
 

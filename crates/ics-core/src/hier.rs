@@ -800,29 +800,50 @@ pub fn flatten(top: &Layout, src: &dyn LayoutSource, max_depth: u32) -> Vec<Flat
 /// [`flatten`] restricted to the shapes whose bounding box touches `area`; instances and
 /// array elements outside it are not descended into.
 pub fn flatten_in(top: &Layout, src: &dyn LayoutSource, max_depth: u32, area: IRect) -> Vec<FlatShape> {
-    type Boxes = HashMap<CellRef, Option<IRect>>;
-    fn cell_bbox(src: &dyn LayoutSource, cell: &CellRef, depth: u32, max: u32, cache: &mut Boxes) -> Option<IRect> {
-        if let Some(b) = cache.get(cell) {
-            return *b;
-        }
-        cache.insert(cell.clone(), None);
-        let l = src.layout(cell)?;
-        let b = layout_bbox(l, src, depth, max, cache);
-        cache.insert(cell.clone(), b);
-        b
+    flatten_in_cached(top, src, max_depth, area, &mut CellBoxes::new())
+}
+
+/// Bounding boxes of flattened cells, shared by calls of [`flatten_in_cached`] and
+/// [`flat_bbox`] with the same source and depth.
+pub type CellBoxes = HashMap<CellRef, Option<IRect>>;
+
+fn cell_bbox(src: &dyn LayoutSource, cell: &CellRef, depth: u32, max: u32, cache: &mut CellBoxes) -> Option<IRect> {
+    if let Some(b) = cache.get(cell) {
+        return *b;
     }
-    fn layout_bbox(l: &Layout, src: &dyn LayoutSource, depth: u32, max: u32, cache: &mut Boxes) -> Option<IRect> {
-        let mut b = l.shapes_bbox();
-        if depth < max {
-            for inst in &l.instances {
-                if let Some(c) = cell_bbox(src, &inst.cell, depth + 1, max, cache) {
-                    let ib = inst.bbox(c);
-                    b = Some(b.map_or(ib, |x| x.union(&ib)));
-                }
+    cache.insert(cell.clone(), None);
+    let l = src.layout(cell)?;
+    let b = layout_bbox(l, src, depth, max, cache);
+    cache.insert(cell.clone(), b);
+    b
+}
+
+fn layout_bbox(l: &Layout, src: &dyn LayoutSource, depth: u32, max: u32, cache: &mut CellBoxes) -> Option<IRect> {
+    let mut b = l.shapes_bbox();
+    if depth < max {
+        for inst in &l.instances {
+            if let Some(c) = cell_bbox(src, &inst.cell, depth + 1, max, cache) {
+                let ib = inst.bbox(c);
+                b = Some(b.map_or(ib, |x| x.union(&ib)));
             }
         }
-        b
     }
+    b
+}
+
+/// Bounding box of every shape of `top` flattened to `max_depth` levels.
+pub fn flat_bbox(top: &Layout, src: &dyn LayoutSource, max_depth: u32, cache: &mut CellBoxes) -> Option<IRect> {
+    layout_bbox(top, src, 0, max_depth, cache)
+}
+
+/// [`flatten_in`] with the cell bounding boxes kept in `cache` across calls.
+pub fn flatten_in_cached(
+    top: &Layout,
+    src: &dyn LayoutSource,
+    max_depth: u32,
+    area: IRect,
+    cache: &mut CellBoxes,
+) -> Vec<FlatShape> {
     fn touches(a: &IRect, b: &IRect) -> bool {
         a.x0 <= b.x1 && b.x0 <= a.x1 && a.y0 <= b.y1 && b.y0 <= a.y1
     }
@@ -835,10 +856,13 @@ pub fn flatten_in(top: &Layout, src: &dyn LayoutSource, max_depth: u32, area: IR
         max: u32,
         top: bool,
         area: IRect,
-        cache: &mut Boxes,
+        cache: &mut CellBoxes,
         out: &mut Vec<FlatShape>,
     ) {
         for s in &l.shapes {
+            if !matches!(s.geom, Geometry::Label { .. }) && !touches(&t.apply_rect(s.bbox()), &area) {
+                continue;
+            }
             let geom = if t.is_identity() { s.geom.clone() } else { s.geom.transformed(&t) };
             if touches(&geom.bbox(), &area) {
                 out.push(FlatShape { layer: s.layer, geom, id: top.then_some(s.id) });
@@ -857,9 +881,8 @@ pub fn flatten_in(top: &Layout, src: &dyn LayoutSource, max_depth: u32, area: IR
             }
         }
     }
-    let mut cache = HashMap::new();
     let mut out = vec![];
-    rec(top, src, Trans::IDENTITY, 0, max_depth, true, area, &mut cache, &mut out);
+    rec(top, src, Trans::IDENTITY, 0, max_depth, true, area, cache, &mut out);
     out
 }
 
