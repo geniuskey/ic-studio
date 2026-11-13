@@ -72,15 +72,17 @@
 //! Every connected piece of a rule's violation region becomes one [`Violation`] marked by its
 //! bounding box, at most [`MAX_VIOLATIONS_PER_RULE`] per rule (see [`DrcReport::capped`]).
 
-use std::sync::Mutex;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use rstar::{AABB, RTree, RTreeObject};
 
 use crate::geom::IRect;
-use crate::hier::{LayoutSource, flatten, flatten_in};
-use crate::layout::{Geometry, Layout};
+use crate::hier::{CellBoxes, FlatShape, LayoutSource, flat_bbox, flatten, flatten_in, flatten_in_cached};
+use crate::layout::{CellInst, Geometry, Layout, Trans};
+use crate::project::CellRef;
 use crate::region::{BoolOp, Region};
 use crate::tech::Tech;
 
@@ -455,6 +457,11 @@ impl Deck {
         });
         let total: i64 = derived.sum();
         rules.max().unwrap_or(0) + total + tech.grid.max(1)
+    }
+
+    /// The deck without its global rules (`antenna`, `density`), as live DRC runs it.
+    pub fn local(&self) -> Deck {
+        Deck { derived: self.derived.clone(), rules: self.rules.iter().filter(|r| !r.rule.is_global()).cloned().collect() }
     }
 
     /// Every layer a rule can refer to: the technology layers, then the derived layers.
@@ -860,19 +867,645 @@ pub fn run(deck: &Deck, top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Dr
 pub fn run_window(deck: &Deck, top: &Layout, src: &dyn LayoutSource, tech: &Tech, window: IRect) -> DrcReport {
     let h = 2 * deck.reach(tech) + tech.grid.max(1);
     let halo = IRect::new(window.x0 - h, window.y0 - h, window.x1 + h, window.y1 + h);
-    let local =
-        Deck { derived: deck.derived.clone(), rules: deck.rules.iter().filter(|r| !r.rule.is_global()).cloned().collect() };
-    let mut rep = run_shapes(&local, flatten_in(top, src, MAX_DEPTH, halo), tech, Some(window));
+    let mut rep = run_shapes(&deck.local(), flatten_in(top, src, MAX_DEPTH, halo), tech, Some(window));
     rep.rules_run = deck.rules.len();
     rep
 }
 
-fn run_shapes(deck: &Deck, flat: Vec<crate::hier::FlatShape>, tech: &Tech, window: Option<IRect>) -> DrcReport {
+/// [`run`] computed hierarchically ([`HierDrc`]); the report is the same.
+pub fn run_hier(deck: &Deck, top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> DrcReport {
+    HierDrc::new(deck, tech).run(top, src, tech)
+}
+
+/// How far a rule's verdict at a point depends on the geometry around it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scope {
+    /// Only on the geometry within the halo ([`HierDrc`]): `width`, `space`, `extension`, `flag`.
+    Local,
+    /// Violations lie inside whole pieces of this layer and depend on the piece and the
+    /// geometry within the halo of it: `area`, `separation` (B pieces), `enclosure` (inner pieces).
+    Piece(usize),
+    /// On the whole layout: global rules and rules reading piece selections, holes or extents.
+    Flat,
+}
+
+fn scopes(deck: &Deck, n: usize) -> Vec<Scope> {
+    let mut local = vec![true; n];
+    for d in &deck.derived {
+        let ok = match &d.expr {
+            LayerExpr::Bool { .. } | LayerExpr::Size { .. } | LayerExpr::Wide { .. } | LayerExpr::Union(_) => {
+                d.expr.inputs().iter().all(|&l| local.get(l).copied().unwrap_or(true))
+            }
+            LayerExpr::Check(r) => rule_scope(r, &local) == Scope::Local,
+            _ => false,
+        };
+        local.push(ok);
+    }
+    deck.rules.iter().map(|r| rule_scope(&r.rule, &local)).collect()
+}
+
+fn rule_scope(rule: &Rule, local: &[bool]) -> Scope {
+    if rule.is_global() || !rule.layers().iter().all(|&l| local.get(l).copied().unwrap_or(true)) {
+        return Scope::Flat;
+    }
+    match *rule {
+        Rule::Area { layer, .. } => Scope::Piece(layer),
+        Rule::Separation { b, .. } => Scope::Piece(b),
+        Rule::Enclosure { inner, .. } => Scope::Piece(inner),
+        _ => Scope::Local,
+    }
+}
+
+fn grown(r: IRect, d: i64) -> IRect {
+    IRect { x0: r.x0 - d, y0: r.y0 - d, x1: r.x1 + d, y1: r.y1 + d }
+}
+
+fn covers(outer: &IRect, inner: &IRect) -> bool {
+    outer.x0 <= inner.x0 && outer.y0 <= inner.y0 && inner.x1 <= outer.x1 && inner.y1 <= outer.y1
+}
+
+fn rect_area(r: &IRect) -> i128 {
+    r.width() as i128 * r.height() as i128
+}
+
+/// Points within `h` of two different groups of boxes (`(box, group)`).
+fn interactions(items: &[(IRect, usize)], h: i64) -> Region {
+    let tree = RTree::bulk_load(items.iter().enumerate().map(|(k, it)| Tagged(grown(it.0, h), k)).collect());
+    let mut out = Vec::new();
+    for (k, &(b, g)) in items.iter().enumerate() {
+        let e = grown(b, h);
+        for t in tree.locate_in_envelope_intersecting(aabb(e)) {
+            if t.1 > k && items[t.1].1 != g && t.0.intersects(&e) {
+                out.push(IRect::new(e.x0.max(t.0.x0), e.y0.max(t.0.y0), e.x1.min(t.0.x1), e.y1.min(t.0.y1)));
+            }
+        }
+    }
+    Region::from_rects(out)
+}
+
+/// Nearby boxes grouped into windows no larger than the sum of their padded areas and at most
+/// `64 * pad` wide and high (unless a single box is larger), so they run in parallel.
+fn group_boxes(boxes: &[IRect], pad: i64) -> Vec<Vec<usize>> {
+    let mut order: Vec<usize> = (0..boxes.len()).collect();
+    order.sort_by_key(|&i| (boxes[i].y0, boxes[i].x0));
+    let cap = 64 * pad.max(1);
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let (mut bb, mut sum) = (IRect::default(), 0i128);
+    for i in order {
+        let b = grown(boxes[i], pad);
+        if let Some(g) = groups.last_mut() {
+            let u = bb.union(&b);
+            if u.width() <= cap && u.height() <= cap && rect_area(&u) <= sum + rect_area(&b) {
+                g.push(i);
+                (bb, sum) = (u, sum + rect_area(&b));
+                continue;
+            }
+        }
+        groups.push(vec![i]);
+        (bb, sum) = (b, rect_area(&b));
+    }
+    groups
+}
+
+/// Shapes checked, non-Manhattan shapes skipped and the bounding box of the cell's own shapes.
+fn own_counts(l: &Layout, n: usize) -> (usize, usize, Option<IRect>) {
+    let (mut shapes, mut skipped, mut bbox) = (0, 0, None::<IRect>);
+    for s in l.shapes.iter().filter(|s| s.layer < n && !matches!(s.geom, Geometry::Label { .. })) {
+        shapes += 1;
+        if !matches!(s.geom, Geometry::Rect(_)) && Region::from_geometry(&s.geom).is_err() {
+            skipped += 1;
+        }
+        let b = s.bbox();
+        bbox = Some(bbox.map_or(b, |x| x.union(&b)));
+    }
+    (shapes, skipped, bbox)
+}
+
+/// The checked result of one cell definition.
+struct CellDrc {
+    /// Violation region of every rule in cell coordinates (empty for [`Scope::Flat`] rules).
+    regions: Vec<Region>,
+    /// Bounding box of the flattened shapes.
+    bbox: Option<IRect>,
+    shapes: usize,
+    skipped: usize,
+    /// Levels of hierarchy below the cell.
+    height: u32,
+}
+
+/// What a re-checked zone replaces in earlier results.
+enum Mask {
+    /// The area itself: the zone, plus for piece rules every piece overlapping it.
+    Cut(Region),
+    /// Every violation piece overlapping the zone (`area` rules, whose violations are whole pieces).
+    Pieces(Region),
+}
+
+impl Mask {
+    fn apply(&self, old: &Region) -> Region {
+        match self {
+            Mask::Cut(m) => old.boolean(m, BoolOp::Not),
+            Mask::Pieces(z) => split_overlapping(old, z).1,
+        }
+    }
+
+    fn bbox(&self) -> Option<IRect> {
+        match self {
+            Mask::Cut(m) | Mask::Pieces(m) => m.bbox(),
+        }
+    }
+}
+
+/// Exact rule regions inside a zone: `res` replaces what `mask` removes.
+struct Zone {
+    mask: Vec<Mask>,
+    res: Vec<Region>,
+}
+
+#[derive(Default)]
+struct Found {
+    res: Vec<(usize, Region)>,
+    pieces: Vec<(usize, Region)>,
+    pending: Vec<(usize, Region)>,
+}
+
+/// Hierarchical DRC with results equal to the flat [`run`].
+///
+/// Each cell definition is checked once and cached (per deck). In a parent, the violations of
+/// every placement and of the parent's own shapes checked alone are valid wherever only one of
+/// them lies within the halo (twice the deck's reach, see [`Scope`]); the remaining
+/// interaction zone, where placements overlap or come near each other or the parent's shapes,
+/// is re-checked on the flattened geometry around it. Piece rules (`area`, `separation`,
+/// `enclosure`) re-check every piece overlapping the zone in full, widening the window until
+/// the piece is complete. Global rules and rules on piece selections run on the flat layout.
+/// Rotated placements can differ from flat DRC only where two diagonal corner gaps of a
+/// `space` rule tie.
+pub struct HierDrc {
+    deck: Deck,
+    n: usize,
+    halo: i64,
+    scope: Vec<Scope>,
+    cells: HashMap<CellRef, Arc<CellDrc>>,
+    /// Cells checked by their interaction zones.
+    #[cfg(test)]
+    zoned: usize,
+}
+
+impl HierDrc {
+    pub fn new(deck: &Deck, tech: &Tech) -> Self {
+        let n = tech.layers.len();
+        let scope = scopes(deck, n);
+        let rules = deck
+            .rules
+            .iter()
+            .zip(&scope)
+            .filter(|(r, s)| **s != Scope::Flat && !matches!(r.rule, Rule::Area { .. }))
+            .map(|(r, _)| r.rule.reach().max(0));
+        let derived: i64 = deck
+            .derived
+            .iter()
+            .map(|d| match d.expr {
+                LayerExpr::Size { by, .. } => by.abs(),
+                LayerExpr::Wide { min, .. } => min.max(0),
+                LayerExpr::Check(ref r) => r.reach().max(0),
+                _ => 0,
+            })
+            .sum();
+        let halo = 2 * (rules.max().unwrap_or(0) + derived) + 2 * tech.grid.max(1) + 4;
+        Self {
+            deck: deck.clone(),
+            n,
+            halo,
+            scope,
+            cells: HashMap::new(),
+            #[cfg(test)]
+            zoned: 0,
+        }
+    }
+
+    pub fn deck(&self) -> &Deck {
+        &self.deck
+    }
+
+    /// Forget the cached cells (after a cell definition changed).
+    pub fn clear(&mut self) {
+        self.cells.clear();
+    }
+
+    pub fn run(&mut self, top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> DrcReport {
+        let start = Instant::now();
+        let (regions, shapes, skipped) = self.regions(top, src);
+        let mut rep = report_of(&self.deck, tech, &regions, None);
+        (rep.shapes, rep.skipped) = (shapes, skipped);
+        rep.millis = start.elapsed().as_secs_f64() * 1000.0;
+        rep
+    }
+
+    fn rules(&self, f: impl Fn(Scope) -> bool) -> Vec<usize> {
+        (0..self.deck.rules.len()).filter(|&k| f(self.scope[k])).collect()
+    }
+
+    /// Every rule's violation region of `top`, the shapes checked and skipped.
+    fn regions(&mut self, top: &Layout, src: &dyn LayoutSource) -> (Vec<Region>, usize, usize) {
+        match self.check_layout(top, src, 0) {
+            Some(c) => (self.fill_flat(c.regions, top, src), c.shapes, c.skipped),
+            None => {
+                let all: Vec<usize> = (0..self.deck.rules.len()).collect();
+                let used = used_layers(&self.deck, self.n, all.iter().copied());
+                let layers = layers_of(&self.deck, self.n, &flatten(top, src, MAX_DEPTH), &used, true);
+                (self.checks(&layers, &all, true), layers.shapes, layers.skipped)
+            }
+        }
+    }
+
+    /// `regions` with the [`Scope::Flat`] rules computed on the flattened layout.
+    fn fill_flat(&self, mut regions: Vec<Region>, top: &Layout, src: &dyn LayoutSource) -> Vec<Region> {
+        let flat = self.rules(|s| s == Scope::Flat);
+        if !flat.is_empty() {
+            let used = used_layers(&self.deck, self.n, flat.iter().copied());
+            let layers = layers_of(&self.deck, self.n, &flatten(top, src, MAX_DEPTH), &used, true);
+            let mut res = self.checks(&layers, &flat, true);
+            for &k in &flat {
+                regions[k] = std::mem::take(&mut res[k]);
+            }
+        }
+        regions
+    }
+
+    /// Rule regions of `rules` (others empty).
+    fn checks(&self, layers: &Layers, rules: &[usize], parallel: bool) -> Vec<Region> {
+        let empty = Region::default();
+        let layer = |l: usize| layers.regions.get(l).unwrap_or(&empty);
+        let f = |k: &usize| check(&self.deck.rules[*k].rule, &layer, layers.extent);
+        let res: Vec<Region> = if parallel { par_map(rules, f) } else { rules.iter().map(f).collect() };
+        let mut out = vec![Region::default(); self.deck.rules.len()];
+        for (&k, r) in rules.iter().zip(res) {
+            out[k] = r;
+        }
+        out
+    }
+
+    fn cell(&mut self, cell: &CellRef, l: &Layout, src: &dyn LayoutSource, depth: u32) -> Option<Arc<CellDrc>> {
+        if let Some(c) = self.cells.get(cell) {
+            return Some(c.clone());
+        }
+        let c = Arc::new(self.check_layout(l, src, depth)?);
+        self.cells.insert(cell.clone(), c.clone());
+        Some(c)
+    }
+
+    /// The checked cells placed by `l`. `None` when the hierarchy is cyclic or deeper than
+    /// flattening goes.
+    fn children<'l>(&mut self, l: &'l Layout, src: &dyn LayoutSource, depth: u32) -> Option<Vec<(&'l CellInst, Arc<CellDrc>)>> {
+        let mut out = Vec::new();
+        for inst in &l.instances {
+            let Some(cl) = src.layout(&inst.cell) else { continue };
+            if depth >= MAX_DEPTH {
+                return None;
+            }
+            let c = self.cell(&inst.cell, cl, src, depth + 1)?;
+            if depth + 1 + c.height > MAX_DEPTH {
+                return None;
+            }
+            out.push((inst, c));
+        }
+        Some(out)
+    }
+
+    /// Shapes and skipped shapes of `l` flattened.
+    fn counts(&mut self, l: &Layout, src: &dyn LayoutSource) -> Option<(usize, usize)> {
+        let (mut shapes, mut skipped, _) = own_counts(l, self.n);
+        for (inst, c) in self.children(l, src, 0)? {
+            shapes += c.shapes * inst.count() as usize;
+            skipped += c.skipped * inst.count() as usize;
+        }
+        Some((shapes, skipped))
+    }
+
+    fn check_layout(&mut self, l: &Layout, src: &dyn LayoutSource, depth: u32) -> Option<CellDrc> {
+        let children = self.children(l, src, depth)?;
+        let height = children.iter().map(|c| c.1.height + 1).max().unwrap_or(0);
+        let rules = self.rules(|s| s != Scope::Flat);
+        let used = used_layers(&self.deck, self.n, rules.iter().copied());
+        let own: Vec<FlatShape> = l.shapes.iter().map(|s| FlatShape { layer: s.layer, geom: s.geom.clone(), id: None }).collect();
+        let own_regions = self.checks(&layers_of(&self.deck, self.n, &own, &used, true), &rules, true);
+        let (mut shapes, mut skipped, mut bbox) = own_counts(l, self.n);
+        let mut items: Vec<(IRect, usize)> = l
+            .shapes
+            .iter()
+            .filter(|s| s.layer < self.n && !matches!(s.geom, Geometry::Label { .. }))
+            .map(|s| (s.bbox(), 0))
+            .collect();
+        let mut elems: Vec<(Trans, usize)> = Vec::new();
+        for (ci, (inst, c)) in children.iter().enumerate() {
+            shapes += c.shapes * inst.count() as usize;
+            skipped += c.skipped * inst.count() as usize;
+            let Some(cb) = c.bbox else { continue };
+            let b = inst.bbox(cb);
+            bbox = Some(bbox.map_or(b, |x| x.union(&b)));
+            let (cols, rows) = inst.dims();
+            for j in 0..rows {
+                for i in 0..cols {
+                    let t = inst.element_trans(i, j);
+                    elems.push((t, ci));
+                    items.push((t.apply_rect(cb), elems.len()));
+                }
+            }
+        }
+        let done = |regions: Vec<Region>| Some(CellDrc { regions, bbox, shapes, skipped, height });
+        let Some(extent) = bbox.filter(|_| !elems.is_empty()) else { return done(own_regions) };
+        let z = interactions(&items, self.halo);
+        if z.area() * 2 > rect_area(&grown(extent, self.halo)) {
+            let layers = layers_of(&self.deck, self.n, &flatten(l, src, MAX_DEPTH - depth), &used, true);
+            return done(self.checks(&layers, &rules, true));
+        }
+        #[cfg(test)]
+        {
+            self.zoned += 1;
+        }
+        let zone = self.zone(l, src, &z, extent, depth);
+        let mut regions = vec![Region::default(); self.deck.rules.len()];
+        for &k in &rules {
+            let mut rects = own_regions[k].rects().to_vec();
+            for (t, ci) in &elems {
+                rects.extend(children[*ci].1.regions[k].rects().iter().map(|r| t.apply_rect(*r)));
+            }
+            regions[k] = zone.mask[k].apply(&Region::from_rects(rects)).boolean(&zone.res[k], BoolOp::Or);
+        }
+        done(regions)
+    }
+
+    /// The non-flat rules checked exactly inside zone `z` of `top` (whose shapes lie in `extent`).
+    fn zone(&self, top: &Layout, src: &dyn LayoutSource, z: &Region, extent: IRect, depth: u32) -> Zone {
+        let nr = self.deck.rules.len();
+        let h = self.halo;
+        let max_depth = MAX_DEPTH.saturating_sub(depth);
+        let full = grown(extent, h + 1);
+        let rules = self.rules(|s| s != Scope::Flat);
+        let mut piece_layers: Vec<usize> =
+            rules.iter().filter_map(|&k| if let Scope::Piece(l) = self.scope[k] { Some(l) } else { None }).collect();
+        piece_layers.sort_unstable();
+        piece_layers.dedup();
+        let used = used_layers(&self.deck, self.n, rules.iter().copied());
+        let (mut res, mut found) = (vec![Vec::new(); nr], HashMap::<usize, Vec<IRect>>::new());
+        let mut collect = |outs: Vec<Found>, pending: &mut Vec<(usize, Region)>| {
+            for o in outs {
+                for (k, r) in o.res {
+                    res[k].extend_from_slice(r.rects());
+                }
+                for (l, r) in o.pieces {
+                    found.entry(l).or_default().extend_from_slice(r.rects());
+                }
+                pending.extend(o.pending);
+            }
+        };
+
+        let boxes = z.rects();
+        let groups: Vec<(Region, IRect)> = group_boxes(boxes, 2 * h)
+            .iter()
+            .map(|g| {
+                let target = Region::from_rects(g.iter().map(|&i| boxes[i]));
+                let exact = grown(target.bbox().unwrap_or_default(), h);
+                (target, exact)
+            })
+            .collect();
+        let outs = par_windows(
+            top,
+            src,
+            max_depth,
+            &groups,
+            |w| grown(w.1, h),
+            |(target, exact), flat| {
+                let layers = layers_of(&self.deck, self.n, flat, &used, false);
+                let mut out = Found::default();
+                let empty = Region::default();
+                let layer = |l: usize| layers.regions.get(l).unwrap_or(&empty);
+                for &k in rules.iter().filter(|&&k| self.scope[k] == Scope::Local) {
+                    out.res.push((k, check(&self.deck.rules[k].rule, &layer, None).boolean(target, BoolOp::And)));
+                }
+                for &pl in &piece_layers {
+                    self.pieces(&layers, pl, target, *exact, full, &mut out);
+                }
+                out
+            },
+        );
+        let mut pending = Vec::new();
+        collect(outs, &mut pending);
+
+        let mut g = 2 * h;
+        while !pending.is_empty() {
+            let mut next = Vec::new();
+            for &pl in &piece_layers {
+                let seeds: Vec<&Region> = pending.iter().filter(|p| p.0 == pl).map(|p| &p.1).collect();
+                if seeds.is_empty() {
+                    continue;
+                }
+                let boxes: Vec<IRect> = seeds.iter().map(|s| s.bbox().unwrap_or_default()).collect();
+                let used = used_layers(&self.deck, self.n, rules.iter().copied().filter(|&k| self.scope[k] == Scope::Piece(pl)));
+                let groups: Vec<(Region, IRect)> = group_boxes(&boxes, g)
+                    .iter()
+                    .map(|grp| {
+                        let target = Region::from_rects(grp.iter().flat_map(|&i| seeds[i].rects().iter().copied()));
+                        let exact = grown(target.bbox().unwrap_or_default(), g);
+                        (target, exact)
+                    })
+                    .collect();
+                let outs = par_windows(
+                    top,
+                    src,
+                    max_depth,
+                    &groups,
+                    |w| grown(w.1, h),
+                    |(target, exact), flat| {
+                        let layers = layers_of(&self.deck, self.n, flat, &used, false);
+                        let mut out = Found::default();
+                        self.pieces(&layers, pl, target, *exact, full, &mut out);
+                        out
+                    },
+                );
+                collect(outs, &mut next);
+            }
+            pending = next;
+            g *= 2;
+        }
+
+        let mask = (0..nr)
+            .map(|k| match self.scope[k] {
+                Scope::Piece(l) if self.area_only(l).is_some() => Mask::Pieces(z.clone()),
+                Scope::Piece(l) => {
+                    Mask::Cut(z.boolean(&Region::from_rects(found.get(&l).into_iter().flatten().copied()), BoolOp::Or))
+                }
+                _ => Mask::Cut(z.clone()),
+            })
+            .collect();
+        Zone { mask, res: res.into_iter().map(Region::from_rects).collect() }
+    }
+
+    /// The largest minimum area when every piece rule on layer `pl` is an `area` rule. Then a
+    /// piece is settled as soon as a known part of it is that large.
+    fn area_only(&self, pl: usize) -> Option<i128> {
+        let mut min: Option<i128> = None;
+        for (k, s) in self.scope.iter().enumerate() {
+            if *s == Scope::Piece(pl) {
+                let Rule::Area { min: m, .. } = self.deck.rules[k].rule else { return None };
+                min = Some(min.map_or(m, |x| x.max(m)));
+            }
+        }
+        min
+    }
+
+    /// Pieces of layer `pl` overlapping `target`, computed in a window whose layers are exact
+    /// within `exact`: complete ones are checked by the piece rules on `pl`, the others are
+    /// left `pending` (their known part) for a wider window.
+    fn pieces(&self, layers: &Layers, pl: usize, target: &Region, exact: IRect, full: IRect, out: &mut Found) {
+        let Some(l) = layers.regions.get(pl) else { return };
+        let (hit, _) = split_overlapping(l, target);
+        if hit.is_empty() {
+            return;
+        }
+        let all_known = covers(&exact, &full);
+        let inner = grown(exact, -1);
+        let (mut done, mut open) = (Vec::new(), Vec::new());
+        for p in hit.parts() {
+            let complete = all_known || p.bbox().is_some_and(|b| covers(&inner, &b));
+            if complete { &mut done } else { &mut open }.extend_from_slice(p.rects());
+        }
+        if !open.is_empty() {
+            let known = Region::from_rects(open).boolean(&Region::from_rects([exact]), BoolOp::And);
+            let (mut seed, _) = split_overlapping(&known, target);
+            if let Some(min) = self.area_only(pl) {
+                seed = Region::from_rects(seed.parts().into_iter().filter(|p| p.area() < min).flat_map(|p| p.rects().to_vec()));
+            }
+            if !seed.is_empty() {
+                out.pending.push((pl, seed));
+            }
+        }
+        if done.is_empty() {
+            return;
+        }
+        let done = Region::from_rects(done);
+        let empty = Region::default();
+        let layer = |l: usize| layers.regions.get(l).unwrap_or(&empty);
+        for k in (0..self.deck.rules.len()).filter(|&k| self.scope[k] == Scope::Piece(pl)) {
+            out.res.push((k, check(&self.deck.rules[k].rule, &layer, None).boolean(&done, BoolOp::And)));
+        }
+        out.pieces.push((pl, done));
+    }
+}
+
+/// Incremental DRC of a cell: keeps the violation pieces of the last check and, given the
+/// areas changed since, re-checks only the halo around them ([`HierDrc`] zones). Placed cells
+/// are checked once and cached; build a new session when the deck or a placed cell changes.
+pub struct DrcSession {
+    hier: HierDrc,
+    /// Violation pieces of every rule, in the order [`Region::parts`] gives them.
+    parts: Vec<Vec<Region>>,
+    report: DrcReport,
+}
+
+fn part_key(p: &Region) -> (i64, i64) {
+    p.rects().first().map_or((i64::MIN, i64::MIN), |r| (r.y0, r.x0))
+}
+
+/// `parts` with the area `mask` replaced by `res`: only the pieces near either are rebuilt.
+fn splice(parts: Vec<Region>, mask: &Mask, res: &Region) -> Vec<Region> {
+    let near = |p: &Region, a: Option<IRect>| match (p.bbox(), a) {
+        (Some(b), Some(a)) => grown(b, 1).intersects(&a),
+        _ => false,
+    };
+    let (m, r) = (mask.bbox(), res.bbox());
+    let (hit, mut keep): (Vec<Region>, Vec<Region>) = parts.into_iter().partition(|p| near(p, m) || near(p, r));
+    if hit.is_empty() && res.is_empty() {
+        return keep;
+    }
+    let local = Region::from_rects(hit.iter().flat_map(|p| p.rects().iter().copied()));
+    keep.extend(mask.apply(&local).boolean(res, BoolOp::Or).parts());
+    keep.sort_by_key(part_key);
+    keep
+}
+
+impl DrcSession {
+    /// Check `top` in full (hierarchically).
+    pub fn new(deck: &Deck, top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Self {
+        let start = Instant::now();
+        let mut hier = HierDrc::new(deck, tech);
+        let (regions, shapes, skipped) = hier.regions(top, src);
+        let mut s = Self { hier, parts: par_map(&regions, Region::parts), report: DrcReport::default() };
+        s.publish(tech, shapes, skipped, start);
+        s
+    }
+
+    pub fn deck(&self) -> &Deck {
+        self.hier.deck()
+    }
+
+    pub fn report(&self) -> &DrcReport {
+        &self.report
+    }
+
+    /// Re-check after edits of `top`. `dirty` must cover every changed shape and placement,
+    /// before and after the change.
+    pub fn update(&mut self, top: &Layout, src: &dyn LayoutSource, tech: &Tech, dirty: &[IRect]) -> &DrcReport {
+        if dirty.is_empty() {
+            return &self.report;
+        }
+        let start = Instant::now();
+        let h = self.hier.halo;
+        let z = Region::from_rects(dirty.iter().map(|d| grown(*d, h)));
+        let extent = flat_bbox(top, src, MAX_DEPTH, &mut CellBoxes::new());
+        let (shapes, skipped) = match (self.hier.counts(top, src), extent) {
+            (Some((shapes, skipped)), Some(extent)) if z.area() * 2 <= rect_area(&grown(extent, h)) => {
+                let zone = self.hier.zone(top, src, &z, extent, 0);
+                let local = self.hier.rules(|s| s != Scope::Flat);
+                for k in local {
+                    let old = std::mem::take(&mut self.parts[k]);
+                    self.parts[k] = splice(old, &zone.mask[k], &zone.res[k]);
+                }
+                let flat = self.hier.rules(|s| s == Scope::Flat);
+                if !flat.is_empty() {
+                    let regions = self.hier.fill_flat(vec![Region::default(); self.parts.len()], top, src);
+                    for k in flat {
+                        self.parts[k] = regions[k].parts();
+                    }
+                }
+                (shapes, skipped)
+            }
+            _ => {
+                let (regions, shapes, skipped) = self.hier.regions(top, src);
+                self.parts = par_map(&regions, Region::parts);
+                (shapes, skipped)
+            }
+        };
+        self.publish(tech, shapes, skipped, start);
+        &self.report
+    }
+
+    fn publish(&mut self, tech: &Tech, shapes: usize, skipped: usize, start: Instant) {
+        self.report = report_parts(&self.hier.deck, tech, &self.parts, None);
+        (self.report.shapes, self.report.skipped) = (shapes, skipped);
+        self.report.millis = start.elapsed().as_secs_f64() * 1000.0;
+    }
+}
+
+fn run_shapes(deck: &Deck, flat: Vec<FlatShape>, tech: &Tech, window: Option<IRect>) -> DrcReport {
     let start = Instant::now();
     let n = tech.layers.len();
+    let used = used_layers(deck, n, 0..deck.rules.len());
+    let layers = layers_of(deck, n, &flat, &used, true);
+    let empty = Region::default();
+    let layer = |l: usize| layers.regions.get(l).unwrap_or(&empty);
+    let results = par_map(&deck.rules, |nr| check(&nr.rule, &layer, layers.extent));
+    let mut report = report_of(deck, tech, &results, window);
+    (report.shapes, report.skipped) = (layers.shapes, layers.skipped);
+    report.millis = start.elapsed().as_secs_f64() * 1000.0;
+    report
+}
+
+/// Which layers (technology, then derived) the rules `rules` read, directly or through derived layers.
+fn used_layers(deck: &Deck, n: usize, rules: impl IntoIterator<Item = usize>) -> Vec<bool> {
     let total = n + deck.derived.len();
     let mut used = vec![false; total];
-    for l in deck.rules.iter().flat_map(|r| r.rule.layers()) {
+    for l in rules.into_iter().flat_map(|k| deck.rules[k].rule.layers()) {
         if l < total {
             used[l] = true;
         }
@@ -884,6 +1517,18 @@ fn run_shapes(deck: &Deck, flat: Vec<crate::hier::FlatShape>, tech: &Tech, windo
             }
         }
     }
+    used
+}
+
+/// Merged layers of flattened shapes (unused ones empty) and the shape counts.
+struct Layers {
+    regions: Vec<Region>,
+    shapes: usize,
+    skipped: usize,
+    extent: Option<IRect>,
+}
+
+fn layers_of(deck: &Deck, n: usize, flat: &[FlatShape], used: &[bool], parallel: bool) -> Layers {
     let mut rects: Vec<Vec<IRect>> = vec![Vec::new(); n];
     let (mut shapes, mut skipped) = (0, 0);
     let mut extent: Option<IRect> = None;
@@ -904,17 +1549,25 @@ fn run_shapes(deck: &Deck, flat: Vec<crate::hier::FlatShape>, tech: &Tech, windo
             },
         }
     }
-    let mut regions = par_map(&rects, |r| Region::from_rects(r.iter().copied()));
+    let merge = |r: &Vec<IRect>| Region::from_rects(r.iter().copied());
+    let mut regions = if parallel { par_map(&rects, merge) } else { rects.iter().map(merge).collect() };
     for (k, d) in deck.derived.iter().enumerate() {
         let r = if used[n + k] { d.expr.eval(&regions, extent) } else { Region::default() };
         regions.push(r);
     }
-    let empty = Region::default();
-    let layer = |l: usize| regions.get(l).unwrap_or(&empty);
-    let results = par_map(&deck.rules, |nr| check(&nr.rule, &layer, extent).parts());
+    Layers { regions, shapes, skipped, extent }
+}
 
+/// Violations of the rule regions `results` (one per deck rule), only those touching `window`.
+fn report_of(deck: &Deck, tech: &Tech, results: &[Region], window: Option<IRect>) -> DrcReport {
+    report_parts(deck, tech, &par_map(results, Region::parts), window)
+}
+
+/// [`report_of`] from the pieces of every rule's region.
+fn report_parts(deck: &Deck, tech: &Tech, results: &[Vec<Region>], window: Option<IRect>) -> DrcReport {
+    let n = tech.layers.len();
     let names = deck.layer_names(tech);
-    let mut report = DrcReport { rules_run: deck.rules.len(), shapes, skipped, ..Default::default() };
+    let mut report = DrcReport { rules_run: deck.rules.len(), ..Default::default() };
     for (nr, parts) in deck.rules.iter().zip(results) {
         if parts.len() > MAX_VIOLATIONS_PER_RULE {
             report.capped.push((nr.name.clone(), parts.len()));
@@ -935,8 +1588,26 @@ fn run_shapes(deck: &Deck, flat: Vec<crate::hier::FlatShape>, tech: &Tech, windo
             }
         }
     }
-    report.millis = start.elapsed().as_secs_f64() * 1000.0;
     report
+}
+
+/// `f` on every group and its flattened window (flattened in chunks on this thread).
+fn par_windows<G: Sync, R: Send>(
+    top: &Layout,
+    src: &dyn LayoutSource,
+    max_depth: u32,
+    groups: &[G],
+    window: impl Fn(&G) -> IRect,
+    f: impl Fn(&G, &[FlatShape]) -> R + Sync,
+) -> Vec<R> {
+    let mut out = Vec::with_capacity(groups.len());
+    let mut boxes = CellBoxes::new();
+    for chunk in groups.chunks(256) {
+        let items: Vec<(&G, Vec<FlatShape>)> =
+            chunk.iter().map(|g| (g, flatten_in_cached(top, src, max_depth, window(g), &mut boxes))).collect();
+        out.extend(par_map(&items, |(g, flat)| f(g, flat)));
+    }
+    out
 }
 
 fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
@@ -1302,10 +1973,9 @@ fn aabb(r: IRect) -> AABB<[i64; 2]> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use super::*;
     use crate::hier::NoCells;
+    use crate::layout::ArraySpec;
     use crate::layout::Trans;
     use crate::project::CellRef;
 
@@ -1730,6 +2400,203 @@ mod tests {
         );
     }
 
+    const HIER_DECK: &str = "width metal1 0.23\nspace metal1 0.23\narea metal1 0.2\nenclosure contact metal1 0.05\n\
+                             separation poly contact 0.16\nextension poly active 0.22\nm1w = metal1 wide 0.5\n\
+                             separation m1w metal1 0.5\nbig = metal1 size 0.1\nspace big 0.3\n\
+                             loose = contact not inside metal1\nflag loose\ndensity metal1 0 30 5";
+
+    /// A 20 x 20 µm cell whose shapes only violate (or stop violating) once it is placed next
+    /// to copies of itself: slivers and gaps at its left and right edges, a pad touching the top
+    /// edge that joins the bottom rail of the cell above.
+    fn leaf() -> Layout {
+        layout(&[
+            ("metal1", (0, 0, 20_000, 600)),
+            ("metal1", (19_950, 6000, 20_000, 6300)),
+            ("metal1", (0, 6000, 80, 6300)),
+            ("metal1", (5000, 15_000, 5200, 15_100)),
+            ("contact", (5050, 15_020, 5150, 15_080)),
+            ("poly", (10_000, 4200, 10_180, 5400)),
+            ("active", (9800, 4300, 10_500, 4700)),
+            ("metal1", (12_000, 19_800, 12_200, 20_000)),
+            ("metal1", (19_800, 12_000, 19_990, 12_200)),
+            ("metal1", (100, 12_000, 300, 12_200)),
+            ("metal1", (3000, 3000, 4000, 4000)),
+            ("metal1", (4300, 3000, 4500, 4000)),
+        ])
+    }
+
+    fn hier_design() -> (Layout, HashMap<CellRef, Layout>) {
+        let (leaf_ref, mid_ref) = (CellRef::new("w", "leaf"), CellRef::new("w", "mid"));
+        let mut mid = layout(&[("metal1", (0, 20_000, 40_100, 20_100))]);
+        mid.add_instance(leaf_ref.clone(), Trans::IDENTITY, None);
+        mid.add_instance(leaf_ref.clone(), Trans::new(20_100, 0), None);
+        let mut src = HashMap::new();
+        src.insert(leaf_ref.clone(), leaf());
+        src.insert(mid_ref.clone(), mid);
+
+        let mut top = layout(&[
+            ("metal1", (85_000, -5000, 85_100, 65_000)),
+            ("contact", (25_150, 35_020, 25_260, 35_080)),
+            ("poly", (24_800, 34_900, 24_900, 35_300)),
+            ("metal1", (140_000, 0, 140_100, 600)),
+        ]);
+        let array = ArraySpec { cols: 4, rows: 3, col: (20_000, 0), row: (0, 20_000) };
+        top.add_instance(leaf_ref.clone(), Trans::IDENTITY, Some(array));
+        top.add_instance(leaf_ref.clone(), Trans::with(90_000, 10_000, 1, false), None);
+        top.add_instance(leaf_ref.clone(), Trans::with(160_000, 0, 0, true), None);
+        top.add_instance(leaf_ref.clone(), Trans::with(160_000, 40_000, 2, false), None);
+        top.add_instance(mid_ref.clone(), Trans::new(0, 100_000), None);
+        let pair = ArraySpec { cols: 2, rows: 1, col: (45_000, 0), row: (0, 0) };
+        top.add_instance(mid_ref, Trans::new(0, 200_000), Some(pair));
+        (top, src)
+    }
+
+    fn assert_hier_matches(deck: &Deck, top: &Layout, src: &dyn LayoutSource, t: &Tech) -> (DrcReport, usize) {
+        let flat = run(deck, top, src, t);
+        let mut h = HierDrc::new(deck, t);
+        let hier = h.run(top, src, t);
+        assert_eq!(hier.violations, flat.violations);
+        assert_eq!(
+            (hier.shapes, hier.skipped, hier.rules_run, &hier.capped),
+            (flat.shapes, flat.skipped, flat.rules_run, &flat.capped)
+        );
+        (flat, h.zoned)
+    }
+
+    #[test]
+    fn hierarchical_equals_flat() {
+        let t = tech();
+        let deck = parse_deck(HIER_DECK, &t).unwrap();
+        let (top, src) = hier_design();
+        let (rep, zoned) = assert_hier_matches(&deck, &top, &src, &t);
+        assert_eq!(zoned, 2, "mid and top are checked by their interaction zones");
+        let has = |rule: &str, m: IRect| rep.violations.iter().any(|v| v.rule == rule && v.marker == m);
+        assert!(has("metal1.W", r(19_950, 6000, 20_080, 6300)), "slivers of neighbours merge across the boundary");
+        assert!(has("metal1.S", r(19_990, 12_000, 20_100, 12_200)), "a gap that exists only between placements");
+        assert!(!has("metal1.A", r(12_000, 19_800, 12_200, 20_000)), "the pad joins the rail of the cell above");
+        assert!(has("metal1.A", r(12_000, 59_800, 12_200, 60_000)), "the top row's pad stays small");
+        assert!(has("poly.SEP.contact", r(25_050, 35_020, 25_060, 35_080)), "parent poly near a placed contact");
+        assert!(rep.violations.iter().any(|v| v.rule == "loose.FLAG"));
+        assert!(rep.violations.iter().any(|v| v.rule == "m1w.SEP.metal1"));
+
+        let mut empty = Layout::default();
+        assert_hier_matches(&deck, &empty, &src, &t);
+        empty.add_instance(CellRef::new("w", "missing"), Trans::IDENTITY, None);
+        assert_hier_matches(&deck, &empty, &src, &t);
+        let mut tiny = HashMap::new();
+        tiny.insert(CellRef::new("w", "leaf"), layout(&[("metal1", (0, 0, 100, 100))]));
+        let mut stacked = Layout::default();
+        for k in 0..3 {
+            stacked.add_instance(CellRef::new("w", "leaf"), Trans::new(k * 50, 0), None);
+        }
+        assert_hier_matches(&deck, &stacked, &tiny, &t);
+    }
+
+    #[test]
+    fn hierarchical_equals_flat_on_demo_cells() {
+        let p = crate::examples::demo_project();
+        let text = format!("{}\nspace metal1 0.6\nwidth poly 0.3\narea metal1 0.6\nspace nwell 3", p.tech.deck_text());
+        let deck = parse_any(&text, &p.tech).unwrap().deck;
+        let mut checked = 0;
+        for lib in &p.libraries {
+            for cell in lib.cells.iter().filter(|c| c.layout.as_ref().is_some_and(|l| !l.instances.is_empty())) {
+                let (rep, _) = assert_hier_matches(&deck, cell.layout.as_ref().unwrap(), &p, &p.tech);
+                checked += usize::from(!rep.violations.is_empty());
+            }
+        }
+        assert!(checked > 0, "the strict deck finds violations in placed cells");
+    }
+
+    #[test]
+    fn hierarchy_cycle_falls_back_to_flat() {
+        let t = tech();
+        let deck = parse_deck("width metal1 0.23", &t).unwrap();
+        let a = CellRef::new("w", "a");
+        let mut l = layout(&[("metal1", (0, 0, 100, 100))]);
+        l.add_instance(a.clone(), Trans::new(10, 0), None);
+        let mut src = HashMap::new();
+        src.insert(a, l.clone());
+        assert_hier_matches(&deck, &l, &src, &t);
+    }
+
+    #[test]
+    fn incremental_equals_full() {
+        let t = tech();
+        let deck = parse_deck(HIER_DECK, &t).unwrap();
+        let (mut top, src) = hier_design();
+        let mut session = DrcSession::new(&deck, &top, &src, &t);
+        assert_eq!(session.report().violations, run(&deck, &top, &src, &t).violations);
+        let leaf_box = leaf().shapes_bbox().unwrap();
+        let mut step = |top: &Layout, dirty: &[IRect], what: &str| {
+            let full = run(&deck, top, &src, &t);
+            let inc = session.update(top, &src, &t, dirty);
+            assert_eq!(inc.violations, full.violations, "{what}");
+            assert_eq!(inc.shapes, full.shapes, "{what}");
+        };
+
+        let bar = top.add_rect(li("metal1"), 20_050, 30_000, 20_150, 30_300);
+        step(&top, &[top.shape(bar).unwrap().bbox()], "narrow bar between two placements");
+        let before = top.shape(bar).unwrap().bbox();
+        top.translate_item(bar, 15_000, 25_000);
+        step(&top, &[before, top.shape(bar).unwrap().bbox()], "bar moved");
+        let rail = top.shapes.iter().find(|s| s.bbox() == r(85_000, -5000, 85_100, 65_000)).unwrap().clone();
+        top.remove(rail.id);
+        step(&top, &[rail.bbox()], "wire across placements removed");
+        let bridge = top.add_rect(li("metal1"), 0, 60_000, 80_000, 60_100);
+        step(&top, &[top.shape(bridge).unwrap().bbox()], "top pads joined by a bridge");
+        let inst = top.add_instance(CellRef::new("w", "leaf"), Trans::with(30_000, 90_000, 3, true), None);
+        let ib = top.instance(inst).unwrap().bbox(leaf_box);
+        step(&top, &[ib], "overlapping placement added");
+        top.remove(inst);
+        step(&top, &[ib], "placement removed");
+        top.remove(bridge);
+        step(&top, &[r(0, 60_000, 80_000, 60_100)], "bridge removed");
+        step(&top, &[], "no change");
+        step(&top, &[r(-500_000, -500_000, 500_000, 500_000)], "everything dirty");
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_hier_and_incremental() {
+        let t = tech();
+        let leaf_ref = CellRef::new("w", "leaf");
+        let mut src = HashMap::new();
+        let mut cell = leaf();
+        for k in 0..20 {
+            cell.add_rect(li("metal2"), 1000 + k * 900, 4000, 1300 + k * 900, 16_000);
+        }
+        src.insert(leaf_ref.clone(), cell);
+        let mut base = Layout::default();
+        let array = ArraySpec { cols: 60, rows: 60, col: (20_000, 0), row: (0, 20_000) };
+        base.add_instance(leaf_ref, Trans::IDENTITY, Some(array));
+        let time = |f: &mut dyn FnMut() -> DrcReport| {
+            let s = Instant::now();
+            let rep = f();
+            (rep, s.elapsed().as_secs_f64() * 1000.0)
+        };
+        let typical = "width metal1 0.23\nspace metal1 0.23\narea metal1 0.2\nenclosure contact metal1 0.05\n\
+                       separation poly contact 0.16\nextension poly active 0.22\nwidth metal2 0.28\nspace metal2 0.28";
+        for (name, text) in [("typical", typical), ("derived", HIER_DECK.split("loose").next().unwrap())] {
+            let deck = parse_deck(text, &t).unwrap();
+            let mut top = base.clone();
+            let (flat, flat_ms) = time(&mut || run(&deck, &top, &src, &t));
+            let (hier, hier_ms) = time(&mut || run_hier(&deck, &top, &src, &t));
+            assert_eq!(hier.violations, flat.violations);
+            let mut session = DrcSession::new(&deck, &top, &src, &t);
+            let bar = top.add_rect(li("metal1"), 610_050, 610_000, 610_150, 614_000);
+            let dirty = [top.shape(bar).unwrap().bbox()];
+            let (inc, inc_ms) = time(&mut || session.update(&top, &src, &t, &dirty).clone());
+            let (full, full_ms) = time(&mut || run(&deck, &top, &src, &t));
+            assert_eq!(inc.violations, full.violations);
+            println!(
+                "{name}: {} shapes, {} violations: flat {flat_ms:.0} ms, hierarchical {hier_ms:.0} ms ({:.1}x), incremental edit {inc_ms:.1} ms vs flat {full_ms:.0} ms ({:.0}x)",
+                flat.shapes,
+                flat.violations.len(),
+                flat_ms / hier_ms,
+                full_ms / inc_ms
+            );
+        }
+    }
     #[test]
     fn selections_holes_extents_area_and_flag() {
         // metal1: A overlaps poly, B touches it, C is inside poly, D is far away; poly has a
