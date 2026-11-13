@@ -147,6 +147,8 @@ pub enum Command {
     RunOptimizer,
     /// Show or hide the design copilot chat.
     Copilot,
+    /// Provider, model and API key for the AI features.
+    AiModels,
     /// Ask the copilot a question, or answer the one it is waiting on.
     CopilotAsk(String),
     /// Approve the plan the copilot presented in plan mode.
@@ -186,6 +188,7 @@ struct Settings {
     reopen_last: bool,
     interaction: Profile,
     check_updates: bool,
+    llm: crate::llm::LlmSettings,
 }
 
 impl Default for Settings {
@@ -198,6 +201,7 @@ impl Default for Settings {
             reopen_last: true,
             interaction: Profile::Virtuoso,
             check_updates: true,
+            llm: Default::default(),
         }
     }
 }
@@ -468,6 +472,7 @@ pub struct IcStudio {
     bridge: Option<Bridge>,
     rule_designer: RuleDesigner,
     copilot: crate::copilot::Copilot,
+    ai_models: crate::llm::AiSettingsWindow,
     updater: crate::update::Updater,
     optimizer: crate::optimizer_view::Optimizer,
     stream_map: StreamMapEditor,
@@ -518,6 +523,7 @@ impl IcStudio {
             bridge: None,
             rule_designer: RuleDesigner::default(),
             copilot: Default::default(),
+            ai_models: Default::default(),
             updater: Default::default(),
             optimizer: Default::default(),
             stream_map: StreamMapEditor::default(),
@@ -903,6 +909,7 @@ impl IcStudio {
                 self.ciw.request_focus();
             }
             Command::Copilot => self.copilot.open = !self.copilot.open,
+            Command::AiModels => self.ai_models.open = true,
             Command::CopilotAsk(q) => self.copilot_reply(ctx, crate::copilot::Reply::Text(q)),
             Command::CopilotApprove => self.copilot_reply(ctx, crate::copilot::Reply::Approve),
             Command::CopilotStop => self.copilot.stop(),
@@ -1742,6 +1749,9 @@ impl IcStudio {
             ui.menu_button("Tools", |ui| {
                 if ui.button("Design Copilot…").clicked() {
                     q.push(Command::Copilot);
+                }
+                if ui.button("AI Models…").clicked() {
+                    q.push(Command::AiModels);
                 }
                 if ui.button("Optimizer…").clicked() {
                     q.push(Command::Optimizer);
@@ -2667,6 +2677,7 @@ impl IcStudio {
             ("Load SKILL (.il)…".into(), "", Command::LoadSkill(None)),
             ("SKILL command interpreter (CIW)".into(), "", Command::Ciw),
             ("Design copilot (AI chat)".into(), "", Command::Copilot),
+            ("AI models (provider, model, API key)…".into(), "", Command::AiModels),
             ("Export SPICE netlist…".into(), "", Command::ExportNetlist),
             ("Toggle light / dark theme".into(), "", Command::ToggleTheme),
             ("Toggle console".into(), "⌘J", Command::ToggleConsole),
@@ -3050,6 +3061,11 @@ impl IcStudio {
                         ui.end_row();
                         ui.label("");
                         ui.checkbox(&mut self.settings.check_updates, "Check for updates");
+                        ui.end_row();
+                        ui.label("AI");
+                        if ui.button(format!("AI Models… ({})", self.settings.llm.describe())).clicked() {
+                            self.ai_models.open = true;
+                        }
                         ui.end_row();
                     });
                     ui.add_space(8.0);
@@ -3758,7 +3774,7 @@ impl IcStudio {
         self.copilot.open = true;
         let context = self.copilot_context();
         let dirs: Vec<PathBuf> = self.project.as_ref().and_then(|p| p.root.clone()).into_iter().collect();
-        self.copilot.reply(ctx, reply, &context, &dirs);
+        self.copilot.reply(ctx, reply, &context, &self.settings.llm, &dirs);
     }
 
     /// What the copilot is told about the session.
@@ -3939,9 +3955,14 @@ impl eframe::App for IcStudio {
         self.dialogs(&ctx);
         self.rule_designer_window(&ctx);
         self.optimizer_window(&ctx);
-        if let Some(r) = self.copilot.window(&ctx) {
+        if let Some(r) = self.copilot.window(&ctx, &self.settings.llm) {
             self.copilot_reply(&ctx, r);
         }
+        if std::mem::take(&mut self.copilot.open_settings) {
+            self.ai_models.open = true;
+        }
+        let dirs: Vec<PathBuf> = self.project.as_ref().and_then(|p| p.root.clone()).into_iter().collect();
+        self.ai_models.window(&ctx, &mut self.settings.llm, &dirs);
         self.stream_map_window(&ctx);
         self.fill_window(&ctx);
         let active = self.active.clone();

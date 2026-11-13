@@ -1,4 +1,4 @@
-//! Design copilot: an agent on a Gemini model that works on the open project through the same tools
+//! Design copilot: an agent on the model chosen in AI Models settings that works on the open project through the same tools
 //! as the MCP server. Its tool calls go through the app's live-mode queue, so every edit, DRC
 //! marker and waveform appears in the window as it happens, and edits stay undoable per cell.
 //!
@@ -19,7 +19,6 @@ use serde_json::{Map, Value, json};
 /// Model turns per request before the copilot pauses.
 const MAX_TURNS: usize = 40;
 const TOOL_TIMEOUT: Duration = Duration::from_secs(600);
-pub const DEFAULT_MODEL: &str = "gemini-flash-latest";
 /// Tools the copilot does not get: it works on the project already open in the window.
 const HIDDEN: [&str; 3] = ["new_project", "open_project", "gui_status"];
 /// Design tools that only read the project: the ones plan mode runs.
@@ -38,38 +37,11 @@ const READ_ONLY: [&str; 12] = [
     "diff_layout",
 ];
 
-/// One `generateContent` round trip: Gemini request JSON in, response JSON out.
-pub trait Llm: Send {
-    fn generate(&mut self, request: &Value) -> Result<Value, String>;
-}
-
-pub struct Gemini {
-    pub key: String,
-    pub model: String,
-}
-
-impl Llm for Gemini {
-    fn generate(&mut self, request: &Value) -> Result<Value, String> {
-        let url = format!("https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent", self.model);
-        let mut res = ureq::post(&url)
-            .header("x-goog-api-key", &self.key)
-            .config()
-            .http_status_as_error(false)
-            .build()
-            .send_json(request)
-            .map_err(|e| format!("request failed: {e}"))?;
-        let status = res.status();
-        let body: Value = res.body_mut().read_json().map_err(|e| format!("bad response: {e}"))?;
-        if !status.is_success() {
-            let msg = body["error"]["message"].as_str().unwrap_or("unknown error");
-            return Err(format!("Gemini {}: {msg}", status.as_u16()));
-        }
-        Ok(body)
-    }
-}
+pub use crate::llm::Llm;
+use crate::llm::LlmSettings;
 
 /// Makes the model client for a question (a scripted one in tests).
-pub type LlmFactory = Box<dyn Fn(&str, &str) -> Box<dyn Llm>>;
+pub type LlmFactory = Box<dyn Fn(&LlmSettings, &[std::path::PathBuf]) -> Result<Box<dyn Llm>, String>>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Entry {
@@ -136,12 +108,13 @@ enum Event {
 
 pub struct Copilot {
     pub open: bool,
+    /// Shown inside the main window instead of its own OS window.
+    pub docked: bool,
     pub log: Vec<Entry>,
     pub todos: Vec<Todo>,
     pub input: String,
-    pub model: String,
-    /// API key typed into the window (not stored); else `GEMINI_API_KEY` / `GOOGLE_API_KEY`.
-    pub key: String,
+    /// Set when the user asks for the AI Models settings window.
+    pub open_settings: bool,
     /// Investigate and plan with read-only tools; edits wait for an approved plan.
     pub plan_mode: bool,
     /// Gemini `contents` of the conversation so far.
@@ -158,53 +131,20 @@ impl Default for Copilot {
     fn default() -> Self {
         Self {
             open: false,
+            docked: false,
             log: vec![],
             todos: vec![],
             input: String::new(),
-            model: DEFAULT_MODEL.into(),
-            key: String::new(),
+            open_settings: false,
             plan_mode: false,
             history: vec![],
             wait: None,
             events: None,
             cancel: Arc::default(),
             calls: None,
-            factory: Box::new(|key, model| Box::new(Gemini { key: key.into(), model: model.into() })),
+            factory: Box::new(crate::llm::client),
         }
     }
-}
-
-const KEY_VARS: [&str; 2] = ["GEMINI_API_KEY", "GOOGLE_API_KEY"];
-
-/// `KEY=value` lines of a `.env` file (quotes and `export ` stripped).
-fn dotenv(path: &std::path::Path) -> Vec<(String, String)> {
-    let Ok(text) = std::fs::read_to_string(path) else { return vec![] };
-    text.lines()
-        .filter_map(|l| {
-            let l = l.trim();
-            let l = l.strip_prefix("export ").unwrap_or(l);
-            let (k, v) = l.split_once('=').filter(|_| !l.starts_with('#'))?;
-            Some((k.trim().to_string(), v.trim().trim_matches(['"', '\'']).to_string()))
-        })
-        .collect()
-}
-
-/// The API key from a `.env` file in one of `dirs` (e.g. the project folder) or the working
-/// directory, or their parents; else from the environment. A `.env` next to the work wins
-/// over a key set globally.
-fn env_key_in(dirs: &[std::path::PathBuf]) -> Option<String> {
-    let cwd = std::env::current_dir().ok();
-    let from_file = dirs.iter().chain(&cwd).flat_map(|d| d.ancestors().take(4)).find_map(|d| {
-        let vars = dotenv(&d.join(".env"));
-        KEY_VARS.iter().find_map(|k| vars.iter().find(|(n, v)| n == k && !v.is_empty()).map(|(_, v)| v.clone()))
-    });
-    from_file.or_else(|| {
-        KEY_VARS.iter().find_map(|k| std::env::var(k).ok().filter(|v| !v.trim().is_empty())).map(|k| k.trim().to_string())
-    })
-}
-
-fn env_key() -> Option<String> {
-    env_key_in(&[])
 }
 
 /// The copilot's own tools, run on the worker rather than on the project.
@@ -500,19 +440,9 @@ impl Copilot {
         self.cancel.store(true, Ordering::Relaxed);
     }
 
-    /// Ask a question; `context` describes the open project and cell for the model.
-    pub fn ask(&mut self, ctx: &egui::Context, question: &str, context: &str) {
-        self.reply(ctx, Reply::Text(question.into()), context, &[]);
-    }
-
-    /// [`Self::ask`], also looking for a `.env` with the key in `dirs`.
-    pub fn ask_in(&mut self, ctx: &egui::Context, question: &str, context: &str, dirs: &[std::path::PathBuf]) {
-        self.reply(ctx, Reply::Text(question.into()), context, dirs);
-    }
-
     /// Send a request, or, while the agent waits, the answer to its question or the verdict on its
     /// plan (approval, or text as feedback).
-    pub fn reply(&mut self, ctx: &egui::Context, reply: Reply, context: &str, dirs: &[std::path::PathBuf]) {
+    pub fn reply(&mut self, ctx: &egui::Context, reply: Reply, context: &str, llm: &LlmSettings, dirs: &[std::path::PathBuf]) {
         if self.busy() {
             return;
         }
@@ -527,13 +457,15 @@ impl Copilot {
         if !valid {
             return;
         }
-        let key = Some(self.key.trim().to_string()).filter(|k| !k.is_empty()).or_else(|| env_key_in(dirs));
-        let Some(key) = key else {
-            if let Some(t) = &text {
-                self.log.push(Entry::User(t.clone()));
+        let llm = match (self.factory)(llm, dirs) {
+            Ok(c) => c,
+            Err(e) => {
+                if let Some(t) = &text {
+                    self.log.push(Entry::User(t.clone()));
+                }
+                self.log.push(Entry::Error(e));
+                return;
             }
-            self.log.push(Entry::Error("Set GEMINI_API_KEY (environment or .env) or enter an API key above.".into()));
-            return;
         };
         let parts = match self.wait.take() {
             None => {
@@ -566,7 +498,6 @@ impl Copilot {
                 parts
             }
         };
-        let llm = (self.factory)(&key, &self.model);
         let mut history = std::mem::take(&mut self.history);
         push_user(&mut history, parts);
         let (tool_tx, tool_rx) = mpsc::channel();
@@ -633,25 +564,16 @@ impl Copilot {
     }
 
     /// The chat window. Returns what the user sends.
-    pub fn window(&mut self, ctx: &egui::Context) -> Option<Reply> {
-        if !self.open {
-            return None;
-        }
-        let mut open = true;
+    pub fn window(&mut self, ctx: &egui::Context, llm: &LlmSettings) -> Option<Reply> {
+        let (mut open, mut docked) = (self.open, self.docked);
         let mut send = None;
-        egui::Window::new("Copilot").open(&mut open).default_size([480.0, 600.0]).resizable(true).show(ctx, |ui| {
+        crate::float::tool_window(ctx, "copilot", "Copilot", [480.0, 600.0], &mut open, &mut docked, |ui| {
             let busy = self.busy();
             ui.horizontal(|ui| {
-                let l = ui.label("Model");
-                ui.add(egui::TextEdit::singleline(&mut self.model).desired_width(140.0)).labelled_by(l.id);
-                let k = ui.label("API key");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.key)
-                        .password(true)
-                        .desired_width(110.0)
-                        .hint_text(if env_key().is_some() { "from environment / .env" } else { "GEMINI_API_KEY" }),
-                )
-                .labelled_by(k.id);
+                ui.label(egui::RichText::new(llm.describe()).weak());
+                if ui.small_button("AI Models…").on_hover_text("Choose the provider, model and API key").clicked() {
+                    self.open_settings = true;
+                }
             });
             ui.horizontal(|ui| {
                 ui.add_enabled(!busy, egui::Checkbox::new(&mut self.plan_mode, "Plan mode"))
@@ -776,6 +698,7 @@ impl Copilot {
             });
         });
         self.open = open;
+        self.docked = docked;
         send
     }
 }
@@ -783,16 +706,6 @@ impl Copilot {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn reads_dotenv_lines() {
-        let d = std::env::temp_dir().join(format!("ics-dotenv-{}", std::process::id()));
-        std::fs::create_dir_all(&d).unwrap();
-        std::fs::write(d.join(".env"), "# c\r\nexport A = \"x y\"\r\nGEMINI_API_KEY='k1'\r\n").unwrap();
-        let v = dotenv(&d.join(".env"));
-        assert_eq!(v, [("A".to_string(), "x y".to_string()), ("GEMINI_API_KEY".to_string(), "k1".to_string())]);
-        let _ = std::fs::remove_dir_all(&d);
-    }
 
     #[test]
     fn declarations_are_gemini_functions() {

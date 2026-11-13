@@ -29,6 +29,8 @@ enum Msg {
 #[derive(Default)]
 pub struct Optimizer {
     pub open: bool,
+    /// Shown inside the main window instead of its own OS window.
+    pub docked: bool,
     pub cell: Option<CellRef>,
     pub setup: OptSetup,
     pub evals: Vec<OptEval>,
@@ -116,13 +118,13 @@ impl Optimizer {
             return (None, false);
         }
         let (mut action, mut run) = (None, false);
-        let mut open = true;
+        let (mut open, mut docked) = (self.open, self.docked);
         let title = match &self.cell {
             Some(c) => format!("Optimizer: {c}"),
             None => "Optimizer".into(),
         };
         let specs = self.cell.as_ref().and_then(|c| project?.cell(c)).map(|c| c.sim.sweep.specs.clone()).unwrap_or_default();
-        egui::Window::new(title).id(egui::Id::unique("optimizer")).open(&mut open).default_size([640.0, 600.0]).show(ctx, |ui| {
+        crate::float::tool_window(ctx, "optimizer", &title, [640.0, 600.0], &mut open, &mut docked, |ui| {
             let mut changed = false;
             let running = self.is_running();
             ui.add_enabled_ui(!running, |ui| {
@@ -282,6 +284,7 @@ impl Optimizer {
             });
         });
         self.open = open;
+        self.docked = docked;
         (action, run)
     }
 }

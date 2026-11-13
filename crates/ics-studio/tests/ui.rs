@@ -1536,6 +1536,19 @@ impl ics_studio::copilot::Llm for Scripted {
     }
 }
 
+/// The AI Models window: provider, key, model, base URL and headers for the AI features.
+#[test]
+fn ai_models_window() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = app(demo_args("rc_lowpass", "schematic", false));
+    h.state_mut().command(Command::AiModels);
+    h.run_steps(3);
+    h.get_by_label("Base URL");
+    h.get_by_label("+ Header").click();
+    h.run_steps(2);
+    shot(&mut h, "46_ai_models");
+}
+
 /// The copilot runs the model's tool calls on the open project (here: sizing R1 of the RC
 /// filter for a 10 kHz bandwidth with the optimizer); the Optimizer window then re-runs it.
 #[test]
@@ -1552,8 +1565,7 @@ fn copilot_optimizes_rc_filter() {
     let script = std::sync::Arc::new(std::sync::Mutex::new(vec![call, answer]));
     let s2 = script.clone();
     let cp = h.state_mut().copilot_mut();
-    cp.key = "test".into();
-    cp.set_llm(Box::new(move |_, _| Box::new(Scripted(s2.clone()))));
+    cp.set_llm(Box::new(move |_, _| Ok(Box::new(Scripted(s2.clone())))));
     h.state_mut().command(Command::CopilotAsk("Size R1 for a 10 kHz bandwidth".into()));
     h.run_steps(2);
     settle(&mut h, "copilot");
@@ -1619,9 +1631,8 @@ fn copilot_plan_mode_agent() {
     let mut h = app(demo_args("nand2", "layout", false));
     let (s2, r2) = (script.clone(), seen.clone());
     let cp = h.state_mut().copilot_mut();
-    cp.key = "test".into();
     cp.plan_mode = true;
-    cp.set_llm(Box::new(move |_, _| Box::new(Recorded { script: s2.clone(), seen: r2.clone() })));
+    cp.set_llm(Box::new(move |_, _| Ok(Box::new(Recorded { script: s2.clone(), seen: r2.clone() }))));
     h.state_mut().command(Command::CopilotAsk("Lay out nand2".into()));
     h.run_steps(2);
     settle(&mut h, "plan");
