@@ -6,6 +6,7 @@ use std::sync::{Arc, OnceLock};
 
 fn main() -> eframe::Result {
     let args = ics_studio::parse_args();
+    ics_studio::update::cleanup();
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("IC Studio")
@@ -35,6 +36,7 @@ fn main() -> eframe::Result {
         Box::new(move |cc| {
             let _ = ctx.set(cc.egui_ctx.clone());
             let mut app = ics_studio::app::IcStudio::new(cc, args);
+            app.check_updates_on_start(&cc.egui_ctx);
             if let Some(rx) = rx {
                 app.attach_bridge(rx);
             }

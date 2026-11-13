@@ -1,0 +1,69 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows-x86_64
+            ext: .exe
+          - os: ubuntu-latest
+            platform: linux-x86_64
+            ext: ""
+          - os: macos-latest
+            platform: macos-aarch64
+            ext: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check the tag matches the app version
+        shell: bash
+        run: |
+          v=$(grep -m1 '^version' crates/ics-studio/Cargo.toml | cut -d'"' -f2)
+          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME != crates/ics-studio version v$v"; exit 1; }
+      - name: Install system libraries (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev
+      - name: Build
+        run: cargo build --release -p ics-studio -p ics-cli -p ics-mcp
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist pkg
+          for b in ic-studio ics ics-mcp; do cp "target/release/$b${{ matrix.ext }}" pkg/; done
+          cp "target/release/ic-studio${{ matrix.ext }}" "dist/ic-studio-${{ matrix.platform }}${{ matrix.ext }}"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a "dist/ic-studio-${{ matrix.platform }}.zip" ./pkg/*
+          else
+            tar -czf "dist/ic-studio-${{ matrix.platform }}.tar.gz" -C pkg .
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }}
+          path: dist/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

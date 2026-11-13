@@ -20,6 +20,7 @@ pub mod sim_view;
 pub mod stream_map_view;
 pub mod sweep_view;
 pub mod theme;
+pub mod update;
 
 /// Command line: `ics-studio [PROJECT_DIR] [--demo] [--workspace home|schematic|simulation|layout] [--run]`
 pub struct LaunchArgs {

@@ -29,6 +29,7 @@ use crate::sim_view::{self, SimEvent, SimState};
 use crate::stream_map_view::StreamMapEditor;
 use crate::sweep_view::{SweepAction, SweepManager};
 use crate::theme::{self, Palette};
+use crate::update;
 use ics_core::gds::StreamFormat;
 use ics_core::hier::Hier;
 
@@ -163,6 +164,12 @@ pub enum Command {
     Shortcuts,
     UserGuide,
     About,
+    /// Look for a newer release on GitHub and show the update dialog.
+    CheckForUpdates,
+    /// Download and install the newer release found by the last check.
+    InstallUpdate,
+    /// Restart into the installed update.
+    RestartToUpdate,
     CommandPalette,
     /// A layout editor action (Virtuoso menus and bindkeys) on the active layout.
     Lay(LayAction),
@@ -178,6 +185,7 @@ struct Settings {
     ui_scale: f32,
     reopen_last: bool,
     interaction: Profile,
+    check_updates: bool,
 }
 
 impl Default for Settings {
@@ -189,6 +197,7 @@ impl Default for Settings {
             ui_scale: 1.0,
             reopen_last: true,
             interaction: Profile::Virtuoso,
+            check_updates: true,
         }
     }
 }
@@ -202,6 +211,7 @@ enum Dialog {
     Settings,
     Shortcuts,
     About,
+    Update,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -458,6 +468,7 @@ pub struct IcStudio {
     bridge: Option<Bridge>,
     rule_designer: RuleDesigner,
     copilot: crate::copilot::Copilot,
+    updater: crate::update::Updater,
     optimizer: crate::optimizer_view::Optimizer,
     stream_map: StreamMapEditor,
     fill: FillTool,
@@ -507,6 +518,7 @@ impl IcStudio {
             bridge: None,
             rule_designer: RuleDesigner::default(),
             copilot: Default::default(),
+            updater: Default::default(),
             optimizer: Default::default(),
             stream_map: StreamMapEditor::default(),
             fill: FillTool::default(),
@@ -924,6 +936,30 @@ impl IcStudio {
             Command::Shortcuts => self.dialog = Some(Dialog::Shortcuts),
             Command::UserGuide => ctx.open_url(egui::OpenUrl::new_tab(GUIDE_URL)),
             Command::About => self.dialog = Some(Dialog::About),
+            Command::CheckForUpdates => {
+                if !matches!(self.updater.state, update::State::Installed { .. }) {
+                    self.updater.check(ctx, true);
+                }
+                self.dialog = Some(Dialog::Update);
+            }
+            Command::InstallUpdate => {
+                self.updater.download(ctx);
+                self.dialog = Some(Dialog::Update);
+            }
+            Command::RestartToUpdate => {
+                let update::State::Installed { exe, .. } = &self.updater.state else { return };
+                let exe = exe.clone();
+                if !self.guard_unsaved(Command::RestartToUpdate) {
+                    return;
+                }
+                match update::relaunch(&exe) {
+                    Ok(()) => {
+                        self.allow_close = true;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                    Err(e) => self.error(e),
+                }
+            }
             Command::CommandPalette => self.palette = Some(PaletteState { query: String::new(), sel: 0 }),
             Command::Quit => {
                 if !self.guard_unsaved(Command::Quit) {
@@ -1779,6 +1815,9 @@ impl IcStudio {
                     q.push(Command::CommandPalette);
                 }
                 ui.separator();
+                if ui.button("Check for Updates…").clicked() {
+                    q.push(Command::CheckForUpdates);
+                }
                 if ui.button("About IC Studio").clicked() {
                     q.push(Command::About);
                 }
@@ -2432,6 +2471,15 @@ impl IcStudio {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).small().color(pal.text_weak));
+                if let Some(r) = self.updater.available() {
+                    let txt = match self.updater.state {
+                        update::State::Installed { .. } => "Restart to update".to_string(),
+                        _ => format!("Update {} available", r.version),
+                    };
+                    if ui.link(RichText::new(txt).small().color(pal.accent)).clicked() {
+                        self.queue.push(Command::CheckForUpdates);
+                    }
+                }
                 ui.separator();
                 if let Some(b) = &self.bridge {
                     let hover = match &b.last {
@@ -2627,6 +2675,7 @@ impl IcStudio {
             ("Keyboard shortcuts".into(), "F1", Command::Shortcuts),
             ("Open user guide (web)".into(), "", Command::UserGuide),
             ("About IC Studio".into(), "", Command::About),
+            ("Check for updates".into(), "", Command::CheckForUpdates),
         ];
         if self.workspace == Workspace::Layout && self.active.is_some() {
             for (menu, items) in LayAction::MENUS {
@@ -2999,6 +3048,9 @@ impl IcStudio {
                         ui.label("Startup");
                         ui.checkbox(&mut self.settings.reopen_last, "Reopen last project");
                         ui.end_row();
+                        ui.label("");
+                        ui.checkbox(&mut self.settings.check_updates, "Check for updates");
+                        ui.end_row();
                     });
                     ui.add_space(8.0);
                     if ui.button("Close").clicked() {
@@ -3042,6 +3094,66 @@ impl IcStudio {
                         }
                     });
                 }
+                Dialog::Update => {
+                    ui.heading("Software update");
+                    ui.label(RichText::new(format!("Installed version {}", update::CURRENT)).color(pal.text_weak));
+                    ui.add_space(8.0);
+                    let release_notes = |ui: &mut egui::Ui, r: &update::Release| {
+                        if !r.notes.trim().is_empty() {
+                            egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
+                                ui.label(RichText::new(r.notes.trim()).small());
+                            });
+                        }
+                        ui.hyperlink_to("Release page", &r.page);
+                    };
+                    match &self.updater.state {
+                        update::State::Idle | update::State::Checking(_) => {
+                            ui.horizontal(|ui| {
+                                ui.add(egui::Spinner::new().size(14.0));
+                                ui.label("Checking GitHub for a newer release…");
+                            });
+                        }
+                        update::State::UpToDate => {
+                            ui.colored_label(pal.ok, "IC Studio is up to date.");
+                        }
+                        update::State::Available(r) => {
+                            ui.label(RichText::new(format!("IC Studio {} is available.", r.version)).strong());
+                            release_notes(ui, r);
+                            ui.add_space(6.0);
+                            if r.url.is_none() {
+                                ui.colored_label(pal.warning, "No build for this platform; download it from the release page.");
+                            } else if ui.button(RichText::new("Download and install").strong()).clicked() {
+                                self.queue.push(Command::InstallUpdate);
+                            }
+                        }
+                        update::State::Downloading { release, .. } => {
+                            ui.label(format!("Downloading IC Studio {}…", release.version));
+                            match self.updater.progress() {
+                                Some(f) => ui.add(egui::ProgressBar::new(f).show_percentage()),
+                                None => ui.add(egui::Spinner::new()),
+                            };
+                        }
+                        update::State::Installed { release, .. } => {
+                            ui.colored_label(pal.ok, format!("IC Studio {} is installed.", release.version));
+                            ui.label("Restart to start using it.");
+                            ui.add_space(6.0);
+                            if ui.button(RichText::new("Restart now").strong()).clicked() {
+                                self.queue.push(Command::RestartToUpdate);
+                                close = true;
+                            }
+                        }
+                        update::State::Failed(e) => {
+                            ui.colored_label(pal.danger, format!("Update failed: {e}"));
+                            if ui.button("Try again").clicked() {
+                                self.queue.push(Command::CheckForUpdates);
+                            }
+                        }
+                    }
+                    ui.add_space(10.0);
+                    if ui.button("Close").clicked() {
+                        close = true;
+                    }
+                }
                 Dialog::About => {
                     ui.vertical_centered(|ui| {
                         ui.label(RichText::new("IC Studio").size(26.0).strong());
@@ -3064,6 +3176,13 @@ impl IcStudio {
         }
         if !close && self.dialog.is_none() {
             self.dialog = Some(dlg);
+        }
+    }
+
+    /// Checks GitHub for a newer release in the background, if enabled in Settings.
+    pub fn check_updates_on_start(&mut self, ctx: &egui::Context) {
+        if self.settings.check_updates {
+            self.updater.check(ctx, false);
         }
     }
 
@@ -3697,6 +3816,16 @@ impl eframe::App for IcStudio {
         if ctx.input(|i| i.viewport().close_requested()) && self.dirty && !self.allow_close {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.dialog = Some(Dialog::Unsaved { then: Box::new(Command::Quit) });
+        }
+        if let Some(ev) = self.updater.poll() {
+            let verbose = self.updater.verbose;
+            match ev {
+                update::Event::UpToDate if verbose => self.info(format!("IC Studio {} is up to date", update::CURRENT)),
+                update::Event::Available(v) => self.info(format!("IC Studio {v} is available (Help › Check for Updates)")),
+                update::Event::Installed(v) => self.ok(format!("IC Studio {v} installed; restart to use it")),
+                update::Event::Failed(e) if verbose => self.warn(format!("Update: {e}")),
+                _ => {}
+            }
         }
         // Background simulation completion.
         let mut events = vec![];
