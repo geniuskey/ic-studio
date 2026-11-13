@@ -62,7 +62,7 @@ or copy `skills/ic-studio` into `~/.claude/skills/`.
 | `run_signoff` | Run an external KLayout / Calibre / netgen runset of the technology |
 | `post_layout_parasitics` | Extracted parasitics and the largest net and coupling capacitances |
 | `load_pdk` | Replace the technology with a PDK file |
-| `export_gds`, `import_gds` | GDSII export and import (import skips layers the technology lacks) |
+| `export_gds`, `import_gds` | GDSII export and import (import skips layers the technology lacks); both apply the technology's stream layer map |
 | `run_skill` | Run Cadence SKILL code (`code`) or a `.il` file (`file`); returns `output`, `value` and the `modified` cells |
 | `gui_status` | Whether a desktop app is connected, and its project |
 

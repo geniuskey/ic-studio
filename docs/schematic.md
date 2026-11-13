@@ -101,7 +101,14 @@ they would appear in a netlist, with SPICE scale suffixes: `10k`, `2.2p`, `180n`
 
 With nothing selected, the inspector shows statistics (instances, wires, nets), the list
 of nets with their pin counts, and any **Warnings** (unconnected pins, duplicate names,
-shorted net names). The same warnings appear in the **Problems** tab.
+shorted net names).
+
+The **Problems** tab of the bottom panel runs the schematic checker on the active cell as
+you edit: missing ground, bad or duplicate names, missing or invalid values, shorted
+devices, voltage-source loops, floating nets, dangling wires and more. Click a finding to
+select its devices. **Tools > Check Schematic** runs the check on demand, and **File >
+Check and Save** saves only when there are no errors. See
+[Check Schematic](tools.md#check-schematic) for every check.
 
 ## Netlist
 

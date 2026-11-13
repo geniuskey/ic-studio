@@ -21,7 +21,12 @@ The rules come from the technology's deck. Expand **Rule deck** to view and edit
 place: **Run DRC** uses the edited text right away, **Save to technology** stores it in
 the project's `tech.json`, and **Reset** replaces it with the deck derived from the
 technology's layer and via rules. Syntax errors are listed by line. See
-[Technology](technology.md#drc-rule-deck) for the deck syntax.
+[Technology](technology.md#drc-rule-deck) for the deck syntax. **Rule Designer...** (also
+**Tools > DRC Rule Designer**) edits the deck as forms and self-tests every rule on
+generated patterns; see [DRC Rule Designer](tools.md#drc-rule-designer).
+
+A layer that fails a `density` rule can be filled with **Tools > Dummy Fill** (see
+[Dummy Fill](tools.md#dummy-fill)).
 
 DRC checks Manhattan geometry; other shapes are skipped and counted. Distances between
 corners are Euclidean.
@@ -34,6 +39,10 @@ corners are Euclidean.
    canvas to highlight the net it belongs to.
 4. **Devices** lists each transistor with W, L and its terminal nets; click one to zoom to
    its gate.
+
+**Tools > Net Browser** lists the extracted nets in a sortable table with their layers,
+area, transistor terminals and wire capacitance; click one to highlight it and zoom to it
+(see [Net Browser](tools.md#net-browser)).
 
 How the extractor works:
 

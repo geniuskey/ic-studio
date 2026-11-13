@@ -40,6 +40,7 @@ Top level:
 | `rules` | Device rules used by the PCells, in dbu (optional) |
 | `devices` | PDK MOS devices (optional; generic `nmos` / `pmos` when absent) |
 | `models` | PDK SPICE model library (optional; built-in level-1 models when absent) |
+| `stream_map` | GDSII / OASIS layer map for import and export: rows of `layer`, `stream_layer`, `datatype` (optional; see [Stream Layer Map](tools.md#stream-layer-map)) |
 
 Layer:
 

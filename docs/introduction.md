@@ -70,6 +70,18 @@ operations, vias, PCells, GDSII and OASIS in and out.</p>
 and sign-off runs through KLayout, Calibre or netgen.</p>
 </div>
 <div class="ics-card">
+<span class="ics-icon">ADE</span>
+<h3>Analysis tools</h3>
+<p>A waveform calculator, corner, parametric and Monte Carlo sweeps with specs, yield
+and datasheets, and run-to-run comparison of results.</p>
+</div>
+<div class="ics-card">
+<span class="ics-icon">GEN</span>
+<h3>Layout generators</h3>
+<p>Guard rings, via arrays, common-centroid matched placement and density fill, plus a
+visual DRC rule designer and Virtuoso-compatible SKILL.</p>
+</div>
+<div class="ics-card">
 <span class="ics-icon">PDK</span>
 <h3>Real PDKs</h3>
 <p>Start on the generic 180 nm technology, then switch to SKY130 or IHP SG13G2: layers,
@@ -126,6 +138,7 @@ checked or exported from the command line, or driven by an agent.
 - Designing a circuit: [Schematic](schematic.md) and [Simulation](simulation.md).
 - Drawing and checking layout: [Layout](layout.md), [Verification](verification.md) and
   [Schematic-driven layout](schematic-driven-layout.md).
+- Measurements, corners, Monte Carlo and layout generators: [Tools](tools.md).
 - Using a real PDK: [Technology](technology.md).
 - Automation: [Command line](cli.md) and [MCP server](mcp.md).
 

@@ -11,8 +11,12 @@
   (`Ctrl+1` to `Ctrl+4`), and the Settings gear at the bottom.
 - **Explorer**: libraries, cells and their views.
 - **Cell tabs** above the editor. `Ctrl+W` closes the active tab.
-- **Bottom panel** (`Ctrl+J`): **Console** (log), **Problems** and **Netlist** (the SPICE
-  netlist of the active cell).
+- **Bottom panel** (`Ctrl+J`): **Console** (log), **CIW** (SKILL prompt), **Problems**
+  (schematic checker findings) and **Netlist** (the SPICE netlist of the active cell).
+- **Menus**: File, Edit, View, Simulation, Verify, **Tools** (calculator, sweeps, browsers,
+  generators, DRC rule designer, stream layer map, dummy fill, SKILL; see
+  [Tools](tools.md)) and Help. In the Layout workspace the Create and Options menus are
+  added.
 - **Status bar**: workspace, zoom, selection, technology name, ngspice status and, while
   an agent is connected, "MCP live".
 

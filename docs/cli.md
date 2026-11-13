@@ -78,6 +78,8 @@ AC vectors are `{ "re": [...], "im": [...] }`.
   given. The library name defaults to the file name. By default the library is stored as
   one GDS file in the project; `--json` stores one JSON folder per cell instead (editable,
   diff-friendly, larger). `ics lib-storage` converts an existing library between the two.
+- `ics gds` and `ics import-gds` apply the technology's
+  [stream layer map](tools.md#stream-layer-map) when it has one.
 - `ics gds-info` reads a GDS file without writing anything and prints the top cells with
   their sizes and the read / parse / index times.
 

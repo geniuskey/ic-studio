@@ -45,8 +45,8 @@ Lines in this collapsible section are appended verbatim to the deck before the a
 for example `.options reltol=1e-4`. **Show netlist** displays the generated deck next to the
 results.
 
-The setup (backend, analyses, temperature, parasitics flag and extra lines) is saved per
-cell in `sim.json`.
+The setup (backend, analyses, temperature, parasitics flag, extra lines and the
+[sweep setup](tools.md#corner--sweep-manager)) is saved per cell in `sim.json`.
 
 ## Results
 
@@ -59,7 +59,12 @@ values as `name_re` / `name_im` columns).
 - **Signals** (left): tick signals to plot. **Filter** narrows the list, **all V** selects
   every node voltage, **clear** clears the selection. By default `v(out)`, `v(in)`,
   `v(vout)` and `v(vin)` are shown when present, otherwise the first three voltages. The
-  selection is kept per analysis between runs.
+  selection is kept per analysis between runs. Waveforms plotted from the
+  [Waveform Calculator](tools.md#waveform-calculator) appear here as signals named after
+  their expression.
+- **Compare runs** (above the signal list): the earlier runs of the cell. Tick one to draw
+  its signals dashed on the same plot and list them in the measurements (see
+  [Results Browser](tools.md#results-browser)).
 - **Plot**: DC and transient results share one plot. AC results are a Bode pair:
   **Magnitude (dB)** over **Phase (°)** on a logarithmic frequency axis, with linked zoom
   and cursor. Hover a trace to read values. Scroll to zoom, drag to pan, double-click to
@@ -89,6 +94,18 @@ the schematic (see [Schematic](schematic.md#operating-point-annotation)).
 4. Open the **Transient** tab to see the input pulse and the filtered output.
 5. To change the input, go to the schematic (`Ctrl+2`), select the source, edit
    **Transient**, and press `F5` again.
+
+## Measurements, corners and Monte Carlo
+
+- **Tools > Waveform Calculator** evaluates expressions on the results, such as
+  `bandwidth(v(out)/v(in))`, `risetime(v(out))` or `phasemargin(v(out))`, and plots derived
+  waveforms. See [Waveform Calculator](tools.md#waveform-calculator).
+- **Tools > Corner / Sweep Manager** runs the setup over model corners, temperatures and
+  parameter values, and Monte Carlo variations, in parallel; specs with limits are checked
+  on every point, with statistics, yield, overlaid waveforms and an HTML datasheet. See
+  [Corner / Sweep Manager](tools.md#corner--sweep-manager).
+- **Tools > Results Browser** keeps earlier runs for comparison, for example the schematic
+  against the post-layout simulation.
 
 ## Post-layout simulation
 

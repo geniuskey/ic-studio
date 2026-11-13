@@ -199,8 +199,24 @@ to dots.
 
 ![8192 inverters](screenshots/09_layout_tiles.png)
 
-The hierarchy tree lists the cells placed in the current cell with their counts; click
-one to open it.
+The hierarchy tree (**Edit > Hierarchy Tree**, `Shift+T`) lists the cells placed in the
+current cell with their counts; click one to open it. **Tools > Hierarchy Browser** shows
+the whole project's layout hierarchy with where-used lists (see
+[Tools](tools.md#hierarchy-browser)).
+
+## Generators and fill
+
+The **Tools** menu also adds geometry to the active layout, each as one undoable step:
+
+- **Layout Generators > Guard Ring**: a p+ substrate or n+ nwell ring with contacts and a
+  metal1 strap around an area or the selection;
+- **Layout Generators > Via Array**: via arrays on every overlap of two layers, or filling
+  an area;
+- **Layout Generators > Matched Placement**: common-centroid, interdigitated or 2-D
+  common-centroid placement of matched transistors with dummies;
+- **Dummy Fill**: fill squares to meet a density rule.
+
+See [Tools](tools.md#layout-generators) for the options.
 
 ## PCells
 
@@ -228,15 +244,15 @@ the inspector the same way.
 
 ## SKILL scripts
 
-File > Import > Load SKILL (.il) runs a Cadence SKILL file on the project; `ics skill` and
+**Tools > Load SKILL (.il)** runs a Cadence SKILL file on the project; `ics skill` and
 the MCP tool `run_skill` do the same from the command line and from agents. Printed output
 goes to the log, every changed layout can be undone, and `geGetEditCellView()` returns the
 cell open in the editor.
 
-The **CIW** tab of the bottom panel (View > SKILL CIW, or "CIW" in the command palette) is
+The **CIW** tab of the bottom panel (**Tools > SKILL CIW**, or "CIW" in the command palette) is
 an interactive SKILL prompt like Virtuoso's Command Interpreter Window. Variables,
 procedures and open cellviews persist between commands and include everything defined by
-files loaded with File > Import > Load SKILL; opening another project starts a fresh
+files loaded with Tools > Load SKILL; opening another project starts a fresh
 session. Enter runs the line, a line with unclosed parentheses or strings continues on the
 next one (the prompt shows `...`), and Up / Down recall earlier commands.
 
@@ -281,4 +297,6 @@ scoping.
   cell it places; **Export > Library GDSII...** writes every layout in the project.
 
 Layers are mapped by GDS layer / datatype. Layers the technology does not have are added
-to it on import, so nothing is lost.
+to it on import, so nothing is lost. A [stream layer map](tools.md#stream-layer-map)
+(**Tools > Stream Layer Map**, or a Virtuoso layer map file) renumbers layers on export,
+maps other numbers onto technology layers on import, or drops them.

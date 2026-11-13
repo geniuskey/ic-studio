@@ -22,6 +22,8 @@ schematics, checked against them (LVS) and their parasitics flow back into simul
 | ![OTA](docs/screenshots/demo_ota2s.png) | ![SRAM](docs/screenshots/demo_sram_array.png) |
 | **Layout generated from the schematic, with flylines** | **Rule-deck DRC on placed cells** |
 | ![SDL](docs/screenshots/13_layout_sdl.png) | ![DRC](docs/screenshots/11_layout_drc.png) |
+| **Monte Carlo with spec statistics, yield and histogram** | **Visual DRC rule designer with self-tested rules** |
+| ![Monte Carlo](docs/screenshots/tool_monte_carlo.png) | ![Rule designer](docs/screenshots/tool_rule_designer.png) |
 
 ## Quick start
 
@@ -49,6 +51,9 @@ Linux needs the usual windowing libraries:
   explorer, command palette (⌘K / Ctrl+K), console, problems and netlist panels, dark and
   light themes
 - Every action is an `app::Command`: menus, shortcuts, the palette and automation share it
+- Cadence Virtuoso conventions: default bindkeys and two-click commands in the layout
+  editor, a Virtuoso or conventional mouse profile, and Cadence SKILL (`.il`) scripts with an
+  interactive CIW prompt
 
 **Schematic and simulation**
 - analogLib-style primitives (R, C, L, V, I, diode, NMOS, PMOS, ground, supply), wiring,
@@ -59,6 +64,8 @@ Linux needs the usual windowing libraries:
   coupling between nets, MOS drain / source junctions (`ad as pd ps`) and an RC network of
   wire, via and gate resistance extracted from the layout are added to the matching
   schematic nets and devices
+- Schematic checker (Check and Save): missing ground, bad names, missing values, shorted
+  devices, voltage-source loops, floating nets and dangling wires, live in the Problems tab
 
 **Layout**
 - Hierarchy: cell instances and arrays (GDS SREF / AREF) with 90° rotations and mirroring,
@@ -94,6 +101,18 @@ Linux needs the usual windowing libraries:
   terminal-aligned grid over metal1 and up) wires them DRC-clean around existing geometry,
   ripping up and rerouting nets that block each other
 - Cross-probing: selecting a device in one view selects it in the other
+
+**Tools** ([guide](https://geniuskey.github.io/ic-studio/tools.html))
+- Waveform calculator: `bandwidth`, `ugf`, `phasemargin`, `risetime`, `cross`, `delay`,
+  `rms`, `deriv`, ... on simulation results, with derived waveforms plotted
+- Corner / sweep manager: model corners × temperatures × parameters and Monte Carlo
+  (process and mismatch), run in parallel, specs with limits, statistics, yield,
+  histograms, overlaid waveforms and an HTML datasheet
+- Results browser: keep earlier runs and overlay them, e.g. pre- versus post-layout
+- Layout generators: guard rings, via arrays, common-centroid / interdigitated matched
+  placement with dummies; dummy metal fill to a density target
+- Hierarchy and net browsers; a visual DRC rule designer that self-tests every rule; a
+  stream layer map (Virtuoso layer map files) for GDSII / OASIS import and export
 
 **Technology**
 - `tech.json` with layers, GDS numbers, colours, fill patterns, width / spacing, vias,
@@ -206,11 +225,15 @@ Binaries: `ic-studio` (desktop app), `ics` (CLI), `ics-mcp` (MCP server).
 crates/
   ics-core    UI-free design database
               geom · schematic · connectivity · netlist · layout · hier (indices, LOD)
-              region (Booleans) · pcell · gds · tech · tech_import · drc · extract · lvs
-              sdl (schematic-driven layout) · pex · project storage · examples
-  ics-sim     SPICE parser, MNA engine, ngspice backend, backend-independent results
+              region (Booleans) · pcell · gds · oasis · stream_map · tech · tech_import
+              drc · rule_design · extract · lvs · sdl (schematic-driven layout) · route
+              matching · layout_gen · fill · pex · sch_check · sweep · skill
+              project storage · examples
+  ics-sim     SPICE parser, MNA engine, ngspice backend, waveform calculator, results
   ics-studio  desktop app (eframe/egui on wgpu)
               app (shell, commands) · schematic_view · sim_view · layout_view (edit, verify)
+              tool windows: calc_view · sweep_view · rule_designer · stream_map_view
+              fill_view · gen_view · net_view · hier_view · ciw
   ics-cli     `ics` command line
   ics-mcp     MCP server for AI agents
 ```
@@ -240,11 +263,11 @@ mouse input, and check accessibility labels and glyph coverage.
 
 ## Roadmap
 
-- OASIS and LEF / DEF
+- LEF / DEF and abstract generation
 - Python API (PyO3)
 - Resistor / capacitor recognition in LVS; incremental and hierarchical DRC
-- Non-Manhattan Boolean operations; guard rings around matched groups
-- Parametric sweeps, corners and optimisation loops
+- Non-Manhattan Boolean operations
+- Optimisation loops over the sweep manager; EM / IR-drop estimation
 
 ## License
 

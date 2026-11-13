@@ -17,6 +17,7 @@
 - [Verification: DRC, extraction and LVS](verification.md)
 - [Schematic-driven layout](schematic-driven-layout.md)
 - [Technology](technology.md)
+- [Tools: calculator, sweeps, generators and more](tools.md)
 
 # Automation
 
