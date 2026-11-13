@@ -108,14 +108,8 @@ impl LayoutGenerators {
             self.open = false;
             return None;
         };
-        let builder = egui::ViewportBuilder::default()
-            .with_title("Layout Generators")
-            .with_inner_size([560.0, 600.0])
-            .with_min_inner_size([440.0, 380.0]);
-        ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("layout_generators"), builder, |ui, _class| {
-            if ui.ctx().input(|i| i.viewport().close_requested()) {
-                self.open = false;
-            }
+        let mut open = true;
+        let r = crate::float::tool_window(ctx, "layout_generators", "Layout Generators", [560.0, 600.0], &mut open, |ui| {
             let pal = theme::palette(ui.ctx());
             let mut action = None;
             egui::CentralPanel::default().frame(egui::Frame::new().fill(pal.bg_panel).inner_margin(12)).show(ui, |ui| {
@@ -148,7 +142,9 @@ impl LayoutGenerators {
                 });
             });
             action
-        })
+        });
+        self.open &= open;
+        r.unwrap_or_default()
     }
 
     fn area_ui(&mut self, ui: &mut egui::Ui, tech: &Tech, sel: Option<IRect>, pal: &Palette) {

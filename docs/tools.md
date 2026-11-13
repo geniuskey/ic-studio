@@ -1,9 +1,10 @@
 # Tools
 
 The **Tools** menu collects the sub-tools, modelled on their Cadence Virtuoso
-counterparts. Each opens in its own window and works on the project open in the main
-window, usually on the active cell; **Dock** moves a window into the main window and
-**Pop out** moves it back out. Every tool is also in the command palette (`Ctrl+K`).
+counterparts. Each opens as a window docked inside the main window and works on the
+project open there, usually on the active cell. The pop-out button left of a window's
+close button moves it into its own OS window, and **Dock** in that window brings it
+back; the choice is remembered per tool. Every tool is also in the command palette (`Ctrl+K`).
 
 | Tool | Virtuoso counterpart | Works on |
 |---|---|---|

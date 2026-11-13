@@ -109,7 +109,6 @@ enum Event {
 pub struct Copilot {
     pub open: bool,
     /// Shown inside the main window instead of its own OS window.
-    pub docked: bool,
     pub log: Vec<Entry>,
     pub todos: Vec<Todo>,
     pub input: String,
@@ -131,7 +130,6 @@ impl Default for Copilot {
     fn default() -> Self {
         Self {
             open: false,
-            docked: false,
             log: vec![],
             todos: vec![],
             input: String::new(),
@@ -565,9 +563,9 @@ impl Copilot {
 
     /// The chat window. Returns what the user sends.
     pub fn window(&mut self, ctx: &egui::Context, llm: &LlmSettings) -> Option<Reply> {
-        let (mut open, mut docked) = (self.open, self.docked);
+        let mut open = self.open;
         let mut send = None;
-        crate::float::tool_window(ctx, "copilot", "Copilot", [480.0, 600.0], &mut open, &mut docked, |ui| {
+        crate::float::tool_window(ctx, "copilot", "Copilot", [480.0, 600.0], &mut open, |ui| {
             let busy = self.busy();
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(llm.describe()).weak());
@@ -698,7 +696,6 @@ impl Copilot {
             });
         });
         self.open = open;
-        self.docked = docked;
         send
     }
 }

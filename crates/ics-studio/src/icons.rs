@@ -11,6 +11,8 @@ pub enum Icon {
     Settings,
     Library,
     Cell,
+    PopOut,
+    DockIn,
 }
 
 pub fn paint(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
@@ -77,6 +79,14 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
         Icon::Cell => {
             p.rect_stroke(Rect::from_min_max(at(5.0, 5.0), at(19.0, 19.0)), 2.0 * u, st, eframe::egui::StrokeKind::Middle);
             p.rect_filled(Rect::from_min_max(at(9.0, 9.0), at(15.0, 15.0)), 1.0 * u, color.gamma_multiply(0.6));
+        }
+        Icon::PopOut | Icon::DockIn => {
+            p.add(Shape::line(vec![at(11.0, 5.0), at(5.0, 5.0), at(5.0, 19.0), at(19.0, 19.0), at(19.0, 13.0)], st));
+            let (tip, tail) = if icon == Icon::PopOut { ((19.5, 4.5), (11.5, 12.5)) } else { ((11.5, 12.5), (19.5, 4.5)) };
+            let (tx, ty) = tip;
+            let sx = if tail.0 > tx { 1.0 } else { -1.0 };
+            p.line_segment([at(tail.0, tail.1), at(tx, ty)], st);
+            p.add(Shape::line(vec![at(tx + sx * 6.0, ty), at(tx, ty), at(tx, ty - sx * 6.0)], st));
         }
     }
 }

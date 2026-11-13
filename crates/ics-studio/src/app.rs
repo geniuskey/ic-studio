@@ -3565,13 +3565,9 @@ impl IcStudio {
             return;
         }
         let active = self.active.clone();
-        let mut sim = active.as_ref().and_then(|r| self.sims.get_mut(r));
+        let sim = active.as_ref().and_then(|r| self.sims.get_mut(r));
         let mut open = true;
-        let builder = egui::ViewportBuilder::default().with_title("Results Browser").with_inner_size([420.0, 520.0]);
-        ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("results_browser"), builder, |ui, _class| {
-            if ui.ctx().input(|i| i.viewport().close_requested()) {
-                open = false;
-            }
+        crate::float::tool_window(ctx, "results_browser", "Results Browser", [420.0, 520.0], &mut open, |ui| {
             let pal = theme::palette(ui.ctx());
             egui::CentralPanel::default().frame(egui::Frame::new().fill(pal.bg_panel).inner_margin(12)).show(ui, |ui| {
                 ui.label(RichText::new("Results Browser").strong().color(pal.text_strong));
@@ -3581,7 +3577,7 @@ impl IcStudio {
                         .color(pal.text_weak),
                 );
                 ui.separator();
-                match sim.as_deref_mut() {
+                match sim {
                     Some(s) if s.results.is_some() => {
                         let res = s.results.as_ref().unwrap();
                         ui.label(

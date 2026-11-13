@@ -72,16 +72,12 @@ impl HierBrowser {
         if self.selected.is_none() {
             self.selected = active.cloned();
         }
-        let builder = egui::ViewportBuilder::default()
-            .with_title("Hierarchy Browser")
-            .with_inner_size([900.0, 600.0])
-            .with_min_inner_size([560.0, 360.0]);
-        ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("hier_browser"), builder, |ui, _class| {
-            if ui.ctx().input(|i| i.viewport().close_requested()) {
-                self.open = false;
-            }
+        let mut open = true;
+        let r = crate::float::tool_window(ctx, "hier_browser", "Hierarchy Browser", [900.0, 600.0], &mut open, |ui| {
             self.ui(ui, project)
-        })
+        });
+        self.open &= open;
+        r.unwrap_or_default()
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, project: &Project) -> Option<HierAction> {

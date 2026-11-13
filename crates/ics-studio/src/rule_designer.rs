@@ -626,16 +626,12 @@ impl RuleDesigner {
             return None;
         };
         self.poll();
-        let builder = egui::ViewportBuilder::default()
-            .with_title("DRC Rule Designer")
-            .with_inner_size([1220.0, 780.0])
-            .with_min_inner_size([760.0, 480.0]);
-        ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("rule_designer"), builder, |ui, _class| {
-            if ui.ctx().input(|i| i.viewport().close_requested()) {
-                self.open = false;
-            }
+        let mut open = true;
+        let r = crate::float::tool_window(ctx, "rule_designer", "DRC Rule Designer", [1220.0, 780.0], &mut open, |ui| {
             self.ui(ui, project, active)
-        })
+        });
+        self.open &= open;
+        r.unwrap_or_default()
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, project: &Project, active: Option<&CellRef>) -> Option<DesignerAction> {

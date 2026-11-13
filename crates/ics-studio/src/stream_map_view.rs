@@ -51,16 +51,12 @@ impl StreamMapEditor {
             self.open = false;
             return None;
         };
-        let builder = egui::ViewportBuilder::default()
-            .with_title("Stream Layer Map")
-            .with_inner_size([860.0, 640.0])
-            .with_min_inner_size([560.0, 380.0]);
-        ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("stream_map"), builder, |ui, _class| {
-            if ui.ctx().input(|i| i.viewport().close_requested()) {
-                self.open = false;
-            }
+        let mut open = true;
+        let r = crate::float::tool_window(ctx, "stream_map", "Stream Layer Map", [860.0, 640.0], &mut open, |ui| {
             self.ui(ui, &project.tech)
-        })
+        });
+        self.open &= open;
+        r.unwrap_or_default()
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, tech: &Tech) -> Option<Vec<StreamMapEntry>> {

@@ -11,6 +11,7 @@ fn main() -> eframe::Result {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("IC Studio")
             .with_app_id("ic-studio")
+            .with_icon(ics_studio::app_icon::icon())
             .with_inner_size([1440.0, 900.0])
             .with_min_inner_size([960.0, 600.0]),
         renderer: eframe::Renderer::Wgpu,

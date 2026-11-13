@@ -511,7 +511,6 @@ fn from_claude(res: &Value) -> Result<Value, String> {
 #[derive(Default)]
 pub struct AiSettingsWindow {
     pub open: bool,
-    pub docked: bool,
     test: Option<Receiver<Result<String, String>>>,
     status: Option<Result<String, String>>,
 }
@@ -525,13 +524,10 @@ impl AiSettingsWindow {
             self.status = Some(r);
             self.test = None;
         }
-        let (mut open, mut docked) = (self.open, self.docked);
+        let mut open = self.open;
         let before = s.clone();
-        crate::float::tool_window(ctx, "ai_models", "AI Models", [520.0, 420.0], &mut open, &mut docked, |ui| {
-            self.ui(ui, s, dirs)
-        });
+        crate::float::tool_window(ctx, "ai_models", "AI Models", [520.0, 420.0], &mut open, |ui| self.ui(ui, s, dirs));
         self.open = open;
-        self.docked = docked;
         let changed = *s != before;
         if changed && self.test.is_none() {
             self.status = None;

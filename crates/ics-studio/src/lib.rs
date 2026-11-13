@@ -1,6 +1,7 @@
 //! IC Studio desktop application (library part, so UI tests can drive the app headlessly).
 
 pub mod app;
+pub mod app_icon;
 pub mod calc_view;
 pub mod canvas;
 pub mod ciw;

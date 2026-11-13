@@ -46,20 +46,15 @@ impl Calculator {
         r
     }
 
-    pub fn window(&mut self, ctx: &egui::Context, cell: Option<&CellRef>, mut sim: Option<&mut SimState>) {
+    pub fn window(&mut self, ctx: &egui::Context, cell: Option<&CellRef>, sim: Option<&mut SimState>) {
         if !self.open {
             return;
         }
-        let builder = egui::ViewportBuilder::default()
-            .with_title("Waveform Calculator")
-            .with_inner_size([900.0, 600.0])
-            .with_min_inner_size([600.0, 380.0]);
-        ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("calculator"), builder, |ui, _class| {
-            if ui.ctx().input(|i| i.viewport().close_requested()) {
-                self.open = false;
-            }
-            self.ui(ui, cell, sim.as_deref_mut());
+        let mut open = true;
+        crate::float::tool_window(ctx, "calculator", "Waveform Calculator", [900.0, 600.0], &mut open, |ui| {
+            self.ui(ui, cell, sim);
         });
+        self.open &= open;
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, cell: Option<&CellRef>, sim: Option<&mut SimState>) {
