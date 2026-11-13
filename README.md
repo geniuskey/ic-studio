@@ -104,7 +104,9 @@ Linux needs the usual windowing libraries:
   own schematic, then routed (`ics place-like`, MCP `place_like`)
 - Design copilot (Tools > Design Copilot; `GEMINI_API_KEY` from a `.env` in the project or working
   folder, else the environment; model `gemini-flash-latest`): a Gemini chat that works on
-  the open project through the MCP tools, every edit visible and undoable in the window
+  the open project through the MCP tools, every edit visible and undoable in the window. It
+  works as an agent: keeps a task list, asks when a request is unclear, and in plan mode
+  investigates read-only and presents a plan for approval before editing; Stop cancels a run
 
 **Verification**
 - DRC with a text rule deck (`width`, `space`, `separation`, `enclosure`, `extension`,

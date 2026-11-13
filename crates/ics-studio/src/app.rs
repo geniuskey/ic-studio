@@ -146,8 +146,12 @@ pub enum Command {
     RunOptimizer,
     /// Show or hide the design copilot chat.
     Copilot,
-    /// Ask the copilot a question.
+    /// Ask the copilot a question, or answer the one it is waiting on.
     CopilotAsk(String),
+    /// Approve the plan the copilot presented in plan mode.
+    CopilotApprove,
+    /// Stop the copilot's running request.
+    CopilotStop,
     /// Run a Cadence SKILL (.il) script on the project; `None` asks for the file.
     LoadSkill(Option<PathBuf>),
     /// Replace the technology with a PDK file (see `ics_core::pdk`); `None` asks for the file.
@@ -887,12 +891,9 @@ impl IcStudio {
                 self.ciw.request_focus();
             }
             Command::Copilot => self.copilot.open = !self.copilot.open,
-            Command::CopilotAsk(q) => {
-                self.copilot.open = true;
-                let context = self.copilot_context();
-                let dirs: Vec<PathBuf> = self.project.as_ref().and_then(|p| p.root.clone()).into_iter().collect();
-                self.copilot.ask_in(ctx, &q, &context, &dirs);
-            }
+            Command::CopilotAsk(q) => self.copilot_reply(ctx, crate::copilot::Reply::Text(q)),
+            Command::CopilotApprove => self.copilot_reply(ctx, crate::copilot::Reply::Approve),
+            Command::CopilotStop => self.copilot.stop(),
             Command::CiwEval(src) => {
                 self.ciw.push(CiwKind::Input, src.clone());
                 self.ciw_eval(&src);
@@ -3634,17 +3635,42 @@ impl IcStudio {
         &mut self.copilot
     }
 
+    fn copilot_reply(&mut self, ctx: &egui::Context, reply: crate::copilot::Reply) {
+        self.copilot.open = true;
+        let context = self.copilot_context();
+        let dirs: Vec<PathBuf> = self.project.as_ref().and_then(|p| p.root.clone()).into_iter().collect();
+        self.copilot.reply(ctx, reply, &context, &dirs);
+    }
+
     /// What the copilot is told about the session.
     fn copilot_context(&self) -> String {
-        let mut s = String::new();
-        match &self.project {
-            Some(p) => {
-                s += &format!("Open project: {} ({} cells).", p.name, p.all_cells().count());
-                if let Some(r) = &self.active {
-                    s += &format!(" Active cell: {r} in the {} workspace.", self.workspace.name());
-                }
+        let Some(p) = &self.project else { return "No project is open.".into() };
+        let mut s = format!(
+            "Open project: {} (technology {}, {} cells{}).",
+            p.name,
+            p.tech.name,
+            p.all_cells().count(),
+            if self.dirty { ", unsaved edits" } else { "" }
+        );
+        if let Some(r) = &self.active {
+            s += &format!(" Active cell: {r} in the {} workspace; \"this cell\" means it.", self.workspace.name());
+        }
+        s += "
+Cells (views):";
+        for (r, c) in p.all_cells().take(60) {
+            let views: Vec<&str> =
+                [(c.schematic.is_some(), "schematic"), (c.layout.is_some(), "layout"), (c.pcell.is_some(), "pcell")]
+                    .into_iter()
+                    .filter_map(|(has, v)| has.then_some(v))
+                    .collect();
+            s += &format!(
+                "
+- {r}: {}",
+                views.join(", ")
+            );
+            if !c.description.trim().is_empty() {
+                s += &format!(" ({})", c.description.trim());
             }
-            None => s += "No project is open.",
         }
         s
     }
@@ -3784,10 +3810,8 @@ impl eframe::App for IcStudio {
         self.dialogs(&ctx);
         self.rule_designer_window(&ctx);
         self.optimizer_window(&ctx);
-        if let Some(q) = self.copilot.window(&ctx) {
-            let context = self.copilot_context();
-            let dirs: Vec<PathBuf> = self.project.as_ref().and_then(|p| p.root.clone()).into_iter().collect();
-            self.copilot.ask_in(&ctx, &q, &context, &dirs);
+        if let Some(r) = self.copilot.window(&ctx) {
+            self.copilot_reply(&ctx, r);
         }
         self.stream_map_window(&ctx);
         self.fill_window(&ctx);

@@ -1584,6 +1584,82 @@ fn copilot_optimizes_rc_filter() {
     shot(&mut h, "45_optimizer");
 }
 
+/// A scripted model that also records the requests it gets.
+struct Recorded {
+    script: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    seen: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+}
+
+impl ics_studio::copilot::Llm for Recorded {
+    fn generate(&mut self, req: &serde_json::Value) -> Result<serde_json::Value, String> {
+        self.seen.lock().unwrap().push(req.clone());
+        let mut q = self.script.lock().unwrap();
+        if q.is_empty() { Err("script exhausted".into()) } else { Ok(q.remove(0)) }
+    }
+}
+
+/// Plan mode: read-only tools run, edits are refused, the plan waits for approval; once approved
+/// the agent keeps a task list and pauses on a question until the user answers.
+#[test]
+fn copilot_plan_mode_agent() {
+    use ics_studio::copilot::{Entry, TodoStatus, WaitKind};
+    use serde_json::json;
+    let calls = |c: serde_json::Value| json!({"candidates": [{"content": {"role": "model", "parts": c}}]});
+    let script = vec![
+        calls(json!([{"text": "Looking at the project first."}, {"functionCall": {"name": "project_info", "args": {}}},
+            {"functionCall": {"name": "route", "args": {"cell": "nand2"}}}])),
+        calls(json!([{"functionCall": {"name": "exit_plan_mode", "args": {"plan": "1. Place\n2. Route\n3. DRC"}}}])),
+        calls(json!([{"functionCall": {"name": "update_todos", "args": {"todos": [
+            {"content": "Place devices", "status": "completed"}, {"content": "Route", "status": "in_progress"}]}}},
+            {"functionCall": {"name": "ask_user", "args": {"question": "Which metal?", "options": ["M1", "M2"]}}}])),
+        calls(json!([{"text": "Done with M2."}])),
+    ];
+    let script = std::sync::Arc::new(std::sync::Mutex::new(script));
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
+    let mut h = app(demo_args("nand2", "layout", false));
+    let (s2, r2) = (script.clone(), seen.clone());
+    let cp = h.state_mut().copilot_mut();
+    cp.key = "test".into();
+    cp.plan_mode = true;
+    cp.set_llm(Box::new(move |_, _| Box::new(Recorded { script: s2.clone(), seen: r2.clone() })));
+    h.state_mut().command(Command::CopilotAsk("Lay out nand2".into()));
+    h.run_steps(2);
+    settle(&mut h, "plan");
+    let cp = h.state_mut().copilot_mut();
+    assert_eq!(cp.waiting(), Some(WaitKind::Approval), "{:?}", cp.log);
+    assert!(cp.log.iter().any(|e| matches!(e, Entry::Tool { name, error: false, .. } if name == "project_info")));
+    assert!(!cp.log.iter().any(|e| matches!(e, Entry::Tool { name, .. } if name == "route")), "route ran in plan mode");
+    assert!(matches!(cp.log.last(), Some(Entry::Plan(p)) if p.contains("Route")));
+    shot(&mut h, "48_copilot_plan");
+
+    h.state_mut().command(Command::CopilotApprove);
+    h.run_steps(2);
+    settle(&mut h, "approve");
+    let cp = h.state_mut().copilot_mut();
+    assert!(!cp.plan_mode);
+    assert_eq!(cp.waiting(), Some(WaitKind::Answer));
+    assert_eq!(cp.todos.len(), 2);
+    assert_eq!(cp.todos[1].status, TodoStatus::InProgress);
+    shot(&mut h, "49_copilot_question");
+
+    h.state_mut().command(Command::CopilotAsk("M2".into()));
+    h.run_steps(2);
+    settle(&mut h, "answer");
+    let cp = h.state_mut().copilot_mut();
+    assert_eq!(cp.waiting(), None);
+    assert_eq!(cp.log.last(), Some(&Entry::Assistant("Done with M2.".into())));
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 4);
+    let last_user = |i: usize| seen[i]["contents"].as_array().unwrap().last().unwrap()["parts"].clone();
+    assert!(last_user(1).to_string().contains("plan mode is on"), "{}", last_user(1));
+    assert_eq!(last_user(2)[0]["functionResponse"]["response"]["approved"], true);
+    let answer = last_user(3);
+    assert_eq!(answer[0]["functionResponse"]["name"], "update_todos");
+    assert_eq!(answer[1]["functionResponse"]["response"]["answer"], "M2");
+    assert!(seen[0]["systemInstruction"].to_string().contains("PLAN MODE is on"));
+    assert!(!seen[2]["systemInstruction"].to_string().contains("PLAN MODE is on"));
+}
+
 /// Layout by example: a renamed copy of the NAND2 circuit is placed like the demo NAND2 layout
 /// and routed, leaving no flylines.
 #[test]
@@ -1661,7 +1737,7 @@ fn copilot_live() {
     eprintln!("took {:.1} s", t.elapsed().as_secs_f64());
     shot(&mut h, "47_copilot_live");
     assert!(!log.iter().any(|e| matches!(e, Entry::Error(_))), "copilot error");
-    assert!(matches!(log.last(), Some(Entry::Assistant(_))), "no final answer");
+    assert!(matches!(log.last(), Some(Entry::Assistant(_) | Entry::Question { .. })), "no final answer");
     if custom.is_none() {
         assert_eq!(flylines(&h, "nand2"), 0, "unrouted flylines left");
     }
