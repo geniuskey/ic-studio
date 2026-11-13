@@ -1340,9 +1340,6 @@ impl IcStudio {
                     if ui.add_enabled(has_project, egui::Button::new("PDK…")).clicked() {
                         q.push(Command::LoadPdk(None));
                     }
-                    if ui.add_enabled(has_project, egui::Button::new("Load SKILL (.il)…")).clicked() {
-                        q.push(Command::LoadSkill(None));
-                    }
                 });
                 ui.menu_button("Export", |ui| {
                     if ui.add_enabled(has_project, egui::Button::new("SPICE netlist…")).clicked() {
@@ -1401,9 +1398,6 @@ impl IcStudio {
                 if ui.add(egui::Button::new("Toggle Console").shortcut_text("⌘J")).clicked() {
                     q.push(Command::ToggleConsole);
                 }
-                if ui.button("SKILL CIW").clicked() {
-                    q.push(Command::Ciw);
-                }
                 if ui.button(if self.settings.dark { "Light Theme" } else { "Dark Theme" }).clicked() {
                     q.push(Command::ToggleTheme);
                 }
@@ -1439,15 +1433,31 @@ impl IcStudio {
                 if ui.button("Run Sign-off Runset").clicked() {
                     q.push(Command::RunSignoff(None));
                 }
-                if ui.add_enabled(has_project, egui::Button::new("DRC Rule Designer…")).clicked() {
-                    q.push(Command::RuleDesigner);
-                }
                 ui.separator();
                 if ui.button("Generate Layout from Schematic").clicked() {
                     q.push(Command::GenerateLayout);
                 }
                 if ui.button("Route Flylines").clicked() {
                     q.push(Command::RouteFlylines);
+                }
+            });
+            ui.menu_button("Tools", |ui| {
+                if ui.add_enabled(has_project, egui::Button::new("DRC Rule Designer…")).clicked() {
+                    q.push(Command::RuleDesigner);
+                }
+                ui.separator();
+                if ui.button("SKILL CIW").clicked() {
+                    q.push(Command::Ciw);
+                }
+                if ui.add_enabled(has_project, egui::Button::new("Load SKILL (.il)…")).clicked() {
+                    q.push(Command::LoadSkill(None));
+                }
+                ui.separator();
+                if ui.add(egui::Button::new("Command Palette").shortcut_text("⌘K")).clicked() {
+                    q.push(Command::CommandPalette);
+                }
+                if ui.add(egui::Button::new("Settings…").shortcut_text("⌘,")).clicked() {
+                    q.push(Command::Settings);
                 }
             });
             if lay {
