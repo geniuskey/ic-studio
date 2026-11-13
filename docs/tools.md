@@ -2,10 +2,13 @@
 
 The **Tools** menu collects the sub-tools, modelled on their Cadence Virtuoso
 counterparts. Each opens in its own window and works on the project open in the main
-window, usually on the active cell. Every tool is also in the command palette (`Ctrl+K`).
+window, usually on the active cell; **Dock** moves a window into the main window and
+**Pop out** moves it back out. Every tool is also in the command palette (`Ctrl+K`).
 
 | Tool | Virtuoso counterpart | Works on |
 |---|---|---|
+| Design Copilot, AI Models | - | An AI agent working on the open project through the [MCP](mcp.md) tools; AI Models sets its provider, model and API key |
+| [Optimizer](#optimizer) | ADE GXL Optimization | Active cell's schematic and specs |
 | [Waveform Calculator](#waveform-calculator) | ViVA Calculator | Simulation results of the active cell |
 | [Corner / Sweep Manager](#corner--sweep-manager) | ADE Explorer / Assembler | Active cell's schematic |
 | [Results Browser](#results-browser) | Results Browser | Earlier simulation runs of the active cell |
@@ -104,6 +107,24 @@ spec, and a histogram of the selected spec marks the bins outside its limits in 
 **Export datasheet...** writes an HTML page of the last run: the spec summary (limits,
 min / mean / max / σ and yield) and the table of every point with pass / fail colours.
 
+## Optimizer
+
+**Tools > Optimizer** sizes device parameters of the active cell until the specs of its
+[Corner / Sweep Manager](#corner--sweep-manager) setup are met (at least one spec needs a
+**Min** or **Max** limit).
+
+- **Variables**: each **Target** (`INST.param` such as `M1.w`, or a design variable) with
+  **Min**, **Max**, an optional **Step** and **Log** for a log-scale search; **+ Variable**
+  adds one.
+- **Evaluations**: the number of candidates to simulate.
+- **Goal**: **Best margin** (the largest worst-case margin to the limits) or **Least area**
+  (the smallest MOS gate area once every spec passes).
+- **Post-layout**: place, route and extract every candidate and simulate it with its
+  parasitics, so the specs hold after layout.
+
+**Run optimizer** plots the objective of every evaluation; **Stop** ends the run early and
+**Apply best to schematic** writes the best values into the schematic.
+
 ## Results Browser
 
 Every successful simulation keeps the previous results: the current run is **Run N**, and
@@ -170,7 +191,8 @@ zoom to it. A note warns when the layout changed after the extraction.
 
 ## Layout Generators
 
-**Tools > Layout Generators** has three tabs. Each adds to the active layout as one step
+**Tools > Layout Generators** (**Guard Ring...**, **Via Array...**, **Matched
+Placement...**) opens one window with four tabs. Each adds to the active layout as one step
 that `u` / `Ctrl+Z` undoes.
 
 ### Guard Ring
@@ -217,6 +239,14 @@ are dropped by LVS. Neighbouring devices are moved aside to make room.
 Run it before routing: wires crossing the block are not moved. Common centroid allows at
 most one device with an odd number of units; with single-finger devices use
 interdigitated, or more fingers per device.
+
+### By Example
+
+Reuses the placement of a finished cell with the same circuit. Pick the **Reference** (a
+cell with a schematic and a placed layout) and press **Place like reference**: devices are
+matched by topology, placed where their counterparts are and sized from this cell's
+schematic. Wells, implants and taps are copied; wires are not, so tick **Route the flylines
+afterwards** to route them again.
 
 ## DRC Rule Designer
 

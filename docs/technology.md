@@ -40,6 +40,8 @@ Top level:
 | `rules` | Device rules used by the PCells, in dbu (optional) |
 | `devices` | PDK MOS devices (optional; generic `nmos` / `pmos` when absent) |
 | `models` | PDK SPICE model library (optional; built-in level-1 models when absent) |
+| `signoff` | External DRC / LVS runsets (optional; see [Verification](verification.md#sign-off-with-external-tools)) |
+| `pcell_layers`, `pin_labels`, `drc_extra` | Extra PCell layers, net label layers and deck lines, as `[[pcell_layer]]`, `[[pin_label]]` and `drc_extra` of a [PDK file](#pdk-files) (optional) |
 | `stream_map` | GDSII / OASIS layer map for import and export: rows of `layer`, `stream_layer`, `datatype` (optional; see [Stream Layer Map](tools.md#stream-layer-map)) |
 
 Layer:
@@ -69,7 +71,8 @@ parallel neighbour) and `resistance` (Ω per square).
 The deck is plain text, one statement per line. `#` starts a comment. Lengths are in µm,
 areas in µm². Keywords and layer names are not case sensitive. Every rule can have an
 optional `NAME:` prefix; otherwise a name such as `metal1.W` or `contact.EN.metal1` is
-generated.
+generated. A `#@ text` line gives the next rule its description, reported with its
+violations instead of the generated one.
 
 ### Rules
 
@@ -172,9 +175,11 @@ antenna metal1 400
 density metal1 20 80 100
 ```
 
-When a technology has no `drc_deck`, IC Studio derives one from the layers' `min_width`
-and `min_spacing`, the via enclosures, a poly-over-active extension and antenna rules.
+When a technology has no `drc_deck`, IC Studio derives one from the layers' `min_width`,
+`min_spacing` and `min_area`, the via cut sizes, spacings and enclosures, a poly-over-active
+extension, antenna rules and the PDK's `drc_extra` lines.
 Open **Rule deck** in the Layout workspace to see it, edit it, and **Save to technology**.
+The [DRC Rule Designer](tools.md#drc-rule-designer) edits the same deck as forms.
 The command line can use a separate file: `ics drc <project> <cell> --deck rules.drc`.
 
 ## PDK files
@@ -216,7 +221,7 @@ The main sections:
 | `[[device]]` | `name`, `type` (`nmos` / `pmos`), `layers`, `exclude`, `subckt` |
 | `[models]` | `path`, `extra` (more model files loaded at the same corner), `corners`, `default`, `length_unit` (`m` or `um`) |
 | `drc_deck` | Optional DRC deck file |
-| `[[signoff]]` | External DRC / LVS runsets: `name`, `tool` (`klayout`, `calibre`, `netgen`), `check` (`drc`, `lvs`), `deck`, `vars`, `skip`, `ground` (see [Verification](verification.md#sign-off-with-external-tools)) |
+| `[[signoff]]` | External DRC / LVS runsets: `name`, `tool` (`klayout`, `calibre`, `netgen`, `builtin`), `check` (`drc`, `lvs`), `deck`, `vars`, `klayout`, `skip`, `ground` (see [Verification](verification.md#sign-off-with-external-tools)) |
 | `[[cap]]` | Parasitic coefficients, as in `tech.json` |
 
 What changes with a PDK:

@@ -29,18 +29,17 @@ Canvas keys work while the mouse is over the canvas and no text field has focus.
 | `Shift`+wheel | Pan horizontally |
 | Middle drag | Pan |
 | Right drag | Layout: zoom into the box (Conventional profile: pan); schematic: pan |
-
-The mouse follows the **Interaction** profile in **Settings** (`Ctrl+,`). **Virtuoso**
-(the default) matches the Virtuoso defaults: the wheel pans, `Ctrl`+wheel zooms at the
-mouse and a right drag zooms into a box. **Conventional** zooms with the wheel and pans with
-a right drag. Bindkeys are the same in both.
-
 | `F` | Fit to window |
 | `Esc` | Cancel the current operation, then back to Select, then clear the selection |
 | `Del`, `Backspace` | Delete the selection |
 | `Ctrl+A` | Select all |
 | `Ctrl+D` | Duplicate the selection (layout: deselect all) |
 | `Shift`/`Ctrl`+click | Add to or remove from the selection |
+
+The mouse follows the **Interaction** profile in **Settings** (`Ctrl+,`). **Virtuoso**
+(the default) matches the Virtuoso defaults: the wheel pans, `Ctrl`+wheel zooms at the
+mouse and a right drag zooms into a box. **Conventional** zooms with the wheel and pans with
+a right drag. Bindkeys are the same in both.
 
 ## Schematic
 
@@ -87,6 +86,7 @@ Layout keys follow the Cadence Virtuoso (IC6) default bindkeys.
 | `Shift+T` | Hierarchy tree |
 | `Ctrl+J` | Flip sideways (also while moving or copying) |
 | `Shift+N` | Mark net mode (click a shape to highlight its net after **Extract**) |
+| `Ctrl+.` | Quick fix: candidate repairs of a DRC violation (see [Verification](verification.md)) |
 | `Enter` | Finish a path or polygon |
 | `Backspace` | Remove the last point while drawing |
 | `Shift`+click | Any-angle polygon point |

@@ -22,10 +22,12 @@ Simulation workspace. Errors appear in a red **Simulation error** box and in the
 | Field | Meaning |
 |---|---|
 | **Backend** | **Built-in (ics-sim)** (default) or **ngspice** |
+| **Corner** | Model corner of the PDK model library; shown only when the technology's models have corners (default: the library's default corner) |
 | **Temperature** | -55 to 200 °C, default 27 (written as `.temp`) |
 | **Include layout parasitics** | Add parasitics extracted from the cell's layout (see below); disabled when the cell has no layout |
 
-The line under the backend shows whether ngspice was found. Set its path in
+The line under the backend shows whether ngspice was found, or that PDK models need
+ngspice when the technology has a model library. Set the ngspice path in
 **Settings** (see [Installation](install.md#ngspice-optional)).
 
 ### Analyses
@@ -45,7 +47,7 @@ Lines in this collapsible section are appended verbatim to the deck before the a
 for example `.options reltol=1e-4`. **Show netlist** displays the generated deck next to the
 results.
 
-The setup (backend, analyses, temperature, parasitics flag, extra lines and the
+The setup (backend, corner, analyses, temperature, parasitics flag, extra lines and the
 [sweep setup](tools.md#corner--sweep-manager)) is saved per cell in `sim.json`.
 
 ## Results
@@ -56,7 +58,7 @@ values as `name_re` / `name_im` columns).
 
 ### Waveforms
 
-- **Signals** (left): tick signals to plot. **Filter** narrows the list, **all V** selects
+- **Signals** (right): tick signals to plot. **Filter** narrows the list, **all V** selects
   every node voltage, **clear** clears the selection. By default `v(out)`, `v(in)`,
   `v(vout)` and `v(vin)` are shown when present, otherwise the first three voltages. The
   selection is kept per analysis between runs. Waveforms plotted from the
@@ -79,7 +81,7 @@ values as `name_re` / `name_im` columns).
 
 The **Operating Point** tab lists node voltages and branch currents, and per device:
 
-- MOS: region (saturation, triode), `id`, `vgs`, `vds`, `vth`, `gm`, `gds`
+- MOS: region (cutoff, saturation, triode), `id`, `vgs`, `vds`, `vth`, `gm`, `gds`
 - diode: `vd`, `id`, `gd`
 - resistor: `v`, `i`, `p`
 
@@ -132,15 +134,17 @@ A modified nodal analysis engine written in Rust. It supports:
 - sources: `DC`, `AC mag [phase]`, `PULSE(v1 v2 td tr tf pw per)`,
   `SIN(vo va freq td theta)`, `PWL(t v ...)`,
 - directives `.model`, `.op`, `.dc`, `.ac`, `.tran`, `.temp`, `.end`; other dot lines
-  such as `.include`, `.options`, `.param` and `.subckt` are ignored,
+  such as `.options`, `.param` and `.subckt` are ignored, and a deck with `.include` or
+  `.lib` is rejected (model libraries need ngspice),
 - diode model (`is`, `n`, `cjo`) and MOS level 1 (`vto`, `kp`, `lambda`, `gamma`, `phi`,
   `tox`, `cgso`, `cgdo`, `cj`, `cjsw`) with instance parameters `w l m ad as pd ps`.
 
-The default `nmos` / `pmos` models use `vto = ±0.7`, `kp = 2e-5`.
+The generic `nmos` / `pmos` models the netlister writes use `vto = ±0.45` and
+`kp = 280u` / `70u`; a MOS model parameter left out defaults to `vto = ±0.7`, `kp = 2e-5`.
 
 ### ngspice
 
 With the ngspice backend, IC Studio runs ngspice in batch mode and reads its raw output.
-The deck is still checked by the built-in parser first, so it must only use the elements
-listed above, and models must be defined in the deck (models only reachable through
-`.include` are reported as unknown).
+ngspice reads the deck itself, so subcircuit devices (`X`), `.include` and `.lib` model
+libraries of a PDK work; IC Studio only takes the analyses (`.op`, `.dc`, `.ac`, `.tran`)
+from the deck when the setup lists none.

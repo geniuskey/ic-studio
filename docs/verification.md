@@ -31,6 +31,16 @@ A layer that fails a `density` rule can be filled with **Tools > Dummy Fill** (s
 DRC checks Manhattan geometry; other shapes are skipped and counted. Distances between
 corners are Euclidean.
 
+### Live DRC
+
+The **Live DRC** checkbox in the layout toolbar re-checks the deck around every edit in the
+background and draws the violations as dashed boxes as they appear; hover one to see its
+rule. **Quick Fix** (`Ctrl+.`) on a violation offers candidate edits of top-level shapes
+(reshape, move or add), each checked with DRC first and marked **clean** or with the number
+of new violations it causes; it turns live DRC on when it is off. **Fix All Violations**
+(command palette) applies fixes until none helps any more, as one undoable step. Geometry
+inside placed cells is not changed.
+
 ## Connectivity extraction
 
 1. Press **Extract** in the **Connectivity** section (or **Verify > Extract Nets**).
@@ -96,7 +106,7 @@ The built-in checks are fast and good for iterating. For sign-off, a technology 
 | built-in | DRC | IC Studio or SVRF deck file, run on the built-in engine |
 
 In the Layout workspace, the **Sign-off** section appears when the technology has
-runsets. Pick a runset and press **Run** (or **Verify > Run Sign-off Runset**). IC Studio
+runsets. Pick a **Runset** and press **Run <tool>** (or **Verify > Run Sign-off Runset**). IC Studio
 writes the cell and every cell it places to `<cell>.gds` in a new temporary folder, plus
 the schematic as a `.subckt` for LVS, runs the tool there and reads its report:
 

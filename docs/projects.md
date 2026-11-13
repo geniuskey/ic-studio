@@ -4,8 +4,7 @@
 
 ![Project home](screenshots/02_project_home.png)
 
-- **Menu bar** (File, Edit, View, Simulation, Verify, Help) with a breadcrumb
-  `project > library > cell`. A dot after the cell name means unsaved changes. On the
+- **Menu bar** (see **Menus** below) with a breadcrumb `project > library > cell`. A dot after the cell name means unsaved changes. On the
   right, **Search commands...** opens the command palette.
 - **Activity bar** (far left): the four workspaces Home, Schematic, Simulation and Layout
   (`Ctrl+1` to `Ctrl+4`), and the Settings gear at the bottom.
@@ -13,10 +12,10 @@
 - **Cell tabs** above the editor. `Ctrl+W` closes the active tab.
 - **Bottom panel** (`Ctrl+J`): **Console** (log), **CIW** (SKILL prompt), **Problems**
   (schematic checker findings) and **Netlist** (the SPICE netlist of the active cell).
-- **Menus**: File, Edit, View, Simulation, Verify, **Tools** (calculator, sweeps, browsers,
-  generators, DRC rule designer, stream layer map, dummy fill, SKILL; see
-  [Tools](tools.md)) and Help. In the Layout workspace the Create and Options menus are
-  added.
+- **Menus**: File, Edit, View, Simulation, Verify, **Tools** (design copilot, optimizer,
+  calculator, sweeps, results and browsers, generators, DRC rule designer, stream layer
+  map, dummy fill, SKILL; see [Tools](tools.md)) and Help (user guide, shortcuts, check for
+  updates). In the Layout workspace the Create and Options menus are added.
 - **Status bar**: workspace, zoom, selection, technology name, ngspice status and, while
   an agent is connected, "MCP live".
 
@@ -49,7 +48,7 @@ The welcome page (shown when no project is open) has three cards: **Open demo pr
 - Right-click a cell for **Open schematic**, **Open layout**, **Rename...** and
   **Delete...**. Deleting removes the cell's files from disk when the project is saved.
 - The **Home** workspace shows the project overview: a thumbnail card per cell, plus
-  **+ New cell**, **Import GDS...** and **Export library GDS...** buttons.
+  **+ New cell**, **Import GDS / OASIS...** and **Export library GDS...** buttons.
 
 ## Command palette
 
@@ -81,12 +80,13 @@ with a `library.json`), so large imports stay compact.
 
 | Action | Menu |
 |---|---|
-| Import a GDSII file as a new library | **File > Import > GDSII...** |
+| Import a GDSII or OASIS file as a new library | **File > Import > GDSII / OASIS...** |
 | Import a KLayout layer properties file as the technology | **File > Import > KLayout layer properties...** |
+| Replace the technology with a PDK file | **File > Import > PDK...** |
 | Export the active cell's SPICE netlist | **File > Export > SPICE netlist...** |
-| Export the active cell and everything it places to GDSII | **File > Export > Cell GDSII...** |
-| Export every layout in the project to one GDSII | **File > Export > Library GDSII...** |
+| Export the active cell and everything it places to GDSII / OASIS | **File > Export > Cell GDSII...** / **Cell OASIS...** |
+| Export every layout in the project to one GDSII / OASIS file | **File > Export > Library GDSII...** / **Library OASIS...** |
 
-GDS import keeps the hierarchy. Layers that are not in the technology are added to it
+GDS / OASIS import keeps the hierarchy. Layers that are not in the technology are added to it
 (and reported in the console). After import, the top cell opens in the Layout workspace.
-See [Technology](technology.md) for `.lyp` import.
+See [Technology](technology.md) for `.lyp` and PDK import.

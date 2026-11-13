@@ -18,8 +18,8 @@ the layout commands; every item shows its bindkey, and the command palette lists
   and the options of the current tool.
 - **Toolbar**: undo / redo, the tools (**Select**, **Stretch**, **Move**, **Copy**, **Rectangle**,
   **Polygon**, **Path**, **Label**, **Via**, **Instance**, **Chop**, **Ruler**), fit,
-  **Zoom box**, **Prev view**, **Grid**, **Snap**, **Gravity**, **DRD**, **Flylines**, and
-  **GDS** to export the cell.
+  **Zoom box**, **Prev view**, **Grid**, **Snap**, **Gravity**, **DRD**, **Constraints**,
+  **Magnet**, **Live DRC**, **Flylines**, and **GDS** to export the cell.
 - **Status bar**: `X` / `Y` of the cursor; while a command is in progress `dX`, `dY` and
   `Dist` from its reference point; `Sel: n` (`Sel(P): n` for a partial selection); `Cmd:`
   the current tool; and a `mouse L: … M: … R: …` line telling what each button does now.
@@ -65,6 +65,10 @@ While drawing a polygon or path, `Backspace` removes the last point and `Esc` ca
   drawing rectangles and paths, moving, copying and pasting. Neighbours inside placed cells
   count too (at any depth), as do the shapes around a cell edited in place; a moved or
   pasted instance is checked by the shapes along its outline.
+- **Magnet** (on by default) pulls a shape being drawn or moved to exactly the minimum
+  spacing from its neighbours when it comes close.
+- **Live DRC** (on by default) checks the rule deck around every edit; see
+  [Live DRC](verification.md#live-drc).
 - **Layer tap**: `T` makes the layer of the shape under the cursor the active layer.
 - **Changing metal while routing**: with the Path tool, press `+` (or `=` / `PageUp`) to
   end the path at the cursor, drop the via to the routing layer above and continue on it;
@@ -108,7 +112,7 @@ While drawing a polygon or path, `Backspace` removes the last point and `Esc` ca
 | Flip | `Ctrl+J` flips the selection sideways, or what is being moved or copied |
 | Edit in place | `x` over an instance (or with one selected) edits its cell, or the array element under the cursor, inside the parent: the surroundings stay visible, dimmed, in the parent's orientation, and DRD checks against them. `Shift+B` or **Return** in the toolbar goes back |
 | Open a placed cell | Double-click the instance, or **Open** in the inspector |
-| Pop-up menu | Middle-click, or right-click when no command point is pending: Move, Copy, Stretch, Delete, Properties, Rotate 90°, Merge, Yank, Paste, Descend Edit, Return, Fit All, Previous View. With nothing selected, the item under the cursor is selected first |
+| Pop-up menu | Middle-click, or right-click when no command point is pending: Move, Copy, Stretch, Delete, Properties, Rotate 90°, Merge, Yank, Paste, Descend Edit, Return, Fit All, Previous View, plus Edit In Place. With nothing selected, the item under the cursor is selected first |
 
 ### Partial selection
 
@@ -172,6 +176,24 @@ With nothing selected, **Layer operations** computes Boolean results:
 
 Boolean operations work on Manhattan geometry; other shapes are skipped and reported.
 
+## Constraints, compaction and compare
+
+These commands have no menu or bindkey; run them from the command palette, where they are
+listed as "Layout Assist: <item>".
+
+- **Symmetric About Vertical / Horizontal Axis**, **Keep Left / Bottom Edges Aligned**,
+  **Keep Centres Aligned Vertically / Horizontally** and **Fix In Place** add a constraint
+  to the selected items. Moving one member moves the others so the constraint keeps holding.
+  **Infer Constraints From Schematic** adds symmetry constraints for the schematic's
+  matched devices; **Remove Constraints** clears them. The **Constraints** checkbox in the
+  toolbar draws them, and the **Constraints** section of the right panel lists them, with
+  **Snap** for one that no longer holds.
+- **Compact (Left, Then Down)** and **Compact Left / Right / Down / Up** slide the cell's
+  top-level items toward one side as far as the spacing rules allow. Connected geometry and
+  the members of a constraint move together.
+- **Compare With Saved** and **Compare With Git HEAD** draw the geometry added and removed
+  since the last save or the last commit; **Next Difference** steps through them.
+
 ## Hierarchy
 
 ![Hierarchy](screenshots/08_layout_hierarchy.png)
@@ -191,7 +213,8 @@ and **Row pitch**.
 ### Drawn depth
 
 The **levels** field in **Hierarchy** (keys `0` to `8`, and `9` for all levels) sets how
-many levels of placed cells are drawn with their contents. Deeper instances are drawn as
+many levels of placed cells are drawn with their contents (`Shift+F` all levels, `Ctrl+F`
+top level only). Deeper instances are drawn as
 labelled boxes. Missing cells are drawn in red.
 
 Large designs stay fast: cells that are small on screen collapse to boxes and tiny shapes
@@ -214,6 +237,8 @@ The **Tools** menu also adds geometry to the active layout, each as one undoable
   an area;
 - **Layout Generators > Matched Placement**: common-centroid, interdigitated or 2-D
   common-centroid placement of matched transistors with dummies;
+- **Layout Generators > By Example**: place the devices like a finished cell with the same
+  circuit (matched by topology), copying its wells, implants and taps, and optionally route;
 - **Dummy Fill**: fill squares to meet a density rule.
 
 See [Tools](tools.md#layout-generators) for the options.
@@ -261,8 +286,7 @@ cv = dbOpenCellViewByType("work" "pad" "layout" "maskLayout" "w")
 for(i 0 3
   dbCreateRect(cv list("metal1" "drawing") list(i*2:0 i*2+1:1)))
 dbCreateInstByMasterName(cv "work" "via_cell" "layout" "I0" 0:5 "R90")
-printf("%d shapes
-" length(cv~>shapes))
+printf("%d shapes\n" length(cv~>shapes))
 ```
 
 Supported:
@@ -292,9 +316,10 @@ scoping.
 
 ## GDSII
 
-- **File > Import > GDSII...** reads a GDS file into a new library with full hierarchy.
+- **File > Import > GDSII / OASIS...** reads a GDS or OASIS file into a new library with full hierarchy.
 - **GDS** in the toolbar or **File > Export > Cell GDSII...** writes the cell and every
   cell it places; **Export > Library GDSII...** writes every layout in the project.
+  **Cell OASIS...** and **Library OASIS...** write OASIS instead.
 
 Layers are mapped by GDS layer / datatype. Layers the technology does not have are added
 to it on import, so nothing is lost. A [stream layer map](tools.md#stream-layer-map)
