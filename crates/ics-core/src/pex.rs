@@ -9,6 +9,8 @@
 //!   Substrate capacitance is not reduced where a wire is shielded, so totals are conservative.
 //! - MOS drain / source junctions from the extracted diffusion (`ad as pd ps` on the schematic
 //!   device lines, so the device models compute the junction capacitance).
+//! - Layout-dependent stress for PDK models ([`junction_params`] with `lde`): `nf sa sb sd` from
+//!   the gates' distances to the edges of their rectangular diffusion (BSIM4 convention).
 //! - Wire resistance ([`rc_networks`]): the wires of a net on layers with a sheet resistance
 //!   become segments joined by resistors, vias by their cut resistance. A schematic net with a
 //!   network keeps its name on its largest node; each MOS terminal on it moves to the node nearest
@@ -20,7 +22,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use rstar::{AABB, RTree, RTreeObject};
 
 use crate::connectivity;
-use crate::extract::{Extraction, Junction, extract};
+use crate::extract::{Device, Extraction, Junction, extract};
 use crate::geom::IRect;
 use crate::hier::{LayoutSource, flatten};
 use crate::layout::Layout;
@@ -192,8 +194,15 @@ pub fn annotate(caps: &[NetCap], net_pairs: &[(String, String)], min_farads: f64
 }
 
 /// `ad as pd ps` per schematic MOS instance (by SPICE name, upper case) from the matched layout
-/// devices. Merged parallel devices share their junctions in proportion to `m`.
-pub fn junction_params(sch: &Schematic, x: &Extraction, rep: &LvsReport, unit: LengthUnit) -> BTreeMap<String, String> {
+/// devices. Merged parallel devices share their junctions in proportion to `m`. With `lde` (PDK
+/// models only: level-1 models reject them) the stress parameters follow, see [`lde_params`].
+pub fn junction_params(
+    sch: &Schematic,
+    x: &Extraction,
+    rep: &LvsReport,
+    unit: LengthUnit,
+    lde: bool,
+) -> BTreeMap<String, String> {
     let conn = connectivity::extract(sch);
     let insts: HashMap<&str, _> = sch
         .instances
@@ -208,7 +217,8 @@ pub fn junction_params(sch: &Schematic, x: &Extraction, rep: &LvsReport, unit: L
     let mut out = BTreeMap::new();
     for (sname, lname) in &rep.devices {
         let mut total: HashMap<&str, Junction> = HashMap::new();
-        for d in lname.split('+').filter_map(|n| devs.get(n)) {
+        let fingers: Vec<&Device> = lname.split('+').filter_map(|n| devs.get(n).copied()).collect();
+        for d in &fingers {
             for (net, j) in [(d.d, d.jd), (d.s, d.js)] {
                 let t = total.entry(x.nets[net].name.as_str()).or_default();
                 t.area += j.area;
@@ -229,19 +239,65 @@ pub fn junction_params(sch: &Schematic, x: &Extraction, rep: &LvsReport, unit: L
                 js = jd;
             }
             let k = 1.0 / units.max(1.0);
-            out.insert(
-                spice_name(inst).to_ascii_uppercase(),
-                format!(
-                    "ad={:.4e} as={:.4e} pd={:.4e} ps={:.4e}",
-                    jd.area * k * m2,
-                    js.area * k * m2,
-                    jd.perimeter * k / um * 1e-6 * f,
-                    js.perimeter * k / um * 1e-6 * f
-                ),
+            let mut p = format!(
+                "ad={:.4e} as={:.4e} pd={:.4e} ps={:.4e}",
+                jd.area * k * m2,
+                js.area * k * m2,
+                jd.perimeter * k / um * 1e-6 * f,
+                js.perimeter * k / um * 1e-6 * f
             );
+            if lde {
+                // The low side of a layout device is its source; flipped when that is the schematic drain.
+                let drain = conn.net_of(inst.id, "d").and_then(|n| to_layout.get(n)).copied();
+                let flip = |d: &Device| drain == Some(x.nets[d.s].name.as_str()) && d.s != d.d;
+                p += &lde_params(&fingers, units, flip, |v| v as f64 / um * 1e-6 * f);
+            }
+            out.insert(spice_name(inst).to_ascii_uppercase(), p);
         }
     }
     out
+}
+
+/// ` nf=.. sa=.. sb=.. sd=..` of one of `units` schematic units sharing the layout `fingers`.
+/// `nf` is the fingers per unit. `sa` / `sb` are the distances from the gate to the diffusion
+/// edge on the source / drain side; with several fingers on one diffusion, those of the outermost
+/// fingers, and `sd` the uniform spacing between adjacent gates. Left out when the geometry is
+/// ambiguous: a bent or any-angle gate, non-rectangular or separate diffusions, uneven spacing,
+/// or single-finger units whose devices differ.
+fn lde_params(fingers: &[&Device], units: f64, flip: impl Fn(&Device) -> bool, len: impl Fn(i64) -> f64) -> String {
+    let k = fingers.len() as f64 / units;
+    if fingers.is_empty() || k < 1.0 || k.fract() != 0.0 {
+        return String::new();
+    }
+    let nf = k as usize;
+    let oriented = |d: &Device, lo: i64, hi: i64| if flip(d) { (hi, lo) } else { (lo, hi) };
+    let ch: Option<Vec<_>> = fingers.iter().map(|d| d.channel().map(|c| (*d, c))).collect();
+    let geom = ch.and_then(|mut ch| {
+        if nf == 1 {
+            let ext: Vec<(i64, i64)> = ch.iter().map(|(d, (_, g, od))| oriented(d, g.0 - od.0, od.1 - g.1)).collect();
+            return ext.iter().all(|e| *e == ext[0]).then_some((ext[0], None));
+        }
+        let (d0, (axis, _, od)) = ch[0];
+        if nf != fingers.len() || ch.iter().any(|(d, c)| c.0 != axis || d.od != d0.od) {
+            return None;
+        }
+        ch.sort_by_key(|(_, c)| c.1.0);
+        let gaps: Vec<i64> = ch.windows(2).map(|w| w[1].1.1.0 - w[0].1.1.1).collect();
+        let sd = gaps[0];
+        if sd <= 0 || gaps.iter().any(|g| *g != sd) {
+            return None;
+        }
+        let ((first, (_, g0, _)), (_, (_, gn, _))) = (ch[0], ch[ch.len() - 1]);
+        Some((oriented(first, g0.0 - od.0, od.1 - gn.1), Some(sd)))
+    });
+    let mut s = format!(" nf={nf}");
+    if let Some(((sa, sb), sd)) = geom {
+        s += &format!(" sa={:.4e} sb={:.4e}", len(sa), len(sb));
+        if let Some(sd) = sd {
+            s += &format!(" sd={:.4e}", len(sd));
+        }
+    }
+    s
 }
 
 /// Wire segments are at most this many squares long, so taps along a wire see the resistance
@@ -570,7 +626,8 @@ pub fn post_layout(project: &Project, cell: &CellRef) -> Result<PostLayout, Stri
         n_cc += 1;
         cc_total += f;
     }
-    let junctions = junction_params(sch, &x, &rep, project.tech.length_unit());
+    let junctions =
+        junction_params(sch, &x, &rep, project.tech.length_unit(), project.tech.models.as_ref().is_some_and(|m| m.lde));
 
     let mut summary = format!(
         "post-layout: {n_ground} nets annotated, {:.3} fF to ground, {n_cc} coupling caps ({:.3} fF), junctions on {} devices, {n_res} resistors on {} nets",
@@ -739,6 +796,95 @@ mod tests {
         got.sort_by(|a, b| a.area.total_cmp(&b.area));
         assert_eq!(got, [shared, shared, outer, outer]);
         assert!([left.s, left.d].iter().any(|n| [right.s, right.d].contains(n)), "the middle strip is shared");
+    }
+
+    /// NMOS gates `[x0, x1)` across the active `[0, len) x [0, 1000)`, and one schematic NMOS
+    /// whose drain and source are the layout pieces at `d` / `s`, matched to all of them.
+    fn lde_case(len: i64, gates: &[(i64, i64)], d: (i64, i64), s: (i64, i64), lde: bool, unit: LengthUnit) -> String {
+        use crate::geom::{Orient, Pt};
+        let tech = Tech::generic();
+        let l = |n: &str| tech.layer_index(n).unwrap();
+        let mut lay = Layout::default();
+        lay.add_rect(l("nplus"), -500, -500, len + 500, 1500);
+        lay.add_rect(l("active"), 0, 0, len, 1000);
+        for &(x0, x1) in gates {
+            lay.add_rect(l("poly"), x0, -300, x1, 1300);
+        }
+        let x = extract(&lay, &crate::hier::NoCells, &tech);
+        assert_eq!(x.devices.len(), gates.len());
+        let mut sch = Schematic::default();
+        let id = sch.add_instance(DeviceKind::Nmos, Pt::new(0, 0), Orient::default());
+        let pins = sch.instance(id).unwrap().pin_positions();
+        for (pin, net) in [("d", "d"), ("g", "g"), ("s", "s")] {
+            sch.add_label(net, pins.iter().find(|(n, _)| *n == pin).unwrap().1);
+        }
+        let at = |p: (i64, i64)| x.nets[x.net_at(l("active"), p).unwrap()].name.clone();
+        let rep = LvsReport {
+            devices: vec![(
+                sch.instances[0].name.clone(),
+                x.devices.iter().map(|d| d.name.as_str()).collect::<Vec<_>>().join("+"),
+            )],
+            nets: vec![("d".into(), at(d)), ("s".into(), at(s))],
+            ..LvsReport::default()
+        };
+        junction_params(&sch, &x, &rep, unit, lde).remove("M1").unwrap()
+    }
+
+    fn lde_part(p: &str) -> &str {
+        p.find(" nf=").map_or("", |i| &p[i..])
+    }
+
+    #[test]
+    fn lde_single_device() {
+        // Gate 1.0-1.2 µm on a 3 µm active: 1 µm of diffusion on the left, 1.8 µm on the right.
+        let p = lde_case(3000, &[(1000, 1200)], (2500, 500), (500, 500), true, LengthUnit::M);
+        assert_eq!(lde_part(&p), " nf=1 sa=1.0000e-6 sb=1.8000e-6", "{p}");
+        // Drain on the left: sa stays on the source side.
+        let p = lde_case(3000, &[(1000, 1200)], (500, 500), (2500, 500), true, LengthUnit::Um);
+        assert_eq!(lde_part(&p), " nf=1 sa=1.8000e0 sb=1.0000e0", "{p}");
+    }
+
+    #[test]
+    fn lde_two_fingers() {
+        // Fingers 1.0-1.2 and 2.8-3.0 µm on a 4.5 µm active: outer 1 / 1.5 µm, 1.6 µm between.
+        let p = lde_case(4500, &[(1000, 1200), (2800, 3000)], (2000, 500), (500, 500), true, LengthUnit::M);
+        assert_eq!(lde_part(&p), " nf=2 sa=1.0000e-6 sb=1.5000e-6 sd=1.6000e-6", "{p}");
+        // Uneven spacing: nf only.
+        let p = lde_case(5000, &[(1000, 1200), (2000, 2200), (3800, 4000)], (1500, 500), (500, 500), true, LengthUnit::M);
+        assert_eq!(lde_part(&p), " nf=3", "{p}");
+    }
+
+    #[test]
+    fn lde_off_without_pdk_models() {
+        let on = lde_case(4500, &[(1000, 1200), (2800, 3000)], (2000, 500), (500, 500), true, LengthUnit::M);
+        let off = lde_case(4500, &[(1000, 1200), (2800, 3000)], (2000, 500), (500, 500), false, LengthUnit::M);
+        assert_eq!(off.split_whitespace().count(), 4, "{off}");
+        assert!(off.starts_with("ad=") && !off.contains("nf="), "{off}");
+        assert_eq!(on, format!("{off}{}", lde_part(&on)));
+        // The demo technology has no PDK models: post-layout junctions stay `ad as pd ps`.
+        let p = crate::examples::demo_project();
+        assert!(p.tech.models.is_none());
+        let pl = post_layout(&p, &CellRef::new("work", "cmos_inverter")).unwrap();
+        assert!(pl.junctions.values().all(|j| j.split_whitespace().count() == 4), "{:?}", pl.junctions);
+    }
+
+    #[test]
+    fn lde_needs_rectangular_diffusion() {
+        let tech = Tech::generic();
+        let l = |n: &str| tech.layer_index(n).unwrap();
+        let device = |arm: bool| {
+            let mut lay = Layout::default();
+            lay.add_rect(l("nplus"), -500, -500, 3500, 3500);
+            lay.add_rect(l("active"), 0, 0, 3000, 1000);
+            if arm {
+                lay.add_rect(l("active"), 2000, 1000, 3000, 3000);
+            }
+            lay.add_rect(l("poly"), 1000, -300, 1200, 1300);
+            extract(&lay, &crate::hier::NoCells, &tech).devices.remove(0)
+        };
+        assert_eq!(device(false).channel(), Some((true, (1000, 1200), (0, 3000))));
+        let bent = device(true);
+        assert_eq!((bent.od, bent.channel()), (None, None));
     }
 
     #[test]

@@ -511,6 +511,7 @@ mod tests {
             gate: IRect::new(at.0 - 90, at.1 - 500, at.0 + 90, at.1 + 500),
             jd: Junction::default(),
             js: Junction::default(),
+            od: None,
         }
     }
 

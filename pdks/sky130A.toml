@@ -406,6 +406,8 @@ path = "${PDK_ROOT}/sky130A/libs.tech/ngspice/sky130.lib.spice"
 corners = ["tt", "ff", "ss", "sf", "fs"]
 default = "tt"
 length_unit = "um"
+# The fet subcircuits take nf sa sb sd: post-layout decks carry the layout LDE geometry.
+lde = true
 
 # Sign-off checks with the tools' own decks from the installed PDK.
 [[signoff]]

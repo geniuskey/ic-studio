@@ -236,6 +236,10 @@ pub struct ModelLib {
     /// Compiled Verilog-A models (OpenVAF `.osdi`) ngspice loads before reading the deck.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub osdi: Vec<String>,
+    /// The device models take the layout-dependent-effect instance parameters `nf sa sb sd`
+    /// (BSIM4 stress), which post-layout decks then carry.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lde: bool,
 }
 
 /// Unit of device geometry in netlists: metres (`w=1u`) or microns (`w=1`, for model libraries

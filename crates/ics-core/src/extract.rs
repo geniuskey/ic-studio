@@ -104,6 +104,27 @@ pub struct Device {
     pub gate: IRect,
     pub jd: Junction,
     pub js: Junction,
+    /// The rectangular diffusion (OD) a straight rectangular gate crosses completely; `None` for
+    /// bent or any-angle gates and non-rectangular diffusion.
+    pub od: Option<IRect>,
+}
+
+/// An extent (low, high) in dbu.
+pub type Span = (i64, i64);
+
+impl Device {
+    /// The channel direction (`true` along x) and the gate's and OD's extents along it; the
+    /// source is on the low side.
+    pub fn channel(&self) -> Option<(bool, Span, Span)> {
+        let (g, o) = (self.gate, self.od?);
+        if (g.y0, g.y1) == (o.y0, o.y1) && o.x0 <= g.x0 && g.x1 <= o.x1 {
+            Some((true, (g.x0, g.x1), (o.x0, o.x1)))
+        } else if (g.x0, g.x1) == (o.x0, o.x1) && o.y0 <= g.y0 && g.y1 <= o.y1 {
+            Some((false, (g.y0, g.y1), (o.y0, o.y1)))
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -461,6 +482,7 @@ struct Gate {
     rects: Vec<IRect>,
     /// Diffusion components (plane-local) of the source and drain.
     sd: (usize, usize),
+    od: Option<IRect>,
     w: i64,
     l: i64,
     s: usize,
@@ -652,6 +674,7 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
     if let (Some(dp), Some(pp), Some(pp_layer)) = (diff_pi, poly_pi, poly) {
         let diff_poly: Vec<usize> = diffusions.iter().copied().chain(poly).collect();
         let gp = Plane::new(gate_r);
+        let od_p = Plane::new(active_r.clone());
         for m in &gp.members {
             let rs: Vec<IRect> = m.iter().map(|&i| gp.region.rects()[i]).collect();
             let Some(bb) = rs.iter().copied().reduce(|a, b| a.union(&b)) else { continue };
@@ -693,6 +716,10 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
             };
             let anchor = (rs[0].x0, rs[0].y0);
             let Some(g) = planes[pp].comp_at(anchor, false) else { continue };
+            let od = rectangular.and_then(|_| od_p.comp_at(anchor, false)).and_then(|c| match od_p.members[c].as_slice() {
+                &[i] => Some(od_p.region.rects()[i]),
+                _ => None,
+            });
             let in_nwell = planes[nwell_pi].comp_at(anchor, false);
             let pmos = if pplus_p.comp_at(anchor, false).is_some() {
                 true
@@ -739,6 +766,7 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
                 rect: bb,
                 rects: rs,
                 sd: (s, d),
+                od,
                 w,
                 l,
                 s: offset[dp] + s,
@@ -1016,6 +1044,7 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
             gate: g.rect,
             js: junctions.get(&g.sd.0).copied().unwrap_or_default(),
             jd: junctions.get(&g.sd.1).copied().unwrap_or_default(),
+            od: g.od,
         })
         .collect();
     passives.sort_by_key(|p| (p.kind == PassiveKind::Capacitor, p.body.y0, p.body.x0));

@@ -89,6 +89,7 @@
 //! length_unit = "um"           # "m" (default) or "um"
 //! extra = []                   # further model files loaded at the same corner
 //! osdi = []                    # compiled Verilog-A models (OpenVAF .osdi) ngspice loads first
+//! lde = false                  # models take nf sa sb sd (post-layout LDE parameters)
 //!
 //! drc_deck = "rules.deck"      # optional IC Studio DRC deck (see `drc`)
 //!
@@ -229,6 +230,8 @@ struct ModelsEntry {
     extra: Vec<String>,
     #[serde(default)]
     osdi: Vec<String>,
+    #[serde(default)]
+    lde: bool,
 }
 
 /// A loaded PDK: the technology plus non-fatal problems found while loading it.
@@ -396,7 +399,7 @@ pub fn parse(text: &str, base: &Path, env: &dyn Fn(&str) -> Option<String>) -> R
         if !m.default.is_empty() && !m.corners.contains(&m.default) {
             warnings.push(format!("default corner '{}' is not one of {:?}", m.default, m.corners));
         }
-        ModelLib { path, corners: m.corners, default_corner: m.default, length_unit: m.length_unit, extra, osdi }
+        ModelLib { path, corners: m.corners, default_corner: m.default, length_unit: m.length_unit, extra, osdi, lde: m.lde }
     });
     tech.signoff = f
         .signoff
