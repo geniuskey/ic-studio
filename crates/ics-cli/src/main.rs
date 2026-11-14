@@ -78,6 +78,35 @@ enum Cmd {
         #[arg(long, default_value_t = 0.05)]
         tol: f64,
     },
+    /// Monte Carlo on the built-in engine: process shifts and Pelgrom mismatch of every MOS,
+    /// with statistics of waveform-calculator measurements.
+    Mc {
+        project: PathBuf,
+        cell: String,
+        #[arg(long, default_value_t = 100)]
+        runs: usize,
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        /// Measurement `analysis:expression`, e.g. `ac:bw(v(out))` or `op:v(out)` (repeatable).
+        #[arg(long = "measure", required = true)]
+        measures: Vec<String>,
+        /// Threshold mismatch coefficient in V·m (5n = 5 mV·µm).
+        #[arg(long, default_value = "5n")]
+        avt: String,
+        /// Current factor mismatch coefficient in m (10n = 1 %·µm).
+        #[arg(long, default_value = "10n")]
+        abeta: String,
+        /// Global threshold sigma per polarity (V).
+        #[arg(long, default_value = "20m")]
+        vto_sigma: String,
+        /// Global relative kp sigma per polarity.
+        #[arg(long, default_value = "0.03")]
+        kp_sigma: String,
+        #[arg(long)]
+        parasitics: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Simulate a raw SPICE file using its own dot analyses.
     Spice {
         file: PathBuf,
@@ -492,6 +521,63 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             print!("{}", nl.deck(&r.to_string(), &c.sim));
             p.save().map_err(|e| e.to_string())?;
+        }
+        Cmd::Mc { project, cell, runs, seed, measures, avt, abeta, vto_sigma, kp_sigma, parasitics, json } => {
+            let p = Project::open(&project).map_err(|e| e.to_string())?;
+            let r = resolve(&p, &cell)?;
+            let c = p.cell(&r).unwrap();
+            let sch = c.schematic.as_ref().ok_or("cell has no schematic")?;
+            let mut deck = ics_core::netlist::netlist_for(sch, &p.tech, &c.sim.corner).deck(&r.to_string(), &c.sim);
+            if parasitics || c.sim.parasitics {
+                deck = ics_core::pex::post_layout(&p, &r)?.apply(&deck);
+            }
+            let num = |label: &str, v: &str| ics_core::units::parse_spice(v).ok_or(format!("--{label}: invalid number '{v}'"));
+            let spec = ics_sim::montecarlo::McSpec {
+                runs,
+                seed,
+                avt: num("avt", &avt)?,
+                abeta: num("abeta", &abeta)?,
+                vto_sigma: num("vto-sigma", &vto_sigma)?,
+                kp_sigma: num("kp-sigma", &kp_sigma)?,
+            };
+            let ms = measures
+                .iter()
+                .map(|m| {
+                    let (a, e) = m.split_once(':').ok_or(format!("--measure '{m}': write analysis:expression"))?;
+                    Ok(ics_sim::montecarlo::Measure { analysis: a.trim().to_ascii_lowercase(), expr: e.trim().to_string() })
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            let analyses: Vec<_> = c.sim.enabled().cloned().collect();
+            let res = ics_sim::montecarlo::monte_carlo(&deck, &analyses, &ms, &spec).map_err(|e| e.to_string())?;
+            if json {
+                let stats: Vec<_> = ms
+                    .iter()
+                    .zip(&res.stats)
+                    .zip(&res.values)
+                    .map(|((m, s), v)| {
+                        serde_json::json!({"analysis": m.analysis, "expr": m.expr, "n": s.n, "mean": s.mean, "sigma": s.sigma,
+                            "min": s.min, "max": s.max, "values": v.iter().map(|p| p.1).collect::<Vec<_>>()})
+                    })
+                    .collect();
+                println!("{}", serde_json::json!({"runs": runs, "failed": res.failed.len(), "measures": stats}));
+            } else {
+                println!("Monte Carlo: {runs} runs, {} failed", res.failed.len());
+                for (m, s) in ms.iter().zip(&res.stats) {
+                    println!(
+                        "  {:<5} {:<24} n={:<4} mean {}  sigma {}  min {}  max {}",
+                        m.analysis,
+                        m.expr,
+                        s.n,
+                        format_eng(s.mean, ""),
+                        format_eng(s.sigma, ""),
+                        format_eng(s.min, ""),
+                        format_eng(s.max, "")
+                    );
+                }
+                for (run, e) in res.failed.iter().take(5) {
+                    eprintln!("run {run} failed: {e}");
+                }
+            }
         }
         Cmd::Sim { project, cell, backend: b, json, parasitics, compare, tol } => {
             let p = Project::open(&project).map_err(|e| e.to_string())?;

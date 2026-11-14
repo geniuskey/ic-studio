@@ -12,6 +12,7 @@ pub mod circuit;
 pub mod correlate;
 pub mod engine;
 pub mod linalg;
+pub mod montecarlo;
 pub mod ngspice;
 pub mod optimize;
 pub mod results;
@@ -49,7 +50,7 @@ impl Default for SimOptions {
 
 /// The first deck line loading models the built-in engine cannot read (model libraries,
 /// compiled Verilog-A models).
-fn external_models(deck: &str) -> Option<&str> {
+pub(crate) fn external_models(deck: &str) -> Option<&str> {
     deck.lines().map(str::trim).find(|l| {
         let l = l.to_ascii_lowercase();
         l.starts_with(".lib") || l.starts_with(".include") || l.starts_with(".inc ") || l.starts_with("pre_osdi")
