@@ -2886,7 +2886,9 @@ impl IcStudio {
                     .desired_width(f32::INFINITY)
                     .font(FontId::proportional(15.0)),
             );
-            r.request_focus();
+            if !r.has_focus() {
+                r.request_focus();
+            }
             if r.changed() {
                 st.sel = 0;
             }
@@ -3019,7 +3021,7 @@ impl IcStudio {
                         ui.end_row();
                         ui.label("Cell name");
                         let r = ui.text_edit_singleline(name);
-                        if name.is_empty() {
+                        if name.is_empty() && !r.has_focus() {
                             r.request_focus();
                         }
                         ui.end_row();

@@ -1819,3 +1819,21 @@ fn update_toast() {
     h.run_steps(2);
     assert!(h.query_by_label("Update now").is_none());
 }
+
+/// Requesting focus every frame interrupts IME composition every frame, which on Windows
+/// toggles the IME and floods the event loop until the app hangs.
+#[test]
+fn text_prompts_do_not_interrupt_ime_every_frame() {
+    let mut h = app(LaunchArgs { project: None, demo: true, workspace: None, cell: None, run: false });
+    for c in [Command::CommandPalette, Command::NewCellDialog] {
+        h.state_mut().command(c);
+        h.run_steps(4);
+        for _ in 0..5 {
+            h.step();
+            let ime = h.output().platform_output.ime.as_ref().expect("a text field has focus");
+            assert!(!ime.should_interrupt_composition, "IME interrupted on a steady frame");
+        }
+        h.key_press(egui::Key::Escape);
+        h.run_steps(2);
+    }
+}
