@@ -9,6 +9,7 @@
 
 pub mod calc;
 pub mod circuit;
+pub mod correlate;
 pub mod engine;
 pub mod linalg;
 pub mod ngspice;
@@ -19,6 +20,7 @@ use std::time::Instant;
 
 use ics_core::{Analysis, Backend};
 
+pub use correlate::{Correlation, VecDiff, compare, correlate};
 pub use results::{Dataset, DeviceOp, SimResults, VecKind, Vector};
 
 #[derive(Debug, thiserror::Error)]

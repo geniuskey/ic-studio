@@ -70,6 +70,12 @@ enum Cmd {
         /// Add layout parasitic capacitances (also enabled by the saved setup).
         #[arg(long)]
         parasitics: bool,
+        /// Run on both the built-in engine and ngspice and report how far they disagree.
+        #[arg(long)]
+        compare: bool,
+        /// Largest relative error `--compare` accepts (non-zero exit above it).
+        #[arg(long, default_value_t = 0.05)]
+        tol: f64,
     },
     /// Simulate a raw SPICE file using its own dot analyses.
     Spice {
@@ -78,6 +84,12 @@ enum Cmd {
         backend: BackendArg,
         #[arg(long)]
         json: bool,
+        /// Run on both the built-in engine and ngspice and report how far they disagree.
+        #[arg(long)]
+        compare: bool,
+        /// Largest relative error `--compare` accepts (non-zero exit above it).
+        #[arg(long, default_value_t = 0.05)]
+        tol: f64,
     },
     /// Export a cell layout and every cell it places to GDSII, or to OASIS when the output
     /// file ends in `.oas` / `.oasis`.
@@ -344,6 +356,17 @@ fn print_drc(rep: &ics_core::drc::DrcReport, deck: &ics_core::drc::Deck, dbu_per
     println!("{total} violation(s); {} rules on {} shapes in {:.0} ms", rep.rules_run, rep.shapes, rep.millis);
 }
 
+fn print_correlation(deck: &str, analyses: &[ics_core::Analysis], opts: &SimOptions, tol: f64) -> Result<(), String> {
+    let (_, _, c) = ics_sim::correlate(deck, analyses, opts).map_err(|e| e.to_string())?;
+    print!("{}", c.table());
+    match c.worst() {
+        Some(w) if w.rel > tol => {
+            Err(format!("{} {} differs by {:.2} % (tolerance {:.2} %)", w.analysis, w.name, w.rel * 100.0, tol * 100.0))
+        }
+        _ => Ok(()),
+    }
+}
+
 fn print_results(res: &SimResults, json: bool) {
     if json {
         let sets: Vec<_> = res
@@ -462,7 +485,7 @@ fn run(cli: Cli) -> Result<(), String> {
             print!("{}", nl.deck(&r.to_string(), &c.sim));
             p.save().map_err(|e| e.to_string())?;
         }
-        Cmd::Sim { project, cell, backend: b, json, parasitics } => {
+        Cmd::Sim { project, cell, backend: b, json, parasitics, compare, tol } => {
             let p = Project::open(&project).map_err(|e| e.to_string())?;
             let r = resolve(&p, &cell)?;
             let c = p.cell(&r).unwrap();
@@ -482,12 +505,18 @@ fn run(cli: Cli) -> Result<(), String> {
                 opts.ngspice_exe = exe.clone();
             }
             let analyses: Vec<_> = c.sim.enabled().cloned().collect();
+            if compare {
+                return print_correlation(&deck, &analyses, &opts, tol);
+            }
             let res = ics_sim::simulate(&deck, &analyses, &opts).map_err(|e| e.to_string())?;
             print_results(&res, json);
         }
-        Cmd::Spice { file, backend: b, json } => {
+        Cmd::Spice { file, backend: b, json, compare, tol } => {
             let deck = std::fs::read_to_string(&file).map_err(|e| e.to_string())?;
             let opts = SimOptions { backend: backend(b), ..Default::default() };
+            if compare {
+                return print_correlation(&deck, &[], &opts, tol);
+            }
             let res = ics_sim::simulate(&deck, &[], &opts).map_err(|e| e.to_string())?;
             print_results(&res, json);
         }

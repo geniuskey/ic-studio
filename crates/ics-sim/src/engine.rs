@@ -759,6 +759,22 @@ mod tests {
     }
 
     #[test]
+    fn level1_currents_match_the_square_law() {
+        let id = |vg: f64, vd: f64| {
+            let deck = format!(
+                "* m\nVD d 0 {vd}\nVG g 0 {vg}\nM1 d g 0 0 nm w=2u l=1u\n.model nm nmos (vto=0.5 kp=100u lambda=0.1)\n.end"
+            );
+            -engine(&deck).run_op().unwrap().get("i(vd)").unwrap().re[0]
+        };
+        let beta = 100e-6 * 2.0;
+        let sat = 0.5 * beta * 0.5f64.powi(2) * (1.0 + 0.1 * 1.5);
+        assert!((id(1.0, 1.5) - sat).abs() < 1e-9 * sat.max(1.0) + 1e-12, "{} vs {sat}", id(1.0, 1.5));
+        let tri = beta * (0.5 * 0.2 - 0.5 * 0.04) * (1.0 + 0.1 * 0.2);
+        assert!((id(1.0, 0.2) - tri).abs() < 1e-6 * tri, "{} vs {tri}", id(1.0, 0.2));
+        assert!(id(0.4, 1.0).abs() < 1e-9);
+    }
+
+    #[test]
     fn diode_forward() {
         let deck = "* d\nV1 a 0 5\nR1 a k 1k\nD1 k 0 dm\n.model dm d (is=1e-14 n=1)\n.end";
         let mut e = engine(deck);
