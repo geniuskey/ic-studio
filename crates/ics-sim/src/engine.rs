@@ -83,6 +83,8 @@ struct TranState {
     cap_v: Vec<f64>,
     /// Meyer capacitance for the next step (unused for other kinds).
     cap_c: Vec<f64>,
+    /// Meyer capacitance predicted for the end of the step being taken.
+    cap_c_end: Vec<f64>,
     ind_v: Vec<f64>,
     ind_i: Vec<f64>,
 }
@@ -304,8 +306,8 @@ impl Engine {
     }
 
     /// Charge and capacitance of cap `k` at solution `x`. Within a transient step (`state`) a
-    /// Meyer capacitance is the average of its step-start value and its value at `x`; without one
-    /// it is evaluated at `x`.
+    /// Meyer capacitance is the average of its step-start value and its predicted step-end value;
+    /// without a state it is evaluated at `x`.
     fn cap_qc(&self, k: usize, x: &[f64], state: Option<&TranState>) -> (f64, f64) {
         let cp = &self.caps[k];
         let v = self.v(x, cp.a) - self.v(x, cp.b);
@@ -327,7 +329,7 @@ impl Engine {
             }
             CapKind::Meyer { elem, part } => match state {
                 Some(s) => {
-                    let c = 0.5 * (s.cap_c[k] + self.meyer_at(*elem, *part, x));
+                    let c = 0.5 * (s.cap_c[k] + s.cap_c_end[k]);
                     (s.cap_q[k] + c * (v - s.cap_v[k]), c)
                 }
                 None => {
@@ -889,6 +891,7 @@ impl Engine {
         let mut state = TranState {
             cap_q: qc.iter().map(|p| p.0).collect(),
             cap_c: qc.iter().map(|p| p.1).collect(),
+            cap_c_end: qc.iter().map(|p| p.1).collect(),
             cap_v: self.caps.iter().map(|c| self.v(&x, c.a) - self.v(&x, c.b)).collect(),
             cap_i: vec![0.0; self.caps.len()],
             ind_v: vec![0.0; self.inductors.len()],
@@ -913,6 +916,21 @@ impl Engine {
             let mut tries = 0;
             let mut rejects = 0;
             let (xn, iters, lte) = loop {
+                // Meyer capacitance at the step end from the solution extrapolated over the last step,
+                // fixed during the Newton iteration so the charge stays linear within the step.
+                let xp: Vec<f64> = match hist.len() {
+                    n if n >= 2 => {
+                        let ((t0, x0), (t1, x1)) = (&hist[n - 2], &hist[n - 1]);
+                        let k = hs / (t1 - t0);
+                        x1.iter().zip(x0).map(|(a, b)| a + (a - b) * k).collect()
+                    }
+                    _ => x.clone(),
+                };
+                for (k, cp) in self.caps.iter().enumerate() {
+                    if let CapKind::Meyer { elem, part } = cp.kind {
+                        state.cap_c_end[k] = self.meyer_at(elem, part, &xp);
+                    }
+                }
                 let mut xt = x.clone();
                 let mode = Mode::Tran { t: t + hs, h: hs, method, state: &state };
                 match self.newton(&mut xt, mode, GMIN, 60) {
