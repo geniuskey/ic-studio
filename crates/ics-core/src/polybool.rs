@@ -62,6 +62,11 @@ impl PolySet {
         from_rings([points])
     }
 
+    /// The area of several outlines under the nonzero winding rule (holes run the other way).
+    pub fn from_outlines(rings: &[Vec<Point>]) -> PolySet {
+        from_rings(rings)
+    }
+
     pub fn from_rect(r: IRect) -> PolySet {
         from_rings([rect_ring(r)])
     }
@@ -183,6 +188,61 @@ impl PolySet {
                 Geometry::Polygon { points }
             })
             .collect()
+    }
+
+    /// A Manhattan staircase approximation: horizontal bands at most `step` high (band edges at
+    /// every vertex y, so horizontal edges stay exact), each filled where the set crosses the
+    /// band's middle line. Any-angle edges move by at most half a band.
+    pub fn manhattanize(&self, step: i64) -> Region {
+        let step = step.max(1);
+        let edges: Vec<(Point, Point)> =
+            self.rings().flat_map(|r| r.iter().zip(r.iter().cycle().skip(1)).map(|(&a, &b)| (a, b))).collect();
+        let mut ys: Vec<i64> = edges.iter().map(|e| e.0.1).collect();
+        ys.sort_unstable();
+        ys.dedup();
+        let mut rects = Vec::new();
+        let mut xs: Vec<(f64, i32)> = Vec::new();
+        for w in ys.windows(2) {
+            let n = (w[1] - w[0] + step - 1) / step;
+            for k in 0..n {
+                let (y0, y1) = (w[0] + (w[1] - w[0]) * k / n, w[0] + (w[1] - w[0]) * (k + 1) / n);
+                let ym = (y0 + y1) as f64 / 2.0;
+                xs.clear();
+                for &(a, b) in &edges {
+                    if (a.1 as f64) < ym && ym < b.1 as f64 || (b.1 as f64) < ym && ym < a.1 as f64 {
+                        let t = (ym - a.1 as f64) / (b.1 - a.1) as f64;
+                        xs.push((a.0 as f64 + t * (b.0 - a.0) as f64, if b.1 > a.1 { 1 } else { -1 }));
+                    }
+                }
+                xs.sort_by(|p, q| p.0.total_cmp(&q.0));
+                let mut wind = 0;
+                let mut start = 0.0;
+                for &(x, d) in &xs {
+                    let was = wind != 0;
+                    wind += d;
+                    if !was && wind != 0 {
+                        start = x;
+                    } else if was && wind == 0 && x.round() > start.round() {
+                        rects.push(IRect::new(start.round() as i64, y0, x.round() as i64, y1));
+                    }
+                }
+            }
+        }
+        Region::from_rects(rects)
+    }
+
+    /// Whether the point lies inside the set (points on the boundary may go either way).
+    pub fn contains_f(&self, x: f64, y: f64) -> bool {
+        let mut inside = false;
+        for r in self.rings() {
+            for (a, b) in r.iter().zip(r.iter().cycle().skip(1)) {
+                let (ay, by) = (a.1 as f64, b.1 as f64);
+                if (ay > y) != (by > y) && x < a.0 as f64 + (y - ay) / (by - ay) * (b.0 - a.0) as f64 {
+                    inside = !inside;
+                }
+            }
+        }
+        inside
     }
 
     fn rings(&self) -> impl Iterator<Item = &[Point]> {
@@ -1291,5 +1351,17 @@ mod tests {
                 assert!((PolySet::from_geometries(&r.to_geometry()).area2() - r.area2()).abs() <= 100);
             }
         }
+    }
+
+    #[test]
+    fn manhattanize_staircase() {
+        let r = PolySet::from_rect(IRect::new(3, 7, 40, 50)).manhattanize(10);
+        assert_eq!(r, Region::from_rects([IRect::new(3, 7, 40, 50)]));
+        let diamond = PolySet::from_polygon(&[(0, 0), (1000, -1000), (3000, 1000), (2000, 2000)]);
+        let r = diamond.manhattanize(10);
+        assert_eq!(r.bbox(), Some(IRect::new(5, -1000, 2995, 2000)));
+        assert!((r.area() as f64 - diamond.area()).abs() < diamond.area() * 0.01);
+        assert_eq!(r.parts().len(), 1);
+        assert!(diamond.contains_f(1500.0, 500.0) && !diamond.contains_f(100.0, 1500.0));
     }
 }

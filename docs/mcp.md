@@ -64,7 +64,7 @@ The server has 34 tools:
 | `run_spice` | Simulate a raw SPICE deck |
 | `layout_summary` | Bounding box, shapes per layer, labels and instances |
 | `add_rect`, `add_path`, `add_label` | Draw shapes; a label on a routing layer names the net under it |
-| `place_instance`, `place_pcell` | Place a cell or a PCell (`nmos`, `pmos` with an optional PDK `device`, `poly_res`, `mom_cap`) |
+| `place_instance`, `place_pcell` | Place a cell or a [PCell](pcells.md) (`nmos`, `pmos` with an optional PDK `device`, `poly_res`, `mom_cap`, `ntap`, `ptap`) |
 | `delete_items` | Delete shapes / instances by id |
 | `generate_layout` | Schematic-driven placement with matching (no wiring) |
 | `flylines` | List unrouted connections |

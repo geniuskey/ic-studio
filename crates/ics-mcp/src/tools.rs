@@ -586,10 +586,10 @@ pub fn definitions() -> Vec<Value> {
             ),
             json!({
                 "cell": edit_cell(),
-                "kind": {"type": "string", "enum": ["nmos", "pmos", "poly_res", "mom_cap"]},
+                "kind": {"type": "string", "enum": ["nmos", "pmos", "poly_res", "mom_cap", "ntap", "ptap"]},
                 "params": {
                     "type": "object",
-                    "description": "Sizes in µm. nmos/pmos: w (per finger, default 1 / 2), l (default 0.18), fingers (default 1), device (PDK device name, e.g. a low-Vt model; default: the technology's default device). poly_res: w (0.4), l (5). mom_cap: w (5), h (5).",
+                    "description": "Sizes in µm. nmos/pmos: w (per finger, default 1 / 2), l (default 0.18), fingers (default 1), device (PDK device name, e.g. a low-Vt model; default: the technology's default device). poly_res: w (0.4), l (5). mom_cap: w (5), h (5). ntap/ptap: w (tap height, 1).",
                     "properties": {"w": {"type": "number"}, "l": {"type": "number"}, "h": {"type": "number"}, "fingers": {"type": "integer", "minimum": 1}, "device": {"type": "string"}},
                     "additionalProperties": false,
                 },
@@ -1432,7 +1432,7 @@ impl State {
             "by_rule": rules,
             "rules_run": rep.rules_run,
             "shapes_checked": rep.shapes,
-            "non_manhattan_skipped": rep.skipped,
+            "any_angle_shapes": rep.any_angle,
             "millis": sig(rep.millis),
         });
         if !deck_notes.is_empty() {

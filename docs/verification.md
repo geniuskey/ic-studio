@@ -28,8 +28,12 @@ generated patterns; see [DRC Rule Designer](tools.md#drc-rule-designer).
 A layer that fails a `density` rule can be filled with **Tools > Dummy Fill** (see
 [Dummy Fill](tools.md#dummy-fill)).
 
-DRC checks Manhattan geometry; other shapes are skipped and counted. Distances between
-corners are Euclidean.
+Distances between corners are Euclidean. Any-angle (for example 45°) shapes are checked
+exactly by `width`, `space`, `separation`, `enclosure` and `extension`: distances are
+measured edge to edge on the true polygons, distances within 3/4 dbu of the limit pass
+(vertices off 45° lines are rounded to the grid) and acute corners are flagged. The other
+rules (`area`, `density`, `antenna` and derived selections) see any-angle shapes as a
+staircase of 10 dbu bands.
 
 ### Live DRC
 
@@ -58,7 +62,12 @@ How the extractor works:
 
 - Conducting layers are the layers joined by vias. Diffusion is `active` minus `poly`.
 - A transistor is `poly` over `active`. It is PMOS when it is inside `pplus` (or inside
-  `nwell` when there is no implant). L is measured across the gate; W is area / L.
+  `nwell` when there is no implant). L is measured across the gate; W is area / L. Bent,
+  ring and 45° gates take W from the mean of the source and drain edge lengths, with the
+  PDK's `bend_corner` correction (see
+  [Device shapes](pcells.md#device-shapes-extraction-understands)).
+- Any-angle shapes are approximated by a fine staircase for connectivity; gate W / L use
+  the exact geometry.
 - Net names come from labels in the top cell on conducting layers. Unnamed nets are called
   `netN`.
 - Warnings report labels not on conducting geometry, two labels shorted together, and a

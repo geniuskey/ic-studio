@@ -406,7 +406,7 @@ impl LayoutEditor {
                 r.rules_run,
                 r.shapes,
                 r.millis,
-                if r.skipped > 0 { format!(" · {} non-Manhattan skipped", r.skipped) } else { String::new() }
+                if r.skipped > 0 { format!(" · {} without a location", r.skipped) } else { String::new() }
             );
             ui.label(egui::RichText::new(summary).small().color(pal.text_weak));
             if r.violations.is_empty() {

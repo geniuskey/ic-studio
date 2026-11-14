@@ -249,27 +249,15 @@ See [Tools](tools.md#layout-generators) for the options.
 
 ## PCells
 
-![PCells](screenshots/10_layout_pcells.png)
+Parametric cells (`nmos`, `pmos`, `poly_res`, `mom_cap`, and the `ntap` / `ptap` taps) are
+generated from the technology and stored as ordinary cells in the `pcells` library (for
+example `nmos_w1000_l180_nf2`). To place one, press `I`, choose the PCell in the left panel,
+set its parameters and click. To change a placed PCell, select it, edit the parameters in
+the **PCell** section of the inspector and press **Apply**.
 
-Parametric cells are generated from the technology and stored as ordinary cells in the
-`pcells` library (for example `nmos_w1000_l180_nf2`).
-
-| PCell | Parameters | Defaults |
-|---|---|---|
-| `nmos` | W, L, fingers, device | W 1 µm, L 0.18 µm, 1 finger |
-| `pmos` | W, L, fingers, device | W 2 µm, L 0.18 µm, 1 finger |
-| `poly_res` | W, L | W 0.4 µm, L 5 µm |
-| `mom_cap` | W, H | 5 µm x 5 µm |
-
-**Device** appears when the technology is a PDK with several MOS devices of that polarity
-(for example low- and high-Vt variants): the PCell then draws that device's marker layers,
-and the variant name ends with the device name. The default is the PDK's first device.
-
-To place one, press `I`, choose the PCell in the left panel, set its parameters and click.
-To change a placed PCell, select it, edit the parameters in the **PCell** section of the
-inspector and press **Apply**. Well and substrate taps (`ntap`, `ptap`) are created by
-[schematic-driven layout](schematic-driven-layout.md); their parameters can be edited in
-the inspector the same way.
+[PCells and custom devices](pcells.md) covers the parameters, how variants are stored, what
+a PDK must provide, which device shapes extraction understands (including L- and U-shaped
+active) and how to write your own device generator in SKILL.
 
 ## SKILL scripts
 
@@ -318,7 +306,7 @@ Supported:
 Coordinates are in µm. A layer is a name, `list(name purpose)` or a layer index; a purpose
 other than `drawing` first looks for a layer named `name.purpose` or `name_purpose`.
 Variables are dynamically scoped as in `.il` files. Not supported: schematic views, PCell
-definitions (`pcDefinePCell`), interactive `hi*` / `le*` forms and SKILL++ (`.ils`) lexical
+definitions (`pcDefinePCell`; see [Your own device generators](pcells.md#your-own-device-generators)), interactive `hi*` / `le*` forms and SKILL++ (`.ils`) lexical
 scoping.
 
 ## GDSII

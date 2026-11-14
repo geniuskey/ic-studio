@@ -342,9 +342,6 @@ fn print_drc(rep: &ics_core::drc::DrcReport, deck: &ics_core::drc::Deck, dbu_per
         }
     }
     println!("{total} violation(s); {} rules on {} shapes in {:.0} ms", rep.rules_run, rep.shapes, rep.millis);
-    if rep.skipped > 0 {
-        eprintln!("warning: {} non-Manhattan shape(s) were not checked", rep.skipped);
-    }
 }
 
 fn print_results(res: &SimResults, json: bool) {

@@ -36,7 +36,9 @@
 //! `<layer>.ANT`, `<layer>.DEN` and `<layer>.FLAG`.
 //!
 //! Every check works on the merged geometry of each layer (all Manhattan shapes of the
-//! flattened top cell; labels are ignored and non-Manhattan shapes are skipped and counted).
+//! flattened top cell; labels are ignored). Any-angle shapes enter as a staircase of 10 dbu bands;
+//! near them `width`, `space`, `separation`, `enclosure` and `extension` are recomputed on the
+//! exact polygons (see [`any_angle`]).
 //! Coordinates are integers, so a region is a set of 1 x 1 dbu pixels and the morphology
 //! below is exact for any (odd or even) MIN. Facing edges are measured across; corner-to-corner
 //! distances in `space` and `separation` are Euclidean (`sqrt(dx² + dy²)`). Sizing (`size`,
@@ -82,8 +84,11 @@ use rstar::{AABB, RTree, RTreeObject};
 use crate::geom::IRect;
 use crate::hier::{CellBoxes, FlatShape, LayoutSource, flat_bbox, flatten, flatten_in, flatten_in_cached};
 use crate::layout::{CellInst, Geometry, Layout, Trans};
+use crate::polybool::PolySet;
 use crate::project::CellRef;
 use crate::region::{BoolOp, Region};
+
+mod any_angle;
 use crate::tech::Tech;
 
 /// Markers reported per rule; further pieces are only counted.
@@ -499,7 +504,10 @@ pub struct DrcReport {
     pub rules_run: usize,
     /// Flattened shapes checked.
     pub shapes: usize,
-    /// Shapes skipped because they are not Manhattan.
+    /// Any-angle shapes: checked exactly by `width`, `space`, `separation`, `enclosure` and
+    /// `extension`, through a staircase of 10 dbu bands by the other rules.
+    pub any_angle: usize,
+    /// External sign-off results without a location.
     pub skipped: usize,
     pub millis: f64,
     /// Rules with more than [`MAX_VIOLATIONS_PER_RULE`] violations and their full count.
@@ -967,18 +975,18 @@ fn group_boxes(boxes: &[IRect], pad: i64) -> Vec<Vec<usize>> {
     groups
 }
 
-/// Shapes checked, non-Manhattan shapes skipped and the bounding box of the cell's own shapes.
+/// Shapes checked, any-angle shapes among them and the bounding box of the cell's own shapes.
 fn own_counts(l: &Layout, n: usize) -> (usize, usize, Option<IRect>) {
-    let (mut shapes, mut skipped, mut bbox) = (0, 0, None::<IRect>);
+    let (mut shapes, mut any_angle, mut bbox) = (0, 0, None::<IRect>);
     for s in l.shapes.iter().filter(|s| s.layer < n && !matches!(s.geom, Geometry::Label { .. })) {
         shapes += 1;
         if !matches!(s.geom, Geometry::Rect(_)) && Region::from_geometry(&s.geom).is_err() {
-            skipped += 1;
+            any_angle += 1;
         }
         let b = s.bbox();
         bbox = Some(bbox.map_or(b, |x| x.union(&b)));
     }
-    (shapes, skipped, bbox)
+    (shapes, any_angle, bbox)
 }
 
 /// The checked result of one cell definition.
@@ -988,7 +996,7 @@ struct CellDrc {
     /// Bounding box of the flattened shapes.
     bbox: Option<IRect>,
     shapes: usize,
-    skipped: usize,
+    any_angle: usize,
     /// Levels of hierarchy below the cell.
     height: u32,
 }
@@ -1094,9 +1102,9 @@ impl HierDrc {
 
     pub fn run(&mut self, top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> DrcReport {
         let start = Instant::now();
-        let (regions, shapes, skipped) = self.regions(top, src);
+        let (regions, shapes, any_angle) = self.regions(top, src);
         let mut rep = report_of(&self.deck, tech, &regions, None);
-        (rep.shapes, rep.skipped) = (shapes, skipped);
+        (rep.shapes, rep.any_angle) = (shapes, any_angle);
         rep.millis = start.elapsed().as_secs_f64() * 1000.0;
         rep
     }
@@ -1105,15 +1113,15 @@ impl HierDrc {
         (0..self.deck.rules.len()).filter(|&k| f(self.scope[k])).collect()
     }
 
-    /// Every rule's violation region of `top`, the shapes checked and skipped.
+    /// Every rule's violation region of `top`, the shapes checked and the any-angle ones.
     fn regions(&mut self, top: &Layout, src: &dyn LayoutSource) -> (Vec<Region>, usize, usize) {
         match self.check_layout(top, src, 0) {
-            Some(c) => (self.fill_flat(c.regions, top, src), c.shapes, c.skipped),
+            Some(c) => (self.fill_flat(c.regions, top, src), c.shapes, c.any_angle),
             None => {
                 let all: Vec<usize> = (0..self.deck.rules.len()).collect();
                 let used = used_layers(&self.deck, self.n, all.iter().copied());
                 let layers = layers_of(&self.deck, self.n, &flatten(top, src, MAX_DEPTH), &used, true);
-                (self.checks(&layers, &all, true), layers.shapes, layers.skipped)
+                (self.checks(&layers, &all, true), layers.shapes, layers.any_angle)
             }
         }
     }
@@ -1134,9 +1142,7 @@ impl HierDrc {
 
     /// Rule regions of `rules` (others empty).
     fn checks(&self, layers: &Layers, rules: &[usize], parallel: bool) -> Vec<Region> {
-        let empty = Region::default();
-        let layer = |l: usize| layers.regions.get(l).unwrap_or(&empty);
-        let f = |k: &usize| check(&self.deck.rules[*k].rule, &layer, layers.extent);
+        let f = |k: &usize| layers.check(&self.deck, &self.deck.rules[*k].rule, layers.extent);
         let res: Vec<Region> = if parallel { par_map(rules, f) } else { rules.iter().map(f).collect() };
         let mut out = vec![Region::default(); self.deck.rules.len()];
         for (&k, r) in rules.iter().zip(res) {
@@ -1172,14 +1178,14 @@ impl HierDrc {
         Some(out)
     }
 
-    /// Shapes and skipped shapes of `l` flattened.
+    /// Shapes and any-angle shapes of `l` flattened.
     fn counts(&mut self, l: &Layout, src: &dyn LayoutSource) -> Option<(usize, usize)> {
-        let (mut shapes, mut skipped, _) = own_counts(l, self.n);
+        let (mut shapes, mut any_angle, _) = own_counts(l, self.n);
         for (inst, c) in self.children(l, src, 0)? {
             shapes += c.shapes * inst.count() as usize;
-            skipped += c.skipped * inst.count() as usize;
+            any_angle += c.any_angle * inst.count() as usize;
         }
-        Some((shapes, skipped))
+        Some((shapes, any_angle))
     }
 
     fn check_layout(&mut self, l: &Layout, src: &dyn LayoutSource, depth: u32) -> Option<CellDrc> {
@@ -1189,7 +1195,7 @@ impl HierDrc {
         let used = used_layers(&self.deck, self.n, rules.iter().copied());
         let own: Vec<FlatShape> = l.shapes.iter().map(|s| FlatShape { layer: s.layer, geom: s.geom.clone(), id: None }).collect();
         let own_regions = self.checks(&layers_of(&self.deck, self.n, &own, &used, true), &rules, true);
-        let (mut shapes, mut skipped, mut bbox) = own_counts(l, self.n);
+        let (mut shapes, mut any_angle, mut bbox) = own_counts(l, self.n);
         let mut items: Vec<(IRect, usize)> = l
             .shapes
             .iter()
@@ -1199,7 +1205,7 @@ impl HierDrc {
         let mut elems: Vec<(Trans, usize)> = Vec::new();
         for (ci, (inst, c)) in children.iter().enumerate() {
             shapes += c.shapes * inst.count() as usize;
-            skipped += c.skipped * inst.count() as usize;
+            any_angle += c.any_angle * inst.count() as usize;
             let Some(cb) = c.bbox else { continue };
             let b = inst.bbox(cb);
             bbox = Some(bbox.map_or(b, |x| x.union(&b)));
@@ -1212,7 +1218,7 @@ impl HierDrc {
                 }
             }
         }
-        let done = |regions: Vec<Region>| Some(CellDrc { regions, bbox, shapes, skipped, height });
+        let done = |regions: Vec<Region>| Some(CellDrc { regions, bbox, shapes, any_angle, height });
         let Some(extent) = bbox.filter(|_| !elems.is_empty()) else { return done(own_regions) };
         let z = interactions(&items, self.halo);
         if z.area() * 2 > rect_area(&grown(extent, self.halo)) {
@@ -1278,10 +1284,8 @@ impl HierDrc {
             |(target, exact), flat| {
                 let layers = layers_of(&self.deck, self.n, flat, &used, false);
                 let mut out = Found::default();
-                let empty = Region::default();
-                let layer = |l: usize| layers.regions.get(l).unwrap_or(&empty);
                 for &k in rules.iter().filter(|&&k| self.scope[k] == Scope::Local) {
-                    out.res.push((k, check(&self.deck.rules[k].rule, &layer, None).boolean(target, BoolOp::And)));
+                    out.res.push((k, layers.check(&self.deck, &self.deck.rules[k].rule, None).boolean(target, BoolOp::And)));
                 }
                 for &pl in &piece_layers {
                     self.pieces(&layers, pl, target, *exact, full, &mut out);
@@ -1384,10 +1388,8 @@ impl HierDrc {
             return;
         }
         let done = Region::from_rects(done);
-        let empty = Region::default();
-        let layer = |l: usize| layers.regions.get(l).unwrap_or(&empty);
         for k in (0..self.deck.rules.len()).filter(|&k| self.scope[k] == Scope::Piece(pl)) {
-            out.res.push((k, check(&self.deck.rules[k].rule, &layer, None).boolean(&done, BoolOp::And)));
+            out.res.push((k, layers.check(&self.deck, &self.deck.rules[k].rule, None).boolean(&done, BoolOp::And)));
         }
         out.pieces.push((pl, done));
     }
@@ -1429,9 +1431,9 @@ impl DrcSession {
     pub fn new(deck: &Deck, top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Self {
         let start = Instant::now();
         let mut hier = HierDrc::new(deck, tech);
-        let (regions, shapes, skipped) = hier.regions(top, src);
+        let (regions, shapes, any_angle) = hier.regions(top, src);
         let mut s = Self { hier, parts: par_map(&regions, Region::parts), report: DrcReport::default() };
-        s.publish(tech, shapes, skipped, start);
+        s.publish(tech, shapes, any_angle, start);
         s
     }
 
@@ -1453,8 +1455,8 @@ impl DrcSession {
         let h = self.hier.halo;
         let z = Region::from_rects(dirty.iter().map(|d| grown(*d, h)));
         let extent = flat_bbox(top, src, MAX_DEPTH, &mut CellBoxes::new());
-        let (shapes, skipped) = match (self.hier.counts(top, src), extent) {
-            (Some((shapes, skipped)), Some(extent)) if z.area() * 2 <= rect_area(&grown(extent, h)) => {
+        let (shapes, any_angle) = match (self.hier.counts(top, src), extent) {
+            (Some((shapes, any_angle)), Some(extent)) if z.area() * 2 <= rect_area(&grown(extent, h)) => {
                 let zone = self.hier.zone(top, src, &z, extent, 0);
                 let local = self.hier.rules(|s| s != Scope::Flat);
                 for k in local {
@@ -1468,21 +1470,21 @@ impl DrcSession {
                         self.parts[k] = regions[k].parts();
                     }
                 }
-                (shapes, skipped)
+                (shapes, any_angle)
             }
             _ => {
-                let (regions, shapes, skipped) = self.hier.regions(top, src);
+                let (regions, shapes, any_angle) = self.hier.regions(top, src);
                 self.parts = par_map(&regions, Region::parts);
-                (shapes, skipped)
+                (shapes, any_angle)
             }
         };
-        self.publish(tech, shapes, skipped, start);
+        self.publish(tech, shapes, any_angle, start);
         &self.report
     }
 
-    fn publish(&mut self, tech: &Tech, shapes: usize, skipped: usize, start: Instant) {
+    fn publish(&mut self, tech: &Tech, shapes: usize, any_angle: usize, start: Instant) {
         self.report = report_parts(&self.hier.deck, tech, &self.parts, None);
-        (self.report.shapes, self.report.skipped) = (shapes, skipped);
+        (self.report.shapes, self.report.any_angle) = (shapes, any_angle);
         self.report.millis = start.elapsed().as_secs_f64() * 1000.0;
     }
 }
@@ -1492,11 +1494,9 @@ fn run_shapes(deck: &Deck, flat: Vec<FlatShape>, tech: &Tech, window: Option<IRe
     let n = tech.layers.len();
     let used = used_layers(deck, n, 0..deck.rules.len());
     let layers = layers_of(deck, n, &flat, &used, true);
-    let empty = Region::default();
-    let layer = |l: usize| layers.regions.get(l).unwrap_or(&empty);
-    let results = par_map(&deck.rules, |nr| check(&nr.rule, &layer, layers.extent));
+    let results = par_map(&deck.rules, |nr| layers.check(deck, &nr.rule, layers.extent));
     let mut report = report_of(deck, tech, &results, window);
-    (report.shapes, report.skipped) = (layers.shapes, layers.skipped);
+    (report.shapes, report.any_angle) = (layers.shapes, layers.any_angle);
     report.millis = start.elapsed().as_secs_f64() * 1000.0;
     report
 }
@@ -1524,13 +1524,16 @@ fn used_layers(deck: &Deck, n: usize, rules: impl IntoIterator<Item = usize>) ->
 struct Layers {
     regions: Vec<Region>,
     shapes: usize,
-    skipped: usize,
+    any_angle: usize,
     extent: Option<IRect>,
+    any: any_angle::AnyAngle,
+    n: usize,
 }
 
 fn layers_of(deck: &Deck, n: usize, flat: &[FlatShape], used: &[bool], parallel: bool) -> Layers {
     let mut rects: Vec<Vec<IRect>> = vec![Vec::new(); n];
-    let (mut shapes, mut skipped) = (0, 0);
+    let mut any = any_angle::AnyAngle::default();
+    let (mut shapes, mut any_count) = (0, 0);
     let mut extent: Option<IRect> = None;
     for f in flat {
         if f.layer >= n || matches!(f.geom, Geometry::Label { .. }) {
@@ -1545,9 +1548,19 @@ fn layers_of(deck: &Deck, n: usize, flat: &[FlatShape], used: &[bool], parallel:
             g => match Region::from_geometry(g) {
                 Ok(r) if used[f.layer] => rects[f.layer].extend_from_slice(r.rects()),
                 Ok(_) => {}
-                Err(_) => skipped += 1,
+                Err(_) => {
+                    any_count += 1;
+                    if used[f.layer] {
+                        any.shapes.push((f.layer, g.clone()));
+                    }
+                }
             },
         }
+    }
+    let stairs = par_map(&any.shapes, |(l, g)| (*l, PolySet::from_geometry(g).manhattanize(any_angle::STAIR)));
+    for (l, st) in stairs {
+        any.manhattan.entry(l).or_insert_with(|| Region::from_rects(rects[l].iter().copied()));
+        rects[l].extend_from_slice(st.rects());
     }
     let merge = |r: &Vec<IRect>| Region::from_rects(r.iter().copied());
     let mut regions = if parallel { par_map(&rects, merge) } else { rects.iter().map(merge).collect() };
@@ -1555,7 +1568,21 @@ fn layers_of(deck: &Deck, n: usize, flat: &[FlatShape], used: &[bool], parallel:
         let r = if used[n + k] { d.expr.eval(&regions, extent) } else { Region::default() };
         regions.push(r);
     }
-    Layers { regions, shapes, skipped, extent }
+    Layers { regions, shapes, any_angle: any_count, extent, any, n }
+}
+
+impl Layers {
+    /// The violation region of `rule`, exact near any-angle shapes.
+    fn check(&self, deck: &Deck, rule: &Rule, extent: Option<IRect>) -> Region {
+        let empty = Region::default();
+        any_angle::refine(deck, self.n, &self.regions, &self.any, rule, |manhattan_only| {
+            let layer = |l: usize| {
+                let man = if manhattan_only { self.any.manhattan.get(&l) } else { None };
+                man.or(self.regions.get(l)).unwrap_or(&empty)
+            };
+            check(rule, &layer, extent)
+        })
+    }
 }
 
 /// Violations of the rule regions `results` (one per deck rule), only those touching `window`.
@@ -1610,7 +1637,7 @@ fn par_windows<G: Sync, R: Send>(
     out
 }
 
-fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+pub(crate) fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
     let workers = std::thread::available_parallelism().map_or(1, |n| n.get()).min(items.len());
     if workers <= 1 {
         return items.iter().map(f).collect();
@@ -1652,6 +1679,9 @@ fn check<'a>(rule: &Rule, layer: &impl Fn(usize) -> &'a Region, extent: Option<I
         Rule::Enclosure { inner, outer, min } => {
             let outer = layer(outer);
             let (hit, _) = split_overlapping(layer(inner), outer);
+            if hit.is_empty() {
+                return hit;
+            }
             hit.boolean(&outer.sized(-min), BoolOp::Not)
         }
         Rule::Extension { a, b, min } => extension(layer(a), layer(b), min),
@@ -1946,6 +1976,9 @@ fn extension(a: &Region, b: &Region, min: i64) -> Region {
 
 /// Pieces of `a` that overlap `b` (positive area) and the remaining pieces.
 fn split_overlapping(a: &Region, b: &Region) -> (Region, Region) {
+    if a.is_empty() {
+        return (Region::default(), Region::default());
+    }
     if b.is_empty() {
         return (Region::default(), a.clone());
     }
@@ -2352,7 +2385,7 @@ mod tests {
     }
 
     #[test]
-    fn hierarchy_skipped_and_cap() {
+    fn hierarchy_any_angle_and_cap() {
         let t = tech();
         let leaf = CellRef::new("w", "leaf");
         let mut src = HashMap::new();
@@ -2362,15 +2395,51 @@ mod tests {
         top.add(li("metal1"), Geometry::Polygon { points: vec![(0, 0), (100, 0), (50, 80)] });
         top.add(li("text"), Geometry::Label { text: "x".into(), at: (0, 0), size: 10 });
         let rep = run(&parse_deck("width metal1 0.23", &t).unwrap(), &top, &src, &t);
-        assert_eq!((rep.shapes, rep.skipped, rep.rules_run), (2, 1, 1));
-        assert_eq!(rep.violations[0].marker, r(5000, 0, 5100, 1000));
-        assert_eq!(rep.violations[0].layer, Some(li("metal1")));
+        assert_eq!((rep.shapes, rep.any_angle, rep.rules_run), (2, 1, 1));
+        assert_eq!(rep.violations.len(), 2, "{:?}", rep.violations);
+        assert!(rep.violations.iter().any(|v| v.marker == r(5000, 0, 5100, 1000)));
+        assert!(rep.violations.iter().all(|v| v.layer == Some(li("metal1"))));
 
         let bars: Vec<(&str, Coords)> =
             (0..MAX_VIOLATIONS_PER_RULE as i64 + 5).map(|i| ("metal1", (i * 1000, 0, i * 1000 + 100, 1000))).collect();
         let rep = run(&parse_deck("width metal1 0.23", &t).unwrap(), &layout(&bars), &NoCells, &t);
         assert_eq!(rep.violations.len(), MAX_VIOLATIONS_PER_RULE);
         assert_eq!(rep.capped, [("metal1.W".to_string(), MAX_VIOLATIONS_PER_RULE + 5)]);
+    }
+
+    #[test]
+    fn any_angle_rules() {
+        let t = tech();
+        let deck = parse_deck(
+            "width metal1 0.23
+space metal1 0.23
+extension poly active 0.22",
+            &t,
+        )
+        .unwrap();
+        let path = |x: i64, w: i64| Geometry::Path { points: vec![(x, 0), (x + 5000, 5000)], width: w };
+        let rules = |shapes: Vec<(&str, Geometry)>| {
+            let mut l = Layout::default();
+            for (n, g) in shapes {
+                l.add(li(n), g);
+            }
+            let rep = run(&deck, &l, &NoCells, &t);
+            assert_eq!(rep.violations.len(), run_hier(&deck, &l, &NoCells, &t).violations.len());
+            rep.violations.into_iter().map(|v| v.rule).collect::<Vec<_>>()
+        };
+        // 45° wires at the minimum width and spacing (offset 0.23 µm · 2√2 apart) are clean.
+        assert!(rules(vec![("metal1", path(0, 230)), ("metal1", path(651, 230))]).is_empty());
+        assert_eq!(rules(vec![("metal1", path(0, 200))]), ["metal1.W"]);
+        assert_eq!(rules(vec![("metal1", path(0, 230)), ("metal1", path(620, 230))]), ["metal1.S"]);
+        // A wire leaving a pad at 45° is one shape; squares 0.2 µm apart diagonally are 0.28 µm away.
+        assert!(rules(vec![("metal1", Geometry::Rect(r(-1000, -1000, 500, 500))), ("metal1", path(0, 300))]).is_empty());
+        let poly = Geometry::Polygon { points: vec![(1200, 1200), (2200, 1200), (2200, 2200), (1300, 2200), (1200, 2100)] };
+        assert!(rules(vec![("metal1", Geometry::Rect(r(0, 0, 1000, 1000))), ("metal1", poly)]).is_empty());
+        // A 45° gate needs its end cap measured from the active edge.
+        let active = ("active", Geometry::Rect(r(0, 0, 4000, 2000)));
+        let gate = |ext: i64| Geometry::Path { points: vec![(500 - ext, -ext), (2500 + ext, 2000 + ext)], width: 180 };
+        assert!(rules(vec![active.clone(), ("poly", gate(400))]).is_empty());
+        assert_eq!(rules(vec![active, ("poly", gate(80))]), ["poly.EX.active", "poly.EX.active"]);
     }
 
     #[test]
@@ -2381,7 +2450,7 @@ mod tests {
             let rep = run_tech_deck(lay, &p, &p.tech).unwrap();
             let found: Vec<String> = rep.violations.iter().map(|v| format!("{} {:?}", v.rule, v.marker)).collect();
             assert!(found.is_empty(), "{cell}: {found:#?}");
-            assert_eq!(rep.skipped, 0);
+            assert_eq!(rep.any_angle, 0);
         }
     }
 
@@ -2457,8 +2526,8 @@ mod tests {
         let hier = h.run(top, src, t);
         assert_eq!(hier.violations, flat.violations);
         assert_eq!(
-            (hier.shapes, hier.skipped, hier.rules_run, &hier.capped),
-            (flat.shapes, flat.skipped, flat.rules_run, &flat.capped)
+            (hier.shapes, hier.any_angle, hier.rules_run, &hier.capped),
+            (flat.shapes, flat.any_angle, flat.rules_run, &flat.capped)
         );
         (flat, h.zoned)
     }

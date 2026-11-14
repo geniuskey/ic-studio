@@ -1,6 +1,8 @@
 //! Layout connectivity extraction and MOS device recognition.
 //!
-//! Works on the flattened top cell with Manhattan region operations:
+//! Works on the flattened top cell with Manhattan region operations; any-angle shapes are
+//! replaced by a staircase approximation (bands of the grid, at least 10 dbu, up to a quarter of
+//! the shape's thickness and 4 grid steps):
 //! - Layers are found through the technology's [`LayerRoles`](crate::tech::LayerRoles).
 //! - Conducting layers are the bottom / top layers of the technology vias. The diffusion layers
 //!   merge into one conductor, `diffusion NOT poly`, so gates split it into source / drain pieces.
@@ -10,7 +12,12 @@
 //! - Well taps: `n+` diffusion inside nwell joins the well, `p+` diffusion outside it joins the
 //!   global substrate net "sub".
 //! - Gates are the pieces of `diffusion AND poly`. PMOS when inside the p implant (or, without an
-//!   implant, inside nwell). L is measured across the two diffusion pieces, W = area / L. The
+//!   implant, inside nwell). For a rectangular gate L is measured across the two diffusion
+//!   pieces and W = area / L. Any other gate (bent, ring, any-angle) must touch exactly two
+//!   diffusion pieces: L = area / mean edge, where the mean edge is the mean of the source and
+//!   drain edge lengths, and W is the mean edge less `1 - bend_corner` of the corner squares
+//!   ([`DeviceRules::bend_corner`](crate::tech::DeviceRules::bend_corner)), from the exact
+//!   any-angle geometry when there is any. The
 //!   model is the first PDK device ([`Tech::devices`]) of that polarity whose marker layers
 //!   cover the gate, else the generic `nmos` / `pmos`.
 //! - Junctions: each source / drain diffusion piece contributes its area and its perimeter
@@ -18,6 +25,8 @@
 //!   abutted devices) is split equally between them.
 //! - Resistors ([`Tech::resistors`]): the marked body is cut out of its conducting layer; the
 //!   pieces touching two opposite sides are the terminals, R = sheet · L / W with W = area / L.
+//!   A bent or any-angle body must join exactly two pieces and is measured like a bent gate
+//!   (without corner correction).
 //! - Capacitors ([`Tech::capacitors`]): each marked overlap of the two plate layers, between
 //!   the bottom and top plate nets.
 
@@ -28,6 +37,7 @@ use rstar::{AABB, RTree, RTreeObject};
 use crate::geom::IRect;
 use crate::hier::{LayoutSource, flatten};
 use crate::layout::{Geometry, Layout};
+use crate::polybool::PolySet;
 use crate::region::{BoolOp, Region};
 use crate::tech::{MosType, Tech};
 
@@ -317,6 +327,119 @@ fn ends(plane: &Plane, bb: IRect) -> Option<(usize, usize, i64)> {
     }
 }
 
+fn ring_length(r: &[(i64, i64)]) -> f64 {
+    r.iter().zip(r.iter().cycle().skip(1)).map(|(a, b)| ((b.0 - a.0) as f64).hypot((b.1 - a.1) as f64)).sum()
+}
+
+/// Components of `plane` touching the gate made of `rs`, with the length of edge each shares
+/// with it.
+fn sd_pieces(plane: &Plane, rs: &[IRect]) -> BTreeMap<usize, i64> {
+    let mut out = BTreeMap::new();
+    for r in rs {
+        let sides = [
+            (IRect::new(r.x0 - 1, r.y0, r.x0, r.y1), true),
+            (IRect::new(r.x1, r.y0, r.x1 + 1, r.y1), true),
+            (IRect::new(r.x0, r.y0 - 1, r.x1, r.y0), false),
+            (IRect::new(r.x0, r.y1, r.x1, r.y1 + 1), false),
+        ];
+        for (strip, vertical) in sides {
+            for e in plane.candidates(strip).filter(|e| e.rect.intersects(&strip)) {
+                let q = e.rect;
+                let len =
+                    if vertical { q.y1.min(strip.y1) - q.y0.max(strip.y0) } else { q.x1.min(strip.x1) - q.x0.max(strip.x0) };
+                *out.entry(plane.comp[e.idx]).or_insert(0) += len;
+            }
+        }
+    }
+    out
+}
+
+/// The original geometry, for measuring devices near any-angle shapes exactly.
+struct Exact {
+    /// Manhattan rects per layer (empty when there are no any-angle shapes).
+    man: Vec<Vec<IRect>>,
+    odd: Vec<(usize, Geometry)>,
+    /// The largest staircase band.
+    step: i64,
+}
+
+impl Exact {
+    /// Whether an any-angle shape on `layers` lies within a band of `bb`.
+    fn near(&self, layers: &[usize], bb: IRect) -> bool {
+        let reach = IRect::new(bb.x0 - self.step, bb.y0 - self.step, bb.x1 + self.step, bb.y1 + self.step);
+        self.odd.iter().any(|(l, g)| layers.contains(l) && g.bbox().intersects(&reach))
+    }
+
+    /// The staircase piece `rs` grown past the staircase error, and its extent.
+    fn clip(&self, rs: &[IRect]) -> (PolySet, IRect) {
+        let clip = Region::from_rects(rs.iter().copied()).sized(self.step);
+        let win = clip.bbox().unwrap_or_default();
+        (PolySet::from_region(&clip), win)
+    }
+
+    /// Union of `layers` within `win`.
+    fn layer(&self, layers: &[usize], win: IRect) -> PolySet {
+        let geoms: Vec<Geometry> = layers
+            .iter()
+            .flat_map(|&l| self.man.get(l).into_iter().flatten())
+            .filter(|r| r.intersects(&win))
+            .map(|&r| Geometry::Rect(r))
+            .chain(self.odd.iter().filter(|(l, g)| layers.contains(l) && g.bbox().intersects(&win)).map(|(_, g)| g.clone()))
+            .collect();
+        PolySet::from_geometries(&geoms).boolean(&PolySet::from_rect(win), BoolOp::And)
+    }
+
+    /// Length of the edges of `body` against `conductor`, per terminal piece (`side` names the
+    /// piece at a point).
+    fn terminal_edges(
+        &self,
+        body: &PolySet,
+        conductor: &PolySet,
+        side: impl Fn((i64, i64)) -> Option<usize>,
+    ) -> BTreeMap<usize, f64> {
+        let mut out = BTreeMap::new();
+        for p in body.polygons() {
+            for ring in std::iter::once(&p.outer).chain(&p.holes) {
+                for (a, b) in ring.iter().zip(ring.iter().cycle().skip(1)) {
+                    let (dx, dy) = ((b.0 - a.0) as f64, (b.1 - a.1) as f64);
+                    let len = dx.hypot(dy);
+                    if len == 0.0 {
+                        continue;
+                    }
+                    // The inside is on the left of every edge: step out to the right.
+                    let at = |d: f64| ((a.0 + b.0) as f64 / 2.0 + d * dy / len, (a.1 + b.1) as f64 / 2.0 - d * dx / len);
+                    let (mx, my) = at(2.0);
+                    if !conductor.contains_f(mx, my) {
+                        continue;
+                    }
+                    let (px, py) = at((self.step + 2) as f64);
+                    if let Some(c) = side((px.round() as i64, py.round() as i64)) {
+                        *out.entry(c).or_insert(0.0) += len;
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+/// Perimeter of a polygon set.
+fn perimeter(p: &PolySet) -> f64 {
+    p.polygons().iter().flat_map(|q| std::iter::once(&q.outer).chain(&q.holes)).map(|r| ring_length(r)).sum()
+}
+
+/// W and L of a device body of `area` between terminal edges `a` and `b`: L = area / mean edge;
+/// W is the mean edge less `1 - bend` of the corner squares (half the edge difference).
+fn measure(area: f64, a: Option<f64>, b: Option<f64>, bend: f64) -> Option<(i64, i64)> {
+    let (a, b) = (a?, b?);
+    let mean = (a + b) / 2.0;
+    if mean <= 0.0 || area <= 0.0 {
+        return None;
+    }
+    let w = mean - (1.0 - bend) * (a - b).abs() / 2.0;
+    Some((w.round().max(1.0) as i64, (area / mean).round().max(1.0) as i64))
+}
+
 /// A resistor or capacitor before net naming: terminals are (plane, component) pieces.
 struct PassiveProto {
     kind: PassiveKind,
@@ -352,7 +475,11 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
     let mut warnings = Vec::new();
     let mut rects: Vec<Vec<IRect>> = vec![Vec::new(); n_layers];
     let mut labels: Vec<(usize, String, (i64, i64))> = Vec::new();
-    let mut skipped = 0usize;
+    let diffusions = tech.diffusion_layers();
+    let active = diffusions.first().copied();
+    let (poly, nwell, nplus, pplus) = (tech.poly(), tech.nwell(), tech.implant(false), tech.implant(true));
+    let step = tech.grid.max(10);
+    let mut odd: Vec<(usize, Geometry)> = Vec::new();
     // A depth cap keeps cyclic references (invalid, but possible in imported data) finite.
     for s in flatten(top, src, 64) {
         if s.layer >= n_layers {
@@ -365,18 +492,25 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
             Geometry::Rect(r) => rects[s.layer].push(r),
             g => match Region::from_geometry(&g) {
                 Ok(r) => rects[s.layer].extend_from_slice(r.rects()),
-                Err(_) => skipped += 1,
+                Err(_) => odd.push((s.layer, g)),
             },
         }
     }
-    if skipped > 0 {
-        warnings.push(format!("{skipped} non-Manhattan shapes were skipped"));
+    let mut exact = Exact { man: if odd.is_empty() { Vec::new() } else { rects.clone() }, odd: odd.clone(), step };
+    // Bands up to a quarter of the shape's thickness (at most 4 grid steps) keep it connected.
+    let stairs = crate::drc::par_map(&odd, |(l, g)| {
+        let ps = PolySet::from_geometry(g);
+        let pe = perimeter(&ps);
+        let thick = if pe > 0.0 { 2.0 * ps.area() / pe } else { 0.0 };
+        let st = ((thick / 4.0) as i64).clamp(step, 4 * step);
+        (*l, ps.manhattanize(st), st)
+    });
+    exact.step = stairs.iter().map(|s| s.2).max().unwrap_or(step);
+    for (l, st, _) in stairs {
+        rects[l].extend_from_slice(st.rects());
     }
     let region = |l: Option<usize>| l.map(|l| Region::from_rects(rects[l].iter().copied())).unwrap_or_default();
     let lid = |n: &str| tech.layer_index(n);
-    let diffusions = tech.diffusion_layers();
-    let active = diffusions.first().copied();
-    let (poly, nwell, nplus, pplus) = (tech.poly(), tech.nwell(), tech.implant(false), tech.implant(true));
     // Every diffusion layer conducts as the first one.
     let canon = |l: usize| if diffusions.contains(&l) { diffusions[0] } else { l };
 
@@ -515,20 +649,46 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
     }
 
     let mut gates = Vec::new();
-    if let (Some(dp), Some(pp)) = (diff_pi, poly_pi) {
+    if let (Some(dp), Some(pp), Some(pp_layer)) = (diff_pi, poly_pi, poly) {
+        let diff_poly: Vec<usize> = diffusions.iter().copied().chain(poly).collect();
         let gp = Plane::new(gate_r);
         for m in &gp.members {
             let rs: Vec<IRect> = m.iter().map(|&i| gp.region.rects()[i]).collect();
             let Some(bb) = rs.iter().copied().reduce(|a, b| a.union(&b)) else { continue };
             let area: i64 = rs.iter().map(|r| r.width() * r.height()).sum();
-            let (s, d, l) = match ends(&planes[dp], bb) {
-                Some(e) => e,
+            let near_any = exact.near(&diff_poly, bb);
+            let rectangular = (rs.len() == 1 && !near_any).then(|| ends(&planes[dp], bb)).flatten();
+            let (s, d, w, l) = match rectangular {
+                Some((s, d, l)) => (s, d, area / l.max(1), l),
                 None => {
-                    warnings.push(format!(
-                        "gate at ({}, {})-({}, {}) lacks diffusion on two opposite sides; skipped",
-                        bb.x0, bb.y0, bb.x1, bb.y1
-                    ));
-                    continue;
+                    let pieces = sd_pieces(&planes[dp], &rs);
+                    let (a, lens) = if near_any {
+                        let (clip, win) = exact.clip(&rs);
+                        let act = exact.layer(&diffusions, win);
+                        let body = act.boolean(&exact.layer(&[pp_layer], win), BoolOp::And).boolean(&clip, BoolOp::And);
+                        (body.area(), exact.terminal_edges(&body, &act, |p| planes[dp].comp_at(p, false)))
+                    } else {
+                        (area as f64, pieces.iter().map(|(&c, &v)| (c, v as f64)).collect())
+                    };
+                    let ids: Vec<usize> = pieces.keys().copied().collect();
+                    let wl = match ids.as_slice() {
+                        &[s, d] => measure(a, lens.get(&s).copied(), lens.get(&d).copied(), tech.rules.bend_corner),
+                        _ => None,
+                    };
+                    match (ids.as_slice(), wl) {
+                        (&[s, d], Some((w, l))) => (s, d, w, l),
+                        _ => {
+                            warnings.push(format!(
+                                "gate at ({}, {})-({}, {}) does not separate two diffusion pieces ({} touch it); skipped",
+                                bb.x0,
+                                bb.y0,
+                                bb.x1,
+                                bb.y1,
+                                ids.len()
+                            ));
+                            continue;
+                        }
+                    }
                 }
             };
             let anchor = (rs[0].x0, rs[0].y0);
@@ -579,7 +739,7 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
                 rect: bb,
                 rects: rs,
                 sd: (s, d),
-                w: area / l.max(1),
+                w,
                 l,
                 s: offset[dp] + s,
                 d: offset[dp] + d,
@@ -590,28 +750,74 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
     }
 
     let mut passives = Vec::new();
+    let poly_l: Vec<usize> = poly.into_iter().collect();
     for (k, l, body) in &res_bodies {
         let (rd, Some(pi)) = (&tech.resistors[*k], pi_of(Some(*l))) else { continue };
+        let cond_layers: Vec<usize> = if Some(*l) == active { diffusions.clone() } else { vec![*l] };
+        let marker_layers: Vec<usize> = rd.layers.iter().chain(&rd.exclude).filter_map(|n| lid(n)).collect();
         for part in body.parts() {
             let Some(bb) = part.bbox() else { continue };
-            let Some((a, b, len)) = ends(&planes[pi], bb) else {
-                warnings.push(format!(
-                    "resistor '{}' at ({}, {})-({}, {}) lacks terminals on two opposite sides; skipped",
-                    rd.name, bb.x0, bb.y0, bb.x1, bb.y1
-                ));
-                continue;
+            let rs = part.rects();
+            let near_any = exact.near(&cond_layers, bb) || exact.near(&marker_layers, bb) || exact.near(&poly_l, bb);
+            let rectangular = (rs.len() == 1 && !near_any).then(|| ends(&planes[pi], bb)).flatten();
+            let (a, b, w, len, area, perim, squares) = match rectangular {
+                Some((a, b, len)) => {
+                    let area = part.area() as i64;
+                    (a, b, area / len.max(1), len, area, part.perimeter(), (len as f64).powi(2) / area.max(1) as f64)
+                }
+                None => {
+                    let pieces = sd_pieces(&planes[pi], rs);
+                    let (ar, pe, lens) = if near_any {
+                        let (clip, win) = exact.clip(rs);
+                        let mut cond = exact.layer(&cond_layers, win);
+                        if Some(*l) == active {
+                            cond = cond.boolean(&exact.layer(&poly_l, win), BoolOp::Not);
+                        }
+                        let marked = rd
+                            .layers
+                            .iter()
+                            .filter_map(|n| lid(n))
+                            .fold(cond.clone(), |r, m| r.boolean(&exact.layer(&[m], win), BoolOp::And));
+                        let body = rd
+                            .exclude
+                            .iter()
+                            .filter_map(|n| lid(n))
+                            .fold(marked, |r, m| r.boolean(&exact.layer(&[m], win), BoolOp::Not))
+                            .boolean(&clip, BoolOp::And);
+                        (body.area(), perimeter(&body), exact.terminal_edges(&body, &cond, |p| planes[pi].comp_at(p, false)))
+                    } else {
+                        (part.area() as f64, part.perimeter() as f64, pieces.iter().map(|(&c, &v)| (c, v as f64)).collect())
+                    };
+                    let ids: Vec<usize> = pieces.keys().copied().collect();
+                    let wl = match ids.as_slice() {
+                        &[a, b] => measure(ar, lens.get(&a).copied(), lens.get(&b).copied(), 1.0),
+                        _ => None,
+                    };
+                    let (&[a, b], Some((w, len))) = (ids.as_slice(), wl) else {
+                        warnings.push(format!(
+                            "resistor '{}' at ({}, {})-({}, {}) does not join two terminal pieces ({} touch it); skipped",
+                            rd.name,
+                            bb.x0,
+                            bb.y0,
+                            bb.x1,
+                            bb.y1,
+                            ids.len()
+                        ));
+                        continue;
+                    };
+                    (a, b, w, len, ar.round() as i64, pe.round() as i64, len as f64 / w as f64)
+                }
             };
-            let area = part.area() as i64;
             passives.push(PassiveProto {
                 kind: PassiveKind::Resistor,
                 model: rd.name.clone(),
-                value: rd.sheet * (len as f64).powi(2) / area.max(1) as f64,
+                value: rd.sheet * squares,
                 a: offset[pi] + a,
                 b: offset[pi] + b,
-                w: area / len.max(1),
+                w,
                 l: len,
                 area,
-                perimeter: part.perimeter(),
+                perimeter: perim,
                 body: bb,
             });
         }
@@ -635,7 +841,29 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
             let (Some(a), Some(b)) = (planes[bp].comp_at((r.x0, r.y0), false), planes[tp].comp_at((r.x0, r.y0), false)) else {
                 continue;
             };
-            let (area, perimeter) = (part.area() as i64, part.perimeter());
+            let plates = |n: &str| -> Vec<usize> {
+                match lid(n) {
+                    Some(l) if diffusions.contains(&l) => diffusions.clone(),
+                    l => l.into_iter().collect(),
+                }
+            };
+            let (bl, tl) = (plates(&cd.bottom), plates(&cd.top));
+            let marks: Vec<usize> = cd.layers.iter().chain(&cd.exclude).filter_map(|n| lid(n)).collect();
+            let (area, perimeter) = if [&bl, &tl, &marks].iter().any(|ls| exact.near(ls, bb)) {
+                let (clip, win) = exact.clip(part.rects());
+                let both = exact.layer(&bl, win).boolean(&exact.layer(&tl, win), BoolOp::And);
+                let marked =
+                    cd.layers.iter().filter_map(|n| lid(n)).fold(both, |r, m| r.boolean(&exact.layer(&[m], win), BoolOp::And));
+                let body = cd
+                    .exclude
+                    .iter()
+                    .filter_map(|n| lid(n))
+                    .fold(marked, |r, m| r.boolean(&exact.layer(&[m], win), BoolOp::Not))
+                    .boolean(&clip, BoolOp::And);
+                (body.area().round() as i64, perimeter(&body).round() as i64)
+            } else {
+                (part.area() as i64, part.perimeter())
+            };
             let value = (cd.area * area as f64 / (dbu * dbu) + cd.perimeter * perimeter as f64 / dbu) * 1e-15;
             passives.push(PassiveProto {
                 kind: PassiveKind::Capacitor,
@@ -887,7 +1115,9 @@ mod tests {
         let x = extract(&lay, &NoCells, &tech);
         assert!(x.passives.is_empty());
         assert!(
-            x.warnings.iter().any(|w| w.contains("resistor 'rpoly' at (0, 500)-(400, 3000) lacks terminals")),
+            x.warnings
+                .iter()
+                .any(|w| w.contains("resistor 'rpoly' at (0, 500)-(400, 3000) does not join two terminal pieces (1 touch it)")),
             "{:?}",
             x.warnings
         );
@@ -963,13 +1193,125 @@ M1 b in a sub nmos w=1u l=0.18u
         lay.add_rect(l("nwell"), -600, -600, 1600, 2600);
         lay.add_rect(l("active"), 0, 0, 1000, 2000);
         lay.add(l("poly"), Geometry::Path { points: vec![(-300, 1000), (1300, 1000)], width: 200 });
-        lay.add(l("poly"), Geometry::Polygon { points: vec![(0, 0), (10, 5), (0, 10)] });
         let x = extract(&lay, &NoCells, &tech);
         assert_eq!(x.devices.len(), 1);
         let d = &x.devices[0];
         assert_eq!((d.kind, d.w, d.l), (DevKind::Pmos, 1000, 200));
         assert_eq!(names(&x, d), ["net3", "net2", "net1", "nwell1"].map(String::from));
-        assert!(x.warnings.iter().any(|w| w.contains("1 non-Manhattan")), "{:?}", x.warnings);
+    }
+
+    fn nmos_cell(active: Geometry, poly: impl IntoIterator<Item = Geometry>) -> Extraction {
+        let tech = Tech::generic();
+        let l = |n: &str| tech.layer_index(n).unwrap();
+        let mut lay = Layout::default();
+        lay.add_rect(l("nplus"), -1000, -2000, 6000, 5000);
+        lay.add(l("active"), active);
+        for g in poly {
+            lay.add(l("poly"), g);
+        }
+        extract(&lay, &NoCells, &tech)
+    }
+
+    fn wl(x: &Extraction) -> Vec<(i64, i64)> {
+        x.devices.iter().map(|d| (d.w, d.l)).collect()
+    }
+
+    #[test]
+    fn non_rectangular_active() {
+        let l_shape = Geometry::Polygon { points: vec![(0, 0), (3000, 0), (3000, 1000), (1000, 1000), (1000, 3000), (0, 3000)] };
+        let x = nmos_cell(l_shape, [Geometry::Rect(IRect::new(2000, -300, 2180, 1300))]);
+        assert!(x.warnings.is_empty(), "{:?}", x.warnings);
+        assert_eq!(wl(&x), [(1000, 180)]);
+        let u_shape = Geometry::Polygon {
+            points: vec![(0, 0), (4000, 0), (4000, 3000), (3000, 3000), (3000, 1000), (1000, 1000), (1000, 3000), (0, 3000)],
+        };
+        let x = nmos_cell(u_shape, [Geometry::Rect(IRect::new(-300, 2000, 4300, 2180))]);
+        assert_eq!(wl(&x), [(1000, 180), (1000, 180)]);
+        assert_eq!(x.devices[0].g, x.devices[1].g);
+        assert_eq!(x.devices[0].s, x.devices[1].s);
+    }
+
+    #[test]
+    fn bent_gate() {
+        // An L-shaped gate turning the corner of a square active: inner edges 2 x 1410, outer
+        // 2 x 1590, so W is their mean, 3000, and L the poly width.
+        let x = nmos_cell(
+            Geometry::Rect(IRect::new(0, 0, 3000, 3000)),
+            [Geometry::Path { points: vec![(1500, -300), (1500, 1500), (-300, 1500)], width: 180 }],
+        );
+        assert!(x.warnings.is_empty(), "{:?}", x.warnings);
+        assert_eq!(wl(&x), [(3000, 180)]);
+        assert_ne!(x.devices[0].s, x.devices[0].d);
+        // A U-shaped gate (two corners) and a ring gate (enclosed layout transistor).
+        let x = nmos_cell(
+            Geometry::Rect(IRect::new(0, 0, 3000, 3000)),
+            [Geometry::Path { points: vec![(500, 3300), (500, 500), (2500, 500), (2500, 3300)], width: 200 }],
+        );
+        assert_eq!(wl(&x), [(7000, 200)]);
+        let ring = [(800, 800, 2200, 1000), (800, 2000, 2200, 2200), (800, 1000, 1000, 2000), (2000, 1000, 2200, 2000)]
+            .map(|(x0, y0, x1, y1)| Geometry::Rect(IRect::new(x0, y0, x1, y1)));
+        let x = nmos_cell(Geometry::Rect(IRect::new(0, 0, 3000, 3000)), ring);
+        assert!(x.warnings.is_empty(), "{:?}", x.warnings);
+        assert_eq!(wl(&x), [(4800, 200)]);
+    }
+
+    #[test]
+    fn bend_corner_correction() {
+        let mut tech = Tech::generic();
+        tech.rules.bend_corner = 0.5;
+        let l = |n: &str| tech.layer_index(n).unwrap();
+        let mut lay = Layout::default();
+        lay.add_rect(l("nplus"), -1000, -1000, 4000, 4000);
+        lay.add_rect(l("active"), 0, 0, 3000, 3000);
+        lay.add(l("poly"), Geometry::Path { points: vec![(1500, -300), (1500, 1500), (-300, 1500)], width: 180 });
+        let x = extract(&lay, &NoCells, &tech);
+        // Edges 2820 and 3180: the corner square (180 x 180) counts half, 3000 - 90.
+        assert_eq!(wl(&x), [(2910, 180)]);
+    }
+
+    #[test]
+    fn bent_and_any_angle_resistors() {
+        let tech = rc_tech();
+        let l = |n: &str| tech.layer_index(n).unwrap();
+        let res = |poly: Geometry, mark: IRect| {
+            let mut lay = Layout::default();
+            lay.add(l("poly"), poly);
+            lay.add_rect(l("polyres"), mark.x0, mark.y0, mark.x1, mark.y1);
+            let x = extract(&lay, &NoCells, &tech);
+            assert!(x.warnings.is_empty(), "{:?}", x.warnings);
+            let [r] = &x.passives[..] else { panic!("{:?}", x.passives) };
+            assert_ne!(r.a, r.b);
+            (r.w, r.l, r.value)
+        };
+        // An L-shaped body 400 wide whose centre line is 2000 + 2000 long: 10 squares.
+        let (w, len, v) = res(
+            Geometry::Path { points: vec![(0, 0), (0, 3000), (3000, 3000)], width: 400 },
+            IRect::new(-1000, 1000, 2000, 4000),
+        );
+        assert_eq!((w, len), (400, 4000));
+        assert!((v - 75.0).abs() < 1e-6, "{v}");
+        // A 45° body cut by a horizontal marker band 1 µm high: terminal edges 400√2 long.
+        let (w, len, _) =
+            res(Geometry::Path { points: vec![(0, 0), (3000, 3000)], width: 400 }, IRect::new(-1000, 1000, 4000, 2000));
+        assert!((w - 566).abs() <= 1 && (len - 1000).abs() <= 1, "w {w} l {len}");
+    }
+
+    #[test]
+    fn any_angle_devices() {
+        // A 45° active (a rotated rectangle) under a horizontal gate: the gate spans 2 µm.
+        let diamond = Geometry::Polygon { points: vec![(0, 0), (1000, -1000), (3000, 1000), (2000, 2000)] };
+        let x = nmos_cell(diamond, [Geometry::Rect(IRect::new(-500, 410, 3500, 590))]);
+        assert!(x.warnings.is_empty(), "{:?}", x.warnings);
+        assert_eq!(wl(&x), [(2000, 180)]);
+        assert_ne!(x.devices[0].s, x.devices[0].d);
+        // A 45° gate across a rectangular active, measured perpendicular to the poly.
+        let x = nmos_cell(
+            Geometry::Rect(IRect::new(0, 0, 4000, 2000)),
+            [Geometry::Path { points: vec![(500, -500), (3500, 2500)], width: 200 }],
+        );
+        assert!(x.warnings.is_empty(), "{:?}", x.warnings);
+        let [(w, l)] = wl(&x)[..] else { panic!("{:?}", wl(&x)) };
+        assert!((w - 2828).abs() <= 2 && (l - 200).abs() <= 2, "w {w} l {l}");
     }
 
     #[test]

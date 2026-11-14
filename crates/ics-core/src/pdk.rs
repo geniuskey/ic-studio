@@ -36,6 +36,7 @@
 //! implant_enc = 0.125
 //! nwell_enc = 0.18
 //! marker_enc = 0.18            # device marker layers (MosDef::layers) around the diffusion
+//! bend_corner = 0.5            # share of a bent gate's corner squares in W (no unit; default 1)
 //!
 //! [[pin_label]]                # layer for the net labels of a conducting layer
 //! layer = "met1"
@@ -183,6 +184,7 @@ struct RulesEntry {
     implant_enc: Option<f64>,
     nwell_enc: Option<f64>,
     marker_enc: Option<f64>,
+    bend_corner: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -346,6 +348,7 @@ pub fn parse(text: &str, base: &Path, env: &dyn Fn(&str) -> Option<String>) -> R
                 implant_enc: or(r.implant_enc, d.implant_enc),
                 nwell_enc: or(r.nwell_enc, d.nwell_enc),
                 marker_enc: or(r.marker_enc, d.marker_enc),
+                bend_corner: r.bend_corner.unwrap_or(d.bend_corner).clamp(0.0, 1.0),
             }
         }
         None => d,

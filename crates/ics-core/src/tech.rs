@@ -298,11 +298,21 @@ pub struct DeviceRules {
     pub nwell_enc: i64,
     /// Enclosure of the diffusion by a device's marker layers ([`MosDef::layers`]).
     pub marker_enc: i64,
+    /// Share of each corner square a bent gate's W counts, from 0 (W is the inner, shorter
+    /// diffusion edge) to 1 (W is the mean of the source and drain edges); used by extraction.
+    pub bend_corner: f64,
 }
 
 impl Default for DeviceRules {
     fn default() -> Self {
-        DeviceRules { gate_contact_space: 160, poly_endcap: 220, implant_enc: 180, nwell_enc: 430, marker_enc: 180 }
+        DeviceRules {
+            gate_contact_space: 160,
+            poly_endcap: 220,
+            implant_enc: 180,
+            nwell_enc: 430,
+            marker_enc: 180,
+            bend_corner: 1.0,
+        }
     }
 }
 

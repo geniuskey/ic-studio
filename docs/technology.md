@@ -37,7 +37,7 @@ Top level:
 | `drc_deck` | DRC deck text (optional; derived from the layer rules when absent) |
 | `caps` | Per-layer parasitic coefficients (optional) |
 | `roles` | Which layers and vias are the diffusion, poly, well, implants and contacts (optional; generic180 names by default) |
-| `rules` | Device rules used by the PCells, in dbu (optional) |
+| `rules` | Device rules used by the [PCells](pcells.md#what-the-technology-must-provide), in dbu (optional) |
 | `devices` | PDK MOS devices (optional; generic `nmos` / `pmos` when absent) |
 | `models` | PDK SPICE model library (optional; built-in level-1 models when absent) |
 | `signoff` | External DRC / LVS runsets (optional; see [Verification](verification.md#sign-off-with-external-tools)) |
@@ -213,12 +213,14 @@ The main sections:
 | `lyp`, `lyt` | Optional KLayout files supplying layers and colours |
 | `[[layer]]` | `name`, `gds`, `datatype`, `width`, `space`, `area` (µm²), `routing`, `color` (`#rrggbb`), `fill`. Adds a layer, or sets rules on a layer from the `.lyp` |
 | `[roles]` | `diffusion` (list), `tap`, `poly`, `nwell`, `nimplant` (empty when the process draws no n+ implant: n+ is diffusion outside `pimplant`), `pimplant`, `diff_contact`, `poly_contact` (via names), `label` |
-| `[rules]` | `gate_contact_space`, `poly_endcap`, `implant_enc`, `nwell_enc`, `marker_enc` (device marker layers around the diffusion) |
+| `[rules]` | `gate_contact_space`, `poly_endcap`, `implant_enc`, `nwell_enc`, `marker_enc` (device marker layers around the diffusion), `bend_corner` (share of a bent gate's corner squares counted in W, 0 to 1, default 1; see [PCells](pcells.md#device-shapes-extraction-understands)) |
 | `[[pin_label]]` | Net label layer of a conducting layer: `layer`, `label` (e.g. `Metal1` and `Metal1.text`). Routing labels named nets there, extraction reads labels there as names of that layer's nets |
 | `[[pcell_layer]]` | Extra layer the PCells draw: `layer`, `around` (`poly_contact`, `diff_contact`, `gate`, `diffusion`, `poly` or a layer name), `enc`, optional `kinds` (`nmos`, `pmos`, `poly_res`, `mom_cap`, `ntap`, `ptap`) |
 | `drc_extra` | Deck lines appended to the deck derived from the layer rules (top-level key, before the tables) |
 | `[[via]]` | `name`, `bottom`, `cut`, `top`, `size`, `space`, `enc_bottom`, `enc_top`, `resistance` |
 | `[[device]]` | `name`, `type` (`nmos` / `pmos`), `layers`, `exclude`, `subckt` |
+| `[[resistor]]` | Resistor: marked body of a conducting layer: `name`, `layer`, `layers` (markers), `exclude`, `sheet` (Ω per square). `poly_res` draws the markers of the resistor on the poly layer |
+| `[[capacitor]]` | Capacitor: marked overlap of two conducting layers: `name`, `bottom`, `top`, `layers`, `area` (fF/µm²), optional `perimeter` (fF/µm). `mom_cap` draws the markers of the metal1 / metal2 capacitor |
 | `[models]` | `path`, `extra` (more model files loaded at the same corner), `corners`, `default`, `length_unit` (`m` or `um`) |
 | `drc_deck` | Optional DRC deck file |
 | `[[signoff]]` | External DRC / LVS runsets: `name`, `tool` (`klayout`, `calibre`, `netgen`, `builtin`), `check` (`drc`, `lvs`), `deck`, `vars`, `klayout`, `skip`, `ground` (see [Verification](verification.md#sign-off-with-external-tools)) |

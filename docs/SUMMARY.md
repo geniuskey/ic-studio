@@ -14,6 +14,7 @@
 - [Schematic editor](schematic.md)
 - [Simulation](simulation.md)
 - [Layout editor](layout.md)
+- [PCells and custom devices](pcells.md)
 - [Verification: DRC, extraction and LVS](verification.md)
 - [Schematic-driven layout](schematic-driven-layout.md)
 - [Technology](technology.md)
