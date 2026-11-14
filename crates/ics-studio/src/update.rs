@@ -138,8 +138,23 @@ fn download_all(jobs: &[Job], done: &AtomicU64) -> Result<PathBuf, String> {
         }
         base += j.size;
     }
+    let mut installed = Vec::new();
     for j in jobs {
-        install(&j.target, &with_suffix(&j.target, "new"))?;
+        match install(&j.target, &with_suffix(&j.target, "new")) {
+            Ok(old) => installed.push((&j.target, old)),
+            Err(e) => {
+                for (target, old) in installed.into_iter().rev() {
+                    if let Some(old) = old {
+                        let _ = std::fs::remove_file(target);
+                        let _ = std::fs::rename(old, target);
+                    }
+                }
+                for j in jobs {
+                    let _ = std::fs::remove_file(with_suffix(&j.target, "new"));
+                }
+                return Err(e);
+            }
+        }
     }
     current_exe()
 }
@@ -180,32 +195,59 @@ fn with_suffix(exe: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(s)
 }
 
+/// A free `<exe>.old` name. An earlier `.old` can still be the image of a running process
+/// (an `ics mcp` server started before the last update), which can be neither removed nor
+/// replaced, so numbered names are tried after it.
 #[cfg(windows)]
-fn install(exe: &Path, new: &Path) -> Result<(), String> {
-    let old = with_suffix(exe, "old");
-    let _ = std::fs::remove_file(&old);
-    std::fs::rename(exe, &old).map_err(|e| format!("cannot move the running executable aside: {e}"))?;
+fn aside(exe: &Path) -> PathBuf {
+    let mut n = 0;
+    loop {
+        let old = with_suffix(exe, &if n == 0 { "old".to_string() } else { format!("old{n}") });
+        let _ = std::fs::remove_file(&old);
+        if !old.exists() || n >= 99 {
+            return old;
+        }
+        n += 1;
+    }
+}
+
+/// Swaps `new` in for `exe`, returning where the previous file went, if it was kept.
+#[cfg(windows)]
+fn install(exe: &Path, new: &Path) -> Result<Option<PathBuf>, String> {
+    let old = aside(exe);
+    std::fs::rename(exe, &old).map_err(|e| format!("cannot move {} aside: {e}", exe.display()))?;
     if let Err(e) = std::fs::rename(new, exe) {
         let _ = std::fs::rename(&old, exe);
         return Err(format!("cannot install the update: {e}"));
     }
-    Ok(())
+    Ok(Some(old))
 }
 
 #[cfg(not(windows))]
-fn install(exe: &Path, new: &Path) -> Result<(), String> {
+fn install(exe: &Path, new: &Path) -> Result<Option<PathBuf>, String> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(new, std::fs::Permissions::from_mode(0o755)).map_err(|e| format!("chmod failed: {e}"))?;
-    std::fs::rename(new, exe).map_err(|e| format!("cannot install the update: {e}"))
+    std::fs::rename(new, exe).map_err(|e| format!("cannot install the update: {e}"))?;
+    Ok(None)
 }
 
-/// Removes leftovers of a previous update.
+/// Removes leftovers of a previous update. Files still in use stay until a later start.
 pub fn cleanup() {
-    if let Ok(exe) = current_exe() {
-        let tools = TOOLS.iter().map(|t| exe.with_file_name(format!("{t}{}", std::env::consts::EXE_SUFFIX)));
-        for f in std::iter::once(exe.clone()).chain(tools) {
-            let _ = std::fs::remove_file(with_suffix(&f, "old"));
-            let _ = std::fs::remove_file(with_suffix(&f, "new"));
+    let Ok(exe) = current_exe() else { return };
+    let Some(dir) = exe.parent() else { return };
+    let names: Vec<String> = std::iter::once(exe.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())
+        .chain(TOOLS.iter().map(|t| format!("{t}{}", std::env::consts::EXE_SUFFIX)))
+        .collect();
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let f = e.file_name().to_string_lossy().into_owned();
+        let leftover = names.iter().any(|n| {
+            f.strip_prefix(n.as_str()).is_some_and(|rest| {
+                rest == ".new" || rest.strip_prefix(".old").is_some_and(|d| d.chars().all(|c| c.is_ascii_digit()))
+            })
+        });
+        if leftover {
+            let _ = std::fs::remove_file(e.path());
         }
     }
 }
@@ -416,6 +458,27 @@ mod tests {
         install(&exe, &new).unwrap();
         assert_eq!(std::fs::read_to_string(&exe).unwrap(), "new");
         assert!(!new.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn swaps_past_a_locked_old_file() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = std::env::temp_dir().join(format!("ics-update-locked-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("ics.exe");
+        let new = with_suffix(&exe, "new");
+        let old = with_suffix(&exe, "old");
+        std::fs::write(&exe, "cur").unwrap();
+        std::fs::write(&new, "new").unwrap();
+        std::fs::write(&old, "running").unwrap();
+        let lock = std::fs::OpenOptions::new().read(true).share_mode(1).open(&old).unwrap();
+        let moved = install(&exe, &new).unwrap().unwrap();
+        assert_eq!(moved, with_suffix(&exe, "old1"));
+        assert_eq!(std::fs::read_to_string(&exe).unwrap(), "new");
+        assert_eq!(std::fs::read_to_string(&moved).unwrap(), "cur");
+        drop(lock);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
