@@ -250,7 +250,7 @@ pub fn setup_panel(
     )
     .fill(fill)
     .min_size(egui::vec2(ui.available_width(), 34.0));
-    if ui.add_enabled(!running, btn).on_hover_text("F5 / ⌘↩").clicked() {
+    if ui.add_enabled(!running, btn).on_hover_text(crate::theme::kbd("F5 / ⌘↩")).clicked() {
         run = true;
     }
     ui.add_space(8.0);

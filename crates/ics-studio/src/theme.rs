@@ -203,3 +203,11 @@ pub fn section(ui: &mut egui::Ui, text: &str) {
     ui.label(egui::RichText::new(text.to_uppercase()).size(10.5).color(p.text_weak).strong());
     ui.add_space(2.0);
 }
+
+/// Shortcut labels are written in macOS notation (`⇧⌘S`); other platforms get `Ctrl+Shift+S`.
+pub fn kbd(s: &str) -> String {
+    if cfg!(target_os = "macos") {
+        return s.to_owned();
+    }
+    s.replace("⇧⌘", "Ctrl+Shift+").replace("⌘↩", "Ctrl+Enter").replace('⌘', "Ctrl+")
+}

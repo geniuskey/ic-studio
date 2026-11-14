@@ -1135,13 +1135,13 @@ pub fn device_palette(ui: &mut egui::Ui, editor: &mut SchematicEditor) {
     for (k, d) in [
         ("Space / X", "rotate / mirror"),
         ("Del", "delete selection"),
-        ("⌘/Ctrl+D", "duplicate"),
-        ("⌘/Ctrl+Z", "undo"),
+        ("⌘D", "duplicate"),
+        ("⌘Z", "undo"),
         ("/", "wire corner direction"),
         ("F", "fit to window"),
     ] {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(k).monospace().small().color(pal.accent));
+            ui.label(egui::RichText::new(theme::kbd(k)).monospace().small().color(pal.accent));
             ui.label(egui::RichText::new(d).small().color(pal.text_weak));
         });
     }

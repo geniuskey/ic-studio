@@ -1700,7 +1700,7 @@ impl IcStudio {
                 if ui.button("New Demo Project").clicked() {
                     q.push(Command::NewDemoProject);
                 }
-                if ui.add(egui::Button::new("Open Project…").shortcut_text("⌘O")).clicked() {
+                if ui.add(egui::Button::new("Open Project…").shortcut_text(theme::kbd("⌘O"))).clicked() {
                     q.push(Command::OpenProjectDialog);
                 }
                 ui.menu_button("Open Recent", |ui| {
@@ -1714,10 +1714,10 @@ impl IcStudio {
                     }
                 });
                 ui.separator();
-                if ui.add_enabled(has_project, egui::Button::new("Save").shortcut_text("⌘S / F2")).clicked() {
+                if ui.add_enabled(has_project, egui::Button::new("Save").shortcut_text(theme::kbd("⌘S / F2"))).clicked() {
                     q.push(Command::Save);
                 }
-                if ui.add_enabled(has_project, egui::Button::new("Save As…").shortcut_text("⇧⌘S")).clicked() {
+                if ui.add_enabled(has_project, egui::Button::new("Save As…").shortcut_text(theme::kbd("⇧⌘S"))).clicked() {
                     q.push(Command::SaveAs);
                 }
                 if ui
@@ -1728,7 +1728,7 @@ impl IcStudio {
                     q.push(Command::CheckSchematic(true));
                 }
                 ui.separator();
-                if ui.add_enabled(has_project, egui::Button::new("New Cell…").shortcut_text("⌘N")).clicked() {
+                if ui.add_enabled(has_project, egui::Button::new("New Cell…").shortcut_text(theme::kbd("⌘N"))).clicked() {
                     q.push(Command::NewCellDialog);
                 }
                 ui.menu_button("Import", |ui| {
@@ -1775,18 +1775,21 @@ impl IcStudio {
                 if ui.add_enabled(has_project, egui::Button::new("Close Project")).clicked() {
                     q.push(Command::CloseProject);
                 }
-                if ui.add(egui::Button::new("Settings…").shortcut_text("⌘,")).clicked() {
+                if ui.add(egui::Button::new("Settings…").shortcut_text(theme::kbd("⌘,"))).clicked() {
                     q.push(Command::Settings);
                 }
-                if ui.add(egui::Button::new("Quit").shortcut_text("⌘Q")).clicked() {
+                if ui.add(egui::Button::new("Quit").shortcut_text(theme::kbd("⌘Q"))).clicked() {
                     q.push(Command::Quit);
                 }
             });
             ui.menu_button("Edit", |ui| {
-                if ui.add(egui::Button::new("Undo").shortcut_text(if lay { "u / ⌘Z" } else { "⌘Z" })).clicked() {
+                if ui.add(egui::Button::new("Undo").shortcut_text(theme::kbd(if lay { "u / ⌘Z" } else { "⌘Z" }))).clicked() {
                     q.push(Command::Undo);
                 }
-                if ui.add(egui::Button::new("Redo").shortcut_text(if lay { "Shift+U / ⇧⌘Z" } else { "⇧⌘Z" })).clicked() {
+                if ui
+                    .add(egui::Button::new("Redo").shortcut_text(theme::kbd(if lay { "Shift+U / ⇧⌘Z" } else { "⇧⌘Z" })))
+                    .clicked()
+                {
                     q.push(Command::Redo);
                 }
                 ui.separator();
@@ -1800,7 +1803,7 @@ impl IcStudio {
             });
             ui.menu_button("View", |ui| {
                 for (i, w) in Workspace::ALL.iter().enumerate() {
-                    if ui.add(egui::Button::new(w.name()).shortcut_text(format!("⌘{}", i + 1))).clicked() {
+                    if ui.add(egui::Button::new(w.name()).shortcut_text(theme::kbd(&format!("⌘{}", i + 1)))).clicked() {
                         q.push(Command::SetWorkspace(*w));
                     }
                 }
@@ -1808,7 +1811,7 @@ impl IcStudio {
                 if ui.add(egui::Button::new("Fit to Window").shortcut_text("F")).clicked() {
                     q.push(Command::FitView);
                 }
-                if ui.add(egui::Button::new("Toggle Console").shortcut_text("⌘J")).clicked() {
+                if ui.add(egui::Button::new("Toggle Console").shortcut_text(theme::kbd("⌘J"))).clicked() {
                     q.push(Command::ToggleConsole);
                 }
                 if ui.button(if self.settings.dark { "Light Theme" } else { "Dark Theme" }).clicked() {
@@ -1919,10 +1922,10 @@ impl IcStudio {
                     q.push(Command::LoadSkill(None));
                 }
                 ui.separator();
-                if ui.add(egui::Button::new("Command Palette").shortcut_text("⌘K")).clicked() {
+                if ui.add(egui::Button::new("Command Palette").shortcut_text(theme::kbd("⌘K"))).clicked() {
                     q.push(Command::CommandPalette);
                 }
-                if ui.add(egui::Button::new("Settings…").shortcut_text("⌘,")).clicked() {
+                if ui.add(egui::Button::new("Settings…").shortcut_text(theme::kbd("⌘,"))).clicked() {
                     q.push(Command::Settings);
                 }
             });
@@ -1936,7 +1939,7 @@ impl IcStudio {
                 if ui.add(egui::Button::new("Keyboard Shortcuts").shortcut_text("F1")).clicked() {
                     q.push(Command::Shortcuts);
                 }
-                if ui.add(egui::Button::new("Command Palette").shortcut_text("⌘K")).clicked() {
+                if ui.add(egui::Button::new("Command Palette").shortcut_text(theme::kbd("⌘K"))).clicked() {
                     q.push(Command::CommandPalette);
                 }
                 ui.separator();
@@ -1963,7 +1966,7 @@ impl IcStudio {
                 }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let b = egui::Button::new(RichText::new("🔍  Search commands…   ⌘K").color(pal.text_weak))
+                let b = egui::Button::new(RichText::new(theme::kbd("🔍  Search commands…   ⌘K")).color(pal.text_weak))
                     .min_size(Vec2::new(220.0, 22.0));
                 if ui.add(b).clicked() {
                     q.push(Command::CommandPalette);
@@ -2002,7 +2005,7 @@ impl IcStudio {
                 self.queue.push(Command::SetWorkspace(w));
             }
             let i = Workspace::ALL.iter().position(|x| *x == w).unwrap() + 1;
-            r.on_hover_text(format!("{} (⌘{i})", w.name()));
+            r.on_hover_text(theme::kbd(&format!("{} (⌘{i})", w.name())));
         }
         ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
             ui.add_space(6.0);
@@ -2014,7 +2017,7 @@ impl IcStudio {
             if r.clicked() {
                 self.queue.push(Command::Settings);
             }
-            r.on_hover_text("Settings (⌘,)");
+            r.on_hover_text(theme::kbd("Settings (⌘,)"));
         });
     }
 
@@ -2030,7 +2033,7 @@ impl IcStudio {
         ui.horizontal(|ui| {
             theme::section(ui, "Explorer");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button("+").on_hover_text("New cell (⌘N)").clicked() {
+                if ui.small_button("+").on_hover_text(theme::kbd("New cell (⌘N)")).clicked() {
                     self.queue.push(Command::NewCellDialog);
                 }
             });
@@ -2168,7 +2171,9 @@ impl IcStudio {
     fn no_cell_placeholder(&mut self, ui: &mut egui::Ui) {
         let pal = theme::palette(ui.ctx());
         ui.centered_and_justified(|ui| {
-            ui.label(RichText::new("Open a cell from the Explorer, or create one with ⌘N").size(15.0).color(pal.text_weak));
+            ui.label(
+                RichText::new(theme::kbd("Open a cell from the Explorer, or create one with ⌘N")).size(15.0).color(pal.text_weak),
+            );
         });
     }
 
@@ -2210,11 +2215,17 @@ impl IcStudio {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(ed.tool.name()).strong().color(pal.schematic));
                             ui.separator();
-                            if ui.add_enabled(ed.history.can_undo(), egui::Button::new("↶")).on_hover_text("Undo (⌘Z)").clicked()
+                            if ui
+                                .add_enabled(ed.history.can_undo(), egui::Button::new("↶"))
+                                .on_hover_text(theme::kbd("Undo (⌘Z)"))
+                                .clicked()
                             {
                                 changed |= ed.undo(sch);
                             }
-                            if ui.add_enabled(ed.history.can_redo(), egui::Button::new("↷")).on_hover_text("Redo (⇧⌘Z)").clicked()
+                            if ui
+                                .add_enabled(ed.history.can_redo(), egui::Button::new("↷"))
+                                .on_hover_text(theme::kbd("Redo (⇧⌘Z)"))
+                                .clicked()
                             {
                                 changed |= ed.redo(sch);
                             }
@@ -2225,7 +2236,7 @@ impl IcStudio {
                             if ui.button("⇋").on_hover_text("Mirror selection (X)").clicked() {
                                 changed |= ed.rotate_selection(sch, true);
                             }
-                            if ui.button("⎘").on_hover_text("Duplicate selection (⌘D)").clicked() {
+                            if ui.button("⎘").on_hover_text(theme::kbd("Duplicate selection (⌘D)")).clicked() {
                                 changed |= ed.duplicate_selection(sch);
                             }
                             if ui.button("⛶").on_hover_text("Fit to window (F)").clicked() {
@@ -2291,8 +2302,12 @@ impl IcStudio {
                             ui.label(RichText::new(ed.tool.name()).strong().color(pal.layout));
                             ui.label(RichText::new(format!("on {}", tech.layers[ed.active_layer].name)).color(pal.text_weak));
                             ui.separator();
-                            let undo = ui.add_enabled(ed.history.can_undo(), egui::Button::new("↶")).on_hover_text("Undo (⌘Z)");
-                            let redo = ui.add_enabled(ed.history.can_redo(), egui::Button::new("↷")).on_hover_text("Redo (⇧⌘Z)");
+                            let undo = ui
+                                .add_enabled(ed.history.can_undo(), egui::Button::new("↶"))
+                                .on_hover_text(theme::kbd("Undo (⌘Z)"));
+                            let redo = ui
+                                .add_enabled(ed.history.can_redo(), egui::Button::new("↷"))
+                                .on_hover_text(theme::kbd("Redo (⇧⌘Z)"));
                             if (undo.clicked() && ed.undo(l)) || (redo.clicked() && ed.redo(l)) {
                                 changed = true;
                                 cx.hier.invalidate(&r);
@@ -2890,7 +2905,7 @@ impl IcStudio {
                     p.text(
                         resp.rect.right_center() - Vec2::new(10.0, 0.0),
                         Align2::RIGHT_CENTER,
-                        *sc,
+                        theme::kbd(sc),
                         FontId::monospace(11.5),
                         pal.text_weak,
                     );
