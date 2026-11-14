@@ -234,6 +234,7 @@ mod tests {
             "run_signoff",
             "post_layout_parasitics",
             "emir",
+            "opc",
             "export_gds",
             "import_gds",
             "export_lef",
@@ -304,6 +305,18 @@ mod tests {
         let ir = call(&mut s, "emir", json!({"cell": "cmos_inverter", "net": "gnd", "currents": {"M1": 0.05}})).unwrap();
         assert!(ir["em_violations"].as_u64().unwrap() > 0, "{ir}");
         assert!(call(&mut s, "emir", json!({"cell": "cmos_inverter", "net": "nope"})).is_err());
+
+        let opc = call(&mut s, "opc", json!({"cell": "nand2", "layer": "poly", "max_items": 3})).unwrap();
+        let rms = |v: &Value, k: &str| v[k]["rms_nm"].as_f64().unwrap();
+        assert!(rms(&opc, "epe_after") < rms(&opc, "epe_before") / 2.0, "{opc}");
+        assert_eq!(opc["worst_fragments"].as_array().unwrap().len(), 3);
+        assert!(opc.get("applied").is_none());
+        let held = call(&mut s, "opc", json!({"cell": "nand2", "layer": "poly", "apply": true}));
+        assert!(held.unwrap_err().contains("placed cells hold poly"));
+        let opc = call(&mut s, "opc", json!({"cell": "nand2", "layer": "poly", "output_layer": "text", "apply": true})).unwrap();
+        assert_eq!(opc["applied"]["replaced"], false, "{opc}");
+        assert!(opc["applied"]["shapes"].as_u64().unwrap() > 0, "{opc}");
+        assert!(call(&mut s, "opc", json!({"cell": "nand2", "layer": "nope"})).is_err());
 
         let m1 = call(
             &mut s,

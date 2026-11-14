@@ -141,6 +141,49 @@ pub fn correct(top: &Layout, src: &dyn LayoutSource, tech: &Tech, p: &OpcParams)
     run(&target, bbox, g, p)
 }
 
+/// Checks that the mask of `layer` can be written to layer `out` of `top`: writing it back onto
+/// `layer` replaces the cell's own shapes, so no placed cell may hold shapes on it.
+pub fn check_output(top: &Layout, src: &dyn LayoutSource, tech: &Tech, layer: usize, out: usize) -> Result<(), String> {
+    let def = tech.layer(out).ok_or_else(|| format!("output layer #{out} does not exist"))?;
+    if out == layer && flatten(top, src, MAX_DEPTH).iter().any(|f| f.layer == layer && f.id.is_none()) {
+        return Err(format!("placed cells hold {} shapes; write the mask to another layer", def.name));
+    }
+    Ok(())
+}
+
+/// Adds `mask` to `lay` on layer `out`, first removing the non-label shapes on `out` when it is
+/// the corrected `layer`. Returns the number of shapes added. Check with [`check_output`] first.
+pub fn write_mask(lay: &mut Layout, mask: &Region, layer: usize, out: usize) -> usize {
+    if out == layer {
+        let old: Vec<u64> =
+            lay.shapes.iter().filter(|s| s.layer == layer && !matches!(s.geom, Geometry::Label { .. })).map(|s| s.id).collect();
+        for id in old {
+            lay.remove(id);
+        }
+    }
+    let geoms = mask.to_geometry();
+    let n = geoms.len();
+    for g in geoms {
+        lay.add(out, g);
+    }
+    n
+}
+
+/// One line: fragments, iterations and the EPE before → after correction in nm.
+pub fn summary(rep: &OpcReport, dbu_per_um: i64) -> String {
+    let n = rep.fragments.len();
+    let nm = |v: f64| v * 1000.0 / dbu_per_um.max(1) as f64;
+    format!(
+        "{n} fragment(s), {} iteration(s), EPE rms {:.1} → {:.1} nm, max {:.1} → {:.1} nm, {}/{n} on target",
+        rep.iterations,
+        nm(rep.before.rms),
+        nm(rep.after.rms),
+        nm(rep.before.max),
+        nm(rep.after.max),
+        rep.after.within
+    )
+}
+
 fn run(target: &Region, bbox: IRect, g: i64, p: &OpcParams) -> Result<OpcReport, String> {
     let sigma = p.sigma as f64;
     let reach = (REACH * sigma).ceil() as i64;

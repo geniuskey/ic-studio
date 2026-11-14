@@ -175,21 +175,6 @@ impl OpcTool {
     }
 }
 
-/// One-line result of a correction.
-pub fn summary(rep: &OpcReport, tech: &Tech) -> String {
-    let n = rep.fragments.len();
-    let nm = |v: f64| v * 1000.0 / tech.dbu_per_um.max(1) as f64;
-    format!(
-        "{n} fragment(s), {} iteration(s), EPE rms {:.1} → {:.1} nm, max {:.1} → {:.1} nm, {}/{n} on target",
-        rep.iterations,
-        nm(rep.before.rms),
-        nm(rep.after.rms),
-        nm(rep.before.max),
-        nm(rep.after.max),
-        rep.after.within
-    )
-}
-
 fn report(ui: &mut egui::Ui, cell: &CellRef, rep: &OpcReport, tech: &Tech, pal: &Palette) {
     let nm = |v: f64| v * 1000.0 / tech.dbu_per_um.max(1) as f64;
     egui::Frame::new().fill(pal.bg_widget).corner_radius(6).inner_margin(8).show(ui, |ui| {

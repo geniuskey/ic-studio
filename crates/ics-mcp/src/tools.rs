@@ -279,6 +279,81 @@ pub fn op_device_currents(p: &Project, r: &CellRef) -> Result<BTreeMap<String, f
 }
 
 /// An IR drop / EM report as JSON, listing up to `max` branches and violations.
+/// Optional OPC settings; lengths in µm.
+#[derive(Debug, Clone, Default)]
+pub struct OpcOverrides {
+    pub sigma: Option<f64>,
+    pub threshold: Option<f64>,
+    pub fragment: Option<f64>,
+    pub max_out: Option<f64>,
+    pub max_in: Option<f64>,
+    pub iterations: Option<u32>,
+    pub gain: Option<f64>,
+}
+
+/// OPC parameters for `layer`: the defaults of [`ics_core::opc::OpcParams::for_layer`] with the
+/// given overrides.
+pub fn opc_params(tech: &Tech, layer: usize, o: &OpcOverrides) -> ics_core::opc::OpcParams {
+    let mut p = ics_core::opc::OpcParams::for_layer(tech, layer);
+    let dbu = |v: f64| (v * tech.dbu_per_um as f64).round() as i64;
+    for (v, f) in [(o.sigma, &mut p.sigma), (o.fragment, &mut p.fragment), (o.max_out, &mut p.max_out), (o.max_in, &mut p.max_in)]
+    {
+        if let Some(v) = v {
+            *f = dbu(v);
+        }
+    }
+    p.threshold = o.threshold.unwrap_or(p.threshold);
+    p.gain = o.gain.unwrap_or(p.gain);
+    p.iterations = o.iterations.unwrap_or(p.iterations);
+    p
+}
+
+/// An OPC result: EPE statistics before / after (nm), mask area and the `max` worst fragments.
+pub fn opc_json(rep: &ics_core::opc::OpcReport, p: &ics_core::opc::OpcParams, tech: &Tech, max: usize) -> Value {
+    let nm = |v: f64| (v * 1000.0 / tech.dbu_per_um.max(1) as f64 * 100.0).round() / 100.0;
+    let um2 = |a: i128| a as f64 / (tech.dbu_per_um.max(1) as f64).powi(2);
+    let n = rep.fragments.len();
+    let stats = |s: &ics_core::opc::EpeStats| json!({"rms_nm": nm(s.rms), "max_nm": nm(s.max), "on_target": s.within});
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&a, &b| rep.fragments[b].epe_after.abs().total_cmp(&rep.fragments[a].epe_after.abs()));
+    let worst: Vec<Value> = order
+        .iter()
+        .take(max)
+        .map(|&i| {
+            let f = &rep.fragments[i];
+            json!({
+                "at_um": [um(tech, f.a.0 + f.b.0) / 2.0, um(tech, f.a.1 + f.b.1) / 2.0],
+                "length_um": um(tech, (f.b.0 - f.a.0).abs() + (f.b.1 - f.a.1).abs()),
+                "normal": [f.normal.0, f.normal.1],
+                "offset_nm": nm(f.offset as f64),
+                "epe_before_nm": nm(f.epe_before),
+                "epe_after_nm": nm(f.epe_after),
+            })
+        })
+        .collect();
+    json!({
+        "layer": layer_name(tech, p.layer),
+        "params": {
+            "sigma_um": um(tech, p.sigma),
+            "threshold": p.threshold,
+            "fragment_um": um(tech, p.fragment),
+            "max_out_um": um(tech, p.max_out),
+            "max_in_um": um(tech, p.max_in),
+            "iterations": p.iterations,
+            "gain": p.gain,
+            "tolerance_nm": nm(p.tolerance as f64),
+        },
+        "fragments": n,
+        "iterations": rep.iterations,
+        "epe_before": stats(&rep.before),
+        "epe_after": stats(&rep.after),
+        "drawn_area_um2": um2(rep.target.area()),
+        "mask_area_um2": um2(rep.mask.area()),
+        "mask_shapes": rep.mask.to_polygons().len(),
+        "worst_fragments": worst,
+    })
+}
+
 pub fn emir_json(rep: &ics_core::emir::EmirReport, tech: &Tech, max: usize) -> Value {
     use ics_core::emir::BranchKind;
     let kind = |k: BranchKind| match k {
@@ -735,6 +810,27 @@ pub fn definitions() -> Vec<Value> {
             &["cell", "net"],
         ),
         tool(
+            "opc",
+            &format!(
+                "Optical proximity correction of one layer of a cell layout (hierarchy flattened, Manhattan shapes). The litho model is a Gaussian blur of the mask followed by a resist threshold; every edge is cut into fragments that are moved along their normal, over several iterations, against the edge placement error (EPE: printed minus drawn edge position, positive = outward) at their middle. Defaults come from the layer's min width and spacing. Returns the EPE statistics without and with correction, the mask area and the worst fragments. With apply=true the mask is written to output_layer (default: the corrected layer, whose top-level shapes it then replaces). {NOT_SAVED}"
+            ),
+            json!({
+                "cell": cell(),
+                "layer": {"type": "string", "description": "Layer to correct, e.g. poly."},
+                "output_layer": {"type": "string", "description": "Layer the mask is written to with apply (default: the corrected layer)."},
+                "apply": {"type": "boolean", "description": "Write the mask into the cell (default false: report only)."},
+                "sigma": {"type": "number", "description": "Blur sigma in µm (default 0.45 x min width)."},
+                "threshold": {"type": "number", "description": "Resist threshold, 0..1 of the open-frame intensity (default 0.5)."},
+                "fragment": {"type": "number", "description": "Longest fragment in µm (default 2 x min width)."},
+                "max_out": {"type": "number", "description": "Furthest outward move in µm (default min spacing / 3)."},
+                "max_in": {"type": "number", "description": "Furthest inward move in µm (default min width / 4)."},
+                "iterations": {"type": "integer", "minimum": 1, "description": "Correction iterations (default 12)."},
+                "gain": {"type": "number", "description": "Fraction of the EPE corrected in the first step (default 0.6)."},
+                "max_items": {"type": "integer", "minimum": 0, "description": "Worst fragments listed (default 20)."},
+            }),
+            &["cell", "layer"],
+        ),
+        tool(
             "export_gds",
             "Write a cell layout and every cell it places to a GDSII file, or to OASIS when the path ends in .oas / .oasis.",
             json!({"cell": cell(), "path": {"type": "string", "description": "Output .gds or .oas file path."}}),
@@ -872,6 +968,7 @@ impl State {
             "run_signoff" => self.run_signoff(a),
             "post_layout_parasitics" => self.post_layout_parasitics(a),
             "emir" => self.emir(a),
+            "opc" => self.opc(a),
             "export_gds" => self.export_gds(a),
             "import_gds" => self.import_gds(a),
             "export_lef" => self.export_lef(a),
@@ -1770,6 +1867,41 @@ impl State {
         out["cell"] = json!(r.to_string());
         self.keep(Verified::Emir(Ok(rep)));
         Ok(out)
+    }
+
+    fn opc(&mut self, a: &Args) -> Result<Value, String> {
+        let (p, r) = self.cell_arg(a)?;
+        let tech = &p.tech;
+        let layer = layer_index(tech, a.str("layer")?)?;
+        let out = a.opt_str("output_layer")?.map(|n| layer_index(tech, n)).transpose()?.unwrap_or(layer);
+        let o = OpcOverrides {
+            sigma: a.opt_num("sigma")?,
+            threshold: a.opt_num("threshold")?,
+            fragment: a.opt_num("fragment")?,
+            max_out: a.opt_num("max_out")?,
+            max_in: a.opt_num("max_in")?,
+            iterations: a.opt_num("iterations")?.map(|v| v.max(1.0) as u32),
+            gain: a.opt_num("gain")?,
+        };
+        let params = opc_params(tech, layer, &o);
+        let top = layout_of(p, &r)?;
+        let rep = ics_core::opc::correct(top, p, tech, &params)?;
+        let apply = a.opt_bool("apply")?.unwrap_or(false);
+        if apply {
+            ics_core::opc::check_output(top, p, tech, layer, out)?;
+        }
+        let max = a.opt_num("max_items")?.map_or(20, |v| v.max(0.0) as usize);
+        let mut res = opc_json(&rep, &params, tech, max);
+        res["cell"] = json!(r.to_string());
+        if apply {
+            let name = layer_name(tech, out);
+            let p = self.project_mut()?;
+            let lay = p.cell_mut(&r).and_then(|c| c.layout.as_mut()).ok_or("cell has no layout view")?;
+            let shapes = ics_core::opc::write_mask(lay, &rep.mask, layer, out);
+            self.dirty = true;
+            res["applied"] = json!({"layer": name, "shapes": shapes, "replaced": out == layer});
+        }
+        Ok(res)
     }
 
     fn export_gds(&self, a: &Args) -> Result<Value, String> {

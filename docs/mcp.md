@@ -80,6 +80,7 @@ The server has 34 tools:
 | `run_signoff` | Run an external KLayout / Calibre / netgen runset of the technology |
 | `post_layout_parasitics` | Extracted parasitics and the largest net and coupling capacitances |
 | `emir` | IR drop and electromigration of a net: worst drop and where, loads, highest current densities, EM violations |
+| `opc` | Optical proximity correction of a layer: EPE statistics without and with correction, mask area, worst fragments; `apply` writes the mask into the cell |
 | `load_pdk` | Replace the technology with a PDK file |
 | `export_gds`, `import_gds` | GDSII / OASIS export and import (import skips layers the technology lacks); both apply the technology's stream layer map |
 | `run_skill` | Run Cadence SKILL code (`code`) or a `.il` file (`file`); returns `output`, `value` and the `modified` cells |

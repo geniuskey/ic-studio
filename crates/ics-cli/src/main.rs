@@ -225,6 +225,44 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Optical proximity correction of one layer of a cell layout: a Gaussian-blur / threshold
+    /// litho model and iterative edge-fragment correction. Prints the edge placement error
+    /// without and with correction; `--apply` writes the mask into the cell and saves the project.
+    Opc {
+        project: PathBuf,
+        cell: String,
+        /// Layer to correct, e.g. poly.
+        #[arg(long)]
+        layer: String,
+        /// Layer the mask is written to with `--apply` (default: replace the corrected layer's
+        /// top-level shapes).
+        #[arg(long)]
+        output: Option<String>,
+        /// Write the mask into the cell and save the project.
+        #[arg(long)]
+        apply: bool,
+        /// Blur sigma in µm (default 0.45 x min width).
+        #[arg(long)]
+        sigma: Option<f64>,
+        /// Resist threshold, 0..1 (default 0.5).
+        #[arg(long)]
+        threshold: Option<f64>,
+        /// Longest fragment in µm (default 2 x min width).
+        #[arg(long)]
+        fragment: Option<f64>,
+        /// Furthest outward move in µm (default min spacing / 3).
+        #[arg(long)]
+        max_out: Option<f64>,
+        /// Furthest inward move in µm (default min width / 4).
+        #[arg(long)]
+        max_in: Option<f64>,
+        #[arg(long)]
+        iterations: Option<u32>,
+        #[arg(long)]
+        gain: Option<f64>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Run an external sign-off DRC / LVS runset of the technology (KLayout, Calibre or netgen)
     /// on a cell; without a runset, list them. Non-zero exit on violations or a mismatch.
     Signoff {
@@ -870,6 +908,35 @@ fn run(cli: Cli) -> Result<(), String> {
                 return Err(format!("LVS: {} difference(s)", rep.errors.len()));
             }
             println!("LVS: layout matches schematic");
+        }
+        Cmd::Opc { project, cell, layer, output, apply, sigma, threshold, fragment, max_out, max_in, iterations, gain, json } => {
+            let mut p = Project::open(&project).map_err(|e| e.to_string())?;
+            let r = resolve(&p, &cell)?;
+            let index = |name: &str| p.tech.layer_index(name).ok_or_else(|| format!("unknown layer '{name}'"));
+            let l = index(&layer)?;
+            let out = output.as_deref().map(index).transpose()?.unwrap_or(l);
+            let o = ics_mcp::tools::OpcOverrides { sigma, threshold, fragment, max_out, max_in, iterations, gain };
+            let params = ics_mcp::tools::opc_params(&p.tech, l, &o);
+            let top = p.cell(&r).unwrap().layout.as_ref().ok_or("cell has no layout")?;
+            let rep = ics_core::opc::correct(top, &p, &p.tech, &params)?;
+            if apply {
+                ics_core::opc::check_output(top, &p, &p.tech, l, out)?;
+            }
+            if json {
+                println!("{}", ics_mcp::tools::opc_json(&rep, &params, &p.tech, 50));
+            } else {
+                println!("{} {layer}: {}", r, ics_core::opc::summary(&rep, p.tech.dbu_per_um));
+            }
+            if apply {
+                let mask = rep.mask;
+                let lay = p.cell_mut(&r).and_then(|c| c.layout.as_mut()).ok_or("cell has no layout")?;
+                let n = ics_core::opc::write_mask(lay, &mask, l, out);
+                p.save().map_err(|e| e.to_string())?;
+                if !json {
+                    let name = &p.tech.layers[out].name;
+                    println!("wrote {n} mask shape(s) to {name} and saved the project");
+                }
+            }
         }
         Cmd::Emir { project, cell, net, currents, json } => {
             let p = Project::open(&project).map_err(|e| e.to_string())?;

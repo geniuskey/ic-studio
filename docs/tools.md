@@ -20,6 +20,7 @@ back; the choice is remembered per tool. Every tool is also in the command palet
 | [DRC Rule Designer](#drc-rule-designer) | Rule deck editing | The technology's DRC deck |
 | [Stream Layer Map](#stream-layer-map) | XStream layer map | GDSII / OASIS import and export |
 | [Dummy Fill](#dummy-fill) | Metal fill | Active layout |
+| [OPC](#opc) | Optical proximity correction | Active layout |
 | SKILL CIW, Load SKILL (.il) | CIW | The project (see [SKILL scripts](layout.md#skill-scripts)) |
 
 ## Waveform Calculator
@@ -326,3 +327,28 @@ The map applies to **File > Import / Export**, `ics gds`, `ics import-gds` and t
 
 A compact cell may have no room for fill inside its bounding box; fill a larger region
 around it instead.
+
+## OPC
+
+**Tools > OPC** corrects one layer of the active layout for optical proximity effects.
+
+The litho model is a Gaussian blur of the mask (**Blur sigma**) followed by a resist
+**Threshold**: wide shapes print at their drawn size, while narrow lines shrink, line ends
+pull back and corners round. Every edge of the layer (flattened through the hierarchy;
+Manhattan shapes only) is cut into fragments of at most **Fragment length**, with half-length
+fragments at the corners. Each iteration measures the edge placement error (EPE: printed
+minus drawn edge position, positive outward) at the middle of each fragment and moves the
+fragment along its normal against it, at most **Max outward move** / **Max inward move**,
+snapped to the grid. Where both edges of a corner move out (or in), a square is added
+(or removed), which gives serifs and mouse bites.
+
+1. Pick the layer to **Correct**. The defaults come from its min width `w` and spacing `s`:
+   sigma 0.45 `w`, fragments 2 `w`, at most `s` / 3 outward and `w` / 4 inward.
+2. **Preview** shows the EPE without and with correction (rms, max and the fragments within
+   the **EPE tolerance**) and a view of the drawn shapes, the mask and the printed contours
+   without (red) and with (green) correction. Scroll to zoom, drag to pan.
+3. **Apply OPC** writes the mask to **Write mask to** (undoable). On the corrected layer
+   itself it replaces the cell's own shapes, so placed cells must not hold shapes on it;
+   pick another layer otherwise.
+
+The same correction runs from the command line (`ics opc`) and over MCP (`opc`).

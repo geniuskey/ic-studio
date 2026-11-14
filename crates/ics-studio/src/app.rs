@@ -4122,31 +4122,16 @@ impl IcStudio {
         };
         let layer = self.opc.params.as_ref().map_or(0, |o| o.layer);
         let out = self.opc.output.unwrap_or(layer);
-        let summary = crate::opc_view::summary(&rep, &p.tech);
+        let summary = ics_core::opc::summary(&rep, p.tech.dbu_per_um);
         let Some(top) = p.cell(&r).and_then(|c| c.layout.as_ref()) else { return };
-        if out == layer && ics_core::hier::flatten(top, p, 64).iter().any(|f| f.layer == layer && f.id.is_none()) {
-            let msg =
-                format!("OPC: {r} has {} shapes inside placed cells; write the mask to another layer", p.tech.layers[layer].name);
-            self.error(msg);
+        if let Err(e) = ics_core::opc::check_output(top, p, &p.tech, layer, out) {
+            self.error(format!("OPC: {e}"));
             return;
         }
         let Some(lay) = p.cell_mut(&r).and_then(|c| c.layout.as_mut()) else { return };
         let ed = self.lay_eds.entry(r.clone()).or_default();
         ed.history.push(lay);
-        if out == layer {
-            let old: Vec<u64> = lay
-                .shapes
-                .iter()
-                .filter(|s| s.layer == layer && !matches!(s.geom, ics_core::Geometry::Label { .. }))
-                .map(|s| s.id)
-                .collect();
-            for id in old {
-                lay.remove(id);
-            }
-        }
-        for g in rep.mask.to_geometry() {
-            lay.add(out, g);
-        }
+        ics_core::opc::write_mask(lay, &rep.mask, layer, out);
         ed.layout_changed();
         self.hier.invalidate(&r);
         self.mark_dirty();

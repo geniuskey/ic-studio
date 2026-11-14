@@ -203,6 +203,7 @@ ics route myproj nand2 --place                          # place devices, route f
 ics extract myproj inv_chain                            # extracted SPICE netlist
 ics lvs myproj cmos_inverter                            # non-zero exit on differences
 ics emir myproj ring_osc5 --net vdd                     # IR drop / EM; non-zero exit on EM violations
+ics opc myproj cmos_inverter --layer poly --apply       # optical proximity correction, save
 ics mcp                                                 # MCP server for AI agents (stdio)
 ```
 
