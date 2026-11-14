@@ -488,6 +488,8 @@ pub struct IcStudio {
     copilot: crate::copilot::Copilot,
     ai_models: crate::llm::AiSettingsWindow,
     updater: crate::update::Updater,
+    /// Version announced by the start-up update check, until dismissed.
+    update_toast: Option<String>,
     optimizer: crate::optimizer_view::Optimizer,
     stream_map: StreamMapEditor,
     fill: FillTool,
@@ -539,6 +541,7 @@ impl IcStudio {
             copilot: Default::default(),
             ai_models: Default::default(),
             updater: Default::default(),
+            update_toast: None,
             optimizer: Default::default(),
             stream_map: StreamMapEditor::default(),
             fill: FillTool::default(),
@@ -3354,6 +3357,55 @@ impl IcStudio {
     }
 
     /// Checks GitHub for a newer release in the background, if enabled in Settings.
+    fn update_toast(&mut self, ctx: &egui::Context) {
+        if !matches!(self.updater.state, update::State::Available(_)) {
+            self.update_toast = None;
+        }
+        let Some(v) = self.update_toast.clone() else { return };
+        let pal = theme::palette(ctx);
+        egui::Area::new(egui::Id::unique("update_toast"))
+            .anchor(Align2::RIGHT_BOTTOM, Vec2::new(-16.0, -36.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).inner_margin(12).show(ui, |ui| {
+                    ui.set_width(280.0);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Update available").strong());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("×").on_hover_text("Dismiss").clicked() {
+                                self.update_toast = None;
+                            }
+                        });
+                    });
+                    ui.label(
+                        RichText::new(format!("IC Studio {v} is available (installed {}).", update::CURRENT))
+                            .color(pal.text_weak),
+                    );
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Update now").clicked() {
+                            self.update_toast = None;
+                            self.queue.push(Command::InstallUpdate);
+                        }
+                        if ui.button("Release notes").clicked() {
+                            self.update_toast = None;
+                            self.dialog = Some(Dialog::Update);
+                        }
+                        if ui.button("Later").clicked() {
+                            self.update_toast = None;
+                        }
+                    });
+                });
+            });
+    }
+
+    /// Test hook: behave as if the start-up check found `r`.
+    #[doc(hidden)]
+    pub fn announce_update(&mut self, r: update::Release) {
+        self.update_toast = Some(r.version.clone());
+        self.updater.state = update::State::Available(r);
+    }
+
     pub fn check_updates_on_start(&mut self, ctx: &egui::Context) {
         if self.settings.check_updates {
             self.updater.check(ctx, false);
@@ -3995,7 +4047,12 @@ impl eframe::App for IcStudio {
             let verbose = self.updater.verbose;
             match ev {
                 update::Event::UpToDate if verbose => self.info(format!("IC Studio {} is up to date", update::CURRENT)),
-                update::Event::Available(v) => self.info(format!("IC Studio {v} is available (Help › Check for Updates)")),
+                update::Event::Available(v) => {
+                    self.info(format!("IC Studio {v} is available (Help › Check for Updates)"));
+                    if !verbose {
+                        self.update_toast = Some(v);
+                    }
+                }
                 update::Event::Installed(v) => self.ok(format!("IC Studio {v} installed; restart to use it")),
                 update::Event::Failed(e) if verbose => self.warn(format!("Update: {e}")),
                 _ => {}
@@ -4111,6 +4168,7 @@ impl eframe::App for IcStudio {
 
         self.command_palette(&ctx);
         self.dialogs(&ctx);
+        self.update_toast(&ctx);
         self.rule_designer_window(&ctx);
         self.optimizer_window(&ctx);
         if let Some(r) = self.copilot.window(&ctx, &self.settings.llm) {

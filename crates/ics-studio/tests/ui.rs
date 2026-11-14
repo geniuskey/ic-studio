@@ -1799,3 +1799,23 @@ fn copilot_live() {
         assert_eq!(flylines(&h, "nand2"), 0, "unrouted flylines left");
     }
 }
+
+#[test]
+fn update_toast() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = app(LaunchArgs { project: None, demo: true, workspace: Some("home".into()), cell: None, run: false });
+    h.state_mut().announce_update(ics_studio::update::Release {
+        version: "9.9.9".into(),
+        page: String::new(),
+        notes: "Test release".into(),
+        url: None,
+        size: 0,
+        tools: vec![],
+    });
+    h.run_steps(4);
+    h.get_by_label("Update now");
+    shot(&mut h, "update_toast");
+    h.get_by_label("Later").click();
+    h.run_steps(2);
+    assert!(h.query_by_label("Update now").is_none());
+}
