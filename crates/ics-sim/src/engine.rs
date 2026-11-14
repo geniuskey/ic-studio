@@ -32,7 +32,8 @@ enum CapKind {
         diode: Option<DiodeModel>,
     },
     /// Meyer gate capacitance (part 0: g-s, 1: g-d, 2: g-b) of MOS element `elem`. It depends on
-    /// all terminal voltages, so within a time step it is held at its value at the step start.
+    /// all terminal voltages; over a time step its charge changes by the average of the step-start
+    /// and step-end capacitance times the voltage change (as in SPICE).
     Meyer {
         elem: usize,
         part: usize,
@@ -303,7 +304,8 @@ impl Engine {
     }
 
     /// Charge and capacitance of cap `k` at solution `x`. Within a transient step (`state`) a
-    /// Meyer capacitance stays at its step-start value; without one it is evaluated at `x`.
+    /// Meyer capacitance is the average of its step-start value and its value at `x`; without one
+    /// it is evaluated at `x`.
     fn cap_qc(&self, k: usize, x: &[f64], state: Option<&TranState>) -> (f64, f64) {
         let cp = &self.caps[k];
         let v = self.v(x, cp.a) - self.v(x, cp.b);
@@ -324,7 +326,10 @@ impl Engine {
                 (q, c)
             }
             CapKind::Meyer { elem, part } => match state {
-                Some(s) => (s.cap_q[k] + s.cap_c[k] * (v - s.cap_v[k]), s.cap_c[k]),
+                Some(s) => {
+                    let c = 0.5 * (s.cap_c[k] + self.meyer_at(*elem, *part, x));
+                    (s.cap_q[k] + c * (v - s.cap_v[k]), c)
+                }
                 None => {
                     let c = self.meyer_at(*elem, *part, x);
                     (c * v, c)

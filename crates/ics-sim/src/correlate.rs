@@ -99,15 +99,28 @@ fn interp(xs: &[f64], ys: &[f64], x: f64) -> f64 {
     ys[k - 1] + f * (ys[k] - ys[k - 1])
 }
 
+/// Pointwise error of `t` against `r`. In a transient the test may also be read up to half a
+/// reference step earlier or later: a current jumping at a waveform corner then counts as the
+/// jump both backends resolve, not as the difference of which side of it each sampled.
 fn diff_vectors(analysis: &str, r: &Vector, rs: Option<&[f64]>, t: &Vector, ts: Option<&[f64]>) -> Option<VecDiff> {
-    let at = |v: &Vector, s: Option<&[f64]>, x: Option<f64>, i: usize| -> (f64, f64) {
-        let im = v.im.as_deref();
-        match (s, x) {
-            (Some(s), Some(x)) if s.len() == v.re.len() && s.len() > 1 => {
-                let (s, re, im) = monotonic(s, &v.re, im);
-                (interp(&s, &re, x), im.map_or(0.0, |im| interp(&s, &im, x)))
+    let scaled = match ts {
+        Some(s) if s.len() == t.re.len() && s.len() > 1 => Some(monotonic(s, &t.re, t.im.as_deref())),
+        _ => None,
+    };
+    let at = |x: Option<f64>, i: usize| -> (f64, f64) {
+        match (&scaled, x) {
+            (Some((s, re, im)), Some(x)) => (interp(s, re, x), im.as_ref().map_or(0.0, |im| interp(s, im, x))),
+            _ => (t.re.get(i).copied().unwrap_or(f64::NAN), t.im.as_ref().and_then(|im| im.get(i).copied()).unwrap_or(0.0)),
+        }
+    };
+    let window = |i: usize| -> f64 {
+        match rs {
+            Some(s) if analysis == "tran" && s.len() > 1 => {
+                let prev = if i > 0 { s[i] - s[i - 1] } else { f64::INFINITY };
+                let next = if i + 1 < s.len() { s[i + 1] - s[i] } else { f64::INFINITY };
+                0.5 * prev.min(next)
             }
-            _ => (v.re.get(i).copied().unwrap_or(f64::NAN), im.and_then(|im| im.get(i).copied()).unwrap_or(0.0)),
+            _ => 0.0,
         }
     };
     let mut max_abs = 0.0f64;
@@ -116,8 +129,14 @@ fn diff_vectors(analysis: &str, r: &Vector, rs: Option<&[f64]>, t: &Vector, ts: 
     for i in 0..r.re.len() {
         let x = rs.map(|s| s[i]);
         let (rr, ri) = (r.re[i], r.im.as_ref().map_or(0.0, |im| im[i]));
-        let (tr, ti) = at(t, ts, x, i);
-        let e = (tr - rr).hypot(ti - ri);
+        let dx = window(i);
+        let e = [0.0, -dx, dx]
+            .into_iter()
+            .map(|d| {
+                let (tr, ti) = at(x.map(|x| x + d), i);
+                (tr - rr).hypot(ti - ri)
+            })
+            .fold(f64::INFINITY, f64::min);
         if !e.is_finite() {
             return None;
         }

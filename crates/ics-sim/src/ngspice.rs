@@ -236,8 +236,14 @@ fn command(exe: &str) -> Command {
     c
 }
 
+/// `ICS_NGSPICE` when set, else common install locations, falling back to PATH lookup.
 pub fn default_exe() -> String {
-    // Common install locations, falling back to PATH lookup.
+    if let Ok(p) = std::env::var("ICS_NGSPICE")
+        && !p.trim().is_empty()
+    {
+        return p;
+    }
+
     let candidates = [
         "/opt/homebrew/bin/ngspice",
         "/usr/local/bin/ngspice",
