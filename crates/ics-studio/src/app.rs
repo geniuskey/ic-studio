@@ -172,6 +172,8 @@ pub enum Command {
     Settings,
     Shortcuts,
     UserGuide,
+    /// Start the interactive tutorial for first-time users.
+    Tutorial,
     About,
     /// Look for a newer release on GitHub and show the update dialog.
     CheckForUpdates,
@@ -501,6 +503,7 @@ pub struct IcStudio {
     hier_browser: HierBrowser,
     gens: LayoutGenerators,
     ciw: Ciw,
+    tutorial: crate::tutorial::Tutorial,
 }
 
 const SETTINGS_KEY: &str = "ic-studio-settings";
@@ -553,6 +556,7 @@ impl IcStudio {
             hier_browser: HierBrowser::default(),
             gens: LayoutGenerators::default(),
             ciw: Ciw::default(),
+            tutorial: Default::default(),
         };
         app.info(format!("IC Studio {} ready — renderer: wgpu", env!("CARGO_PKG_VERSION")));
         match &app.ngspice {
@@ -967,6 +971,7 @@ impl IcStudio {
             Command::Settings => self.dialog = Some(Dialog::Settings),
             Command::Shortcuts => self.dialog = Some(Dialog::Shortcuts),
             Command::UserGuide => ctx.open_url(egui::OpenUrl::new_tab(GUIDE_URL)),
+            Command::Tutorial => self.tutorial.start(),
             Command::About => self.dialog = Some(Dialog::About),
             Command::CheckForUpdates => {
                 if !matches!(self.updater.state, update::State::Installed { .. }) {
@@ -1936,6 +1941,9 @@ impl IcStudio {
                 ui.menu_button("Options", |ui| lay_menu_items(ui, "Options", q));
             }
             ui.menu_button("Help", |ui| {
+                if ui.button("Interactive Tutorial").clicked() {
+                    q.push(Command::Tutorial);
+                }
                 if ui.button("User Guide").clicked() {
                     q.push(Command::UserGuide);
                 }
@@ -1980,11 +1988,23 @@ impl IcStudio {
 
     fn activity_bar(&mut self, ui: &mut egui::Ui) {
         let pal = theme::palette(ui.ctx());
+        let spot = self.tutorial.spotlight().filter(|w| *w != self.workspace);
         ui.add_space(6.0);
         for w in Workspace::ALL {
             let active = self.workspace == w;
             let (r, p) = ui.allocate_painter(Vec2::new(ui.available_width(), 48.0), Sense::click());
             let color = w.color(&pal);
+            if spot == Some(w) {
+                let t = ui.input(|i| i.time);
+                let a = 0.45 + 0.4 * (t * 4.0).sin().abs() as f32;
+                p.rect_stroke(
+                    r.rect.shrink2(Vec2::new(4.0, 1.0)),
+                    9.0,
+                    Stroke::new(2.0, color.gamma_multiply(a)),
+                    egui::StrokeKind::Inside,
+                );
+                ui.ctx().request_repaint_after(Duration::from_millis(50));
+            }
             if active {
                 p.rect_filled(r.rect.shrink2(Vec2::new(6.0, 3.0)), 8.0, color.gamma_multiply(0.16));
                 p.rect_filled(egui::Rect::from_min_size(r.rect.min + Vec2::new(0.0, 10.0), Vec2::new(3.0, 28.0)), 2.0, color);
@@ -2822,6 +2842,7 @@ impl IcStudio {
             ("Fit view".into(), "F", Command::FitView),
             ("Settings".into(), "⌘,", Command::Settings),
             ("Keyboard shortcuts".into(), "F1", Command::Shortcuts),
+            ("Start the interactive tutorial".into(), "", Command::Tutorial),
             ("Open user guide (web)".into(), "", Command::UserGuide),
             ("About IC Studio".into(), "", Command::About),
             ("Check for updates".into(), "", Command::CheckForUpdates),
@@ -3412,6 +3433,37 @@ impl IcStudio {
         if self.settings.check_updates {
             self.updater.check(ctx, false);
         }
+    }
+
+    /// What the user has done of the tutorial's steps.
+    fn tutorial_progress(&self) -> crate::tutorial::Progress {
+        let inverter = self.project.as_ref().and_then(|p| {
+            p.all_cells().find(|(_, c)| c.name == "cmos_inverter" && c.schematic.is_some() && c.layout.is_some()).map(|(r, _)| r)
+        });
+        let Some(r) = inverter.clone() else {
+            return crate::tutorial::Progress {
+                workspace: Some(self.workspace),
+                palette: self.palette.is_some(),
+                ..Default::default()
+            };
+        };
+        let lay = self.lay_eds.get(&r).map(|e| &e.verify);
+        crate::tutorial::Progress {
+            on_inverter: self.active.as_ref() == Some(&r),
+            selected: self.sch_eds.get(&r).is_some_and(|e| !e.selection.is_empty()),
+            simulated: self.sims.get(&r).is_some_and(|s| s.results.is_some()),
+            calculator: self.calc.open,
+            drc: lay.is_some_and(|v| v.drc.is_some()),
+            lvs: lay.is_some_and(|v| v.lvs.is_some()),
+            palette: self.palette.is_some(),
+            workspace: Some(self.workspace),
+            inverter,
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn tutorial(&self) -> &crate::tutorial::Tutorial {
+        &self.tutorial
     }
 
     /// Queue a command, exactly as a menu item or shortcut would. This is the entry point
@@ -4191,6 +4243,10 @@ impl eframe::App for IcStudio {
         self.net_window(&ctx);
         self.hier_window(&ctx);
         self.gen_window(&ctx);
+        let progress = self.tutorial_progress();
+        self.tutorial.track(&progress);
+        let cmds = self.tutorial.window(&ctx, &progress);
+        self.queue.extend(cmds);
 
         let cmds = std::mem::take(&mut self.queue);
         for c in cmds {

@@ -1820,6 +1820,42 @@ fn update_toast() {
     assert!(h.query_by_label("Update now").is_none());
 }
 
+#[test]
+fn tutorial_walkthrough() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = app(LaunchArgs { project: None, demo: false, workspace: None, cell: None, run: false });
+    h.state_mut().command(Command::Tutorial);
+    h.run_steps(3);
+    shot(&mut h, "tutorial_01_start");
+    assert_eq!(h.state().tutorial().step, 0);
+    let expect = |h: &mut Harness<'_, IcStudio>, c: Option<Command>, step: usize| {
+        if let Some(c) = c {
+            h.state_mut().command(c);
+        }
+        h.run_steps(3);
+        settle(h, "tutorial");
+        assert_eq!(h.state().tutorial().step, step, "tutorial did not advance to step {step}");
+    };
+    expect(&mut h, Some(Command::NewDemoProject), 1);
+    let inv = h.state().project().unwrap().all_cells().find(|(_, c)| c.name == "cmos_inverter").unwrap().0;
+    expect(&mut h, Some(Command::OpenCell(inv.clone(), Some(Workspace::Schematic))), 2);
+    shot(&mut h, "tutorial_02_schematic");
+    h.get_by_label("Skip").click();
+    expect(&mut h, None, 3);
+    h.get_by_label("Show me").click();
+    expect(&mut h, None, 4);
+    expect(&mut h, Some(Command::Calculator), 5);
+    expect(&mut h, Some(Command::OpenCell(inv.clone(), Some(Workspace::Layout))), 6);
+    expect(&mut h, Some(Command::RunDrc), 7);
+    expect(&mut h, Some(Command::RunLvs), 8);
+    expect(&mut h, Some(Command::CommandPalette), 9);
+    assert!(h.state().tutorial().finished());
+    assert_eq!(h.state().tutorial().completed(), 8);
+    h.state_mut().command(Command::SetWorkspace(Workspace::Home));
+    h.run_steps(3);
+    shot(&mut h, "tutorial_03_done");
+}
+
 /// Requesting focus every frame interrupts IME composition every frame, which on Windows
 /// toggles the IME and floods the event loop until the app hangs.
 #[test]

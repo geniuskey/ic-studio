@@ -45,6 +45,9 @@ pub fn welcome(ui: &mut egui::Ui, recent: &[PathBuf], q: &mut Vec<Command>) {
                 ui.add_space(28.0);
                 theme::section(ui, "Start");
                 ui.horizontal_wrapped(|ui| {
+                    if action_card(ui, Icon::Simulation, "Take the tutorial", "New here? 9 guided steps", pal.ok) {
+                        q.push(Command::Tutorial);
+                    }
                     if action_card(ui, Icon::Library, "Open demo project", "Auto P&R, OTA, SRAM, pixels", pal.accent) {
                         q.push(Command::NewDemoProject);
                     }
@@ -132,6 +135,9 @@ pub fn project_overview(ui: &mut egui::Ui, project: &Project, hier: &mut Hier, q
                     }
                     if ui.button("⬇ Export library GDS…").clicked() {
                         q.push(Command::ExportLibraryGds);
+                    }
+                    if ui.button("Tutorial").on_hover_text("Learn the design flow step by step").clicked() {
+                        q.push(Command::Tutorial);
                     }
                 });
                 ui.add_space(18.0);
