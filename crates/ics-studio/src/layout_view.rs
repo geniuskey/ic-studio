@@ -795,11 +795,10 @@ pub fn draw_layout(
     };
     let raster_key = |slot: usize| (!o.thumbnail).then(|| egui::Id::unique(("layout-raster", painter.layer_id(), slot)));
     let mut labels = 0;
-    for li in 0..tech.layers.len() {
+    for (li, def) in tech.layers.iter().enumerate() {
         if !o.visible.get(li).copied().unwrap_or(true) {
             continue;
         }
-        let def = &tech.layers[li];
         let c = layer_color(def, pal.dark);
         let fa = fill_alpha(def);
         let mesh_slot = painter.add(egui::Shape::Noop);

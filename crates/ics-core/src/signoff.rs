@@ -506,7 +506,8 @@ fn bbox_of(s: &str, dbu_per_um: i64) -> Option<IRect> {
         .filter_map(|t| t.parse().ok())
         .collect();
     let f = dbu_per_um as f64;
-    let pts: Vec<(i64, i64)> = nums.chunks_exact(2).map(|p| ((p[0] * f).round() as i64, (p[1] * f).round() as i64)).collect();
+    let pts: Vec<(i64, i64)> =
+        nums.as_chunks::<2>().0.iter().map(|&[x, y]| ((x * f).round() as i64, (y * f).round() as i64)).collect();
     let (x0, x1) = (pts.iter().map(|p| p.0).min()?, pts.iter().map(|p| p.0).max()?);
     let (y0, y1) = (pts.iter().map(|p| p.1).min()?, pts.iter().map(|p| p.1).max()?);
     Some(IRect::new(x0, y0, x1, y1))
@@ -598,8 +599,8 @@ pub fn parse_calibre_rdb(text: &str, dbu_per_um: i64) -> Result<DrcReport, Strin
             let mut pts = Vec::new();
             for _ in 0..k {
                 let l = lines.next().ok_or("truncated results database")?;
-                for pair in l.split_whitespace().collect::<Vec<_>>().chunks_exact(2) {
-                    pts.push(((num(pair[0])? * scale).round() as i64, (num(pair[1])? * scale).round() as i64));
+                for [x, y] in l.split_whitespace().collect::<Vec<_>>().as_chunks::<2>().0 {
+                    pts.push(((num(x)? * scale).round() as i64, (num(y)? * scale).round() as i64));
                 }
             }
             done += 1;

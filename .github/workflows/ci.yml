@@ -42,6 +42,6 @@ jobs:
         run: cargo test -p ics-core -p ics-sim -p ics-cli
       - name: Headless UI tests (software Vulkan)
         if: runner.os == 'Linux'
-        run: cargo test -p ics-studio --test ui
+        run: cargo test -p ics-studio --test ui -- --test-threads=1
       - name: Release build of the desktop app
         run: cargo build --release -p ics-studio -p ics-cli

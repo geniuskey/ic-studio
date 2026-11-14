@@ -555,7 +555,7 @@ fn read_shapes(t: &mut Toks, dbu_per_um: f64) -> Result<Vec<LefShape>, String> {
                     continue;
                 }
                 let v = parse_nums(&words, dbu_per_um)?;
-                let pts: Vec<(i64, i64)> = v.chunks_exact(2).map(|c| (c[0], c[1])).collect();
+                let pts: Vec<(i64, i64)> = v.as_chunks::<2>().0.iter().map(|&[x, y]| (x, y)).collect();
                 let geom = match k.as_str() {
                     "RECT" if pts.len() == 2 => Geometry::Rect(IRect::new(pts[0].0, pts[0].1, pts[1].0, pts[1].1)),
                     "POLYGON" if pts.len() >= 3 => Geometry::Polygon { points: pts },
