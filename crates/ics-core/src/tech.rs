@@ -233,6 +233,9 @@ pub struct ModelLib {
     /// Further model files loaded with the same corner (e.g. high-voltage devices).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra: Vec<String>,
+    /// Compiled Verilog-A models (OpenVAF `.osdi`) ngspice loads before reading the deck.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub osdi: Vec<String>,
 }
 
 /// Unit of device geometry in netlists: metres (`w=1u`) or microns (`w=1`, for model libraries
@@ -262,14 +265,17 @@ impl ModelLib {
             .into_iter()
             .find(|c| !c.is_empty())
             .or(self.corners.first().map(String::as_str));
-        std::iter::once(&self.path)
-            .chain(&self.extra)
-            .map(|p| match corner {
-                Some(c) => format!(".lib \"{p}\" {c}"),
-                None => format!(".include \"{p}\""),
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        let osdi = self.osdi.iter().map(|p| {
+            let p = p.replace('\\', "/");
+            let p = if p.contains(char::is_whitespace) { format!("\"{p}\"") } else { p };
+            format!(".control\npre_osdi {p}\n.endc")
+        });
+        osdi.chain(std::iter::once(&self.path).chain(&self.extra).map(|p| match corner {
+            Some(c) => format!(".lib \"{p}\" {c}"),
+            None => format!(".include \"{p}\""),
+        }))
+        .collect::<Vec<_>>()
+        .join("\n")
     }
 }
 

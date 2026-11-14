@@ -103,6 +103,8 @@ pub struct SimResults {
     pub datasets: Vec<Dataset>,
     pub log: String,
     pub elapsed_ms: f64,
+    /// What the backend ignored or approximated, and why `Backend::Auto` chose it.
+    pub warnings: Vec<String>,
 }
 
 impl SimResults {

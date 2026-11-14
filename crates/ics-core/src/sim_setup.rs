@@ -89,6 +89,9 @@ pub enum Backend {
     Builtin,
     /// External ngspice executable.
     Ngspice,
+    /// The built-in solver when it evaluates the deck exactly, ngspice otherwise (PDK model
+    /// libraries, OSDI models, device models or parameters the built-in solver lacks).
+    Auto,
 }
 
 impl Backend {
@@ -96,6 +99,7 @@ impl Backend {
         match self {
             Backend::Builtin => "Built-in (ics-sim)",
             Backend::Ngspice => "ngspice",
+            Backend::Auto => "Auto (built-in, ngspice when needed)",
         }
     }
 }

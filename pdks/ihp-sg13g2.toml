@@ -421,6 +421,8 @@ extra = ["${PDK_ROOT}/ihp-sg13g2/libs.tech/ngspice/models/cornerMOShv.lib"]
 corners = ["mos_tt", "mos_ss", "mos_ff", "mos_sf", "mos_fs"]
 default = "mos_tt"
 length_unit = "m"
+# PSP 103 MOS models compiled with OpenVAF; ngspice loads them before the model cards.
+osdi = ["${PDK_ROOT}/ihp-sg13g2/libs.tech/ngspice/osdi/psp103_nqs.osdi"]
 
 # Sign-off checks with the decks of the installed PDK.
 [[signoff]]

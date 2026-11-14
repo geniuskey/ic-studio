@@ -192,7 +192,8 @@ fn backend(a: &Args) -> Result<Option<Backend>, String> {
         None => Ok(None),
         Some("builtin") => Ok(Some(Backend::Builtin)),
         Some("ngspice") => Ok(Some(Backend::Ngspice)),
-        Some(b) => Err(format!("unknown backend '{b}' (use builtin or ngspice)")),
+        Some("auto") => Ok(Some(Backend::Auto)),
+        Some(b) => Err(format!("unknown backend '{b}' (use builtin, ngspice or auto)")),
     }
 }
 
@@ -255,6 +256,7 @@ fn results_json(res: &SimResults) -> Value {
         "backend": res.backend,
         "elapsed_ms": sig(res.elapsed_ms),
         "datasets": res.datasets.iter().map(dataset_json).collect::<Vec<_>>(),
+        "warnings": res.warnings,
         "log_tail": tail,
     })
 }
@@ -441,7 +443,7 @@ const NOT_SAVED: &str = "Changes stay in memory until save_project is called.";
 pub fn definitions() -> Vec<Value> {
     let cell = cell_prop;
     let edit_cell = || json!({"type": "string", "description": "Target cell name or 'lib/cell'. Created (in library 'work' unless a lib is given) if it does not exist; a layout view is added if missing."});
-    let backend = json!({"type": "string", "enum": ["builtin", "ngspice"], "description": "Simulator: the built-in engine (default unless the cell's setup says otherwise) or an external ngspice."});
+    let backend = json!({"type": "string", "enum": ["builtin", "ngspice", "auto"], "description": "Simulator: the built-in engine (default unless the cell's setup says otherwise), an external ngspice, or auto (built-in unless the deck needs ngspice)."});
     vec![
         tool(
             "open_project",

@@ -173,12 +173,30 @@ pub struct Circuit {
     pub elements: Vec<Element>,
     pub analyses: Vec<Analysis>,
     pub temp: f64,
+    /// Deck content the built-in engine ignores or approximates (unsupported model levels and
+    /// parameters, dot-commands); empty when it evaluates the deck as written.
+    pub warnings: Vec<String>,
 }
 
 impl Circuit {
     pub fn node_count(&self) -> usize {
         self.nodes.len()
     }
+}
+
+/// MOS model parameters the built-in engine evaluates.
+const MOS_PARAMS: &[&str] = &["level", "vto", "kp", "lambda", "gamma", "phi", "tox", "cgso", "cgdo", "cj", "cjsw"];
+/// Diode model parameters the built-in engine evaluates.
+const DIODE_PARAMS: &[&str] = &["is", "n", "cjo"];
+/// MOS instance parameters the built-in engine evaluates.
+const MOS_INSTANCE_PARAMS: &[&str] = &["w", "l", "m", "ad", "as", "pd", "ps"];
+/// Dot-commands the built-in engine reads.
+const DOT_COMMANDS: &[&str] = &[".model", ".temp", ".end", ".title", ".op", ".dc", ".ac", ".tran"];
+
+fn ignored_params(p: &HashMap<String, f64>, known: &[&str]) -> Vec<String> {
+    let mut v: Vec<String> = p.keys().filter(|k| !known.contains(&k.as_str())).cloned().collect();
+    v.sort();
+    v
 }
 
 fn tokens(s: &str) -> Vec<String> {
@@ -359,6 +377,20 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
         let ty = toks[2].to_ascii_lowercase();
         let p = kv_params(&toks[3..]);
         let g = |k: &str, d: f64| p.get(k).copied().unwrap_or(d);
+        let known = match ty.as_str() {
+            "d" => Some(DIODE_PARAMS),
+            "nmos" | "pmos" => Some(MOS_PARAMS),
+            _ => None,
+        };
+        if let Some(known) = known {
+            let ignored = ignored_params(&p, known);
+            if !ignored.is_empty() {
+                c.warnings.push(format!("model {name}: parameters not evaluated by the built-in engine: {}", ignored.join(" ")));
+            }
+        }
+        if known == Some(MOS_PARAMS) && g("level", 1.0) != 1.0 {
+            c.warnings.push(format!("model {name}: level={} is evaluated as level 1", g("level", 1.0)));
+        }
         match ty.as_str() {
             "d" => {
                 diode_models.insert(name, DiodeModel { is: g("is", 1e-14), n: g("n", 1.0), cjo: g("cjo", 0.0) });
@@ -406,10 +438,13 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
             if lower.split_whitespace().next() == Some(".end") {
                 break;
             }
+            let cmd = lower.split_whitespace().next().unwrap_or("");
             if let Some(a) = dot_analysis(l) {
                 c.analyses.push(a);
-            } else if lower.starts_with(".temp") {
+            } else if cmd == ".temp" {
                 c.temp = l.split_whitespace().nth(1).and_then(parse_spice).unwrap_or(27.0);
+            } else if !DOT_COMMANDS.contains(&cmd) {
+                c.warnings.push(format!("line {ln}: '{cmd}' is ignored by the built-in engine"));
             }
             continue;
         }
@@ -465,6 +500,10 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
                     .cloned()
                     .ok_or_else(|| err(ln, format!("unknown MOS model '{}'", t[5])))?;
                 let p = kv_params(&tokens(&t[6..].join(" ")));
+                let ignored = ignored_params(&p, MOS_INSTANCE_PARAMS);
+                if !ignored.is_empty() {
+                    c.warnings.push(format!("{name}: instance parameters not evaluated: {}", ignored.join(" ")));
+                }
                 Element::M {
                     name,
                     d,
@@ -487,6 +526,8 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
         };
         c.elements.push(el);
     }
+    let mut seen = std::collections::HashSet::new();
+    c.warnings.retain(|w| seen.insert(w.clone()));
     Ok(c)
 }
 
@@ -504,6 +545,22 @@ mod tests {
         assert_eq!(w.value(0.0), 0.0);
         let s = parse_source("5").unwrap();
         assert_eq!(s.dc, 5.0);
+    }
+
+    #[test]
+    fn warns_about_what_it_does_not_evaluate() {
+        let deck = "* t\n.param wn=1u\n.option reltol=1e-4\n.model nm nmos (level=54 vto=0.4 u0=0.03)\n\
+                    .model dm d (is=1e-14 rs=10)\nM1 d g 0 0 nm w=1u l=1u nf=2 sa=0.2u\nV1 d 0 1\nV2 g 0 1\n.op\n.end\n";
+        let c = parse_deck(deck).unwrap();
+        let w = c.warnings.join("\n");
+        for s in ["'.param'", "'.option'", "level=54", "parameters not evaluated by the built-in engine: u0", "rs", "nf sa"] {
+            assert!(w.contains(s), "{s} missing from\n{w}");
+        }
+        let clean = format!(
+            "* t\nV1 a 0 1\nR1 a 0 1k\nM1 a a 0 0 nmos w=1u l=1u ad=1p\n{}\n.op\n.end\n",
+            ics_core::netlist::DEFAULT_MODELS
+        );
+        assert_eq!(parse_deck(&clean).unwrap().warnings, vec!["model dmod: parameters not evaluated by the built-in engine: rs"]);
     }
 
     #[test]

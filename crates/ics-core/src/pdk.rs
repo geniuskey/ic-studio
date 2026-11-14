@@ -88,6 +88,7 @@
 //! default = "tt"
 //! length_unit = "um"           # "m" (default) or "um"
 //! extra = []                   # further model files loaded at the same corner
+//! osdi = []                    # compiled Verilog-A models (OpenVAF .osdi) ngspice loads first
 //!
 //! drc_deck = "rules.deck"      # optional IC Studio DRC deck (see `drc`)
 //!
@@ -226,6 +227,8 @@ struct ModelsEntry {
     length_unit: LengthUnit,
     #[serde(default)]
     extra: Vec<String>,
+    #[serde(default)]
+    osdi: Vec<String>,
 }
 
 /// A loaded PDK: the technology plus non-fatal problems found while loading it.
@@ -389,10 +392,11 @@ pub fn parse(text: &str, base: &Path, env: &dyn Fn(&str) -> Option<String>) -> R
         };
         let path = model_path(&m.path);
         let extra: Vec<String> = m.extra.iter().map(|p| model_path(p)).collect();
+        let osdi: Vec<String> = m.osdi.iter().map(|p| model_path(p)).collect();
         if !m.default.is_empty() && !m.corners.contains(&m.default) {
             warnings.push(format!("default corner '{}' is not one of {:?}", m.default, m.corners));
         }
-        ModelLib { path, corners: m.corners, default_corner: m.default, length_unit: m.length_unit, extra }
+        ModelLib { path, corners: m.corners, default_corner: m.default, length_unit: m.length_unit, extra, osdi }
     });
     tech.signoff = f
         .signoff
@@ -774,8 +778,10 @@ area = 2.0
         assert_eq!(t.mos_device(true, "pmos").map(|d| d.name.as_str()), Some("sg13_lv_pmos"));
         let lines = t.models.as_ref().unwrap().spice_line("mos_ss");
         let lines: Vec<String> = lines.replace('\\', "/").lines().map(String::from).collect();
-        assert_eq!(lines.len(), 2);
-        assert!(lines[0].ends_with("cornerMOSlv.lib\" mos_ss") && lines[1].ends_with("cornerMOShv.lib\" mos_ss"), "{lines:?}");
+        assert_eq!(lines.len(), 5);
+        assert_eq!((lines[0].as_str(), lines[2].as_str()), (".control", ".endc"));
+        assert!(lines[1].starts_with("pre_osdi /pdk/") && lines[1].ends_with("osdi/psp103_nqs.osdi"), "{lines:?}");
+        assert!(lines[3].ends_with("cornerMOSlv.lib\" mos_ss") && lines[4].ends_with("cornerMOShv.lib\" mos_ss"), "{lines:?}");
     }
 
     /// The demo inverter in SG13G2: placed, routed, DRC clean, extracted as the 1.2 V devices,

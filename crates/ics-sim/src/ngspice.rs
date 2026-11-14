@@ -26,9 +26,12 @@ fn work_dir() -> std::io::Result<PathBuf> {
     Ok(d)
 }
 
-/// Strip dot-analyses / .end / existing control blocks from a deck so we can drive it from .control.
-fn strip_analyses(deck: &str) -> String {
+/// Strip dot-analyses / .end / existing control blocks from a deck so we can drive it from
+/// .control. The `pre_*` commands of those blocks (`pre_osdi` loading compiled Verilog-A
+/// models) run before the deck is parsed, so they are returned to go into the new block.
+fn strip_analyses(deck: &str) -> (String, Vec<String>) {
     let mut out = String::new();
+    let mut pre = vec![];
     let mut in_control = false;
     for l in deck.lines() {
         let t = l.trim_start().to_ascii_lowercase();
@@ -41,6 +44,9 @@ fn strip_analyses(deck: &str) -> String {
             continue;
         }
         if in_control {
+            if t.starts_with("pre_") {
+                pre.push(l.trim().to_string());
+            }
             continue;
         }
         if [".op", ".dc", ".ac", ".tran", ".end"].iter().any(|k| t == *k || t.starts_with(&format!("{k} "))) {
@@ -49,13 +55,18 @@ fn strip_analyses(deck: &str) -> String {
         out.push_str(l);
         out.push('\n');
     }
-    out
+    (out, pre)
 }
 
 pub fn run(exe: &str, deck: &str, analyses: &[Analysis]) -> Result<(Vec<Dataset>, String), SimError> {
     let dir = work_dir().map_err(|e| SimError::Backend(format!("cannot create temp dir: {e}")))?;
-    let mut text = strip_analyses(deck);
-    text += ".control\nset filetype=ascii\nset noaskquit\n";
+    let (mut text, pre) = strip_analyses(deck);
+    text += ".control\n";
+    for l in pre {
+        text += &l;
+        text.push('\n');
+    }
+    text += "set filetype=ascii\nset noaskquit\n";
     let mut files = vec![];
     for (i, a) in analyses.iter().enumerate() {
         // Relative to the working directory: Windows paths would need escaping in .control.
@@ -236,6 +247,14 @@ pub fn default_exe() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keeps_pre_commands_of_control_blocks() {
+        let deck = "* t\n.control\npre_osdi /pdk/bsimcmg.osdi\nrun\n.endc\nR1 a 0 1k\n.op\n.end\n";
+        let (text, pre) = strip_analyses(deck);
+        assert_eq!(pre, vec!["pre_osdi /pdk/bsimcmg.osdi".to_string()]);
+        assert_eq!(text, "* t\nR1 a 0 1k\n");
+    }
 
     #[test]
     fn parse_ascii_raw() {

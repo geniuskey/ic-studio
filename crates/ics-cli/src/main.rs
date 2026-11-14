@@ -20,6 +20,7 @@ struct Cli {
 enum BackendArg {
     Builtin,
     Ngspice,
+    Auto,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -332,6 +333,7 @@ fn backend(b: BackendArg) -> Backend {
     match b {
         BackendArg::Builtin => Backend::Builtin,
         BackendArg::Ngspice => Backend::Ngspice,
+        BackendArg::Auto => Backend::Auto,
     }
 }
 
@@ -387,10 +389,16 @@ fn print_results(res: &SimResults, json: bool) {
                 serde_json::json!({"analysis": d.analysis, "title": d.title, "vectors": vecs})
             })
             .collect();
-        println!("{}", serde_json::json!({"backend": res.backend, "elapsed_ms": res.elapsed_ms, "datasets": sets}));
+        println!(
+            "{}",
+            serde_json::json!({"backend": res.backend, "elapsed_ms": res.elapsed_ms, "warnings": res.warnings, "datasets": sets})
+        );
         return;
     }
     eprintln!("backend: {}  ({:.1} ms)", res.backend, res.elapsed_ms);
+    for w in &res.warnings {
+        eprintln!("warning: {w}");
+    }
     for d in &res.datasets {
         println!("== {} ({} points)", d.title, d.len());
         if d.analysis == "op" {

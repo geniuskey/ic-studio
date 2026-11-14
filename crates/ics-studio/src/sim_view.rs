@@ -135,12 +135,17 @@ impl SimState {
         self.running = None;
         Some(match r {
             Ok(res) => {
-                let msg = format!(
+                let mut msg = format!(
                     "Simulation finished in {:.1} ms on {} ({} analyses)",
                     res.elapsed_ms,
                     res.backend,
                     res.datasets.len()
                 );
+                match res.warnings.as_slice() {
+                    [] => {}
+                    [w] => msg += &format!(" - {w}"),
+                    [w, rest @ ..] => msg += &format!(" - {w} (+{} more in the log)", rest.len()),
+                }
                 let log = res.log.clone();
                 let mut res = res;
                 for d in &mut res.datasets {
@@ -263,6 +268,7 @@ pub fn setup_panel(
         .show_ui(ui, |ui| {
             ui.selectable_value(&mut setup.backend, Backend::Builtin, Backend::Builtin.label());
             ui.selectable_value(&mut setup.backend, Backend::Ngspice, Backend::Ngspice.label());
+            ui.selectable_value(&mut setup.backend, Backend::Auto, Backend::Auto.label());
         })
         .response
         .labelled_by(backend_label.id);
@@ -272,6 +278,13 @@ pub fn setup_panel(
         }
         (Backend::Ngspice, None) => {
             ui.label(RichText::new("✖ ngspice not found — install it or set the path in Settings").small().color(pal.danger));
+        }
+        (Backend::Auto, v) => {
+            let text = match v {
+                Some(v) => format!("Built-in, {v} for PDK or unsupported models"),
+                None => "Built-in (ngspice not found for PDK models)".into(),
+            };
+            ui.label(RichText::new(text).small().color(pal.text_weak));
         }
         _ if models.is_some() => {
             ui.label(RichText::new("✖ PDK models need ngspice").small().color(pal.danger));
