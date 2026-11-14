@@ -109,7 +109,19 @@ impl Source {
 pub struct DiodeModel {
     pub is: f64,
     pub n: f64,
+    /// Zero-bias depletion capacitance, its built-in potential, grading and the forward-bias
+    /// linearisation point (fraction of `vj`).
     pub cjo: f64,
+    pub vj: f64,
+    pub m: f64,
+    pub fc: f64,
+    /// Transit time: diffusion charge `tt · id`.
+    pub tt: f64,
+    /// Series resistance (an internal node in the circuit).
+    pub rs: f64,
+    /// Reverse breakdown voltage (infinite: none) and the current at it.
+    pub bv: f64,
+    pub ibv: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -120,12 +132,28 @@ pub struct MosModel {
     pub lambda: f64,
     pub gamma: f64,
     pub phi: f64,
+    /// Oxide thickness; 0 when not given (no intrinsic gate capacitance, as in SPICE).
     pub tox: f64,
+    /// Lateral diffusion: the effective channel length is `l - 2 ld`.
+    pub ld: f64,
     pub cgso: f64,
     pub cgdo: f64,
-    /// Zero-bias junction capacitance per area (F/m²) and per perimeter (F/m).
+    pub cgbo: f64,
+    /// Zero-bias junction capacitance per area (F/m²) and per perimeter (F/m), their grading
+    /// coefficients, the junction potential and the forward-bias linearisation point.
     pub cj: f64,
     pub cjsw: f64,
+    pub mj: f64,
+    pub mjsw: f64,
+    pub pb: f64,
+    pub fc: f64,
+    /// Bulk junction saturation current, absolute (A) or per junction area (A/m²) when `js > 0`.
+    pub is: f64,
+    pub js: f64,
+    /// Drain / source series resistance, absolute (Ω) or `rsh` per square times `nrd` / `nrs`.
+    pub rd: f64,
+    pub rs: f64,
+    pub rsh: f64,
 }
 
 /// Drain / source junction geometry of a MOS instance (m², m), per device of `m`.
@@ -135,6 +163,19 @@ pub struct Junctions {
     pub as_: f64,
     pub pd: f64,
     pub ps: f64,
+}
+
+const EPS_OX: f64 = 3.453e-11;
+
+impl MosModel {
+    /// Gate oxide capacitance per area (F/m²), 0 without `tox`.
+    pub fn cox(&self) -> f64 {
+        if self.tox > 0.0 { EPS_OX / self.tox } else { 0.0 }
+    }
+
+    pub fn leff(&self, l: f64) -> f64 {
+        (l - 2.0 * self.ld).max(1e-9)
+    }
 }
 
 /// Node index: 0 is ground.
@@ -185,13 +226,27 @@ impl Circuit {
 }
 
 /// MOS model parameters the built-in engine evaluates.
-const MOS_PARAMS: &[&str] = &["level", "vto", "kp", "lambda", "gamma", "phi", "tox", "cgso", "cgdo", "cj", "cjsw"];
+const MOS_PARAMS: &[&str] = &[
+    "level", "vto", "kp", "u0", "lambda", "gamma", "phi", "tox", "ld", "cgso", "cgdo", "cgbo", "cj", "cjsw", "mj", "mjsw", "pb",
+    "fc", "is", "js", "rd", "rs", "rsh",
+];
 /// Diode model parameters the built-in engine evaluates.
-const DIODE_PARAMS: &[&str] = &["is", "n", "cjo"];
+const DIODE_PARAMS: &[&str] = &["is", "n", "cjo", "cj0", "vj", "m", "fc", "tt", "rs", "bv", "ibv"];
 /// MOS instance parameters the built-in engine evaluates.
-const MOS_INSTANCE_PARAMS: &[&str] = &["w", "l", "m", "ad", "as", "pd", "ps"];
+const MOS_INSTANCE_PARAMS: &[&str] = &["w", "l", "m", "ad", "as", "pd", "ps", "nrd", "nrs"];
 /// Dot-commands the built-in engine reads.
 const DOT_COMMANDS: &[&str] = &[".model", ".temp", ".end", ".title", ".op", ".dc", ".ac", ".tran"];
+
+/// The device-side node of terminal `ext` behind a series resistance `r` (a new internal node
+/// `dev#tag` and a resistor), or `ext` itself without one.
+fn series(c: &mut Circuit, node: &mut impl FnMut(&str, &mut Circuit) -> Node, dev: &str, tag: &str, ext: Node, r: f64) -> Node {
+    if !(r > 0.0 && r.is_finite()) {
+        return ext;
+    }
+    let int = node(&format!("{dev}#{tag}"), c);
+    c.elements.push(Element::R { name: format!("{dev}#r{tag}"), a: ext, b: int, r });
+    int
+}
 
 fn ignored_params(p: &HashMap<String, f64>, known: &[&str]) -> Vec<String> {
     let mut v: Vec<String> = p.keys().filter(|k| !known.contains(&k.as_str())).cloned().collect();
@@ -393,26 +448,54 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
         }
         match ty.as_str() {
             "d" => {
-                diode_models.insert(name, DiodeModel { is: g("is", 1e-14), n: g("n", 1.0), cjo: g("cjo", 0.0) });
+                let d = DiodeModel {
+                    is: g("is", 1e-14),
+                    n: g("n", 1.0),
+                    cjo: g("cjo", g("cj0", 0.0)),
+                    vj: g("vj", 1.0),
+                    m: g("m", 0.5),
+                    fc: g("fc", 0.5),
+                    tt: g("tt", 0.0),
+                    rs: g("rs", 0.0),
+                    bv: g("bv", f64::INFINITY),
+                    ibv: g("ibv", 1e-3),
+                };
+                diode_models.insert(name, d);
             }
             "nmos" | "pmos" => {
-                let pmos = ty == "pmos";
-                mos_models.insert(
-                    name,
-                    MosModel {
-                        pmos,
-                        vto: g("vto", if pmos { -0.7 } else { 0.7 }),
-                        kp: g("kp", 2e-5),
-                        lambda: g("lambda", 0.0),
-                        gamma: g("gamma", 0.0),
-                        phi: g("phi", 0.6),
-                        tox: g("tox", 1e-7),
-                        cgso: g("cgso", 0.0),
-                        cgdo: g("cgdo", 0.0),
-                        cj: g("cj", 0.0),
-                        cjsw: g("cjsw", 0.0),
-                    },
-                );
+                // SPICE level 1 defaults: without `tox` there is no intrinsic gate capacitance
+                // and `kp` defaults to 2e-5; with it, `kp = u0 · cox`.
+                let tox = g("tox", 0.0);
+                let kp = match p.get("kp") {
+                    Some(kp) => *kp,
+                    None if tox > 0.0 => g("u0", 600.0) * 1e-4 * EPS_OX / tox,
+                    None => 2e-5,
+                };
+                let m = MosModel {
+                    pmos: ty == "pmos",
+                    vto: g("vto", 0.0),
+                    kp,
+                    lambda: g("lambda", 0.0),
+                    gamma: g("gamma", 0.0),
+                    phi: g("phi", 0.6),
+                    tox,
+                    ld: g("ld", 0.0),
+                    cgso: g("cgso", 0.0),
+                    cgdo: g("cgdo", 0.0),
+                    cgbo: g("cgbo", 0.0),
+                    cj: g("cj", 0.0),
+                    cjsw: g("cjsw", 0.0),
+                    mj: g("mj", 0.5),
+                    mjsw: g("mjsw", 0.5),
+                    pb: g("pb", 0.8),
+                    fc: g("fc", 0.5),
+                    is: g("is", 1e-14),
+                    js: g("js", 0.0),
+                    rd: g("rd", 0.0),
+                    rs: g("rs", 0.0),
+                    rsh: g("rsh", 0.0),
+                };
+                mos_models.insert(name, m);
             }
             _ => {}
         }
@@ -487,6 +570,7 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
                     .get(&t[3].to_ascii_lowercase())
                     .cloned()
                     .ok_or_else(|| err(ln, format!("unknown diode model '{}'", t[3])))?;
+                let a = series(&mut c, &mut node, &name, "a", a, model.rs);
                 Element::D { name, a, k, model }
             }
             'm' => {
@@ -504,6 +588,12 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
                 if !ignored.is_empty() {
                     c.warnings.push(format!("{name}: instance parameters not evaluated: {}", ignored.join(" ")));
                 }
+                let mult = p.get("m").copied().unwrap_or(1.0).max(1e-12);
+                let r = |abs: f64, squares: &str| {
+                    if abs > 0.0 { abs } else { model.rsh * p.get(squares).copied().unwrap_or(0.0) }
+                };
+                let d = series(&mut c, &mut node, &name, "d", d, r(model.rd, "nrd") / mult);
+                let s = series(&mut c, &mut node, &name, "s", s, r(model.rs, "nrs") / mult);
                 Element::M {
                     name,
                     d,
@@ -550,17 +640,30 @@ mod tests {
     #[test]
     fn warns_about_what_it_does_not_evaluate() {
         let deck = "* t\n.param wn=1u\n.option reltol=1e-4\n.model nm nmos (level=54 vto=0.4 u0=0.03)\n\
-                    .model dm d (is=1e-14 rs=10)\nM1 d g 0 0 nm w=1u l=1u nf=2 sa=0.2u\nV1 d 0 1\nV2 g 0 1\n.op\n.end\n";
+                    .model dm d (is=1e-14 rs=10 xti=3)\nM1 d g 0 0 nm w=1u l=1u nf=2 sa=0.2u\nV1 d 0 1\nV2 g 0 1\n.op\n.end\n";
         let c = parse_deck(deck).unwrap();
         let w = c.warnings.join("\n");
-        for s in ["'.param'", "'.option'", "level=54", "parameters not evaluated by the built-in engine: u0", "rs", "nf sa"] {
+        for s in ["'.param'", "'.option'", "level=54", "parameters not evaluated by the built-in engine: xti", "nf sa"] {
             assert!(w.contains(s), "{s} missing from\n{w}");
         }
         let clean = format!(
             "* t\nV1 a 0 1\nR1 a 0 1k\nM1 a a 0 0 nmos w=1u l=1u ad=1p\n{}\n.op\n.end\n",
             ics_core::netlist::DEFAULT_MODELS
         );
-        assert_eq!(parse_deck(&clean).unwrap().warnings, vec!["model dmod: parameters not evaluated by the built-in engine: rs"]);
+        assert!(parse_deck(&clean).unwrap().warnings.is_empty());
+    }
+
+    #[test]
+    fn series_resistances_get_internal_nodes() {
+        let deck = "* t\n.model nm nmos (rsh=10)\n.model dm d (rs=5)\nM1 d g 0 0 nm w=1u l=1u nrd=2 m=2\nD1 a 0 dm\n.end\n";
+        let c = parse_deck(deck).unwrap();
+        let rs: Vec<(&str, f64)> = c
+            .elements
+            .iter()
+            .filter_map(|e| if let Element::R { name, r, .. } = e { Some((name.as_str(), *r)) } else { None })
+            .collect();
+        assert_eq!(rs, vec![("m1#rd", 10.0), ("d1#ra", 5.0)]);
+        assert!(c.nodes.iter().any(|n| n == "m1#d") && c.nodes.iter().any(|n| n == "d1#a"));
     }
 
     #[test]

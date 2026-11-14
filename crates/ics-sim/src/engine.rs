@@ -17,13 +17,53 @@ const GMIN: f64 = 1e-12;
 const ABSTOL_V: f64 = 1e-6;
 const ABSTOL_I: f64 = 1e-12;
 const RELTOL: f64 = 1e-4;
-const EPS_OX: f64 = 3.453e-11;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
+enum CapKind {
+    Linear(f64),
+    /// Depletion charge of up to two grading terms `(cj0, m)` (area and sidewall), plus the
+    /// diffusion charge `tt · id` of a diode.
+    Junction {
+        terms: [(f64, f64); 2],
+        pb: f64,
+        fc: f64,
+        diode: Option<DiodeModel>,
+    },
+    /// Meyer gate capacitance (part 0: g-s, 1: g-d, 2: g-b) of MOS element `elem`. It depends on
+    /// all terminal voltages, so within a time step it is held at its value at the step start.
+    Meyer {
+        elem: usize,
+        part: usize,
+    },
+}
+
+/// Charge storage between `a` and `b`; `v = v(a) - v(b)` (forward bias for junctions).
+#[derive(Clone)]
 struct Cap {
     a: Node,
     b: Node,
-    c: f64,
+    kind: CapKind,
+}
+
+/// Depletion charge and capacitance of a junction at forward bias `v`, linearised above
+/// `fc · pb` as in SPICE.
+fn depletion(cj0: f64, m: f64, pb: f64, fc: f64, v: f64) -> (f64, f64) {
+    if cj0 <= 0.0 {
+        return (0.0, 0.0);
+    }
+    let m = m.min(0.99);
+    let vfc = fc * pb;
+    if v < vfc {
+        let arg = 1.0 - v / pb;
+        let s = arg.powf(-m);
+        (pb * cj0 * (1.0 - arg * s) / (1.0 - m), cj0 * s)
+    } else {
+        let f1 = pb * (1.0 - (1.0 - fc).powf(1.0 - m)) / (1.0 - m);
+        let f2 = (1.0 - fc).powf(1.0 + m);
+        let f3 = 1.0 - fc * (1.0 + m);
+        let q = cj0 * (f1 + (f3 * (v - vfc) + m / (2.0 * pb) * (v * v - vfc * vfc)) / f2);
+        (q, cj0 / f2 * (f3 + m * v / pb))
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -32,10 +72,14 @@ enum Integ {
     Trapezoidal,
 }
 
+/// Accepted state of the reactive elements at the last time point.
 #[derive(Clone)]
 struct TranState {
-    cap_v: Vec<f64>,
+    cap_q: Vec<f64>,
     cap_i: Vec<f64>,
+    cap_v: Vec<f64>,
+    /// Meyer capacitance for the next step (unused for other kinds).
+    cap_c: Vec<f64>,
     ind_v: Vec<f64>,
     ind_i: Vec<f64>,
 }
@@ -68,21 +112,69 @@ struct MosEval {
     gds: f64,
 }
 
-fn mos_eval(m: &MosModel, w: f64, l: f64, mult: f64, vd: f64, vg: f64, vs: f64, vb: f64) -> MosEval {
+/// Terminal voltages in the normalized frame: NMOS polarity, drain the higher of d / s.
+struct Frame {
+    swapped: bool,
+    vgs: f64,
+    vds: f64,
+    vth: f64,
+    dvth_dvbs: f64,
+}
+
+fn frame(m: &MosModel, vd: f64, vg: f64, vs: f64, vb: f64) -> Frame {
     let sign = if m.pmos { -1.0 } else { 1.0 };
     let (mut d, g, mut s, b) = (sign * vd, sign * vg, sign * vs, sign * vb);
     let swapped = d < s;
     if swapped {
         std::mem::swap(&mut d, &mut s);
     }
-    let vgs = g - s;
-    let vds = d - s;
-    let vbs = b - s;
     let vto = sign * m.vto; // normalized threshold (positive for enhancement)
-    let sq = (m.phi - vbs).max(1e-3).sqrt();
-    let vth = vto + m.gamma * (sq - m.phi.sqrt());
-    let dvth_dvbs = -m.gamma / (2.0 * sq);
-    let beta = m.kp * w / l * mult;
+    let sq = (m.phi - (b - s)).max(1e-3).sqrt();
+    Frame { swapped, vgs: g - s, vds: d - s, vth: vto + m.gamma * (sq - m.phi.sqrt()), dvth_dvbs: -m.gamma / (2.0 * sq) }
+}
+
+/// Meyer intrinsic gate capacitances `[cgs, cgd, cgb]` (level 1: `vdsat = vgs - vth`).
+fn meyer(m: &MosModel, w: f64, l: f64, mult: f64, vd: f64, vg: f64, vs: f64, vb: f64) -> [f64; 3] {
+    let cox = m.cox() * w * m.leff(l) * mult;
+    if cox == 0.0 {
+        return [0.0; 3];
+    }
+    let f = frame(m, vd, vg, vs, vb);
+    let vgst = f.vgs - f.vth;
+    let phi = m.phi.max(1e-3);
+    let k = 2.0 * cox / 3.0;
+    let (cgs, cgd, cgb) = if vgst <= -phi {
+        (0.0, 0.0, cox)
+    } else if vgst <= -phi / 2.0 {
+        (0.0, 0.0, -vgst * cox / phi)
+    } else if vgst <= 0.0 {
+        (k + vgst * cox / (0.75 * phi), 0.0, -vgst * cox / phi)
+    } else if f.vds >= vgst {
+        (k, 0.0, 0.0)
+    } else {
+        let vdd = 2.0 * vgst - f.vds;
+        (k * (1.0 - ((vgst - f.vds) / vdd).powi(2)), k * (1.0 - (vgst / vdd).powi(2)), 0.0)
+    };
+    if f.swapped { [cgd, cgs, cgb] } else { [cgs, cgd, cgb] }
+}
+
+/// Exponential junction current `is (e^(v/nvt) - 1)` and its conductance, linear above 40 nvt.
+fn exp_iv(is: f64, nvt: f64, v: f64) -> (f64, f64) {
+    const MAXARG: f64 = 40.0;
+    let arg = v / nvt;
+    if arg > MAXARG {
+        let e = MAXARG.exp();
+        (is * (e * (1.0 + arg - MAXARG) - 1.0), is * e / nvt)
+    } else {
+        let e = arg.exp();
+        (is * (e - 1.0), is * e / nvt)
+    }
+}
+
+fn mos_eval(m: &MosModel, w: f64, l: f64, mult: f64, vd: f64, vg: f64, vs: f64, vb: f64) -> MosEval {
+    let sign = if m.pmos { -1.0 } else { 1.0 };
+    let Frame { swapped, vgs, vds, vth, dvth_dvbs } = frame(m, vd, vg, vs, vb);
+    let beta = m.kp * w / m.leff(l) * mult;
     let vov = vgs - vth;
     let (id, gm, gds, region) = if vov <= 0.0 {
         (0.0, 0.0, 0.0, "cutoff")
@@ -104,16 +196,27 @@ fn mos_eval(m: &MosModel, w: f64, l: f64, mult: f64, vd: f64, vg: f64, vs: f64, 
 
 fn diode_eval(m: &DiodeModel, vd: f64, vt: f64) -> (f64, f64) {
     let nvt = m.n * vt;
-    let arg = vd / nvt;
-    const MAXARG: f64 = 40.0;
-    if arg > MAXARG {
-        let e = MAXARG.exp();
-        let id = m.is * (e * (1.0 + arg - MAXARG) - 1.0);
-        (id, m.is * e / nvt)
-    } else {
-        let e = arg.exp();
-        (m.is * (e - 1.0), m.is * e / nvt)
+    let (mut id, mut gd) = exp_iv(m.is, nvt, vd);
+    if m.bv.is_finite() {
+        // Reverse breakdown: -ibv · e^(-(vd + bv) / nvt), so the current at -bv is -ibv.
+        let (ib, gb) = exp_iv(m.ibv, nvt, -(vd + m.bv));
+        id -= ib + m.ibv;
+        gd += gb;
     }
+    (id, gd)
+}
+
+/// Bulk junction diodes of a MOS: (anode, cathode, saturation current) for the drain and source
+/// sides that are not tied to the bulk.
+fn bulk_diodes(model: &MosModel, d: Node, s: Node, b: Node, m: f64, j: &crate::circuit::Junctions) -> Vec<(Node, Node, f64)> {
+    [(d, j.ad), (s, j.as_)]
+        .into_iter()
+        .filter(|(t, _)| *t != b)
+        .map(|(t, area)| {
+            let is = if model.js > 0.0 && area > 0.0 { model.js * area } else { model.is } * m;
+            if model.pmos { (t, b, is) } else { (b, t, is) }
+        })
+        .collect()
 }
 
 impl Engine {
@@ -134,24 +237,35 @@ impl Engine {
                     size += 1;
                     inductors.push(i);
                 }
-                Element::C { a, b, c, .. } => caps.push(Cap { a: *a, b: *b, c: *c }),
-                Element::D { a, k, model, .. } if model.cjo > 0.0 => caps.push(Cap { a: *a, b: *k, c: model.cjo }),
+                Element::C { a, b, c, .. } => caps.push(Cap { a: *a, b: *b, kind: CapKind::Linear(*c) }),
+                Element::D { a, k, model, .. } if model.cjo > 0.0 || model.tt > 0.0 => caps.push(Cap {
+                    a: *a,
+                    b: *k,
+                    kind: CapKind::Junction {
+                        terms: [(model.cjo, model.m), (0.0, 0.5)],
+                        pb: model.vj,
+                        fc: model.fc,
+                        diode: (model.tt > 0.0).then(|| model.clone()),
+                    },
+                }),
                 Element::M { d, g, s, b, model, w, l, m, junctions: j, .. } => {
-                    // Junctions are linearised at zero bias.
                     for (t, area, perim) in [(*d, j.ad, j.pd), (*s, j.as_, j.ps)] {
-                        let cj = (model.cj * area + model.cjsw * perim) * m;
-                        if cj > 0.0 && t != *b {
-                            caps.push(Cap { a: t, b: *b, c: cj });
+                        let terms = [(model.cj * area * m, model.mj), (model.cjsw * perim * m, model.mjsw)];
+                        if terms[0].0 + terms[1].0 > 0.0 && t != *b {
+                            let (a, k) = if model.pmos { (t, *b) } else { (*b, t) };
+                            let kind = CapKind::Junction { terms, pb: model.pb, fc: model.fc, diode: None };
+                            caps.push(Cap { a, b: k, kind });
                         }
                     }
-                    let cox = EPS_OX / model.tox;
-                    let cgs = (2.0 / 3.0) * cox * w * l * m + model.cgso * w * m;
-                    let cgd = model.cgdo * w * m;
-                    if cgs > 0.0 {
-                        caps.push(Cap { a: *g, b: *s, c: cgs });
+                    for (t, c) in [(*s, model.cgso * w), (*d, model.cgdo * w), (*b, model.cgbo * model.leff(*l))] {
+                        if c > 0.0 {
+                            caps.push(Cap { a: *g, b: t, kind: CapKind::Linear(c * m) });
+                        }
                     }
-                    if cgd > 0.0 {
-                        caps.push(Cap { a: *g, b: *d, c: cgd });
+                    if model.cox() > 0.0 {
+                        for (part, t) in [*s, *d, *b].into_iter().enumerate() {
+                            caps.push(Cap { a: *g, b: t, kind: CapKind::Meyer { elem: i, part } });
+                        }
                     }
                 }
                 _ => {}
@@ -166,6 +280,47 @@ impl Engine {
 
     fn v(&self, x: &[f64], n: Node) -> f64 {
         if n == 0 { 0.0 } else { x[n - 1] }
+    }
+
+    fn meyer_at(&self, elem: usize, part: usize, x: &[f64]) -> f64 {
+        match &self.c.elements[elem] {
+            Element::M { d, g, s, b, model, w, l, m, .. } => {
+                let v = |n| self.v(x, n);
+                meyer(model, *w, *l, *m, v(*d), v(*g), v(*s), v(*b))[part]
+            }
+            _ => 0.0,
+        }
+    }
+
+    /// Charge and capacitance of cap `k` at solution `x`. Within a transient step (`state`) a
+    /// Meyer capacitance stays at its step-start value; without one it is evaluated at `x`.
+    fn cap_qc(&self, k: usize, x: &[f64], state: Option<&TranState>) -> (f64, f64) {
+        let cp = &self.caps[k];
+        let v = self.v(x, cp.a) - self.v(x, cp.b);
+        match &cp.kind {
+            CapKind::Linear(c) => (c * v, *c),
+            CapKind::Junction { terms, pb, fc, diode } => {
+                let (mut q, mut c) = (0.0, 0.0);
+                for &(cj0, m) in terms {
+                    let (dq, dc) = depletion(cj0, m, *pb, *fc, v);
+                    q += dq;
+                    c += dc;
+                }
+                if let Some(d) = diode {
+                    let (id, gd) = diode_eval(d, v, self.vt);
+                    q += d.tt * id;
+                    c += d.tt * gd;
+                }
+                (q, c)
+            }
+            CapKind::Meyer { elem, part } => match state {
+                Some(s) => (s.cap_q[k] + s.cap_c[k] * (v - s.cap_v[k]), s.cap_c[k]),
+                None => {
+                    let c = self.meyer_at(*elem, *part, x);
+                    (c * v, c)
+                }
+            },
+        }
     }
 
     /// Assemble the linearized system around `x`.
@@ -250,7 +405,13 @@ impl Engine {
                     cond(&mut m, *a, *k, gd);
                     cur(&mut rhs, *a, *k, id - gd * vd);
                 }
-                Element::M { d, g, s, b, model, w, l, m: mult, .. } => {
+                Element::M { d, g, s, b, model, w, l, m: mult, junctions, .. } => {
+                    for (an, ca, is) in bulk_diodes(model, *d, *s, *b, *mult, junctions) {
+                        let vd = self.v(x, an) - self.v(x, ca);
+                        let (id, gd) = exp_iv(is, self.vt, vd);
+                        cond(&mut m, an, ca, gd);
+                        cur(&mut rhs, an, ca, id - gd * vd);
+                    }
                     let nodes = [*d, *g, *s, *b];
                     let vs: Vec<f64> = nodes.iter().map(|&n| self.v(x, n)).collect();
                     let ev = mos_eval(model, *w, *l, *mult, vs[0], vs[1], vs[2], vs[3]);
@@ -273,21 +434,23 @@ impl Engine {
         }
         if let Mode::Tran { h, method, state, .. } = mode {
             for (k, cp) in self.caps.iter().enumerate() {
-                let (geq, ieq) = match method {
-                    Integ::Trapezoidal => {
-                        let geq = 2.0 * cp.c / h;
-                        (geq, geq * state.cap_v[k] + state.cap_i[k])
-                    }
-                    Integ::BackwardEuler => {
-                        let geq = cp.c / h;
-                        (geq, geq * state.cap_v[k])
-                    }
-                };
+                let v = self.v(x, cp.a) - self.v(x, cp.b);
+                let (q, c) = self.cap_qc(k, x, Some(state));
+                let (i, geq) = Self::cap_current(method, h, q, c, state, k);
                 cond(&mut m, cp.a, cp.b, geq);
-                cur(&mut rhs, cp.a, cp.b, -ieq);
+                cur(&mut rhs, cp.a, cp.b, i - geq * v);
             }
         }
         (m, rhs)
+    }
+
+    /// Current through a cap holding charge `q` (capacitance `c`) at the end of a step of `h`,
+    /// and its conductance, by charge-based integration.
+    fn cap_current(method: Integ, h: f64, q: f64, c: f64, state: &TranState, k: usize) -> (f64, f64) {
+        match method {
+            Integ::Trapezoidal => (2.0 / h * (q - state.cap_q[k]) - state.cap_i[k], 2.0 * c / h),
+            Integ::BackwardEuler => ((q - state.cap_q[k]) / h, c / h),
+        }
     }
 
     fn newton(&self, x: &mut [f64], mode: Mode, gmin: f64, max_iter: usize) -> Result<usize, SimError> {
@@ -387,6 +550,7 @@ impl Engine {
                 Element::M { name, d, g, s, b, model, w, l, m, .. } => {
                     let v = |n| self.v(x, n);
                     let ev = mos_eval(model, *w, *l, *m, v(*d), v(*g), v(*s), v(*b));
+                    let [cgs, cgd, cgb] = meyer(model, *w, *l, *m, v(*d), v(*g), v(*s), v(*b));
                     out.push(DeviceOp {
                         name: name.clone(),
                         region: Some(ev.region.to_string()),
@@ -397,6 +561,9 @@ impl Engine {
                             ("vth".into(), ev.vth),
                             ("gm".into(), ev.gm),
                             ("gds".into(), ev.gds),
+                            ("cgs".into(), cgs + model.cgso * w * m),
+                            ("cgd".into(), cgd + model.cgdo * w * m),
+                            ("cgb".into(), cgb + model.cgbo * model.leff(*l) * m),
                         ],
                     });
                 }
@@ -461,6 +628,7 @@ impl Engine {
 
     pub fn run_ac(&mut self, ppd: u32, fstart: f64, fstop: f64) -> Result<Dataset, SimError> {
         let x0 = self.op(None)?;
+        let caps_at_op: Vec<f64> = (0..self.caps.len()).map(|k| self.cap_qc(k, &x0, None).1).collect();
         let mut ds = self.new_dataset("ac", "AC analysis", Some(("frequency", VecKind::Frequency)));
         for v in ds.vectors.iter_mut().skip(1) {
             v.im = Some(vec![]);
@@ -533,7 +701,11 @@ impl Engine {
                         let (_, gd) = diode_eval(model, vd, self.vt);
                         y(&mut m, *a, *k, Complex64::new(gd, 0.0));
                     }
-                    Element::M { d, g, s, b, model, w: wd, l, m: mult, .. } => {
+                    Element::M { d, g, s, b, model, w: wd, l, m: mult, junctions, .. } => {
+                        for (an, ca, is) in bulk_diodes(model, *d, *s, *b, *mult, junctions) {
+                            let (_, gd) = exp_iv(is, self.vt, self.v(&x0, an) - self.v(&x0, ca));
+                            y(&mut m, an, ca, Complex64::new(gd, 0.0));
+                        }
                         let nodes = [*d, *g, *s, *b];
                         let vs: Vec<f64> = nodes.iter().map(|&n| self.v(&x0, n)).collect();
                         let ev = mos_eval(model, *wd, *l, *mult, vs[0], vs[1], vs[2], vs[3]);
@@ -551,8 +723,8 @@ impl Engine {
                     }
                 }
             }
-            for cp in &self.caps {
-                y(&mut m, cp.a, cp.b, Complex64::new(0.0, w * cp.c));
+            for (cp, c) in self.caps.iter().zip(&caps_at_op) {
+                y(&mut m, cp.a, cp.b, Complex64::new(0.0, w * c));
             }
             if !solve(&mut m, &mut rhs) {
                 return Err(SimError::Engine(format!("AC: singular matrix at f={f:.3e}")));
@@ -600,7 +772,10 @@ impl Engine {
             r?
         };
         let mut x = x;
+        let qc: Vec<(f64, f64)> = (0..self.caps.len()).map(|k| self.cap_qc(k, &x, None)).collect();
         let mut state = TranState {
+            cap_q: qc.iter().map(|p| p.0).collect(),
+            cap_c: qc.iter().map(|p| p.1).collect(),
             cap_v: self.caps.iter().map(|c| self.v(&x, c.a) - self.v(&x, c.b)).collect(),
             cap_i: vec![0.0; self.caps.len()],
             ind_v: vec![0.0; self.inductors.len()],
@@ -641,14 +816,16 @@ impl Engine {
                 }
             };
             // Update reactive element state.
-            for (k, cp) in self.caps.iter().enumerate() {
-                let vnew = self.v(&xn, cp.a) - self.v(&xn, cp.b);
-                let inew = match method {
-                    Integ::Trapezoidal => 2.0 * cp.c / hs * (vnew - state.cap_v[k]) - state.cap_i[k],
-                    Integ::BackwardEuler => cp.c / hs * (vnew - state.cap_v[k]),
-                };
-                state.cap_v[k] = vnew;
-                state.cap_i[k] = inew;
+            for k in 0..self.caps.len() {
+                let cp = &self.caps[k];
+                let (q, c) = self.cap_qc(k, &xn, Some(&state));
+                let (i, _) = Self::cap_current(method, hs, q, c, &state, k);
+                state.cap_q[k] = q;
+                state.cap_i[k] = i;
+                state.cap_v[k] = self.v(&xn, cp.a) - self.v(&xn, cp.b);
+                if let CapKind::Meyer { elem, part } = cp.kind {
+                    state.cap_c[k] = self.meyer_at(elem, part, &xn);
+                }
             }
             for (k, &ei) in self.inductors.iter().enumerate() {
                 if let Element::L { a, b, .. } = &self.c.elements[ei] {
@@ -772,6 +949,59 @@ mod tests {
         let tri = beta * (0.5 * 0.2 - 0.5 * 0.04) * (1.0 + 0.1 * 0.2);
         assert!((id(1.0, 0.2) - tri).abs() < 1e-6 * tri, "{} vs {tri}", id(1.0, 0.2));
         assert!(id(0.4, 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn depletion_charge_is_continuous_and_its_derivative_is_the_capacitance() {
+        let (cj0, m, pb, fc) = (1e-12, 0.4, 0.8, 0.5);
+        for v in [-3.0, -0.5, 0.0, 0.3, 0.399, 0.401, 0.6, 1.0] {
+            let h = 1e-6;
+            let (q1, _) = depletion(cj0, m, pb, fc, v - h);
+            let (q2, _) = depletion(cj0, m, pb, fc, v + h);
+            let (_, c) = depletion(cj0, m, pb, fc, v);
+            assert!(((q2 - q1) / (2.0 * h) - c).abs() < 1e-6 * c, "v={v}: {} vs {c}", (q2 - q1) / (2.0 * h));
+        }
+        assert_eq!(depletion(cj0, m, pb, fc, 0.0), (0.0, cj0));
+    }
+
+    #[test]
+    fn meyer_capacitances_by_region() {
+        let model = crate::circuit::MosModel { tox: 10e-9, vto: 0.5, ..dummy_mos() };
+        let cox = model.cox() * 1e-6 * 1e-6;
+        let c = |vd: f64, vg: f64| meyer(&model, 1e-6, 1e-6, 1.0, vd, vg, 0.0, 0.0);
+        let close = |a: [f64; 3], b: [f64; 3]| a.iter().zip(&b).all(|(x, y)| (x - y).abs() < 1e-9 * cox);
+        assert!(close(c(0.0, 1.5), [cox / 2.0, cox / 2.0, 0.0]), "triode at vds=0: {:?}", c(0.0, 1.5));
+        assert!(close(c(1.8, 1.0), [2.0 * cox / 3.0, 0.0, 0.0]), "saturation: {:?}", c(1.8, 1.0));
+        assert!(close(c(1.0, -1.0), [0.0, 0.0, cox]), "accumulation: {:?}", c(1.0, -1.0));
+        // Source and drain swap with the bias: cgd takes the saturated 2/3 Cox.
+        assert!(close(meyer(&model, 1e-6, 1e-6, 1.0, 0.0, 1.0, 1.8, 0.0), [0.0, 2.0 * cox / 3.0, 0.0]));
+    }
+
+    fn dummy_mos() -> crate::circuit::MosModel {
+        match parse_deck("* t\n.model nm nmos ()\nM1 d g 0 0 nm\n.end").unwrap().elements.pop() {
+            Some(Element::M { model, .. }) => model,
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn nonlinear_junction_charge_is_conserved() {
+        // 1 uA for 1 us into a reverse-biased m=0.5, vj=1 junction of 1 pF: 2 cj0 (sqrt(1 + v) - 1) = I t
+        // gives v = 1.25 V where a linear 1 pF would reach 1 V.
+        let deck = "* t\nI1 0 a PULSE(0 1u 0 1p 1p 1 2)\nD1 0 a dm\n.model dm d (is=1e-30 cjo=1p vj=1 m=0.5)\n.end";
+        let ds = engine(deck).run_tran(5e-9, 1e-6).unwrap();
+        let v = *ds.get("v(a)").unwrap().re.last().unwrap();
+        assert!((v - 1.25).abs() < 0.005, "{v}");
+    }
+
+    #[test]
+    fn gate_capacitance_sets_the_input_pole() {
+        // Saturated 10u/10u NMOS with tox=10n: Cin = 2/3 Cox W L = 230 fF behind 1 MOhm.
+        let deck = "* t\nVD d 0 1.8\nVG in 0 DC 1 AC 1\nRG in g 1meg\nM1 d g 0 0 nm w=10u l=10u\n.model nm nmos (vto=0.5 kp=100u tox=10n)\n.end";
+        let cin = 2.0 / 3.0 * 3.453e-11 / 10e-9 * 1e-10;
+        let fc = 1.0 / (2.0 * std::f64::consts::PI * 1e6 * cin);
+        let db = engine(deck).run_ac(10, fc, fc * 1.001).unwrap().get("v(g)").unwrap().db()[0];
+        assert!((db + 3.0103).abs() < 0.02, "{db}");
     }
 
     #[test]
