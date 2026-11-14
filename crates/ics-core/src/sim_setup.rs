@@ -168,6 +168,65 @@ pub struct SimSetup {
     /// Spec-driven optimizer setup (variables, budget, goal).
     #[serde(default, skip_serializing_if = "crate::optimize::OptSetup::is_empty")]
     pub optimize: crate::optimize::OptSetup,
+    /// Process / mismatch Monte Carlo of the built-in engine's device models.
+    #[serde(default, skip_serializing_if = "McSetup::is_default")]
+    pub montecarlo: McSetup,
+}
+
+/// Device-model Monte Carlo: global shifts per polarity plus Pelgrom mismatch. Numbers are
+/// kept as typed (SPICE notation).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct McSetup {
+    pub runs: usize,
+    pub seed: u64,
+    /// Global threshold sigma per polarity (V).
+    pub vto_sigma: String,
+    /// Global relative transconductance sigma per polarity.
+    pub kp_sigma: String,
+    /// Threshold mismatch coefficient (V*m): 5n is 5 mV*um.
+    pub avt: String,
+    /// Current factor mismatch coefficient (m): 10n is 1 %*um.
+    pub abeta: String,
+    pub measures: Vec<McMeasure>,
+}
+
+impl Default for McSetup {
+    fn default() -> Self {
+        Self {
+            runs: 100,
+            seed: 1,
+            vto_sigma: "20m".into(),
+            kp_sigma: "0.03".into(),
+            avt: "5n".into(),
+            abeta: "10n".into(),
+            measures: vec![],
+        }
+    }
+}
+
+impl McSetup {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The four sigmas as numbers: (vto_sigma, kp_sigma, avt, abeta).
+    pub fn sigmas(&self) -> Result<(f64, f64, f64, f64), String> {
+        let num = |label: &str, v: &str| parse_spice(v).ok_or_else(|| format!("{label}: invalid number '{v}'"));
+        Ok((
+            num("vto sigma", &self.vto_sigma)?,
+            num("kp sigma", &self.kp_sigma)?,
+            num("avt", &self.avt)?,
+            num("abeta", &self.abeta)?,
+        ))
+    }
+}
+
+/// A scalar waveform-calculator expression evaluated on the dataset of `analysis`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct McMeasure {
+    pub analysis: String,
+    pub expr: String,
 }
 
 fn default_temp() -> f64 {
@@ -206,6 +265,7 @@ impl Default for SimSetup {
             corner: String::new(),
             sweep: Default::default(),
             optimize: Default::default(),
+            montecarlo: Default::default(),
         }
     }
 }
@@ -225,5 +285,22 @@ impl SimSetup {
 
     pub fn get_mut(&mut self, kind: &str) -> Option<&mut Analysis> {
         self.analyses.iter_mut().find(|a| a.analysis.kind_name() == kind).map(|a| &mut a.analysis)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn montecarlo_setup_round_trips() {
+        let s = SimSetup::default();
+        assert!(!serde_json::to_string(&s).unwrap().contains("montecarlo"));
+        let mut s = s;
+        s.montecarlo.runs = 20;
+        s.montecarlo.measures.push(McMeasure { analysis: "dc".into(), expr: "cross(v(out),0.9)".into() });
+        let back: SimSetup = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back, s);
+        assert_eq!(back.montecarlo.sigmas().unwrap(), (0.02, 0.03, 5e-9, 1e-8));
     }
 }

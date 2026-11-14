@@ -96,6 +96,10 @@ pub enum Command {
     SweepManager,
     /// Run the active cell's corner / parametric sweep.
     RunSweep,
+    /// Open the device-model Monte Carlo (process + mismatch) window on the active cell.
+    MonteCarlo,
+    /// Run the Monte Carlo window's setup on its cell.
+    RunMonteCarlo,
     /// Open the Results Browser (earlier runs of the active cell, for comparison).
     ResultsBrowser,
     /// Check the active schematic (Check and Save: `true` also saves when it has no errors).
@@ -497,6 +501,7 @@ pub struct IcStudio {
     fill: FillTool,
     calc: Calculator,
     sweep: SweepManager,
+    monte_carlo: crate::mc_view::MonteCarlo,
     results_open: bool,
     checks: Vec<ics_core::sch_check::Finding>,
     nets: NetBrowser,
@@ -550,6 +555,7 @@ impl IcStudio {
             fill: FillTool::default(),
             calc: Calculator::default(),
             sweep: SweepManager::default(),
+            monte_carlo: Default::default(),
             results_open: false,
             checks: vec![],
             nets: NetBrowser::default(),
@@ -833,6 +839,14 @@ impl IcStudio {
                 _ => self.warn("Open a cell with a schematic to sweep".into()),
             },
             Command::RunSweep => self.run_sweep(ctx),
+            Command::MonteCarlo => match (self.active.clone(), self.active_cell()) {
+                (Some(r), Some(c)) if c.schematic.is_some() => {
+                    let setup = c.sim.montecarlo.clone();
+                    self.monte_carlo.show(&r, &setup);
+                }
+                _ => self.warn("Open a cell with a schematic for Monte Carlo".into()),
+            },
+            Command::RunMonteCarlo => self.run_monte_carlo(ctx),
             Command::Optimizer => match (self.active.clone(), self.active_cell()) {
                 (Some(r), Some(c)) if c.schematic.is_some() => {
                     let setup = c.sim.optimize.clone();
@@ -1295,6 +1309,69 @@ impl IcStudio {
                 self.error(format!("Sweep: {e}"));
             }
         }
+    }
+
+    fn run_monte_carlo(&mut self, ctx: &egui::Context) {
+        if self.monte_carlo.cell.is_none()
+            && let (Some(r), Some(c)) = (self.active.clone(), self.active_cell())
+        {
+            let setup = c.sim.montecarlo.clone();
+            self.monte_carlo.show(&r, &setup);
+        }
+        let Some(r) = self.monte_carlo.cell.clone() else {
+            self.warn("Open a cell with a schematic for Monte Carlo".into());
+            return;
+        };
+        let mut notes = vec![];
+        let res = self.mc_deck(&r, &mut notes).and_then(|(deck, analyses)| self.monte_carlo.start(ctx, deck, analyses));
+        for n in notes {
+            self.warn(n);
+        }
+        match res {
+            Ok(()) => self.info(format!("Monte Carlo {r}: {} run(s) on the built-in engine", self.monte_carlo.setup.runs)),
+            Err(e) => {
+                self.monte_carlo.error = Some(e.clone());
+                self.error(format!("Monte Carlo: {e}"));
+            }
+        }
+    }
+
+    /// The netlist of cell `r` (with layout parasitics when its setup asks) and its enabled analyses.
+    fn mc_deck(&self, r: &CellRef, notes: &mut Vec<String>) -> Result<(String, Vec<ics_core::Analysis>), String> {
+        let p = self.project.as_ref().ok_or("no project")?;
+        let cell = p.cell(r).ok_or_else(|| format!("no cell {r}"))?;
+        let sch = cell.schematic.as_ref().ok_or_else(|| format!("{r} has no schematic"))?;
+        let analyses: Vec<_> = cell.sim.enabled().cloned().collect();
+        if analyses.is_empty() {
+            return Err("no analyses enabled".into());
+        }
+        let nl = ics_core::netlist::netlist_for(sch, &p.tech, &cell.sim.corner);
+        notes.extend(nl.warnings.iter().map(|w| format!("netlist: {w}")));
+        let mut deck = nl.deck(&r.to_string(), &cell.sim);
+        if cell.sim.parasitics && cell.layout.is_some() {
+            match ics_core::pex::post_layout(p, r) {
+                Ok(pl) => deck = pl.apply(&deck),
+                Err(e) => notes.push(format!("Parasitics not included: {e}")),
+            }
+        }
+        Ok((deck, analyses))
+    }
+
+    fn monte_carlo_window(&mut self, ctx: &egui::Context) {
+        let (changed, run) = self.monte_carlo.window(ctx);
+        if let Some(s) = changed
+            && let Some(c) = self.monte_carlo.cell.clone().and_then(|r| self.project.as_mut()?.cell_mut(&r))
+        {
+            c.sim.montecarlo = s;
+            self.mark_dirty();
+        }
+        if run {
+            self.queue.push(Command::RunMonteCarlo);
+        }
+    }
+
+    pub fn monte_carlo(&mut self) -> &mut crate::mc_view::MonteCarlo {
+        &mut self.monte_carlo
     }
 
     /// The decks of every point of the sweep draft on cell `r`.
@@ -1847,6 +1924,9 @@ impl IcStudio {
                 if ui.button("Corner / Sweep Manager…").clicked() {
                     q.push(Command::SweepManager);
                 }
+                if ui.button("Monte Carlo…").clicked() {
+                    q.push(Command::MonteCarlo);
+                }
             });
             ui.menu_button("Verify", |ui| {
                 if ui.button("Run DRC").clicked() {
@@ -1887,6 +1967,9 @@ impl IcStudio {
                 }
                 if ui.button("Corner / Sweep Manager…").clicked() {
                     q.push(Command::SweepManager);
+                }
+                if ui.button("Monte Carlo…").clicked() {
+                    q.push(Command::MonteCarlo);
                 }
                 if ui.button("Results Browser…").clicked() {
                     q.push(Command::ResultsBrowser);
@@ -2808,6 +2891,8 @@ impl IcStudio {
             ("Dummy fill (metal density)".into(), "", Command::DummyFill),
             ("Waveform calculator".into(), "", Command::Calculator),
             ("Corner / sweep manager".into(), "", Command::SweepManager),
+            ("Monte Carlo (process and mismatch of device models)".into(), "", Command::MonteCarlo),
+            ("Run Monte Carlo".into(), "", Command::RunMonteCarlo),
             ("Optimizer (size devices to meet specs)".into(), "", Command::Optimizer),
             ("Results browser (compare runs)".into(), "", Command::ResultsBrowser),
             ("Check schematic".into(), "", Command::CheckSchematic(false)),
@@ -3697,6 +3782,7 @@ impl IcStudio {
             || self.sweep.is_running()
             || self.copilot.busy()
             || self.optimizer.is_running()
+            || self.monte_carlo.is_running()
     }
 
     fn rule_designer_window(&mut self, ctx: &egui::Context) {
@@ -4149,6 +4235,9 @@ impl eframe::App for IcStudio {
         if let Some((ok, m)) = self.optimizer.poll() {
             if ok { self.ok(m) } else { self.warn(m) }
         }
+        if let Some((ok, m)) = self.monte_carlo.poll() {
+            if ok { self.ok(m) } else { self.warn(m) }
+        }
         self.copilot.poll();
         if let Some(rx) = &self.copilot.calls {
             let calls: Vec<Pending> = rx.try_iter().collect();
@@ -4239,6 +4328,7 @@ impl eframe::App for IcStudio {
         let sim = active.as_ref().and_then(|r| self.sims.get_mut(r));
         self.calc.window(&ctx, active.as_ref(), sim);
         self.sweep_window(&ctx);
+        self.monte_carlo_window(&ctx);
         self.results_window(&ctx);
         self.net_window(&ctx);
         self.hier_window(&ctx);

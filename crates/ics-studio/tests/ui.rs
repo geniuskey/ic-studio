@@ -575,6 +575,32 @@ fn monte_carlo_sweep() {
     shot(&mut h, "36_monte_carlo");
 }
 
+/// Device-model Monte Carlo on the CMOS inverter: spread of the switching threshold.
+#[test]
+fn device_monte_carlo() {
+    let mut h = app(demo_args("cmos_inverter", "simulation", false));
+    h.state_mut().command(Command::MonteCarlo);
+    h.run_steps(2);
+    {
+        let mc = h.state_mut().monte_carlo();
+        assert!(mc.open);
+        mc.setup.runs = 12;
+        mc.setup.measures.push(ics_core::sim_setup::McMeasure { analysis: "dc".into(), expr: "cross(v(out),0.9)".into() });
+    }
+    h.state_mut().command(Command::RunMonteCarlo);
+    h.run_steps(2);
+    settle(&mut h, "device monte carlo");
+    let mc = h.state_mut().monte_carlo();
+    assert!(mc.error.is_none(), "{:?}", mc.error);
+    let res = mc.result.as_ref().expect("monte carlo result");
+    let st = &res.stats[0];
+    assert_eq!(st.n + res.failed.len(), 12, "{res:?}");
+    assert!(st.n >= 10 && st.mean > 0.5 && st.mean < 1.3 && st.sigma > 0.0 && st.min < st.max, "{st:?}");
+    assert!(h.state().console_lines().any(|l| l.contains("Monte Carlo: 12 run(s)")));
+    h.run_steps(4);
+    shot(&mut h, "37_device_monte_carlo");
+}
+
 /// Results Browser: the previous run is kept and can be overlaid.
 #[test]
 fn results_compare() {
@@ -696,6 +722,7 @@ fn glyph_coverage() {
         include_str!("../src/ciw.rs"),
         include_str!("../src/calc_view.rs"),
         include_str!("../src/sweep_view.rs"),
+        include_str!("../src/mc_view.rs"),
         include_str!("../src/stream_map_view.rs"),
         include_str!("../src/fill_view.rs"),
         include_str!("../src/net_view.rs"),
