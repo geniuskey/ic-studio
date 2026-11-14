@@ -17,6 +17,7 @@ pub mod layout_view;
 pub mod llm;
 pub mod mc_view;
 pub mod net_view;
+pub mod opc_view;
 pub mod optimizer_view;
 pub mod rule_designer;
 pub mod schematic_view;

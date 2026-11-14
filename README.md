@@ -161,6 +161,9 @@ Linux needs the usual windowing libraries:
 - Results browser: keep earlier runs and overlay them, e.g. pre- versus post-layout
 - Layout generators: guard rings, via arrays, common-centroid / interdigitated matched
   placement with dummies; dummy metal fill to a density target
+- Model-based OPC: a Gaussian-blur / threshold litho model, edge fragmentation and
+  iterative correction of the edge placement error, with a preview of the mask and what
+  prints with and without correction
 - Hierarchy and net browsers; a visual DRC rule designer that self-tests every rule; a
   stream layer map (Virtuoso layer map files) for GDSII / OASIS import and export
 
@@ -291,13 +294,13 @@ crates/
               geom · schematic · connectivity · netlist · layout · hier (indices, LOD)
               region / polybool (Booleans) · pcell · gds · oasis · stream_map · tech · tech_import
               drc · rule_design · extract · lvs · sdl (schematic-driven layout) · route
-              matching · layout_gen · fill · pex · sch_check · sweep · skill
+              matching · layout_gen · fill · opc · pex · sch_check · sweep · skill
               project storage · examples
   ics-sim     SPICE parser, MNA engine, ngspice backend, waveform calculator, results
   ics-studio  desktop app (eframe/egui on wgpu)
               app (shell, commands) · schematic_view · sim_view · layout_view (edit, verify)
               tool windows: calc_view · sweep_view · rule_designer · stream_map_view
-              fill_view · gen_view · net_view · hier_view · ciw
+              fill_view · opc_view · gen_view · net_view · hier_view · ciw
   ics-cli     `ics` command line and `ics mcp`
   ics-mcp     MCP tools, stdio server and live-mode bridge (library)
 ```

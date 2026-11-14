@@ -536,6 +536,29 @@ fn dummy_fill() {
     assert_eq!(shape_count(&h, "inv_chain"), before);
 }
 
+/// OPC: previews the corrected poly mask and writes it into the cell, undoable.
+#[test]
+fn opc() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = app(demo_args("cmos_inverter", "layout", false));
+    let before = shape_count(&h, "cmos_inverter");
+    h.state_mut().command(Command::Opc);
+    h.run_steps(4);
+    h.get_by_label("Preview").click();
+    h.run_steps(3);
+    h.get_by_label("Printed (OPC)").scroll_to_me();
+    h.run_steps(3);
+    shot(&mut h, "36_opc");
+    h.state_mut().command(Command::ApplyOpc);
+    h.run_steps(3);
+    let lines: Vec<String> = h.state().console_lines().map(String::from).collect();
+    assert!(lines.iter().any(|l| l.starts_with("OPC on")), "{lines:?}");
+    assert_ne!(shape_count(&h, "cmos_inverter"), before);
+    h.state_mut().command(Command::Undo);
+    h.run_steps(2);
+    assert_eq!(shape_count(&h, "cmos_inverter"), before);
+}
+
 /// Monte Carlo on the RC filter: spread of the bandwidth, yield and the HTML datasheet.
 #[test]
 fn monte_carlo_sweep() {
@@ -755,6 +778,7 @@ fn glyph_coverage() {
         include_str!("../src/mc_view.rs"),
         include_str!("../src/stream_map_view.rs"),
         include_str!("../src/fill_view.rs"),
+        include_str!("../src/opc_view.rs"),
         include_str!("../src/net_view.rs"),
         include_str!("../src/hier_view.rs"),
         include_str!("../src/gen_view.rs"),

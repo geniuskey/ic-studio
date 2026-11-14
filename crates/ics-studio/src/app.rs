@@ -23,6 +23,7 @@ use crate::home_view;
 use crate::icons::{self, Icon};
 use crate::layout_view::{EipContext, LayAction, LayCtx, LayRequest, LayTool, LayoutEditor, Verify, fmt_count, um};
 use crate::net_view::{NetAction, NetBrowser};
+use crate::opc_view::OpcTool;
 use crate::rule_designer::{DesignerAction, RuleDesigner};
 use crate::schematic_view::{SchTool, SchematicEditor, device_palette};
 use crate::sim_view::{self, SimEvent, SimState};
@@ -137,6 +138,10 @@ pub enum Command {
     DummyFill,
     /// Add dummy fill with the Dummy Fill tool's parameters to the active cell.
     AddFill,
+    /// Open the OPC (optical proximity correction) tool.
+    Opc,
+    /// Write the OPC tool's corrected mask into the active cell.
+    ApplyOpc,
     /// Run an external sign-off runset of the technology on the active cell: the one named
     /// (or uniquely matched), else the one selected in the Sign-off section.
     RunSignoff(Option<String>),
@@ -501,6 +506,7 @@ pub struct IcStudio {
     optimizer: crate::optimizer_view::Optimizer,
     stream_map: StreamMapEditor,
     fill: FillTool,
+    opc: OpcTool,
     calc: Calculator,
     sweep: SweepManager,
     monte_carlo: crate::mc_view::MonteCarlo,
@@ -555,6 +561,7 @@ impl IcStudio {
             optimizer: Default::default(),
             stream_map: StreamMapEditor::default(),
             fill: FillTool::default(),
+            opc: OpcTool::default(),
             calc: Calculator::default(),
             sweep: SweepManager::default(),
             monte_carlo: Default::default(),
@@ -941,6 +948,11 @@ impl IcStudio {
                 None => self.warn("Open a project to add dummy fill".into()),
             },
             Command::AddFill => self.add_fill(),
+            Command::Opc => match &self.project {
+                Some(p) => self.opc.show(&p.tech),
+                None => self.warn("Open a project to run OPC".into()),
+            },
+            Command::ApplyOpc => self.apply_opc(),
             Command::RunSignoff(name) => self.run_signoff(ctx, name.as_deref()),
             Command::GenerateLayout => self.generate_layout(),
             Command::RouteFlylines => self.route_flylines(),
@@ -2015,6 +2027,9 @@ impl IcStudio {
                 if ui.add_enabled(has_project, egui::Button::new("Dummy Fill…")).clicked() {
                     q.push(Command::DummyFill);
                 }
+                if ui.add_enabled(has_project, egui::Button::new("OPC…")).clicked() {
+                    q.push(Command::Opc);
+                }
                 ui.separator();
                 if ui.button("SKILL CIW").clicked() {
                     q.push(Command::Ciw);
@@ -2913,6 +2928,7 @@ impl IcStudio {
             ("DRC rule designer".into(), "", Command::RuleDesigner),
             ("Stream layer map (GDSII / OASIS layer numbers)".into(), "", Command::StreamMap),
             ("Dummy fill (metal density)".into(), "", Command::DummyFill),
+            ("OPC (optical proximity correction)".into(), "", Command::Opc),
             ("Waveform calculator".into(), "", Command::Calculator),
             ("Corner / sweep manager".into(), "", Command::SweepManager),
             ("Monte Carlo (process and mismatch of device models)".into(), "", Command::MonteCarlo),
@@ -4080,6 +4096,67 @@ impl IcStudio {
         self.ok(format!("Dummy fill on {r}: {}", crate::fill_view::summary(&rep)));
     }
 
+    fn opc_window(&mut self, ctx: &egui::Context) {
+        let active = self.active_layout();
+        if self.opc.window(ctx, self.project.as_ref(), active.as_ref()) {
+            self.apply_opc();
+        }
+    }
+
+    fn apply_opc(&mut self) {
+        let Some(r) = self.active_layout() else {
+            self.warn("Open a layout cell to run OPC".into());
+            return;
+        };
+        let Some(p) = self.project.as_mut() else { return };
+        if self.opc.params.is_none() {
+            self.opc.show(&p.tech);
+            self.opc.open = false;
+        }
+        let rep = match self.opc.run(p, &r) {
+            Ok(rep) => rep,
+            Err(e) => {
+                self.error(format!("OPC: {e}"));
+                return;
+            }
+        };
+        let layer = self.opc.params.as_ref().map_or(0, |o| o.layer);
+        let out = self.opc.output.unwrap_or(layer);
+        let summary = crate::opc_view::summary(&rep, &p.tech);
+        let Some(top) = p.cell(&r).and_then(|c| c.layout.as_ref()) else { return };
+        if out == layer && ics_core::hier::flatten(top, p, 64).iter().any(|f| f.layer == layer && f.id.is_none()) {
+            let msg =
+                format!("OPC: {r} has {} shapes inside placed cells; write the mask to another layer", p.tech.layers[layer].name);
+            self.error(msg);
+            return;
+        }
+        let Some(lay) = p.cell_mut(&r).and_then(|c| c.layout.as_mut()) else { return };
+        let ed = self.lay_eds.entry(r.clone()).or_default();
+        ed.history.push(lay);
+        if out == layer {
+            let old: Vec<u64> = lay
+                .shapes
+                .iter()
+                .filter(|s| s.layer == layer && !matches!(s.geom, ics_core::Geometry::Label { .. }))
+                .map(|s| s.id)
+                .collect();
+            for id in old {
+                lay.remove(id);
+            }
+        }
+        for g in rep.mask.to_geometry() {
+            lay.add(out, g);
+        }
+        ed.layout_changed();
+        self.hier.invalidate(&r);
+        self.mark_dirty();
+        self.ok(format!("OPC on {r}: {summary}"));
+    }
+
+    pub fn opc_tool(&mut self) -> &mut OpcTool {
+        &mut self.opc
+    }
+
     pub fn calculator(&self) -> &Calculator {
         &self.calc
     }
@@ -4349,6 +4426,7 @@ impl eframe::App for IcStudio {
         self.ai_models.window(&ctx, &mut self.settings.llm, &dirs);
         self.stream_map_window(&ctx);
         self.fill_window(&ctx);
+        self.opc_window(&ctx);
         let active = self.active.clone();
         let sim = active.as_ref().and_then(|r| self.sims.get_mut(r));
         self.calc.window(&ctx, active.as_ref(), sim);

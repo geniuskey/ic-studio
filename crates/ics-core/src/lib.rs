@@ -24,6 +24,7 @@ pub mod lvs;
 pub mod matching;
 pub mod netlist;
 pub mod oasis;
+pub mod opc;
 pub mod optimize;
 pub mod pcell;
 pub mod pdk;
