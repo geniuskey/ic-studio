@@ -24,6 +24,11 @@ fn suite() -> Vec<(&'static str, String, f64)> {
             0.03,
         ),
         (
+            "inverter_dc_hot",
+            format!("* inv 125C\n.temp 125\nV1 vdd 0 1.8\nV2 in 0 0\nM1 out in vdd vdd pmos w=2u l=180n\nM2 out in 0 0 nmos w=1u l=180n\n{m}\n.dc V2 0 1.8 0.01\n.end\n"),
+            0.03,
+        ),
+        (
             "cs_amp",
             format!(
                 "* cs\nVDD vdd 0 1.8\nVIN in 0 DC 0.6 AC 1\nRD vdd out 10k\nM1 out in 0 0 nmos w=2u l=1u\nCL out 0 100f\n{m}\n.op\n.ac dec 10 1k 10g\n.end\n"

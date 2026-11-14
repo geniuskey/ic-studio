@@ -222,7 +222,15 @@ fn bulk_diodes(model: &MosModel, d: Node, s: Node, b: Node, m: f64, j: &crate::c
 }
 
 impl Engine {
-    pub fn new(c: Circuit) -> Result<Self, SimError> {
+    pub fn new(mut c: Circuit) -> Result<Self, SimError> {
+        let temp = c.temp;
+        for e in &mut c.elements {
+            match e {
+                Element::M { model, .. } => *model = model.at_temp(temp),
+                Element::D { model, .. } => *model = model.at_temp(temp),
+                _ => {}
+            }
+        }
         let nn = c.node_count() - 1;
         let mut branch = vec![None; c.elements.len()];
         let mut size = nn;
@@ -889,6 +897,8 @@ impl Engine {
         let mut method = Integ::BackwardEuler;
         let mut bp_i = 0;
         let mut steps = 0usize;
+        // Accepted points since the last breakpoint, for the truncation error estimate.
+        let mut hist: Vec<(f64, Vec<f64>)> = vec![(0.0, x.clone())];
         while t < tstop * (1.0 - 1e-12) {
             while bp_i < bps.len() && bps[bp_i] <= t * (1.0 + 1e-12) + 1e-30 {
                 bp_i += 1;
@@ -896,14 +906,23 @@ impl Engine {
             let next_bp = bps.get(bp_i).copied().unwrap_or(tstop);
             let mut hs = h.min(hmax).min(next_bp - t);
             let mut tries = 0;
-            let iters;
-            let xn = loop {
+            let mut rejects = 0;
+            let (xn, iters, lte) = loop {
                 let mut xt = x.clone();
                 let mode = Mode::Tran { t: t + hs, h: hs, method, state: &state };
                 match self.newton(&mut xt, mode, GMIN, 60) {
                     Ok(it) => {
-                        iters = it;
-                        break xt;
+                        let r = if method == Integ::Trapezoidal { self.lte_ratio(&hist, t + hs, &xt) } else { None };
+                        if let Some(r) = r
+                            && r > 1.0
+                            && rejects < 20
+                            && hs > hmax * 1e-7
+                        {
+                            rejects += 1;
+                            hs *= (0.9 * r.cbrt().recip()).max(0.25);
+                            continue;
+                        }
+                        break (xt, it, r);
                     }
                     Err(e) => {
                         tries += 1;
@@ -937,24 +956,54 @@ impl Engine {
             x = xn;
             self.push_point(&mut ds, Some(t), &x);
             steps += 1;
-            // Step control: grow when Newton converges quickly.
+            // Step control: the truncation error estimate sets the next step once three points
+            // past a breakpoint exist; before that, and when Newton struggles, iteration counts do.
             let at_bp = (next_bp - t).abs() <= hmax * 1e-9;
             if at_bp {
                 method = Integ::BackwardEuler;
-                h = (hmax / 20.0).max(hs);
+                h = hs.clamp(hmax * 1e-4, hmax / 20.0);
+                hist.clear();
             } else {
                 method = Integ::Trapezoidal;
-                if iters <= 4 {
-                    h = (hs * 2.0).min(hmax);
-                } else if iters > 10 {
-                    h = hs / 2.0;
+                h = match lte {
+                    Some(r) => hs * (0.9 * r.max(1e-9).cbrt().recip()).min(2.0),
+                    None if iters <= 4 => hs * 2.0,
+                    None => hs,
+                };
+                if iters > 10 {
+                    h = h.min(hs / 2.0);
                 }
+                h = h.min(hmax);
+            }
+            hist.push((t, x.clone()));
+            if hist.len() > 3 {
+                hist.remove(0);
             }
             if steps > 5_000_000 {
                 return Err(SimError::Engine("transient exceeded 5M steps".into()));
             }
         }
         Ok(ds)
+    }
+
+    /// Local truncation error of a trapezoidal step to `(tn, xn)` relative to its tolerance (above
+    /// 1: reject), from the difference to the quadratic extrapolation of the last three points.
+    /// For the trapezoidal rule the error is about a third of that difference.
+    fn lte_ratio(&self, hist: &[(f64, Vec<f64>)], tn: f64, xn: &[f64]) -> Option<f64> {
+        const TRTOL: f64 = 7.0;
+        const LTE_RELTOL: f64 = 1e-3;
+        let [(t0, x0), (t1, x1), (t2, x2)] = hist else { return None };
+        let l0 = (tn - t1) * (tn - t2) / ((t0 - t1) * (t0 - t2));
+        let l1 = (tn - t0) * (tn - t2) / ((t1 - t0) * (t1 - t2));
+        let l2 = (tn - t0) * (tn - t1) / ((t2 - t0) * (t2 - t1));
+        let r = (0..self.nn)
+            .map(|i| {
+                let pred = l0 * x0[i] + l1 * x1[i] + l2 * x2[i];
+                let tol = TRTOL * (LTE_RELTOL * xn[i].abs().max(x2[i].abs()) + ABSTOL_V);
+                (xn[i] - pred).abs() / 3.0 / tol
+            })
+            .fold(0.0, f64::max);
+        r.is_finite().then_some(r)
     }
 
     pub fn run(&mut self, a: &Analysis) -> Result<Dataset, SimError> {
@@ -1141,12 +1190,51 @@ mod tests {
     }
 
     #[test]
+    fn temperature_scales_threshold_mobility_and_diodes() {
+        let mos = |t: f64| {
+            let deck = format!(
+                "* t\n.temp {t}\n.model nm nmos (vto=0.5 kp=100u gamma=0.4 phi=0.7)\nVD d 0 1.8\nVG g 0 1.8\nM1 d g 0 0 nm w=1u l=1u\n.op\n.end"
+            );
+            let ds = engine(&deck).run_op().unwrap();
+            let get = |k: &str| ds.devices[0].values.iter().find(|v| v.0 == k).unwrap().1;
+            (get("vth"), get("id"))
+        };
+        let ((vth27, id27), (vth127, id127)) = (mos(27.0), mos(127.0));
+        assert!((vth27 - 0.5).abs() < 1e-12, "nominal threshold unchanged: {vth27}");
+        let dvdt = (vth127 - vth27) / 100.0;
+        assert!((-3e-3..-0.5e-3).contains(&dvdt), "threshold tempco {dvdt} V/K");
+        assert!(id127 < id27, "mobility loss dominates in strong inversion: {id27} -> {id127}");
+        let vd = |t: f64| {
+            let deck = format!("* d\n.temp {t}\nI1 0 k 1m\nD1 k 0 dm\n.model dm d (is=1e-14)\n.op\n.end");
+            engine(&deck).run_op().unwrap().get("v(k)").unwrap().re[0]
+        };
+        let dvdt = (vd(77.0) - vd(27.0)) / 50.0;
+        assert!((-2.5e-3..-1.5e-3).contains(&dvdt), "diode forward voltage tempco {dvdt} V/K");
+    }
+
+    #[test]
     fn diode_forward() {
         let deck = "* d\nV1 a 0 5\nR1 a k 1k\nD1 k 0 dm\n.model dm d (is=1e-14 n=1)\n.end";
         let mut e = engine(deck);
         let ds = e.run_op().unwrap();
         let vk = ds.get("v(k)").unwrap().re[0];
         assert!(vk > 0.6 && vk < 0.75, "{vk}");
+    }
+
+    #[test]
+    fn truncation_error_control_resolves_fast_edges_under_a_coarse_tstep() {
+        // tau = 1 ns but tstep = 10 ns: only the error estimate keeps the steps small enough.
+        let mut e = engine("* t\nV1 in 0 DC 0 PULSE(0 1 0 1p 1p 1 2)\nR1 in out 1k\nC1 out 0 1p\n.end");
+        let ds = e.run_tran(10e-9, 1e-6).unwrap();
+        let (t, v) = (&ds.vectors[0].re, &ds.get("v(out)").unwrap().re);
+        for &at in &[0.5e-9, 1e-9, 2e-9, 4e-9] {
+            let k = t.partition_point(|&x| x < at);
+            let f = (at - t[k - 1]) / (t[k] - t[k - 1]);
+            let got = v[k - 1] + f * (v[k] - v[k - 1]);
+            let exact = 1.0 - (-(at - 0.5e-12) / 1e-9f64).exp();
+            assert!((got - exact).abs() < 0.01, "t={at:e}: {got} vs {exact}");
+        }
+        assert!(t.len() < 2000, "steps grow again once settled: {}", t.len());
     }
 
     #[test]

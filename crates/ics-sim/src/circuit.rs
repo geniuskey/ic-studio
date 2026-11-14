@@ -125,6 +125,11 @@ pub struct DiodeModel {
     /// Flicker noise coefficient and exponent.
     pub kf: f64,
     pub af: f64,
+    /// Band gap (eV) and saturation current temperature exponent.
+    pub eg: f64,
+    pub xti: f64,
+    /// Temperature the parameters were measured at (°C).
+    pub tnom: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -160,6 +165,8 @@ pub struct MosModel {
     /// Flicker noise coefficient and exponent.
     pub kf: f64,
     pub af: f64,
+    /// Temperature the parameters were measured at (°C).
+    pub tnom: f64,
 }
 
 /// Drain / source junction geometry of a MOS instance (m², m), per device of `m`.
@@ -182,6 +189,89 @@ impl MosModel {
     pub fn leff(&self, l: f64) -> f64 {
         (l - 2.0 * self.ld).max(1e-9)
     }
+
+    /// The model at `temp` °C (SPICE level 1 temperature scaling): mobility ∝ T^-1.5, surface
+    /// potential and threshold from the silicon band gap, junction saturation current, potential
+    /// and capacitance.
+    pub fn at_temp(&self, temp: f64) -> MosModel {
+        let (tnom, t) = (self.tnom + KELVIN, temp + KELVIN);
+        if (t - tnom).abs() < 1e-9 {
+            return self.clone();
+        }
+        let ty = if self.pmos { -1.0 } else { 1.0 };
+        let (g, g1) = (silicon(t), silicon(tnom));
+        let ratio = t / tnom;
+        let phio = (self.phi - g1.pbfact) / g1.fact;
+        let tphi = g.fact * phio + g.pbfact;
+        let vbi = self.vto - ty * self.gamma * self.phi.sqrt() + 0.5 * (g1.egfet - g.egfet) + ty * 0.5 * (tphi - self.phi);
+        let sat = (-g.egfet / g.vt + g1.egfet / g1.vt).exp();
+        let (pb, cap) = junction_temp(self.pb, g, g1);
+        MosModel {
+            kp: self.kp / (ratio * ratio.sqrt()),
+            phi: tphi,
+            vto: vbi + ty * self.gamma * tphi.sqrt(),
+            is: self.is * sat,
+            js: self.js * sat,
+            pb,
+            cj: self.cj * cap(self.mj),
+            cjsw: self.cjsw * cap(self.mjsw),
+            tnom: temp,
+            ..self.clone()
+        }
+    }
+}
+
+impl DiodeModel {
+    /// The model at `temp` °C: saturation current from `eg` / `xti`, junction potential and
+    /// capacitance as in SPICE.
+    pub fn at_temp(&self, temp: f64) -> DiodeModel {
+        let (tnom, t) = (self.tnom + KELVIN, temp + KELVIN);
+        if (t - tnom).abs() < 1e-9 {
+            return self.clone();
+        }
+        let (g, g1) = (silicon(t), silicon(tnom));
+        let ratio = t / tnom;
+        let (vj, cap) = junction_temp(self.vj, g, g1);
+        DiodeModel {
+            is: self.is * ((ratio - 1.0) * self.eg / (self.n * g.vt) + self.xti / self.n * ratio.ln()).exp(),
+            vj,
+            cjo: self.cjo * cap(self.m),
+            tnom: temp,
+            ..self.clone()
+        }
+    }
+}
+
+const KELVIN: f64 = 273.15;
+const REFTEMP: f64 = 300.15;
+
+/// Silicon band gap terms at `t` K (SPICE `mos1temp`): thermal voltage, band gap and the
+/// built-in potential correction relative to 300.15 K.
+#[derive(Clone, Copy)]
+struct Silicon {
+    vt: f64,
+    egfet: f64,
+    pbfact: f64,
+    fact: f64,
+}
+
+fn silicon(t: f64) -> Silicon {
+    let vt = 1.380649e-23 * t / 1.602176634e-19;
+    let vtref = 1.380649e-23 * REFTEMP / 1.602176634e-19;
+    let egfet = 1.16 - 7.02e-4 * t * t / (t + 1108.0);
+    let arg = -egfet / (2.0 * vt) + 1.1150877 / (2.0 * vtref);
+    let fact = t / REFTEMP;
+    Silicon { vt, egfet, pbfact: -2.0 * vt * (1.5 * fact.ln() + arg), fact }
+}
+
+/// Junction potential at `g` from `pb` at `g1`, and the capacitance factor for a grading
+/// coefficient.
+fn junction_temp(pb: f64, g: Silicon, g1: Silicon) -> (f64, impl Fn(f64) -> f64) {
+    let pbo = (pb - g1.pbfact) / g1.fact;
+    let t_pb = g.fact * pbo + g.pbfact;
+    let (gmaold, gmanew) = ((pb - pbo) / pbo, (t_pb - pbo) / pbo);
+    let (dt_old, dt_new) = (4e-4 * (g1.fact - 1.0) * REFTEMP, 4e-4 * (g.fact - 1.0) * REFTEMP);
+    (t_pb, move |m: f64| (1.0 + m * (dt_new - gmanew)) / (1.0 + m * (dt_old - gmaold)))
 }
 
 /// Node index: 0 is ground.
@@ -234,10 +324,11 @@ impl Circuit {
 /// MOS model parameters the built-in engine evaluates.
 const MOS_PARAMS: &[&str] = &[
     "level", "vto", "kp", "u0", "lambda", "gamma", "phi", "tox", "ld", "cgso", "cgdo", "cgbo", "cj", "cjsw", "mj", "mjsw", "pb",
-    "fc", "is", "js", "rd", "rs", "rsh", "kf", "af",
+    "fc", "is", "js", "rd", "rs", "rsh", "kf", "af", "tnom",
 ];
 /// Diode model parameters the built-in engine evaluates.
-const DIODE_PARAMS: &[&str] = &["is", "n", "cjo", "cj0", "vj", "m", "fc", "tt", "rs", "bv", "ibv", "kf", "af"];
+const DIODE_PARAMS: &[&str] =
+    &["is", "n", "cjo", "cj0", "vj", "m", "fc", "tt", "rs", "bv", "ibv", "kf", "af", "eg", "xti", "tnom"];
 /// MOS instance parameters the built-in engine evaluates.
 const MOS_INSTANCE_PARAMS: &[&str] = &["w", "l", "m", "ad", "as", "pd", "ps", "nrd", "nrs"];
 /// Dot-commands the built-in engine reads.
@@ -474,6 +565,9 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
                     ibv: g("ibv", 1e-3),
                     kf: g("kf", 0.0),
                     af: g("af", 1.0),
+                    eg: g("eg", 1.11),
+                    xti: g("xti", 3.0),
+                    tnom: g("tnom", 27.0),
                 };
                 diode_models.insert(name, d);
             }
@@ -511,6 +605,7 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
                     rsh: g("rsh", 0.0),
                     kf: g("kf", 0.0),
                     af: g("af", 1.0),
+                    tnom: g("tnom", 27.0),
                 };
                 mos_models.insert(name, m);
             }
@@ -657,10 +752,10 @@ mod tests {
     #[test]
     fn warns_about_what_it_does_not_evaluate() {
         let deck = "* t\n.param wn=1u\n.option reltol=1e-4\n.model nm nmos (level=54 vto=0.4 u0=0.03)\n\
-                    .model dm d (is=1e-14 rs=10 xti=3)\nM1 d g 0 0 nm w=1u l=1u nf=2 sa=0.2u\nV1 d 0 1\nV2 g 0 1\n.op\n.end\n";
+                    .model dm d (is=1e-14 rs=10 trs=1e-3)\nM1 d g 0 0 nm w=1u l=1u nf=2 sa=0.2u\nV1 d 0 1\nV2 g 0 1\n.op\n.end\n";
         let c = parse_deck(deck).unwrap();
         let w = c.warnings.join("\n");
-        for s in ["'.param'", "'.option'", "level=54", "parameters not evaluated by the built-in engine: xti", "nf sa"] {
+        for s in ["'.param'", "'.option'", "level=54", "parameters not evaluated by the built-in engine: trs", "nf sa"] {
             assert!(w.contains(s), "{s} missing from\n{w}");
         }
         let clean = format!(
