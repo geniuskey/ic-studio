@@ -49,7 +49,7 @@ fn strip_analyses(deck: &str) -> (String, Vec<String>) {
             }
             continue;
         }
-        if [".op", ".dc", ".ac", ".tran", ".end"].iter().any(|k| t == *k || t.starts_with(&format!("{k} "))) {
+        if [".op", ".dc", ".ac", ".tran", ".noise", ".end"].iter().any(|k| t == *k || t.starts_with(&format!("{k} "))) {
             continue;
         }
         out.push_str(l);
@@ -68,10 +68,18 @@ pub fn run(exe: &str, deck: &str, analyses: &[Analysis]) -> Result<(Vec<Dataset>
     }
     text += "set filetype=ascii\nset noaskquit\n";
     let mut files = vec![];
+    let mut noise_runs = 0;
     for (i, a) in analyses.iter().enumerate() {
         // Relative to the working directory: Windows paths would need escaping in .control.
         let name = format!("a{i}_{}.raw", a.kind_name());
-        text += &format!("{}\nwrite {name} all\n", a.spice_command());
+        text += &a.spice_command();
+        text.push('\n');
+        if matches!(a, Analysis::Noise { .. }) {
+            // Each noise run adds a spectrum plot and an integrated-noise plot; write the spectrum.
+            noise_runs += 1;
+            text += &format!("setplot noise{}\n", 2 * noise_runs - 1);
+        }
+        text += &format!("write {name} all\n");
         files.push((a, a.kind_name(), dir.join(name)));
     }
     text += "quit\n.endc\n.end\n";
@@ -111,7 +119,7 @@ fn normalize_name(name: &str, kind: VecKind) -> String {
     if let Some(b) = n.strip_suffix("#branch") {
         return format!("i({b})");
     }
-    if kind == VecKind::Voltage && !n.starts_with("v(") {
+    if kind == VecKind::Voltage && !n.starts_with("v(") && !n.contains("noise") {
         return format!("v({n})");
     }
     n
@@ -148,6 +156,7 @@ pub fn parse_raw(raw: &str) -> Result<Vec<Dataset>, SimError> {
                             "frequency" => VecKind::Frequency,
                             "voltage" => VecKind::Voltage,
                             "current" => VecKind::Current,
+                            _ if name.contains("noise") => VecKind::Voltage,
                             _ => VecKind::Other,
                         };
                         vars.push((normalize_name(name, kind), kind));

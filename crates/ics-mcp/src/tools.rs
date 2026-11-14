@@ -671,7 +671,7 @@ pub fn definitions() -> Vec<Value> {
                     "log": {"type": "boolean"}, "step": {"type": "string", "description": "Grid, e.g. 10n (optional)"}
                 }, "required": ["target", "min", "max"]}},
                 "specs": {"type": "array", "items": {"type": "object", "properties": {
-                    "name": {"type": "string"}, "analysis": {"type": "string", "enum": ["op", "dc", "ac", "tran"]},
+                    "name": {"type": "string"}, "analysis": {"type": "string", "enum": ["op", "dc", "ac", "tran", "noise"]},
                     "expr": {"type": "string"}, "min": {"type": "string"}, "max": {"type": "string"}
                 }, "required": ["name", "analysis", "expr"]}},
                 "max_evals": {"type": "integer", "minimum": 4, "description": "Simulation budget (default 60)."},

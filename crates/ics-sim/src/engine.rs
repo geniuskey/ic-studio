@@ -17,6 +17,8 @@ const GMIN: f64 = 1e-12;
 const ABSTOL_V: f64 = 1e-6;
 const ABSTOL_I: f64 = 1e-12;
 const RELTOL: f64 = 1e-4;
+const BOLTZMANN: f64 = 1.380649e-23;
+const CHARGE: f64 = 1.602176634e-19;
 
 #[derive(Clone)]
 enum CapKind {
@@ -274,7 +276,7 @@ impl Engine {
         if nn == 0 {
             return Err(SimError::Engine("circuit has no nodes besides ground".into()));
         }
-        let vt = 1.380649e-23 * (c.temp + 273.15) / 1.602176634e-19;
+        let vt = BOLTZMANN * (c.temp + 273.15) / CHARGE;
         Ok(Self { c, nn, branch, size, caps, inductors, vt, log: vec![] })
     }
 
@@ -626,6 +628,104 @@ impl Engine {
         Ok(ds)
     }
 
+    /// Small-signal system at angular frequency `w` around the operating point `x0`. The right
+    /// side holds the AC sources, or only element `only` at unit magnitude.
+    fn ac_system(&self, x0: &[f64], caps_at_op: &[f64], w: f64, only: Option<usize>) -> (Matrix<Complex64>, Vec<Complex64>) {
+        let idx = |n: Node| if n == 0 { None } else { Some(n - 1) };
+        let one = Complex64::new(1.0, 0.0);
+        let mut m = Matrix::<Complex64>::new(self.size);
+        let mut rhs = vec![Complex64::new(0.0, 0.0); self.size];
+        let y = |m: &mut Matrix<Complex64>, a: Node, b: Node, g: Complex64| {
+            if let Some(i) = idx(a) {
+                m.add(i, i, g);
+            }
+            if let Some(j) = idx(b) {
+                m.add(j, j, g);
+            }
+            if let (Some(i), Some(j)) = (idx(a), idx(b)) {
+                m.add(i, j, -g);
+                m.add(j, i, -g);
+            }
+        };
+        let branch = |m: &mut Matrix<Complex64>, a: Node, b: Node, br: usize| {
+            if let Some(i) = idx(a) {
+                m.add(i, br, one);
+                m.add(br, i, one);
+            }
+            if let Some(j) = idx(b) {
+                m.add(j, br, -one);
+                m.add(br, j, -one);
+            }
+        };
+        let excitation = |ei: usize, src: &crate::circuit::Source| match only {
+            Some(k) if k == ei => one,
+            Some(_) => Complex64::new(0.0, 0.0),
+            None => Complex64::from_polar(src.ac_mag, src.ac_phase.to_radians()),
+        };
+        for n in 0..self.nn {
+            m.add(n, n, Complex64::new(GMIN, 0.0));
+        }
+        for (ei, e) in self.c.elements.iter().enumerate() {
+            match e {
+                Element::R { a, b, r, .. } => y(&mut m, *a, *b, Complex64::new(1.0 / r, 0.0)),
+                Element::C { .. } => {}
+                Element::L { a, b, l, .. } => {
+                    let br = self.branch[ei].unwrap();
+                    branch(&mut m, *a, *b, br);
+                    m.add(br, br, Complex64::new(0.0, -w * l));
+                }
+                Element::V { a, b, src, .. } => {
+                    let br = self.branch[ei].unwrap();
+                    branch(&mut m, *a, *b, br);
+                    rhs[br] += excitation(ei, src);
+                }
+                Element::I { a, b, src, .. } => {
+                    let v = excitation(ei, src);
+                    if let Some(i) = idx(*a) {
+                        rhs[i] -= v;
+                    }
+                    if let Some(j) = idx(*b) {
+                        rhs[j] += v;
+                    }
+                }
+                Element::D { a, k, model, .. } => {
+                    let vd = self.v(x0, *a) - self.v(x0, *k);
+                    let (_, gd) = diode_eval(model, vd, self.vt);
+                    y(&mut m, *a, *k, Complex64::new(gd, 0.0));
+                }
+                Element::M { d, g, s, b, model, w: wd, l, m: mult, junctions, .. } => {
+                    for (an, ca, is) in bulk_diodes(model, *d, *s, *b, *mult, junctions) {
+                        let (_, gd) = exp_iv(is, self.vt, self.v(x0, an) - self.v(x0, ca));
+                        y(&mut m, an, ca, Complex64::new(gd, 0.0));
+                    }
+                    let nodes = [*d, *g, *s, *b];
+                    let vs: Vec<f64> = nodes.iter().map(|&n| self.v(x0, n)).collect();
+                    let ev = mos_eval(model, *wd, *l, *mult, vs[0], vs[1], vs[2], vs[3]);
+                    for (k, &n) in nodes.iter().enumerate() {
+                        if let Some(col) = idx(n) {
+                            if let Some(rd) = idx(*d) {
+                                m.add(rd, col, Complex64::new(ev.j[k], 0.0));
+                            }
+                            if let Some(rs) = idx(*s) {
+                                m.add(rs, col, Complex64::new(-ev.j[k], 0.0));
+                            }
+                        }
+                    }
+                    y(&mut m, *d, *s, Complex64::new(GMIN, 0.0));
+                }
+            }
+        }
+        for (cp, c) in self.caps.iter().zip(caps_at_op) {
+            y(&mut m, cp.a, cp.b, Complex64::new(0.0, w * c));
+        }
+        (m, rhs)
+    }
+
+    fn log_frequencies(ppd: u32, fstart: f64, fstop: f64) -> Vec<f64> {
+        let npts = ((fstop / fstart).log10() * ppd as f64).ceil().max(1.0) as usize + 1;
+        (0..npts).map(|p| fstart * 10f64.powf(p as f64 / ppd as f64)).take_while(|f| *f <= fstop * 1.000001).collect()
+    }
+
     pub fn run_ac(&mut self, ppd: u32, fstart: f64, fstop: f64) -> Result<Dataset, SimError> {
         let x0 = self.op(None)?;
         let caps_at_op: Vec<f64> = (0..self.caps.len()).map(|k| self.cap_qc(k, &x0, None).1).collect();
@@ -633,99 +733,8 @@ impl Engine {
         for v in ds.vectors.iter_mut().skip(1) {
             v.im = Some(vec![]);
         }
-        let decades = (fstop / fstart).log10();
-        let npts = (decades * ppd as f64).ceil().max(1.0) as usize + 1;
-        let idx = |n: Node| if n == 0 { None } else { Some(n - 1) };
-        for p in 0..npts {
-            let f = fstart * 10f64.powf(p as f64 / ppd as f64);
-            if f > fstop * 1.000001 {
-                break;
-            }
-            let w = 2.0 * std::f64::consts::PI * f;
-            let mut m = Matrix::<Complex64>::new(self.size);
-            let mut rhs = vec![Complex64::new(0.0, 0.0); self.size];
-            let y = |m: &mut Matrix<Complex64>, a: Node, b: Node, g: Complex64| {
-                if let Some(i) = idx(a) {
-                    m.add(i, i, g);
-                }
-                if let Some(j) = idx(b) {
-                    m.add(j, j, g);
-                }
-                if let (Some(i), Some(j)) = (idx(a), idx(b)) {
-                    m.add(i, j, -g);
-                    m.add(j, i, -g);
-                }
-            };
-            for n in 0..self.nn {
-                m.add(n, n, Complex64::new(GMIN, 0.0));
-            }
-            for (ei, e) in self.c.elements.iter().enumerate() {
-                match e {
-                    Element::R { a, b, r, .. } => y(&mut m, *a, *b, Complex64::new(1.0 / r, 0.0)),
-                    Element::C { .. } => {}
-                    Element::L { a, b, l, .. } => {
-                        let br = self.branch[ei].unwrap();
-                        if let Some(i) = idx(*a) {
-                            m.add(i, br, Complex64::new(1.0, 0.0));
-                            m.add(br, i, Complex64::new(1.0, 0.0));
-                        }
-                        if let Some(j) = idx(*b) {
-                            m.add(j, br, Complex64::new(-1.0, 0.0));
-                            m.add(br, j, Complex64::new(-1.0, 0.0));
-                        }
-                        m.add(br, br, Complex64::new(0.0, -w * l));
-                    }
-                    Element::V { a, b, src, .. } => {
-                        let br = self.branch[ei].unwrap();
-                        if let Some(i) = idx(*a) {
-                            m.add(i, br, Complex64::new(1.0, 0.0));
-                            m.add(br, i, Complex64::new(1.0, 0.0));
-                        }
-                        if let Some(j) = idx(*b) {
-                            m.add(j, br, Complex64::new(-1.0, 0.0));
-                            m.add(br, j, Complex64::new(-1.0, 0.0));
-                        }
-                        rhs[br] += Complex64::from_polar(src.ac_mag, src.ac_phase.to_radians());
-                    }
-                    Element::I { a, b, src, .. } => {
-                        let v = Complex64::from_polar(src.ac_mag, src.ac_phase.to_radians());
-                        if let Some(i) = idx(*a) {
-                            rhs[i] -= v;
-                        }
-                        if let Some(j) = idx(*b) {
-                            rhs[j] += v;
-                        }
-                    }
-                    Element::D { a, k, model, .. } => {
-                        let vd = self.v(&x0, *a) - self.v(&x0, *k);
-                        let (_, gd) = diode_eval(model, vd, self.vt);
-                        y(&mut m, *a, *k, Complex64::new(gd, 0.0));
-                    }
-                    Element::M { d, g, s, b, model, w: wd, l, m: mult, junctions, .. } => {
-                        for (an, ca, is) in bulk_diodes(model, *d, *s, *b, *mult, junctions) {
-                            let (_, gd) = exp_iv(is, self.vt, self.v(&x0, an) - self.v(&x0, ca));
-                            y(&mut m, an, ca, Complex64::new(gd, 0.0));
-                        }
-                        let nodes = [*d, *g, *s, *b];
-                        let vs: Vec<f64> = nodes.iter().map(|&n| self.v(&x0, n)).collect();
-                        let ev = mos_eval(model, *wd, *l, *mult, vs[0], vs[1], vs[2], vs[3]);
-                        for (k, &n) in nodes.iter().enumerate() {
-                            if let Some(col) = idx(n) {
-                                if let Some(rd) = idx(*d) {
-                                    m.add(rd, col, Complex64::new(ev.j[k], 0.0));
-                                }
-                                if let Some(rs) = idx(*s) {
-                                    m.add(rs, col, Complex64::new(-ev.j[k], 0.0));
-                                }
-                            }
-                        }
-                        y(&mut m, *d, *s, Complex64::new(GMIN, 0.0));
-                    }
-                }
-            }
-            for (cp, c) in self.caps.iter().zip(&caps_at_op) {
-                y(&mut m, cp.a, cp.b, Complex64::new(0.0, w * c));
-            }
+        for f in Self::log_frequencies(ppd, fstart, fstop) {
+            let (mut m, mut rhs) = self.ac_system(&x0, &caps_at_op, 2.0 * std::f64::consts::PI * f, None);
             if !solve(&mut m, &mut rhs) {
                 return Err(SimError::Engine(format!("AC: singular matrix at f={f:.3e}")));
             }
@@ -735,6 +744,97 @@ impl Engine {
                 ds.vectors[1 + i].im.as_mut().unwrap().push(rhs[i].im);
             }
         }
+        Ok(ds)
+    }
+
+    /// Noise current sources at the operating point `x0` and frequency `f`: (from, to, PSD in
+    /// A²/Hz). Resistor and MOS channel thermal noise, diode shot noise, MOS and diode flicker
+    /// noise (SPICE level 1: `kf id^af / (f cox leff²)`).
+    fn noise_sources(&self, x0: &[f64], f: f64) -> Vec<(Node, Node, f64)> {
+        let kt = BOLTZMANN * (self.c.temp + 273.15);
+        let mut out = vec![];
+        for e in &self.c.elements {
+            match e {
+                Element::R { a, b, r, .. } => out.push((*a, *b, 4.0 * kt / r.abs())),
+                Element::D { a, k, model, .. } => {
+                    let (id, _) = diode_eval(model, self.v(x0, *a) - self.v(x0, *k), self.vt);
+                    let flicker = model.kf * id.abs().powf(model.af) / f;
+                    out.push((*a, *k, 2.0 * CHARGE * id.abs() + flicker));
+                }
+                Element::M { d, g, s, b, model, w, l, m, .. } => {
+                    let v = |n| self.v(x0, n);
+                    let ev = mos_eval(model, *w, *l, *m, v(*d), v(*g), v(*s), v(*b));
+                    let thermal = 8.0 / 3.0 * kt * ev.gm.abs();
+                    let cox = if model.cox() > 0.0 { model.cox() } else { 3.453e-4 };
+                    let leff = model.leff(*l);
+                    let flicker = model.kf * m * (ev.id.abs() / m).powf(model.af) / (f * cox * leff * leff);
+                    out.push((*d, *s, thermal + flicker));
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// Output noise at node `output` and the equivalent input noise of source `input`, as
+    /// spectral densities in V/sqrt(Hz) (`onoise_spectrum`, `inoise_spectrum` as in ngspice).
+    pub fn run_noise(&mut self, output: &str, input: &str, ppd: u32, fstart: f64, fstop: f64) -> Result<Dataset, SimError> {
+        let out_node = self
+            .c
+            .nodes
+            .iter()
+            .position(|n| n.eq_ignore_ascii_case(output.trim().trim_start_matches("v(").trim_end_matches(')')))
+            .filter(|&n| n > 0)
+            .ok_or_else(|| SimError::Engine(format!("noise: output node '{output}' not found")))?;
+        let src = self
+            .c
+            .elements
+            .iter()
+            .position(|e| e.name().eq_ignore_ascii_case(input) && matches!(e, Element::V { .. } | Element::I { .. }))
+            .ok_or_else(|| SimError::Engine(format!("noise: input source '{input}' not found")))?;
+        let x0 = self.op(None)?;
+        let caps_at_op: Vec<f64> = (0..self.caps.len()).map(|k| self.cap_qc(k, &x0, None).1).collect();
+        let mut ds = Dataset {
+            analysis: "noise".into(),
+            title: format!("Noise at v({output}) referred to {input}"),
+            scale: Some(0),
+            vectors: vec![
+                Vector::real("frequency", VecKind::Frequency, vec![]),
+                Vector::real("onoise_spectrum", VecKind::Voltage, vec![]),
+                Vector::real("inoise_spectrum", VecKind::Voltage, vec![]),
+            ],
+            devices: vec![],
+        };
+        let mut total = 0.0;
+        let mut prev: Option<(f64, f64)> = None;
+        for f in Self::log_frequencies(ppd, fstart, fstop) {
+            let w = 2.0 * std::f64::consts::PI * f;
+            let (m, mut gain) = self.ac_system(&x0, &caps_at_op, w, Some(src));
+            // Adjoint: z = Y^-T e_out gives the output voltage per unit current into each node.
+            let mut mt = m.clone();
+            for r in 0..self.size {
+                for c in 0..self.size {
+                    mt.a[r * self.size + c] = m.a[c * self.size + r];
+                }
+            }
+            let mut z = vec![Complex64::new(0.0, 0.0); self.size];
+            z[out_node - 1] = Complex64::new(1.0, 0.0);
+            let mut m = m;
+            if !solve(&mut m, &mut gain) || !solve(&mut mt, &mut z) {
+                return Err(SimError::Engine(format!("noise: singular matrix at f={f:.3e}")));
+            }
+            let zv = |n: Node| if n == 0 { Complex64::new(0.0, 0.0) } else { z[n - 1] };
+            let sv: f64 = self.noise_sources(&x0, f).iter().map(|(a, b, s)| (zv(*a) - zv(*b)).norm_sqr() * s).sum();
+            let h = gain[out_node - 1].norm();
+            ds.vectors[0].re.push(f);
+            ds.vectors[1].re.push(sv.sqrt());
+            ds.vectors[2].re.push(sv.sqrt() / h.max(1e-300));
+            if let Some((f0, s0)) = prev {
+                total += 0.5 * (s0 + sv) * (f - f0);
+            }
+            prev = Some((f, sv));
+        }
+        self.log.push(format!("noise: total output noise {:.4e} V rms over {fstart:.3e}..{fstop:.3e} Hz", total.sqrt()));
         Ok(ds)
     }
 
@@ -864,6 +964,9 @@ impl Engine {
             Analysis::Dc { source, start, stop, step } => self.run_dc(source, num(start)?, num(stop)?, num(step)?),
             Analysis::Ac { points_per_decade, fstart, fstop } => self.run_ac(*points_per_decade, num(fstart)?, num(fstop)?),
             Analysis::Tran { tstep, tstop } => self.run_tran(num(tstep)?, num(tstop)?),
+            Analysis::Noise { output, source, points_per_decade, fstart, fstop } => {
+                self.run_noise(output, source, *points_per_decade, num(fstart)?, num(fstop)?)
+            }
         }
     }
 }
@@ -1002,6 +1105,39 @@ mod tests {
         let fc = 1.0 / (2.0 * std::f64::consts::PI * 1e6 * cin);
         let db = engine(deck).run_ac(10, fc, fc * 1.001).unwrap().get("v(g)").unwrap().db()[0];
         assert!((db + 3.0103).abs() < 0.02, "{db}");
+    }
+
+    const KT: f64 = BOLTZMANN * 300.15;
+
+    #[test]
+    fn divider_thermal_noise() {
+        let mut e = engine("* t\nV1 in 0 DC 0 AC 1\nR1 in out 1k\nR2 out 0 1k\n.end");
+        let ds = e.run_noise("out", "v1", 1, 1e3, 1e4).unwrap();
+        let on = ds.get("onoise_spectrum").unwrap().re[0];
+        let expect = (4.0 * KT * 500.0).sqrt();
+        assert!((on / expect - 1.0).abs() < 1e-6, "{on} vs {expect}");
+        let inn = ds.get("inoise_spectrum").unwrap().re[0];
+        assert!((inn / (2.0 * expect) - 1.0).abs() < 1e-6, "{inn}");
+    }
+
+    #[test]
+    fn rc_noise_integrates_to_kt_over_c() {
+        let mut e = engine("* t\nV1 in 0 DC 0 AC 1\nR1 in out 1k\nC1 out 0 1p\n.end");
+        let ds = e.run_noise("out", "v1", 50, 1e3, 1e14).unwrap();
+        let (f, s) = (&ds.vectors[0].re, &ds.get("onoise_spectrum").unwrap().re);
+        let total: f64 = (1..f.len()).map(|k| 0.5 * (s[k] * s[k] + s[k - 1] * s[k - 1]) * (f[k] - f[k - 1])).sum();
+        let expect = KT / 1e-12;
+        assert!((total / expect - 1.0).abs() < 0.01, "{total} vs {expect}");
+    }
+
+    #[test]
+    fn mos_flicker_noise_falls_as_one_over_f() {
+        let deck = "* t\nVDD vdd 0 1.8\nVIN g 0 DC 1 AC 1\nRD vdd d 10k\nM1 d g 0 0 nm w=10u l=1u\n\
+                    .model nm nmos (vto=0.5 kp=100u tox=10n kf=1e-24)\n.end";
+        let ds = engine(deck).run_noise("d", "vin", 1, 1.0, 10.0).unwrap();
+        let s = &ds.get("onoise_spectrum").unwrap().re;
+        let ratio = (s[0] / s[1]).powi(2);
+        assert!((ratio - 10.0).abs() < 0.2, "PSD ratio over a decade {ratio}");
     }
 
     #[test]

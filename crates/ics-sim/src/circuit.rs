@@ -122,6 +122,9 @@ pub struct DiodeModel {
     /// Reverse breakdown voltage (infinite: none) and the current at it.
     pub bv: f64,
     pub ibv: f64,
+    /// Flicker noise coefficient and exponent.
+    pub kf: f64,
+    pub af: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -154,6 +157,9 @@ pub struct MosModel {
     pub rd: f64,
     pub rs: f64,
     pub rsh: f64,
+    /// Flicker noise coefficient and exponent.
+    pub kf: f64,
+    pub af: f64,
 }
 
 /// Drain / source junction geometry of a MOS instance (m², m), per device of `m`.
@@ -228,14 +234,14 @@ impl Circuit {
 /// MOS model parameters the built-in engine evaluates.
 const MOS_PARAMS: &[&str] = &[
     "level", "vto", "kp", "u0", "lambda", "gamma", "phi", "tox", "ld", "cgso", "cgdo", "cgbo", "cj", "cjsw", "mj", "mjsw", "pb",
-    "fc", "is", "js", "rd", "rs", "rsh",
+    "fc", "is", "js", "rd", "rs", "rsh", "kf", "af",
 ];
 /// Diode model parameters the built-in engine evaluates.
-const DIODE_PARAMS: &[&str] = &["is", "n", "cjo", "cj0", "vj", "m", "fc", "tt", "rs", "bv", "ibv"];
+const DIODE_PARAMS: &[&str] = &["is", "n", "cjo", "cj0", "vj", "m", "fc", "tt", "rs", "bv", "ibv", "kf", "af"];
 /// MOS instance parameters the built-in engine evaluates.
 const MOS_INSTANCE_PARAMS: &[&str] = &["w", "l", "m", "ad", "as", "pd", "ps", "nrd", "nrs"];
 /// Dot-commands the built-in engine reads.
-const DOT_COMMANDS: &[&str] = &[".model", ".temp", ".end", ".title", ".op", ".dc", ".ac", ".tran"];
+const DOT_COMMANDS: &[&str] = &[".model", ".temp", ".end", ".title", ".op", ".dc", ".ac", ".tran", ".noise"];
 
 /// The device-side node of terminal `ext` behind a series resistance `r` (a new internal node
 /// `dev#tag` and a resistor), or `ext` itself without one.
@@ -367,6 +373,13 @@ fn dot_analysis(l: &str) -> Option<Analysis> {
             Analysis::Ac { points_per_decade: t.get(2).and_then(|s| s.parse().ok()).unwrap_or(10), fstart: num(3), fstop: num(4) }
         }
         ".tran" => Analysis::Tran { tstep: num(1), tstop: num(2) },
+        ".noise" => Analysis::Noise {
+            output: num(1).trim_start_matches(['v', 'V']).trim_matches(['(', ')']).to_string(),
+            source: num(2),
+            points_per_decade: t.get(4).and_then(|s| s.parse().ok()).unwrap_or(10),
+            fstart: num(5),
+            fstop: num(6),
+        },
         _ => return None,
     })
 }
@@ -459,6 +472,8 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
                     rs: g("rs", 0.0),
                     bv: g("bv", f64::INFINITY),
                     ibv: g("ibv", 1e-3),
+                    kf: g("kf", 0.0),
+                    af: g("af", 1.0),
                 };
                 diode_models.insert(name, d);
             }
@@ -494,6 +509,8 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
                     rd: g("rd", 0.0),
                     rs: g("rs", 0.0),
                     rsh: g("rsh", 0.0),
+                    kf: g("kf", 0.0),
+                    af: g("af", 1.0),
                 };
                 mos_models.insert(name, m);
             }

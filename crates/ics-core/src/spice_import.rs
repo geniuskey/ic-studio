@@ -220,6 +220,19 @@ fn dot_line(cmd: &str, t: &[String], line: &str, out: &mut Imported) -> Result<(
             Analysis::Ac { points_per_decade, fstart: arg(3)?, fstop: arg(4)? }
         }
         "tran" => Analysis::Tran { tstep: arg(1)?, tstop: arg(2)? },
+        "noise" => {
+            let out_node = arg(1)?;
+            let output = out_node.strip_prefix(['v', 'V']).and_then(|s| s.strip_prefix('(')).and_then(|s| s.strip_suffix(')'));
+            let output = output.filter(|o| !o.contains(',')).ok_or(".noise: the output must be a node voltage v(node)")?;
+            if !arg(3)?.eq_ignore_ascii_case("dec") {
+                return Err(
+                    ".noise: only 'dec' sweeps are supported (.noise v(out) <source> dec <points> <fstart> <fstop>)".into()
+                );
+            }
+            let n = arg(4)?;
+            let points_per_decade = n.parse().map_err(|_| format!(".noise: points per decade '{n}' is not an integer"))?;
+            Analysis::Noise { output: output.into(), source: arg(2)?, points_per_decade, fstart: arg(5)?, fstop: arg(6)? }
+        }
         "temp" => {
             let v = arg(1)?;
             out.temp = Some(v.parse().map_err(|_| format!(".temp: '{v}' is not a number"))?);

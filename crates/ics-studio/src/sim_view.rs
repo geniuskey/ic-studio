@@ -375,6 +375,27 @@ pub fn setup_panel(
                         field(ui, "Step", tstep);
                         field(ui, "Stop time", tstop);
                     }
+                    Analysis::Noise { output, source, points_per_decade, fstart, fstop } => {
+                        let l = ui.label("Output node");
+                        ui.add(egui::TextEdit::singleline(output).desired_width(90.0)).labelled_by(l.id);
+                        ui.end_row();
+                        let l = ui.label("Input source");
+                        egui::ComboBox::from_id_salt("noise_src")
+                            .selected_text(if source.is_empty() { "—" } else { source.as_str() })
+                            .show_ui(ui, |ui| {
+                                for s in &sources {
+                                    ui.selectable_value(source, s.clone(), s);
+                                }
+                            })
+                            .response
+                            .labelled_by(l.id);
+                        ui.end_row();
+                        field(ui, "Start freq", fstart);
+                        field(ui, "Stop freq", fstop);
+                        let l = ui.label("Points/dec");
+                        ui.add(egui::DragValue::new(points_per_decade).range(1..=1000)).labelled_by(l.id);
+                        ui.end_row();
+                    }
                 });
                 if let Err(e) = entry.analysis.validate() {
                     ui.label(RichText::new(e).small().color(pal.danger));
@@ -424,7 +445,7 @@ fn plot_dataset(
     others: &[Other<'_>],
 ) {
     let Some(scale) = d.scale_vector() else { return };
-    let log = d.analysis == "ac";
+    let log = matches!(d.analysis.as_str(), "ac" | "noise");
     let xs: Vec<f64> = if log { scale.re.iter().map(|f| f.max(1e-30).log10()).collect() } else { scale.re.clone() };
     let xk = match scale.kind {
         VecKind::Sweep if scale.name.starts_with('v') => VecKind::Voltage,
@@ -697,6 +718,7 @@ pub fn results_panel(ui: &mut egui::Ui, state: &mut SimState) -> Option<String> 
                 "dc" => "DC Sweep",
                 "ac" => "AC",
                 "tran" => "Transient",
+                "noise" => "Noise",
                 other => other,
             };
             if ui.selectable_label(state.tab == d.analysis, label).clicked() {

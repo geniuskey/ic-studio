@@ -31,6 +31,13 @@ fn suite() -> Vec<(&'static str, String, f64)> {
             0.03,
         ),
         (
+            "cs_noise",
+            format!(
+                "* cs noise\nVDD vdd 0 1.8\nVIN in 0 DC 0.6 AC 1\nRD vdd out 10k\nM1 out in 0 0 nmos w=2u l=1u\nCL out 0 100f\n{m}\n.noise v(out) VIN dec 10 1k 1g\n.end\n"
+            ),
+            0.05,
+        ),
+        (
             "inverter_tran",
             format!(
                 "* inv tran\nV1 vdd 0 1.8\nV2 in 0 PULSE(0 1.8 1n 50p 50p 2n 4n)\nM1 out in vdd vdd pmos w=2u l=180n ad=1p as=1p pd=4u ps=4u\n\

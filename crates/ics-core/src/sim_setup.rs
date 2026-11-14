@@ -8,9 +8,29 @@ use crate::units::parse_spice;
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Analysis {
     Op,
-    Dc { source: String, start: String, stop: String, step: String },
-    Ac { points_per_decade: u32, fstart: String, fstop: String },
-    Tran { tstep: String, tstop: String },
+    Dc {
+        source: String,
+        start: String,
+        stop: String,
+        step: String,
+    },
+    Ac {
+        points_per_decade: u32,
+        fstart: String,
+        fstop: String,
+    },
+    Tran {
+        tstep: String,
+        tstop: String,
+    },
+    /// Noise spectral density at node `output`, also referred to the input `source`.
+    Noise {
+        output: String,
+        source: String,
+        points_per_decade: u32,
+        fstart: String,
+        fstop: String,
+    },
 }
 
 impl Analysis {
@@ -20,6 +40,7 @@ impl Analysis {
             Analysis::Dc { .. } => "dc",
             Analysis::Ac { .. } => "ac",
             Analysis::Tran { .. } => "tran",
+            Analysis::Noise { .. } => "noise",
         }
     }
 
@@ -29,6 +50,7 @@ impl Analysis {
             Analysis::Dc { .. } => "DC Sweep",
             Analysis::Ac { .. } => "AC Small-Signal",
             Analysis::Tran { .. } => "Transient",
+            Analysis::Noise { .. } => "Noise",
         }
     }
 
@@ -39,6 +61,9 @@ impl Analysis {
             Analysis::Dc { source, start, stop, step } => format!("dc {source} {start} {stop} {step}"),
             Analysis::Ac { points_per_decade, fstart, fstop } => format!("ac dec {points_per_decade} {fstart} {fstop}"),
             Analysis::Tran { tstep, tstop } => format!("tran {tstep} {tstop}"),
+            Analysis::Noise { output, source, points_per_decade, fstart, fstop } => {
+                format!("noise v({output}) {source} dec {points_per_decade} {fstart} {fstop}")
+            }
         }
     }
 
@@ -66,6 +91,17 @@ impl Analysis {
                 }
                 if parse_spice(fstart).unwrap_or(0.0) <= 0.0 {
                     return Err("AC: fstart must be > 0".into());
+                }
+                Ok(())
+            }
+            Analysis::Noise { output, source, points_per_decade, fstart, fstop } => {
+                if output.trim().is_empty() || source.trim().is_empty() {
+                    return Err("Noise: give the output node and the input source".into());
+                }
+                num("fstart", fstart)?;
+                num("fstop", fstop)?;
+                if *points_per_decade == 0 || parse_spice(fstart).unwrap_or(0.0) <= 0.0 {
+                    return Err("Noise: points per decade and fstart must be > 0".into());
                 }
                 Ok(())
             }
@@ -153,6 +189,16 @@ impl Default for SimSetup {
                     analysis: Analysis::Ac { points_per_decade: 20, fstart: "1".into(), fstop: "10g".into() },
                 },
                 AnalysisEntry { enabled: false, analysis: Analysis::Tran { tstep: "10p".into(), tstop: "20n".into() } },
+                AnalysisEntry {
+                    enabled: false,
+                    analysis: Analysis::Noise {
+                        output: "out".into(),
+                        source: String::new(),
+                        points_per_decade: 10,
+                        fstart: "1".into(),
+                        fstop: "1g".into(),
+                    },
+                },
             ],
             extra: String::new(),
             temp: 27.0,
