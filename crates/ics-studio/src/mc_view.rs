@@ -1,6 +1,8 @@
 //! Monte Carlo window: process and mismatch variation of the built-in engine's device models
 //! (`ics_sim::montecarlo`), with statistics and a histogram per measurement.
 
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Receiver};
 
 use eframe::egui::{self, RichText};
@@ -8,7 +10,7 @@ use egui_plot::{Bar, BarChart, Plot};
 use ics_core::sim_setup::{McMeasure, McSetup};
 use ics_core::units::format_eng;
 use ics_core::{Analysis, CellRef};
-use ics_sim::montecarlo::{self, McResult, McSpec, Measure};
+use ics_sim::montecarlo::{self, McControl, McResult, McSpec, Measure};
 
 const ANALYSES: [&str; 5] = ["op", "dc", "ac", "tran", "noise"];
 
@@ -24,6 +26,7 @@ pub struct MonteCarlo {
     /// Measure whose histogram is shown.
     pub selected: usize,
     rx: Option<Receiver<Result<McResult, String>>>,
+    ctl: Option<Arc<McControl>>,
 }
 
 impl MonteCarlo {
@@ -68,8 +71,10 @@ impl MonteCarlo {
         self.selected = 0;
         let (tx, rx) = mpsc::channel();
         let ctx = ctx.clone();
+        let ctl = Arc::new(McControl::default());
+        self.ctl = Some(ctl.clone());
         std::thread::spawn(move || {
-            let r = montecarlo::monte_carlo(&deck, &analyses, &measures, &spec).map_err(|e| e.to_string());
+            let r = montecarlo::monte_carlo(&deck, &analyses, &measures, &spec, Some(&ctl)).map_err(|e| e.to_string());
             let _ = tx.send(r);
             ctx.request_repaint();
         });
@@ -77,13 +82,31 @@ impl MonteCarlo {
         Ok(())
     }
 
+    /// Ask a running Monte Carlo to stop after the current sample; the samples so far are kept.
+    pub fn stop(&mut self) -> bool {
+        match (&self.ctl, self.is_running()) {
+            (Some(ctl), true) => {
+                ctl.cancel.store(true, Ordering::Relaxed);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Samples finished by the running Monte Carlo.
+    pub fn progress(&self) -> Option<usize> {
+        self.is_running().then(|| self.ctl.as_ref().map_or(0, |c| c.done.load(Ordering::Relaxed)))
+    }
+
     /// Pick up a finished run; returns (ok, console line).
     pub fn poll(&mut self) -> Option<(bool, String)> {
         let r = self.rx.as_ref()?.try_recv().ok()?;
         self.rx = None;
+        self.ctl = None;
         Some(match r {
             Ok(res) => {
-                let runs = self.setup.runs;
+                let runs =
+                    if res.cancelled { format!("{} of {} (stopped)", res.runs, self.setup.runs) } else { res.runs.to_string() };
                 let failed = res.failed.len();
                 let summary: Vec<String> = self
                     .measured
@@ -101,12 +124,16 @@ impl MonteCarlo {
         })
     }
 
-    /// Returns (setup changed, run requested).
-    pub fn window(&mut self, ctx: &egui::Context) -> (Option<McSetup>, bool) {
+    /// Returns (setup changed, run requested, stop requested).
+    pub fn window(&mut self, ctx: &egui::Context) -> (Option<McSetup>, bool, bool) {
         if !self.open {
-            return (None, false);
+            return (None, false, false);
         }
-        let (mut changed, mut run) = (false, false);
+        let (mut changed, mut run, mut stop) = (false, false, false);
+        let progress = self.progress();
+        if progress.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         let mut open = self.open;
         let title = match &self.cell {
             Some(c) => format!("Monte Carlo: {c}"),
@@ -177,9 +204,16 @@ impl MonteCarlo {
                 if ui.add_enabled(!running && ready, egui::Button::new("Run")).clicked() {
                     run = true;
                 }
-                if running {
-                    ui.add(egui::Spinner::new());
-                    ui.label(format!("Running {} sample(s)", self.setup.runs));
+                if let Some(done) = progress {
+                    if ui.button("Stop").on_hover_text("Stop after the current sample and keep the results so far").clicked() {
+                        stop = true;
+                    }
+                    let total = self.setup.runs.max(1);
+                    ui.add(
+                        egui::ProgressBar::new(done as f32 / total as f32)
+                            .text(format!("{done} / {total} samples"))
+                            .desired_width(220.0),
+                    );
                 }
             });
             let pal = crate::theme::palette(ui.ctx());
@@ -224,7 +258,7 @@ impl MonteCarlo {
             );
         });
         self.open = open;
-        (changed.then(|| self.setup.clone()), run)
+        (changed.then(|| self.setup.clone()), run, stop)
     }
 }
 

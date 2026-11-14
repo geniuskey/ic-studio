@@ -601,6 +601,36 @@ fn device_monte_carlo() {
     shot(&mut h, "37_device_monte_carlo");
 }
 
+/// The simulation panel opens Monte Carlo; Stop ends a long run early and keeps its samples.
+#[test]
+fn monte_carlo_from_panel_and_stop() {
+    let mut h = app(demo_args("cmos_inverter", "simulation", false));
+    h.run_steps(2);
+    use egui_kittest::kittest::Queryable;
+    h.get_by_label("Monte Carlo...").click();
+    h.run_steps(2);
+    {
+        let mc = h.state_mut().monte_carlo();
+        assert!(mc.open, "the panel button opens the window");
+        mc.setup.runs = 1_000_000;
+        mc.setup.measures.push(ics_core::sim_setup::McMeasure { analysis: "op".into(), expr: "v(out)".into() });
+    }
+    h.state_mut().command(Command::RunMonteCarlo);
+    let start = std::time::Instant::now();
+    while h.state_mut().monte_carlo().progress().is_none_or(|d| d < 3) {
+        assert!(start.elapsed() < Duration::from_secs(60), "monte carlo did not start");
+        h.run_steps(1);
+    }
+    h.state_mut().command(Command::StopMonteCarlo);
+    h.run_steps(2);
+    settle(&mut h, "stopped monte carlo");
+    let mc = h.state_mut().monte_carlo();
+    let res = mc.result.as_ref().expect("partial result");
+    assert!(res.cancelled && res.runs >= 3 && res.runs < 1_000_000, "{} runs", res.runs);
+    assert_eq!(res.stats[0].n + res.failed.len(), res.runs);
+    assert!(h.state().console_lines().any(|l| l.contains("(stopped)")));
+}
+
 /// Results Browser: the previous run is kept and can be overlaid.
 #[test]
 fn results_compare() {

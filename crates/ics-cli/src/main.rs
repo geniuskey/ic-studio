@@ -548,7 +548,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 })
                 .collect::<Result<Vec<_>, String>>()?;
             let analyses: Vec<_> = c.sim.enabled().cloned().collect();
-            let res = ics_sim::montecarlo::monte_carlo(&deck, &analyses, &ms, &spec).map_err(|e| e.to_string())?;
+            let res = ics_sim::montecarlo::monte_carlo(&deck, &analyses, &ms, &spec, None).map_err(|e| e.to_string())?;
             if json {
                 let stats: Vec<_> = ms
                     .iter()

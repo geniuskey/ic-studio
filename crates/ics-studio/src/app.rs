@@ -100,6 +100,8 @@ pub enum Command {
     MonteCarlo,
     /// Run the Monte Carlo window's setup on its cell.
     RunMonteCarlo,
+    /// Stop a running Monte Carlo after its current sample, keeping the samples so far.
+    StopMonteCarlo,
     /// Open the Results Browser (earlier runs of the active cell, for comparison).
     ResultsBrowser,
     /// Check the active schematic (Check and Save: `true` also saves when it has no errors).
@@ -847,6 +849,11 @@ impl IcStudio {
                 _ => self.warn("Open a cell with a schematic for Monte Carlo".into()),
             },
             Command::RunMonteCarlo => self.run_monte_carlo(ctx),
+            Command::StopMonteCarlo => {
+                if !self.monte_carlo.stop() {
+                    self.warn("No Monte Carlo is running".into());
+                }
+            }
             Command::Optimizer => match (self.active.clone(), self.active_cell()) {
                 (Some(r), Some(c)) if c.schematic.is_some() => {
                     let setup = c.sim.optimize.clone();
@@ -1358,7 +1365,7 @@ impl IcStudio {
     }
 
     fn monte_carlo_window(&mut self, ctx: &egui::Context) {
-        let (changed, run) = self.monte_carlo.window(ctx);
+        let (changed, run, stop) = self.monte_carlo.window(ctx);
         if let Some(s) = changed
             && let Some(c) = self.monte_carlo.cell.clone().and_then(|r| self.project.as_mut()?.cell_mut(&r))
         {
@@ -1367,6 +1374,9 @@ impl IcStudio {
         }
         if run {
             self.queue.push(Command::RunMonteCarlo);
+        }
+        if stop {
+            self.queue.push(Command::StopMonteCarlo);
         }
     }
 
@@ -2600,7 +2610,20 @@ impl IcStudio {
                 }
                 let st = self.sims.entry(r.clone()).or_default();
                 let mut run = false;
+                let mut tool = None;
                 egui::Panel::left("sim_setup").resizable(true).default_size(270.0).show(ui, |ui| {
+                    ui.add_space(4.0);
+                    ui.horizontal_wrapped(|ui| {
+                        for (label, hint, cmd) in [
+                            ("Sweep...", "Corner and parametric sweeps", Command::SweepManager),
+                            ("Monte Carlo...", "Process and mismatch statistics", Command::MonteCarlo),
+                            ("Optimizer...", "Size devices to meet specs", Command::Optimizer),
+                        ] {
+                            if ui.small_button(label).on_hover_text(hint).clicked() {
+                                tool = Some(cmd);
+                            }
+                        }
+                    });
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         let (c, rr) = sim_view::setup_panel(ui, cell, st, &self.ngspice, tech.models.as_ref());
                         changed |= c;
@@ -2610,6 +2633,7 @@ impl IcStudio {
                 if run {
                     self.queue.push(Command::RunSimulation);
                 }
+                self.queue.extend(tool);
                 let deck = st.show_netlist.then(|| {
                     let nl = ics_core::netlist::netlist_for(cell.schematic.as_ref().unwrap(), &tech, &cell.sim.corner);
                     nl.deck(&r.to_string(), &cell.sim)
@@ -2893,6 +2917,7 @@ impl IcStudio {
             ("Corner / sweep manager".into(), "", Command::SweepManager),
             ("Monte Carlo (process and mismatch of device models)".into(), "", Command::MonteCarlo),
             ("Run Monte Carlo".into(), "", Command::RunMonteCarlo),
+            ("Stop Monte Carlo".into(), "", Command::StopMonteCarlo),
             ("Optimizer (size devices to meet specs)".into(), "", Command::Optimizer),
             ("Results browser (compare runs)".into(), "", Command::ResultsBrowser),
             ("Check schematic".into(), "", Command::CheckSchematic(false)),

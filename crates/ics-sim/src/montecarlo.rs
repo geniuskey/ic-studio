@@ -3,6 +3,8 @@
 //! (Pelgrom: `σ(ΔVth) = avt / sqrt(W L)`, `σ(Δβ/β) = abeta / sqrt(W L)`), simulates, and
 //! evaluates waveform-calculator measurements on the results.
 
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
 use ics_core::Analysis;
 
 use crate::calc::{self, CalcValue};
@@ -73,6 +75,17 @@ pub struct McResult {
     pub stats: Vec<Stats>,
     /// Runs whose simulation failed, with the error.
     pub failed: Vec<(usize, String)>,
+    /// Runs carried out (fewer than asked when cancelled).
+    pub runs: usize,
+    pub cancelled: bool,
+}
+
+/// Progress and cancellation of a run from another thread.
+#[derive(Debug, Default)]
+pub struct McControl {
+    /// Runs finished so far.
+    pub done: AtomicUsize,
+    pub cancel: AtomicBool,
 }
 
 /// SplitMix64 with Box-Muller normals: reproducible for a seed, no dependencies.
@@ -96,7 +109,13 @@ impl Rng {
     }
 }
 
-pub fn monte_carlo(deck: &str, analyses: &[Analysis], measures: &[Measure], spec: &McSpec) -> Result<McResult, SimError> {
+pub fn monte_carlo(
+    deck: &str,
+    analyses: &[Analysis],
+    measures: &[Measure],
+    spec: &McSpec,
+    ctl: Option<&McControl>,
+) -> Result<McResult, SimError> {
     if let Some(l) = external_models(deck) {
         return Err(SimError::Engine(format!(
             "Monte Carlo varies the built-in engine's models; the deck loads external models ('{l}'), use the PDK's own statistical corners with ngspice"
@@ -110,6 +129,14 @@ pub fn monte_carlo(deck: &str, analyses: &[Analysis], measures: &[Measure], spec
     let mut rng = Rng(spec.seed);
     let mut out = McResult { values: vec![vec![]; measures.len()], ..Default::default() };
     for run in 0..spec.runs {
+        if let Some(ctl) = ctl {
+            ctl.done.store(run, Ordering::Relaxed);
+            if ctl.cancel.load(Ordering::Relaxed) {
+                out.cancelled = true;
+                break;
+            }
+        }
+        out.runs = run + 1;
         // Global shifts per polarity: (nmos, pmos).
         let dvto = [rng.normal() * spec.vto_sigma, rng.normal() * spec.vto_sigma];
         let dkp = [rng.normal() * spec.kp_sigma, rng.normal() * spec.kp_sigma];
@@ -145,6 +172,9 @@ pub fn monte_carlo(deck: &str, analyses: &[Analysis], measures: &[Measure], spec
             }
         }
     }
+    if let Some(ctl) = ctl {
+        ctl.done.store(out.runs, Ordering::Relaxed);
+    }
     out.stats = out.values.iter().map(|v| Stats::of(&v.iter().map(|p| p.1).collect::<Vec<_>>())).collect();
     Ok(out)
 }
@@ -168,19 +198,32 @@ mod tests {
         let deck = |w: &str| format!("* t\nI1 0 g 10u\nM1 g g 0 0 nm w={w} l=1u\n.model nm nmos (vto=0.5 kp=100u)\n.op\n.end\n");
         let spec = McSpec { runs: 400, seed: 3, vto_sigma: 0.0, kp_sigma: 0.0, avt: 5e-9, abeta: 0.0 };
         let ms = [Measure { analysis: "op".into(), expr: "v(g)".into() }];
-        let small = monte_carlo(&deck("1u"), &[], &ms, &spec).unwrap();
-        let big = monte_carlo(&deck("4u"), &[], &ms, &spec).unwrap();
+        let small = monte_carlo(&deck("1u"), &[], &ms, &spec, None).unwrap();
+        let big = monte_carlo(&deck("4u"), &[], &ms, &spec, None).unwrap();
         let (s1, s4) = (small.stats[0].sigma, big.stats[0].sigma);
         assert!(small.failed.is_empty() && small.stats[0].n == 400);
         assert!((s1 / 5e-3 - 1.0).abs() < 0.12, "sigma at 1u x 1u: {s1}");
         assert!((s1 / s4 - 2.0).abs() < 0.3, "4x area halves sigma: {s1} vs {s4}");
-        let again = monte_carlo(&deck("1u"), &[], &ms, &spec).unwrap();
+        let again = monte_carlo(&deck("1u"), &[], &ms, &spec, None).unwrap();
         assert_eq!(again.values, small.values, "a seed reproduces the runs");
     }
 
     #[test]
+    fn cancel_stops_early_and_reports_progress() {
+        let deck = "* t\nI1 0 g 10u\nM1 g g 0 0 nm w=1u l=1u\n.model nm nmos (vto=0.5 kp=100u)\n.op\n.end\n";
+        let ms = [Measure { analysis: "op".into(), expr: "v(g)".into() }];
+        let spec = McSpec { runs: 50, ..Default::default() };
+        let ctl = McControl::default();
+        let r = monte_carlo(deck, &[], &ms, &spec, Some(&ctl)).unwrap();
+        assert_eq!((r.runs, r.cancelled, ctl.done.load(Ordering::Relaxed)), (50, false, 50));
+        ctl.cancel.store(true, Ordering::Relaxed);
+        let r = monte_carlo(deck, &[], &ms, &spec, Some(&ctl)).unwrap();
+        assert_eq!((r.runs, r.cancelled, r.stats[0].n), (0, true, 0));
+    }
+
+    #[test]
     fn rejects_external_models() {
-        let e = monte_carlo("* t\n.lib \"x.lib\" tt\nR1 a 0 1\n.op\n.end\n", &[], &[], &McSpec::default()).unwrap_err();
+        let e = monte_carlo("* t\n.lib \"x.lib\" tt\nR1 a 0 1\n.op\n.end\n", &[], &[], &McSpec::default(), None).unwrap_err();
         assert!(e.to_string().contains("statistical"), "{e}");
     }
 }
