@@ -179,7 +179,9 @@ Rust로 작성한 수정 절점 해석(MNA) 엔진입니다. 다음을 지원합
 - 소스: `DC`, `AC mag [phase]`, `PULSE(v1 v2 td tr tf pw per)`,
   `SIN(vo va freq td theta)`, `PWL(t v ...)`,
 - 지시어 `.model`, `.op`, `.dc`, `.ac`, `.tran`, `.noise`, `.temp`, `.title`, `.end`.
-  `.options`, `.ic` 같은 다른 점(dot) 라인은 무시되며, 컴파일된 Verilog-A 모델(`pre_osdi`)을
+  `.ic v(node)=value`(ngspice처럼 과도 해석의 초기 동작점에서 노드를 고정, `.tran ... uic`면 동작점
+  없이 그 값에서 시작), `.nodeset`(동작점 계산의 시작값), `.option`의 `reltol abstol vntol gmin trtol
+  itl1 itl4 temp`(그 밖의 옵션은 경고)를 지원합니다. 그 밖의 점(dot) 라인은 무시되며, 컴파일된 Verilog-A 모델(`pre_osdi`)을
   읽는 덱은 ngspice가 필요합니다.
 - PDK 형식의 계층 덱은 시뮬레이션 전에 평탄화됩니다.
   - `.include` / `.inc` 파일과 `.lib <file> <section>` 라이브러리 섹션(경로는 포함하는 파일

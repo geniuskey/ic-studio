@@ -13,10 +13,6 @@ use crate::circuit::{Circuit, DiodeModel, Element, MosModel, Node};
 use crate::linalg::{Matrix, solve};
 use crate::results::{Dataset, DeviceOp, VecKind, Vector};
 
-const GMIN: f64 = 1e-12;
-const ABSTOL_V: f64 = 1e-6;
-const ABSTOL_I: f64 = 1e-12;
-const RELTOL: f64 = 1e-4;
 const BOLTZMANN: f64 = 1.380649e-23;
 const CHARGE: f64 = 1.602176634e-19;
 
@@ -94,8 +90,17 @@ struct TranState {
 
 #[derive(Clone, Copy)]
 enum Mode<'s> {
-    Dc { src_scale: f64 },
-    Tran { t: f64, h: f64, method: Integ, state: &'s TranState },
+    /// `force`: nodes held at a voltage through a large conductance (`.ic`, `.nodeset`).
+    Dc {
+        src_scale: f64,
+        force: &'s [(Node, f64)],
+    },
+    Tran {
+        t: f64,
+        h: f64,
+        method: Integ,
+        state: &'s TranState,
+    },
 }
 
 pub struct Engine {
@@ -427,11 +432,18 @@ impl Engine {
             }
         };
         let (t, src_scale) = match mode {
-            Mode::Dc { src_scale } => (None, src_scale),
+            Mode::Dc { src_scale, .. } => (None, src_scale),
             Mode::Tran { t, .. } => (Some(t), 1.0),
         };
         for n in 0..self.nn {
             m.add(n, n, gmin);
+        }
+        if let Mode::Dc { force, .. } = mode {
+            // As ngspice: a 1e10 S conductance to the held voltage.
+            for &(n, v) in force {
+                m.add(n - 1, n - 1, 1e10);
+                rhs[n - 1] += 1e10 * v;
+            }
         }
         for (ei, e) in self.c.elements.iter().enumerate() {
             match e {
@@ -583,7 +595,8 @@ impl Engine {
                     dx = 0.5 * dx.signum(); // damp large voltage steps
                     converged = false;
                 }
-                let tol = if is_v { ABSTOL_V } else { ABSTOL_I } + RELTOL * rhs[i].abs().max(x[i].abs());
+                let o = &self.c.options;
+                let tol = if is_v { o.vntol } else { o.abstol } + o.reltol * rhs[i].abs().max(x[i].abs());
                 if dx.abs() > tol {
                     converged = false;
                 }
@@ -599,18 +612,35 @@ impl Engine {
         Err(SimError::NoConvergence)
     }
 
-    /// DC operating point with gmin and source stepping fallbacks.
+    /// DC operating point with gmin and source stepping fallbacks; `.nodeset` voltages give the
+    /// starting point.
     pub fn op(&mut self, x0: Option<&[f64]>) -> Result<Vec<f64>, SimError> {
         let mut x = x0.map(|v| v.to_vec()).unwrap_or_else(|| vec![0.0; self.size]);
-        if self.newton(&mut x, Mode::Dc { src_scale: 1.0 }, GMIN, 150).is_ok() {
+        if x0.is_none() && !self.c.nodeset.is_empty() {
+            let nodeset = self.c.nodeset.clone();
+            if let Ok(xs) = self.op_forced(&nodeset) {
+                x = xs;
+            }
+        }
+        self.op_forced_from(x, &[])
+    }
+
+    /// Operating point with `force` nodes held at their voltages.
+    fn op_forced(&mut self, force: &[(Node, f64)]) -> Result<Vec<f64>, SimError> {
+        self.op_forced_from(vec![0.0; self.size], force)
+    }
+
+    fn op_forced_from(&mut self, mut x: Vec<f64>, force: &[(Node, f64)]) -> Result<Vec<f64>, SimError> {
+        let (gmin0, itl) = (self.c.options.gmin, self.c.options.itl1);
+        if self.newton(&mut x, Mode::Dc { src_scale: 1.0, force }, gmin0, itl).is_ok() {
             return Ok(x);
         }
         self.log.push("OP: direct Newton failed, trying gmin stepping".into());
         let mut x = vec![0.0; self.size];
         let mut ok = true;
         for k in (0..=10).rev() {
-            let g = GMIN * 10f64.powi(k);
-            if self.newton(&mut x, Mode::Dc { src_scale: 1.0 }, g, 150).is_err() {
+            let g = gmin0 * 10f64.powi(k);
+            if self.newton(&mut x, Mode::Dc { src_scale: 1.0, force }, g, itl).is_err() {
                 ok = false;
                 break;
             }
@@ -622,7 +652,7 @@ impl Engine {
         let mut x = vec![0.0; self.size];
         for k in 0..=20 {
             let s = k as f64 / 20.0;
-            self.newton(&mut x, Mode::Dc { src_scale: s }, GMIN, 200)?;
+            self.newton(&mut x, Mode::Dc { src_scale: s, force }, gmin0, itl.max(200))?;
         }
         Ok(x)
     }
@@ -784,7 +814,7 @@ impl Engine {
             None => Complex64::from_polar(src.ac_mag, src.ac_phase.to_radians()),
         };
         for n in 0..self.nn {
-            m.add(n, n, Complex64::new(GMIN, 0.0));
+            m.add(n, n, Complex64::new(self.c.options.gmin, 0.0));
         }
         for (ei, e) in self.c.elements.iter().enumerate() {
             match e {
@@ -832,7 +862,7 @@ impl Engine {
                             }
                         }
                     }
-                    y(&mut m, *d, *s, Complex64::new(GMIN, 0.0));
+                    y(&mut m, *d, *s, Complex64::new(self.c.options.gmin, 0.0));
                 }
             }
         }
@@ -999,7 +1029,41 @@ impl Engine {
                     src.dc = w.value(0.0);
                 }
             }
-            let r = self.op(None);
+            let r = if self.c.uic {
+                // Use initial conditions, no operating point: capacitor and MOS charge terminals
+                // start at their `.ic` voltage (0 without one), as if held by voltage sources at
+                // t = 0+; the other nodes follow from them. Nodes set by voltage sources keep
+                // the source's value.
+                let mut held = vec![false; self.c.node_count()];
+                for cp in &self.caps {
+                    held[cp.a] = true;
+                    held[cp.b] = true;
+                }
+                for (_, nodes) in &self.qdevs {
+                    for &n in nodes {
+                        held[n] = true;
+                    }
+                }
+                for e in &self.c.elements {
+                    if let Element::V { a, b, .. } = e {
+                        held[*a] = false;
+                        held[*b] = false;
+                    }
+                }
+                let mut force: Vec<(Node, f64)> = (1..held.len()).filter(|&n| held[n]).map(|n| (n, 0.0)).collect();
+                for &(n, v) in &self.c.ic {
+                    match force.iter_mut().find(|f| f.0 == n) {
+                        Some(f) => f.1 = v,
+                        None => force.push((n, v)),
+                    }
+                }
+                self.op_forced(&force)
+            } else if self.c.ic.is_empty() {
+                self.op(None)
+            } else {
+                let ic = self.c.ic.clone();
+                self.op_forced(&ic)
+            };
             self.c.elements = saved;
             r?
         };
@@ -1052,7 +1116,7 @@ impl Engine {
                 }
                 let mut xt = x.clone();
                 let mode = Mode::Tran { t: t + hs, h: hs, method, state: &state };
-                match self.newton(&mut xt, mode, GMIN, 60) {
+                match self.newton(&mut xt, mode, self.c.options.gmin, self.c.options.itl4) {
                     Ok(it) => {
                         let r = if method == Integ::Trapezoidal { self.lte_ratio(&hist, t + hs, &xt) } else { None };
                         if let Some(r) = r
@@ -1139,8 +1203,8 @@ impl Engine {
     /// 1: reject), from the difference to the quadratic extrapolation of the last three points.
     /// For the trapezoidal rule the error is about a third of that difference.
     fn lte_ratio(&self, hist: &[(f64, Vec<f64>)], tn: f64, xn: &[f64]) -> Option<f64> {
-        const TRTOL: f64 = 7.0;
-        const LTE_RELTOL: f64 = 1e-3;
+        let o = &self.c.options;
+        let (trtol, lte_reltol, vntol) = (o.trtol, o.lte_reltol, o.vntol);
         let [(t0, x0), (t1, x1), (t2, x2)] = hist else { return None };
         let l0 = (tn - t1) * (tn - t2) / ((t0 - t1) * (t0 - t2));
         let l1 = (tn - t0) * (tn - t2) / ((t1 - t0) * (t1 - t2));
@@ -1148,7 +1212,7 @@ impl Engine {
         let r = (0..self.nn)
             .map(|i| {
                 let pred = l0 * x0[i] + l1 * x1[i] + l2 * x2[i];
-                let tol = TRTOL * (LTE_RELTOL * xn[i].abs().max(x2[i].abs()) + ABSTOL_V);
+                let tol = trtol * (lte_reltol * xn[i].abs().max(x2[i].abs()) + vntol);
                 (xn[i] - pred).abs() / 3.0 / tol
             })
             .fold(0.0, f64::max);

@@ -325,9 +325,63 @@ pub struct Circuit {
     pub elements: Vec<Element>,
     pub analyses: Vec<Analysis>,
     pub temp: f64,
+    /// Simulator options (`.option`).
+    pub options: Options,
+    /// Initial conditions (`.ic`): nodes held at these voltages for the transient's initial
+    /// operating point, or the start values with `uic`.
+    pub ic: Vec<(Node, f64)>,
+    /// Starting guesses (`.nodeset`) for the operating point.
+    pub nodeset: Vec<(Node, f64)>,
+    /// `.tran ... uic`: start the transient from `.ic` without an operating point.
+    pub uic: bool,
     /// Deck content the built-in engine ignores or approximates (unsupported model levels and
     /// parameters, dot-commands); empty when it evaluates the deck as written.
     pub warnings: Vec<String>,
+}
+
+/// Simulator options of the built-in engine (`.option name=value`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Options {
+    /// Newton convergence: relative, absolute current (A) and voltage (V) tolerances.
+    pub reltol: f64,
+    pub abstol: f64,
+    pub vntol: f64,
+    /// Relative tolerance of the transient truncation error.
+    pub lte_reltol: f64,
+    /// Truncation error overestimation factor.
+    pub trtol: f64,
+    pub gmin: f64,
+    /// Newton iteration limits: DC and per transient step.
+    pub itl1: usize,
+    pub itl4: usize,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Options { reltol: 1e-4, abstol: 1e-12, vntol: 1e-6, lte_reltol: 1e-3, trtol: 7.0, gmin: 1e-12, itl1: 150, itl4: 60 }
+    }
+}
+
+impl Options {
+    /// Apply `name = value`; false for options the engine does not use.
+    fn set(&mut self, name: &str, v: f64) -> bool {
+        match name {
+            "reltol" => {
+                // ngspice uses one reltol; the engine's Newton loop stays at least as tight
+                // as its default.
+                self.reltol = v.min(1e-4);
+                self.lte_reltol = v;
+            }
+            "abstol" => self.abstol = v,
+            "vntol" => self.vntol = v,
+            "trtol" => self.trtol = v,
+            "gmin" => self.gmin = v,
+            "itl1" => self.itl1 = v.max(1.0) as usize,
+            "itl4" => self.itl4 = v.max(1.0) as usize,
+            _ => return false,
+        }
+        true
+    }
 }
 
 impl Circuit {
@@ -529,6 +583,8 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
     };
 
     let lines = logical_lines(deck);
+    // (.ic rather than .nodeset, node, value, line), resolved once all nodes are known.
+    let mut pending_ic: Vec<(bool, String, f64, usize)> = vec![];
     // First pass: models.
     let mut diode_models: HashMap<String, DiodeModel> = HashMap::new();
     let mut mos_models: HashMap<String, MosModel> = HashMap::new();
@@ -693,9 +749,47 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
             }
             let cmd = lower.split_whitespace().next().unwrap_or("");
             if let Some(a) = dot_analysis(l) {
+                if cmd == ".tran" && lower.split_whitespace().any(|w| w == "uic") {
+                    c.uic = true;
+                }
                 c.analyses.push(a);
             } else if cmd == ".temp" {
                 c.temp = l.split_whitespace().nth(1).and_then(parse_spice).unwrap_or(27.0);
+            } else if matches!(cmd, ".option" | ".options" | ".opt") {
+                let spaced = l.replace('=', " = ");
+                let t: Vec<&str> = spaced.split_whitespace().skip(1).collect();
+                let mut i = 0;
+                while i < t.len() {
+                    let name = t[i].to_ascii_lowercase();
+                    let value = (t.get(i + 1) == Some(&"=")).then(|| t.get(i + 2).and_then(|v| parse_spice(v))).flatten();
+                    i += if t.get(i + 1) == Some(&"=") { 3 } else { 1 };
+                    let used = match (name.as_str(), value) {
+                        ("temp", Some(v)) => {
+                            c.temp = v;
+                            true
+                        }
+                        (_, Some(v)) => c.options.set(&name, v),
+                        _ => false,
+                    };
+                    if !used {
+                        c.warnings.push(format!("line {ln}: option '{name}' is ignored by the built-in engine"));
+                    }
+                }
+            } else if matches!(cmd, ".ic" | ".nodeset") {
+                let t = tokens(&l.to_ascii_lowercase());
+                let mut i = 1;
+                while i < t.len() {
+                    if t[i] == "v" && i + 2 < t.len() {
+                        match t.get(i + 2).and_then(|v| parse_spice(v)) {
+                            Some(v) => pending_ic.push((cmd == ".ic", t[i + 1].clone(), v, ln)),
+                            None => c.warnings.push(format!("line {ln}: bad value in '{l}'")),
+                        }
+                        i += 3;
+                    } else {
+                        c.warnings.push(format!("line {ln}: '{cmd}' takes v(node)=value, '{}' is ignored", t[i]));
+                        i += 1;
+                    }
+                }
             } else if !DOT_COMMANDS.contains(&cmd) {
                 c.warnings.push(format!("line {ln}: '{cmd}' is ignored by the built-in engine"));
             }
@@ -793,6 +887,18 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
         };
         c.elements.push(el);
     }
+    for (is_ic, name, v, ln) in pending_ic {
+        match node_map.get(&name) {
+            Some(&n) if n > 0 => {
+                if is_ic {
+                    c.ic.push((n, v))
+                } else {
+                    c.nodeset.push((n, v))
+                }
+            }
+            _ => c.warnings.push(format!("line {ln}: initial condition for unknown node '{name}' is ignored")),
+        }
+    }
     let mut seen = std::collections::HashSet::new();
     c.warnings.retain(|w| seen.insert(w.clone()));
     Ok(c)
@@ -816,11 +922,11 @@ mod tests {
 
     #[test]
     fn warns_about_what_it_does_not_evaluate() {
-        let deck = "* t\n.param wn=1u\n.option reltol=1e-4\n.model nm nmos (level=8 vto=0.4 u0=0.03)\n\
+        let deck = "* t\n.param wn=1u\n.option reltol=1e-4 post\n.model nm nmos (level=8 vto=0.4 u0=0.03)\n\
                     .model dm d (is=1e-14 rs=10 trs=1e-3)\nM1 d g 0 0 nm w=1u l=1u nf=2 sa=0.2u\nV1 d 0 1\nV2 g 0 1\n.op\n.end\n";
         let c = parse_deck(deck).unwrap();
         let w = c.warnings.join("\n");
-        for s in ["'.param'", "'.option'", "level=8", "parameters not evaluated by the built-in engine: trs", "nf sa"] {
+        for s in ["'.param'", "option 'post'", "level=8", "parameters not evaluated by the built-in engine: trs", "nf sa"] {
             assert!(w.contains(s), "{s} missing from\n{w}");
         }
         let clean = format!(

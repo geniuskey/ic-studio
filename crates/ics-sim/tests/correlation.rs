@@ -43,6 +43,20 @@ fn suite() -> Vec<(&'static str, String, f64)> {
             format!("* pmos 85C\n.temp 85\nVD d 0 -1\nVG g 0 -1\nM1 d g 0 0 p45 w=1u l=45n\n{b4}.dc VD 0 -1 -0.05\n.end\n"),
             1e-3,
         ),
+        ("rc_ic", "* rc ic\nV1 in 0 0\nR1 in out 1k\nC1 out 0 1n\n.ic v(out)=1\n.tran 10n 5u\n.end\n".into(), 1e-3),
+        (
+            "rc_uic",
+            "* rc uic\nV1 in 0 0.5\nR1 in out 1k\nC1 out 0 1n\nR2 out x 2k\nC2 x 0 2n\n.ic v(out)=1 v(x)=-0.3\n.tran 10n 8u uic\n.end\n".into(),
+            1e-3,
+        ),
+        (
+            "bsim4_latch_nodeset",
+            format!(
+                "* latch\nV1 vdd 0 1.8\nM1 q qb vdd vdd p45 w=2u l=45n\nM2 q qb 0 0 n45 w=0.5u l=45n\nM3 qb q vdd vdd p45 w=2u l=45n\n\
+                 M4 qb q 0 0 n45 w=0.5u l=45n\n{b4}.nodeset v(q)=0 v(qb)=1.8\n.op\n.end\n"
+            ),
+            0.01,
+        ),
         (
             "bsim4_cs_ac",
             format!(

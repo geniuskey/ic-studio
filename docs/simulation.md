@@ -183,7 +183,10 @@ A modified nodal analysis engine written in Rust. It supports:
 - sources: `DC`, `AC mag [phase]`, `PULSE(v1 v2 td tr tf pw per)`,
   `SIN(vo va freq td theta)`, `PWL(t v ...)`,
 - directives `.model`, `.op`, `.dc`, `.ac`, `.tran`, `.noise`, `.temp`, `.title`, `.end`;
-  other dot lines such as `.options` and `.ic` are ignored, and decks that load compiled
+  `.ic v(node)=value` (held for the transient's initial operating point, as in ngspice;
+  with `.tran ... uic` the transient starts from it without one), `.nodeset` (a starting
+  guess for the operating point) and `.option` with `reltol abstol vntol gmin trtol itl1
+  itl4 temp` (other options are reported); other dot lines are ignored, and decks that load compiled
   Verilog-A models (`pre_osdi`) need ngspice,
 - hierarchical decks as PDKs write them, flattened before simulation:
   - `.include` / `.inc` files and `.lib <file> <section>` library sections, with paths

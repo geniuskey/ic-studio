@@ -191,6 +191,48 @@ mod tests {
     }
 
     #[test]
+    fn options_initial_conditions_and_nodesets() {
+        let c = circuit::parse_deck(
+            "* t\n.option reltol=1e-6 abstol=1e-15 gmin=1e-13 temp=50 itl4=80 method=gear\nR1 a 0 1\n.ic v(a)=1 v(zz)=2\n.end\n",
+        )
+        .unwrap();
+        assert_eq!(
+            (c.options.reltol, c.options.lte_reltol, c.options.abstol, c.options.gmin, c.options.itl4),
+            (1e-6, 1e-6, 1e-15, 1e-13, 80)
+        );
+        assert_eq!(c.temp, 50.0);
+        assert_eq!(c.ic, vec![(1, 1.0)]);
+        let w = c.warnings.join("\n");
+        assert!(w.contains("option 'method'") && w.contains("unknown node 'zz'"), "{w}");
+
+        // A latch settles where the nodeset points it.
+        let latch = |q: f64| {
+            let deck = format!(
+                "* latch\n.model nm nmos (vto=0.5 kp=100u)\n.model pm pmos (vto=-0.5 kp=40u)\nV1 vdd 0 1.8\n\
+                 M1 q qb vdd vdd pm w=2u l=1u\nM2 q qb 0 0 nm w=1u l=1u\nM3 qb q vdd vdd pm w=2u l=1u\nM4 qb q 0 0 nm w=1u l=1u\n\
+                 .nodeset v(q)={q} v(qb)={}\n.op\n.end\n",
+                1.8 - q
+            );
+            let r = simulate(&deck, &[], &SimOptions::default()).unwrap();
+            r.datasets[0].get("v(q)").unwrap().re[0]
+        };
+        assert!(latch(1.8) > 1.7 && latch(0.0) < 0.1, "{} {}", latch(1.8), latch(0.0));
+
+        // .ic holds the node for the initial point; uic starts from it without one.
+        for uic in ["", " uic"] {
+            let deck = format!("* rc\nV1 in 0 0\nR1 in out 1k\nC1 out 0 1n\n.ic v(out)=1\n.tran 10n 2u{uic}\n.end\n");
+            let r = simulate(&deck, &[], &SimOptions::default()).unwrap();
+            let v = &r.datasets[0].get("v(out)").unwrap().re;
+            assert!(
+                (v[0] - 1.0).abs() < 1e-6 && (v.last().unwrap() - (-2.0f64).exp()).abs() < 2e-3,
+                "{uic}: {} {}",
+                v[0],
+                v.last().unwrap()
+            );
+        }
+    }
+
+    #[test]
     fn bsim4_decks_run_on_the_builtin_engine() {
         let deck = "* b4\n.model n1 nmos level=54 toxe=4e-9 vth0=0.4 u0=0.04 vsat=1e5 ndep=2e17\n\
                     .model p1 pmos level=54 toxe=4e-9 vth0=-0.4 u0=0.015 vsat=8e4 ndep=2e17\n\
@@ -234,11 +276,11 @@ mod tests {
         let r = simulate("* t\nV1 a 0 1\nR1 a 0 1k\n.op\n.end\n", &[], &opts).unwrap();
         assert_eq!(r.backend, "built-in");
         assert!(r.warnings.is_empty());
-        let deck = "* t\nV1 a 0 1\nR1 a 0 1k\n.option reltol=1e-5\n.op\n.end\n";
+        let deck = "* t\nV1 a 0 1\nR1 a 0 1k\n.option reltol=1e-5 method=gear\n.op\n.end\n";
         assert_eq!(resolve_backend(deck, &opts).0, Backend::Builtin);
         let r = simulate(deck, &[], &opts).unwrap();
         assert!(r.warnings[0].contains("ngspice not found"), "{:?}", r.warnings);
-        assert!(r.log.contains("warning: line 4: '.option'"), "{}", r.log);
+        assert!(r.log.contains("warning: line 4: option 'method' is ignored"), "{}", r.log);
         assert!(builtin_shortfall("* t\n.control\npre_osdi x.osdi\n.endc\nR1 a 0 1\n.end\n").is_some());
     }
 
