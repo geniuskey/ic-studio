@@ -76,10 +76,13 @@ The server has 40 tools:
 | `run_drc` | DRC with the technology deck |
 | `fix_drc` | Apply verified quick fixes to the cell's top-level geometry until nothing more can be fixed |
 | `compact` | Slide top-level items toward each direction until the rules stop them; constraints hold |
-| `predict_yield` | Monte Carlo yield prediction: simulated and predicted yield per condition, per spec Cpk, model Q² and sensitivities |
+| `predict_yield` | Monte Carlo yield prediction: simulated and predicted yield per condition, per spec Cpk, model Q² and sensitivities; `process` also draws the measured process variation |
 | `correlate_silicon` | Compare measured curves (CSV) with the simulation; fit model, instance or design parameters |
+| `import_cdl` | Import a hierarchical CDL netlist (Virtuoso auCdl) as a cell's flat schematic |
+| `export_skill_schematic` | A schematic as a SKILL script that recreates it in Virtuoso (analogLib or mapped PDK symbols) |
 | `process_cross_section` | Process emulation: material stacks, doped layers (type, depth, peak, sheet resistance) and junction depths along a cut through the layout after a process flow; optional SVG |
 | `process_data` | WAT / PCM data against the process spec: capability, control alarms, corner coverage, correlated parameters |
+| `extract_mismatch` | Mismatch from matched pairs: Pelgrom Avt / Abeta per device with standard errors (`apply` stores them in the technology for Monte Carlo) |
 | `extract_corners` | Corner models from WAT data: tt / ff / ss / fs / sf model cards, the process variation for Monte Carlo (`apply` stores it in the technology) and the corner library |
 | `optimize` | Size device parameters to meet specs (optionally after layout); `apply` writes the best values |
 | `place_like` | Layout by example: place a cell like a finished cell with the same circuit topology, optionally route |

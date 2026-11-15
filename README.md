@@ -69,6 +69,9 @@ Linux needs the usual windowing libraries:
   explorer, command palette (⌘K / Ctrl+K), console, problems and netlist panels, dark and
   light themes
 - Every action is an `app::Command`: menus, shortcuts, the palette and automation share it
+- Virtuoso schematics: import hierarchical CDL netlists (auCdl, `ics import-cdl`) and export
+  schematics as SKILL scripts that recreate them with analogLib or PDK symbols
+  (`ics export-skill`)
 - Cadence Virtuoso conventions: default bindkeys and two-click commands in the layout
   editor, a Virtuoso or conventional mouse profile, and Cadence SKILL (`.il`) scripts with an
   interactive CIW prompt
@@ -200,7 +203,10 @@ Linux needs the usual windowing libraries:
 - Corner models from silicon: fit tt and ff / ss / fs / sf model cards to WAT data through
   simulated test structures, with correlated parameters following by regression, and write a
   corner library (`ics corners`, MCP `extract_corners`); the process variation of the model
-  parameters by backward propagation of variance, for Monte Carlo and the library's `mc` section
+  parameters by backward propagation of variance, for Monte Carlo, yield prediction and the
+  library's `mc` section
+- Mismatch from silicon: Pelgrom Avt / Abeta fitted to matched-pair data with standard errors,
+  drawn by Monte Carlo (`ics mismatch`, MCP `extract_mismatch`)
 
 **Technology**
 - `tech.json` with layers, GDS numbers, colours, fill patterns, width / spacing, vias,
@@ -379,7 +385,8 @@ fit for production use, including the optics of image sensors.
    Spectre decks and model libraries; Spectre and CDL netlist output.
 2. **Fit into existing flows**: Done: Virtuoso technology files (`.tf`, `display.drf`, layer
    map), sign-off results from runs made elsewhere (Calibre, KLayout, netgen), DSPF
-   post-layout netlists, Spectre / CDL netlists. Next: OpenAccess / Virtuoso design data.
+   post-layout netlists, Spectre / CDL netlists; Virtuoso schematics in as hierarchical CDL
+   (auCdl) and out as SKILL scripts that rebuild them. Next: OpenAccess databases directly.
 3. **Image sensor pixels**: Done: a pixel stack (microlens, colour filter, dielectrics, metal
    grid, anti-reflection films, silicon) with ray and thin-film optics giving QE, crosstalk
    at a chief ray angle and the photocurrent of the pixel circuit (`ics pixel`, **Pixel
@@ -388,8 +395,10 @@ fit for production use, including the optics of image sensors.
    from the PDK's back-end cross section and the layout.
 4. **Prediction and process**: Done: yield prediction from Monte Carlo with surrogate models
    and sensitivities; silicon-to-simulation correlation with model fitting; process
-   emulation (cross-sections from layout and process steps); process data (WAT / PCM, SPC,
-   corner coverage).
+   emulation (cross-sections from layout and process steps, with implant profiles, diffusion
+   and oxidation); process data (WAT / PCM, SPC, corner coverage); corner models, process
+   variation and mismatch extracted from silicon and drawn by Monte Carlo and yield
+   prediction.
 
 Also: Python API (PyO3), non-Manhattan DRC and extraction, resistor / capacitor definitions
 in the bundled PDKs.

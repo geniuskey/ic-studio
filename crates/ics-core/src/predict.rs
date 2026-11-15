@@ -415,12 +415,13 @@ mod tests {
                 runs: 60,
                 seed: 2,
                 vars: vec![McVar { target: "vb".into(), nominal: "1".into(), sigma: "0.1".into(), ..Default::default() }],
+                ..Default::default()
             },
             ..Default::default()
         };
         let sch = Schematic::default();
-        let plan = crate::sweep::mc_plan(&setup.monte_carlo, &sch).unwrap();
-        let pts = setup.expand(&crate::SimSetup::default(), &sch).unwrap();
+        let plan = crate::sweep::mc_plan(&setup.monte_carlo, &sch, None).unwrap();
+        let pts = setup.expand(&crate::SimSetup::default(), &sch, None).unwrap();
         // The spec is vb (+ 0.05 at 50 °C) with vb <= 1.1: yield Φ(1) ≈ 0.84 and Φ(0.5) ≈ 0.69.
         let vals: Vec<(&SweepPoint, Vec<Option<f64>>)> = pts
             .iter()

@@ -48,8 +48,9 @@ pub fn run(
     if analyses.is_empty() {
         return Err("no analyses enabled".into());
     }
-    let points = setup.sweep.expand(setup, sch)?;
-    let plan = (setup.sweep.monte_carlo.runs > 0).then(|| mc_plan(&setup.sweep.monte_carlo, sch)).transpose()?;
+    let variation = project.tech.variation.as_ref();
+    let points = setup.sweep.expand(setup, sch, variation)?;
+    let plan = (setup.sweep.monte_carlo.runs > 0).then(|| mc_plan(&setup.sweep.monte_carlo, sch, variation)).transpose()?;
     let mut notes = vec![];
     let pex = if setup.parasitics && c.layout.is_some() {
         match ics_core::pex::post_layout(project, cell) {
@@ -131,6 +132,7 @@ mod tests {
             runs: 40,
             seed: 5,
             vars: vec![McVar { target: "R1.r".into(), sigma: "10%".into(), ..Default::default() }],
+            ..Default::default()
         };
         let run = run(&p, &r, &SimOptions::default(), &|_, _| {}).unwrap();
         assert_eq!(run.points.len(), 40);
@@ -145,5 +147,50 @@ mod tests {
         let pred = y[0].prediction.joint.unwrap();
         assert!(y[0].passed > 5 && y[0].passed < 40, "{}", y[0].passed);
         assert!(pred > lo - 0.05 && pred < hi + 0.05, "simulated {sim}, predicted {pred}");
+    }
+
+    /// The inverter's switching point under the process variation measured on the example WAT
+    /// data: the sweep's Monte Carlo draws the correlated model parameters, and the yield
+    /// prediction ranks them.
+    #[test]
+    fn yield_under_the_measured_process_variation() {
+        use ics_core::process_data::{GENERIC180_SPEC, ProcessSpec, WatData};
+        let mut p = ics_core::examples::demo_project();
+        let spec = ProcessSpec::from_toml(GENERIC180_SPEC).unwrap();
+        let csv = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../process/generic180_wat.csv")).unwrap();
+        let data = WatData::parse(&csv).unwrap();
+        let ex = crate::corners::Extraction::new(&p, &spec, &data, &SimOptions::default()).unwrap();
+        let fits = ex.run(40, &mut |_| {});
+        let v = ex.variation(&fits[0], "generic180 WAT").unwrap().variation;
+        let r = CellRef::new("work", "cmos_inverter");
+        let c = p.cell_mut(&r).unwrap();
+        c.sim.backend = ics_core::Backend::Builtin;
+        let s = &mut c.sim.sweep;
+        s.specs = vec![Spec {
+            name: "vsw".into(),
+            analysis: "dc".into(),
+            expr: "cross(v(out), 0.9)".into(),
+            min: "0.88".into(),
+            max: "".into(),
+        }];
+        s.monte_carlo = MonteCarlo { runs: 40, seed: 3, process: true, ..Default::default() };
+        // Without a measured variation in the technology the setup is an error.
+        assert!(run(&p, &r, &SimOptions::default(), &|_, _| {}).unwrap_err().contains("measured process variation"));
+        p.tech.variation = Some(v.clone());
+        let run = run(&p, &r, &SimOptions::default(), &|_, _| {}).unwrap();
+        assert_eq!(run.points.len(), 40);
+        let vals: Vec<f64> = run.points.iter().filter_map(|(_, v)| v[0].as_ref().ok().copied()).collect();
+        let st = ics_core::sweep::stats(&vals);
+        // The same spread as the built-in Monte Carlo with this variation (≈ 891 mV, σ ≈ 10 mV).
+        assert!((st.mean - 0.891).abs() < 0.01 && (st.std - 0.010).abs() < 0.004, "{st:?}");
+        let plan = run.plan.as_ref().unwrap();
+        assert_eq!(plan.inputs, ["nmos.vto (process)", "nmos.kp (process)", "pmos.vto (process)", "pmos.kp (process)"]);
+        let specs = p.cell(&r).unwrap().sim.sweep.specs.clone();
+        let y = run.predict(&specs, 20_000, 1);
+        let pr = y[0].prediction.specs[0].as_ref().unwrap();
+        assert!(pr.model.q2 > 0.9, "{:?}", pr.model);
+        let pred = y[0].prediction.joint.unwrap();
+        let (lo, hi) = predict::wilson(y[0].passed, y[0].runs);
+        assert!(pred > lo - 0.05 && pred < hi + 0.05, "simulated {}/{}, predicted {pred}", y[0].passed, y[0].runs);
     }
 }

@@ -65,6 +65,42 @@ enum Cmd {
         #[arg(long)]
         overwrite: bool,
     },
+    /// Import a hierarchical CDL netlist (Virtuoso auCdl: .SUBCKT, *.PININFO, X ... / cell,
+    /// subcircuit parameters, ! globals) as a flat schematic of one cell. Saves the project.
+    ImportCdl {
+        project: PathBuf,
+        cdl: PathBuf,
+        /// Subcircuit to import (default: the top one).
+        #[arg(long)]
+        top: Option<String>,
+        /// Cell to create or replace (default: work/<top>).
+        #[arg(long)]
+        cell: Option<String>,
+        /// Replace an existing schematic.
+        #[arg(long)]
+        overwrite: bool,
+        /// Import every subcircuit as its own cell (each flattened from itself).
+        #[arg(long)]
+        all: bool,
+    },
+    /// Write a cell's schematic as a SKILL script that recreates it in Virtuoso (load it in the
+    /// CIW), with analogLib symbols or the symbols of a map file.
+    ExportSkill {
+        project: PathBuf,
+        cell: String,
+        /// Output file (.il).
+        #[arg(short, long)]
+        out: PathBuf,
+        /// Virtuoso library to write the schematic into (default: the cell's library).
+        #[arg(long)]
+        lib: Option<String>,
+        /// Symbol map (TOML [[symbol]] entries: kind, model, lib, cell, terms, params).
+        #[arg(long)]
+        map: Option<PathBuf>,
+        /// Virtuoso user units per schematic grid point.
+        #[arg(long, default_value_t = 0.1875)]
+        scale: f64,
+    },
     /// Simulate a cell with its saved simulation setup.
     Sim {
         project: PathBuf,
@@ -112,7 +148,8 @@ enum Cmd {
         /// technology's variation is used if it has one, else --vto-sigma / --kp-sigma.
         #[arg(long)]
         variation: Option<PathBuf>,
-        /// Use --vto-sigma / --kp-sigma even when the technology has a measured variation.
+        /// Use the generic sigmas and Avt / Abeta even when the technology has a measured
+        /// variation or mismatch.
         #[arg(long)]
         generic: bool,
         #[arg(long)]
@@ -211,6 +248,9 @@ enum Cmd {
         /// Yield (0 to 1) every condition must reach.
         #[arg(long)]
         target: Option<f64>,
+        /// Also draw the technology's measured process variation (`ics corners --apply`).
+        #[arg(long)]
+        process: bool,
         #[arg(long)]
         json: bool,
     },
@@ -291,6 +331,21 @@ enum Cmd {
         /// Specification (TOML; default: the generic 180 nm WAT spec).
         #[arg(long)]
         spec: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Mismatch from silicon: fit Pelgrom's law (σ² = A² / (W L) + σ0²) to matched-pair data
+    /// (CSV: device, w, l in µm, dvt in V, dbeta relative) per device: Avt and Abeta with
+    /// their standard errors and the measured against fitted σ of every size.
+    Mismatch {
+        /// Matched-pair data (default: the synthetic generic 180 nm pairs).
+        data: Option<PathBuf>,
+        /// Project whose technology receives the coefficients with --apply.
+        #[arg(long)]
+        project: Option<PathBuf>,
+        /// Store the measured mismatch in the project's technology for Monte Carlo.
+        #[arg(long)]
+        apply: bool,
         #[arg(long)]
         json: bool,
     },
@@ -784,6 +839,61 @@ fn run(cli: Cli) -> Result<(), String> {
             print!("{}", nl.deck(&r.to_string(), &c.sim));
             p.save().map_err(|e| e.to_string())?;
         }
+        Cmd::ImportCdl { project, cdl, top, cell, overwrite, all } => {
+            let mut p = Project::open(&project).map_err(|e| e.to_string())?;
+            let text = std::fs::read_to_string(&cdl).map_err(|e| format!("{}: {e}", cdl.display()))?;
+            let parsed = ics_core::cadence::Cdl::parse(&text)?;
+            let tops: Vec<Option<String>> =
+                if all { parsed.subckts.iter().map(|s| Some(s.name.clone())).collect() } else { vec![top.clone()] };
+            for t in tops {
+                let imp = ics_core::cadence::import_cdl(&text, &p.tech, t.as_deref())?;
+                let target = match (&cell, all) {
+                    (Some(c), false) => c.clone(),
+                    _ => format!("work/{}", if imp.flat.top.is_empty() { "cdl" } else { &imp.flat.top }),
+                };
+                let r = match resolve(&p, &target) {
+                    Ok(r) => r,
+                    Err(_) => {
+                        let (lib, name) = target.split_once('/').unwrap_or(("work", target.as_str()));
+                        if p.library_mut(lib).is_none() {
+                            p.add_library(lib)?;
+                        }
+                        p.add_cell(lib, ics_core::Cell::new(name))?
+                    }
+                };
+                let c = p.cell_mut(&r).unwrap();
+                if c.schematic.is_some() && !overwrite {
+                    return Err(format!("{r} already has a schematic; pass --overwrite to replace it"));
+                }
+                c.schematic = Some(imp.imported.schematic);
+                let pins: Vec<String> =
+                    imp.flat.pins.iter().map(|(n, d)| if d.is_empty() { n.clone() } else { format!("{n}:{d}") }).collect();
+                println!("{r}: {} device(s) from {}, pins {}", imp.flat.devices, imp.flat.top, pins.join(" "));
+                for w in &imp.imported.warnings {
+                    eprintln!("warning: {w}");
+                }
+            }
+            p.save().map_err(|e| e.to_string())?;
+        }
+        Cmd::ExportSkill { project, cell, out, lib, map, scale } => {
+            let p = Project::open(&project).map_err(|e| e.to_string())?;
+            let r = resolve(&p, &cell)?;
+            let c = p.cell(&r).unwrap();
+            let sch = c.schematic.as_ref().ok_or("cell has no schematic")?;
+            let m = match &map {
+                Some(f) => ics_core::cadence::SymbolMap::from_toml(
+                    &std::fs::read_to_string(f).map_err(|e| format!("{}: {e}", f.display()))?,
+                )
+                .map_err(|e| format!("{}: {e}", f.display()))?,
+                None => ics_core::cadence::SymbolMap::analog_lib(),
+            };
+            let (il, warnings) = ics_core::cadence::skill_schematic(sch, lib.as_deref().unwrap_or(&r.lib), &r.cell, &m, scale);
+            for w in &warnings {
+                eprintln!("warning: {w}");
+            }
+            std::fs::write(&out, il).map_err(|e| format!("{}: {e}", out.display()))?;
+            eprintln!("wrote {}", out.display());
+        }
         Cmd::Mc {
             project,
             cell,
@@ -823,7 +933,17 @@ fn run(cli: Cli) -> Result<(), String> {
                     None if generic => None,
                     None => p.tech.variation.clone(),
                 },
+                mismatch: if generic { None } else { p.tech.mismatch.clone() },
             };
+            if let Some(m) = &spec.mismatch
+                && !json
+            {
+                eprintln!(
+                    "mismatch: {} ({} device(s))",
+                    if m.source.is_empty() { "measured" } else { &m.source },
+                    m.devices.len()
+                );
+            }
             if let Some(v) = &spec.process
                 && !json
             {
@@ -1228,15 +1348,18 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             println!("{r}: no layout differences against {what}");
         }
-        Cmd::Yield { project, cell, runs, samples, target, json } => {
+        Cmd::Yield { project, cell, runs, samples, target, process, json } => {
             let mut p = Project::open(&project).map_err(|e| e.to_string())?;
             let r = resolve(&p, &cell)?;
             let c = p.cell_mut(&r).unwrap();
             if let Some(n) = runs {
                 c.sim.sweep.monte_carlo.runs = n;
             }
+            if process {
+                c.sim.sweep.monte_carlo.process = true;
+            }
             let mc = &c.sim.sweep.monte_carlo;
-            if mc.runs == 0 || mc.vars.iter().all(|v| v.target.trim().is_empty()) {
+            if mc.runs == 0 || (mc.vars.iter().all(|v| v.target.trim().is_empty()) && !mc.process) {
                 return Err(format!("{r}: the sweep setup has no Monte Carlo (varied parameters and runs)"));
             }
             let specs = c.sim.sweep.specs.clone();
@@ -1707,6 +1830,58 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             if bad {
                 return Err("out-of-spec sites or control-rule violations".into());
+            }
+        }
+        Cmd::Mismatch { data, project, apply, json } => {
+            use ics_core::mismatch::{GENERIC180_PAIRS, MismatchModel, PairData, fit};
+            let (text, name) = match &data {
+                Some(f) => (std::fs::read_to_string(f).map_err(|e| format!("{}: {e}", f.display()))?, f.display().to_string()),
+                None => (GENERIC180_PAIRS.to_string(), "generic180 pairs (built in)".to_string()),
+            };
+            let d = PairData::parse(&text).map_err(|e| format!("{name}: {e}"))?;
+            let fits = fit(&d)?;
+            if json {
+                let fj: Vec<serde_json::Value> = fits
+                    .iter()
+                    .map(|f| {
+                        let pel = |p: &ics_core::mismatch::Pelgrom| {
+                            serde_json::json!({"a": p.a, "a_err": p.a_err, "floor": p.floor,
+                                "sizes": p.sizes.iter().map(|s| serde_json::json!({"w": s.w, "l": s.l, "n": s.n, "mean": s.mean, "sigma": s.sigma, "fitted": s.fitted})).collect::<Vec<_>>()})
+                        };
+                        serde_json::json!({"device": f.device, "pmos": f.pmos, "vt": pel(&f.vt), "beta": f.beta.as_ref().map(pel)})
+                    })
+                    .collect();
+                println!("{}", serde_json::json!({"data": name, "pairs": d.rows.len(), "devices": fj}));
+            } else {
+                println!("{name}: {} pairs", d.rows.len());
+                for f in &fits {
+                    print!("  {:<6} Avt {:.3} ± {:.3} mV·µm", f.device, f.vt.a * 1e3, f.vt.a_err * 1e3);
+                    if f.vt.floor > 0.0 {
+                        print!(" (floor {:.3} mV)", f.vt.floor * 1e3);
+                    }
+                    if let Some(b) = &f.beta {
+                        print!("   Abeta {:.3} ± {:.3} %·µm", b.a * 100.0, b.a_err * 100.0);
+                    }
+                    println!();
+                    for s in &f.vt.sizes {
+                        println!(
+                            "         W/L {:>5}/{:<5} n {:>3}  σ(ΔVt) {:>6.3} mV (fit {:>6.3})  mean {:>+7.3} mV",
+                            s.w,
+                            s.l,
+                            s.n,
+                            s.sigma * 1e3,
+                            s.fitted * 1e3,
+                            s.mean * 1e3
+                        );
+                    }
+                }
+            }
+            if apply {
+                let dir = project.as_ref().ok_or("--apply needs --project")?;
+                let mut p = Project::open(dir).map_err(|e| e.to_string())?;
+                p.tech.mismatch = Some(MismatchModel::from_fits(&fits, &name));
+                p.save().map_err(|e| e.to_string())?;
+                eprintln!("stored the mismatch in the technology of {}", p.name);
             }
         }
         Cmd::Corners { data, spec, project, lib, variation, apply, iterations, json } => {

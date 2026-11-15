@@ -4,6 +4,7 @@
 //! Python / MCP automation interfaces.
 
 pub mod by_example;
+pub mod cadence;
 pub mod compact;
 pub mod connectivity;
 pub mod constraints;
@@ -23,6 +24,7 @@ pub mod layout_gen;
 pub mod lefdef;
 pub mod lvs;
 pub mod matching;
+pub mod mismatch;
 pub mod netlist;
 pub mod oasis;
 pub mod opc;

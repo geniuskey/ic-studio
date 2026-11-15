@@ -16,6 +16,10 @@ pub enum ProcessDataAction {
     SaveLibrary(String),
     /// Store the process variation in the project's technology for Monte Carlo.
     ApplyVariation(ics_core::process_data::ProcessVariation),
+    /// Load matched-pair data (CSV).
+    LoadPairs,
+    /// Store the measured mismatch in the project's technology for Monte Carlo.
+    ApplyMismatch(ics_core::mismatch::MismatchModel),
 }
 
 /// The result of a corner extraction.
@@ -40,6 +44,10 @@ pub struct ProcessDataView {
     pub selected: usize,
     pub error: Option<String>,
     pub corners: Option<CornerResult>,
+    /// Matched-pair data, its file name and the Pelgrom fit of every device.
+    pub pairs: Option<ics_core::mismatch::PairData>,
+    pub pairs_name: String,
+    pub mismatch: Vec<ics_core::mismatch::DeviceFit>,
     rx: Option<std::sync::mpsc::Receiver<Result<CornerResult, String>>>,
 }
 
@@ -74,6 +82,100 @@ impl ProcessDataView {
             }
             Err(e) => self.error = Some(format!("{name}: {e}")),
         }
+    }
+
+    /// Load matched-pair data and fit Pelgrom's law.
+    pub fn set_pairs_text(&mut self, text: &str, name: &str) {
+        match ics_core::mismatch::PairData::parse(text).and_then(|d| ics_core::mismatch::fit(&d).map(|f| (d, f))) {
+            Ok((d, f)) => {
+                self.pairs = Some(d);
+                self.mismatch = f;
+                self.pairs_name = name.to_string();
+                self.error = None;
+            }
+            Err(e) => self.error = Some(format!("{name}: {e}")),
+        }
+    }
+
+    fn mismatch_ui(&mut self, ui: &mut egui::Ui, pal: &crate::theme::Palette, action: &mut Option<ProcessDataAction>) {
+        crate::theme::section(ui, "Mismatch (matched pairs)");
+        ui.horizontal(|ui| {
+            let l = ui.label("Pairs");
+            let shown = if self.pairs_name.is_empty() { "none" } else { self.pairs_name.as_str() };
+            ui.label(RichText::new(shown).monospace()).labelled_by(l.id);
+            if ui.button("Load pairs…").on_hover_text("CSV: device, w, l (µm), dvt (V), dbeta (relative)").clicked() {
+                *action = Some(ProcessDataAction::LoadPairs);
+            }
+            if ui.button("Example pairs").on_hover_text("Synthetic generic 180 nm matched pairs").clicked() {
+                self.set_pairs_text(ics_core::mismatch::GENERIC180_PAIRS, "generic180 pairs (built in)");
+            }
+            if !self.mismatch.is_empty()
+                && ui
+                    .button("Use mismatch for Monte Carlo")
+                    .on_hover_text(
+                        "Store the Pelgrom coefficients in the technology: Monte Carlo draws them in place of Avt / Abeta",
+                    )
+                    .clicked()
+            {
+                *action = Some(ProcessDataAction::ApplyMismatch(ics_core::mismatch::MismatchModel::from_fits(
+                    &self.mismatch,
+                    &self.pairs_name,
+                )));
+            }
+        });
+        if self.mismatch.is_empty() {
+            return;
+        }
+        egui::Grid::new("pd_mismatch").striped(true).num_columns(5).spacing([14.0, 3.0]).show(ui, |ui| {
+            for h in ["DEVICE", "AVT (mV·µm)", "FLOOR (mV)", "ABETA (%·µm)", "SIZES"] {
+                ui.label(RichText::new(h).small().strong().color(pal.text_weak));
+            }
+            ui.end_row();
+            for f in &self.mismatch {
+                ui.label(RichText::new(&f.device).strong());
+                ui.label(RichText::new(format!("{:.2} ± {:.2}", f.vt.a * 1e3, f.vt.a_err * 1e3)).monospace());
+                ui.label(RichText::new(format!("{:.2}", f.vt.floor * 1e3)).monospace());
+                ui.label(
+                    RichText::new(f.beta.as_ref().map_or("—".into(), |b| format!("{:.2} ± {:.2}", b.a * 100.0, b.a_err * 100.0)))
+                        .monospace(),
+                );
+                ui.label(
+                    RichText::new(format!("{} ({} pairs)", f.vt.sizes.len(), f.vt.sizes.iter().map(|s| s.n).sum::<usize>()))
+                        .monospace(),
+                );
+                ui.end_row();
+            }
+        });
+        // Pelgrom plot: σ(ΔVt) against 1 / √(W L), measured points and the fitted law.
+        let colors = [pal.accent, pal.warning, pal.ok, pal.danger];
+        Plot::new("pd_pelgrom")
+            .height(200.0)
+            .legend(Legend::default().position(egui_plot::Corner::LeftTop))
+            .x_axis_label("1 / √(W L)  (1/µm)")
+            .y_axis_label("σ(ΔVt) (mV)")
+            .include_x(0.0)
+            .include_y(0.0)
+            .allow_scroll(false)
+            .show(ui, |pu| {
+                for (k, f) in self.mismatch.iter().enumerate() {
+                    let c = colors[k % colors.len()];
+                    let pts: Vec<[f64; 2]> = f.vt.sizes.iter().map(|s| [1.0 / (s.w * s.l).sqrt(), s.sigma * 1e3]).collect();
+                    let xmax = pts.iter().map(|p| p[0]).fold(0.0, f64::max) * 1.1;
+                    let line: Vec<[f64; 2]> = (0..=40)
+                        .map(|i| {
+                            let x = xmax * i as f64 / 40.0;
+                            [x, (f.vt.a * f.vt.a * x * x + f.vt.floor * f.vt.floor).sqrt() * 1e3]
+                        })
+                        .collect();
+                    pu.points(Points::new(f.device.clone(), PlotPoints::from(pts)).color(c).radius(3.5));
+                    pu.line(Line::new(format!("{} fit", f.device), PlotPoints::from(line)).color(c));
+                }
+            });
+        ui.label(
+            RichText::new("Avt is the Pelgrom pair coefficient; Monte Carlo draws each device with Avt / √(2 W L).")
+                .small()
+                .color(pal.text_weak),
+        );
     }
 
     pub fn is_running(&self) -> bool {
@@ -165,13 +267,15 @@ impl ProcessDataView {
                 if let Some(e) = &self.error {
                     ui.colored_label(pal.danger, e);
                 }
-                let Some(d) = &self.data else {
+                let Some(d) = self.data.clone() else {
                     ui.label(
                         RichText::new("Load WAT / PCM data: CSV with lot, wafer and site columns and one column per parameter.")
                             .color(pal.text_weak),
                     );
+                    self.mismatch_ui(ui, &pal, &mut action);
                     return;
                 };
+                let d = &d;
                 let wafers = d.wafers();
                 ui.label(RichText::new(format!("{} sites on {} wafers", d.sites.len(), wafers.len())).color(pal.text_weak));
                 crate::theme::section(ui, "Parameters");
@@ -325,6 +429,7 @@ impl ProcessDataView {
                         }
                     });
                 }
+                self.mismatch_ui(ui, &pal, &mut action);
                 let Some(s) = self.summary.get(self.selected) else { return };
                 let ps = self.spec.param(&s.name);
                 ui.add_space(4.0);

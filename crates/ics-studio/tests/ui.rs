@@ -2191,4 +2191,39 @@ fn process_data() {
     h.run_steps(3);
     assert!(h.state_mut().monte_carlo().spec().unwrap().process.is_some());
     assert!(h.query_by_label_contains("Global variation: measured").is_some());
+    // Mismatch from the example matched pairs, into the technology and Monte Carlo.
+    h.state_mut().monte_carlo().open = false;
+    h.state_mut().process_data().set_pairs_text(ics_core::mismatch::GENERIC180_PAIRS, "pairs");
+    h.run_steps(3);
+    assert_eq!(h.state_mut().process_data().mismatch.len(), 2);
+    h.get_by_label("Use mismatch for Monte Carlo").scroll_to_me();
+    h.run_steps(3);
+    shot(&mut h, "42_mismatch");
+    h.get_by_label("Use mismatch for Monte Carlo").click();
+    h.run_steps(3);
+    assert!(h.state().project().unwrap().tech.mismatch.is_some());
+    h.state_mut().command(Command::MonteCarlo);
+    h.run_steps(3);
+    assert!(h.state_mut().monte_carlo().spec().unwrap().mismatch.is_some());
+    assert!(h.query_by_label_contains("Mismatch: measured").is_some());
+}
+
+/// Virtuoso interchange: a hierarchical CDL netlist becomes a cell's schematic.
+#[test]
+fn import_cdl_netlist() {
+    let mut h = app(demo_args("cmos_inverter", "schematic", false));
+    let path = std::env::temp_dir().join(format!("ics_ui_test_{}.cdl", std::process::id()));
+    std::fs::write(
+        &path,
+        ".SUBCKT inv in out\n*.PININFO in:I out:O\nMM1 out in vdd! vdd! pch W=2u L=180n\nMM0 out in gnd! gnd! nch W=1u L=180n\n.ENDS\n\
+         .SUBCKT buf a y\nXI0 a mid / inv\nXI1 mid y / inv\n.ENDS\n",
+    )
+    .unwrap();
+    h.state_mut().command(Command::ImportCdl(Some(path.clone())));
+    h.run_steps(4);
+    let _ = std::fs::remove_file(&path);
+    let p = h.state().project().unwrap();
+    let c = p.cell(&ics_core::CellRef::new("work", "buf")).expect("imported cell");
+    let mos = c.schematic.as_ref().unwrap().instances.iter().filter(|i| i.name.starts_with("MI")).count();
+    assert_eq!(mos, 4, "two inverters of two transistors");
 }

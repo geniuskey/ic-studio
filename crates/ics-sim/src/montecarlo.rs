@@ -29,11 +29,14 @@ pub struct McSpec {
     /// Global variation of model parameters measured on silicon; when set it replaces
     /// `vto_sigma` / `kp_sigma` (mismatch still applies).
     pub process: Option<ProcessVariation>,
+    /// Mismatch measured on matched pairs; replaces `avt` / `abeta` for the polarities it
+    /// covers.
+    pub mismatch: Option<ics_core::mismatch::MismatchModel>,
 }
 
 impl Default for McSpec {
     fn default() -> Self {
-        Self { runs: 100, seed: 1, vto_sigma: 0.02, kp_sigma: 0.03, avt: 5e-9, abeta: 1e-8, process: None }
+        Self { runs: 100, seed: 1, vto_sigma: 0.02, kp_sigma: 0.03, avt: 5e-9, abeta: 1e-8, process: None, mismatch: None }
     }
 }
 
@@ -175,8 +178,10 @@ pub fn monte_carlo(
             if let Element::M { model, w, l, m, .. } = e {
                 let p = model.pmos as usize;
                 let area = (*w * model.leff(*l) * *m).max(1e-18).sqrt();
-                let dv = dvto[p] + rng.normal() * spec.avt / area;
-                let db = dkp[p] + rng.normal() * spec.abeta / area;
+                let (avt, abeta) =
+                    spec.mismatch.as_ref().and_then(|mm| mm.per_device(model.pmos)).unwrap_or((spec.avt, spec.abeta));
+                let dv = dvto[p] + rng.normal() * avt / area;
+                let db = dkp[p] + rng.normal() * abeta / area;
                 model.vto += if model.pmos { -dv } else { dv };
                 model.kp *= (1.0 + db).max(0.05);
             }
@@ -226,7 +231,8 @@ mod tests {
     #[test]
     fn mismatch_scales_with_area() {
         let deck = |w: &str| format!("* t\nI1 0 g 10u\nM1 g g 0 0 nm w={w} l=1u\n.model nm nmos (vto=0.5 kp=100u)\n.op\n.end\n");
-        let spec = McSpec { runs: 400, seed: 3, vto_sigma: 0.0, kp_sigma: 0.0, avt: 5e-9, abeta: 0.0, process: None };
+        let spec =
+            McSpec { runs: 400, seed: 3, vto_sigma: 0.0, kp_sigma: 0.0, avt: 5e-9, abeta: 0.0, process: None, mismatch: None };
         let ms = [Measure { analysis: "op".into(), expr: "v(g)".into() }];
         let small = monte_carlo(&deck("1u"), &[], &ms, &spec, None).unwrap();
         let big = monte_carlo(&deck("4u"), &[], &ms, &spec, None).unwrap();
@@ -284,5 +290,29 @@ mod tests {
     fn rejects_external_models() {
         let e = monte_carlo("* t\n.lib \"x.lib\" tt\nR1 a 0 1\n.op\n.end\n", &[], &[], &McSpec::default(), None).unwrap_err();
         assert!(e.to_string().contains("statistical"), "{e}");
+    }
+
+    #[test]
+    fn measured_mismatch_replaces_avt() {
+        use ics_core::mismatch::{DeviceMismatch, MismatchModel};
+        // Two diode-connected devices; σ of v(a) - v(b) is the pair σ: Avt / √(W L).
+        let deck = "* t\nI1 0 a 10u\nI2 0 b 10u\nM1 a a 0 0 nm w=1u l=1u\nM2 b b 0 0 nm w=1u l=1u\n.model nm nmos (vto=0.5 kp=100u)\n.op\n.end\n";
+        let mm = MismatchModel {
+            source: "test".into(),
+            devices: vec![DeviceMismatch { device: "nmos".into(), pmos: false, avt: 8e-9, abeta: 0.0 }],
+        };
+        let spec = McSpec {
+            runs: 500,
+            seed: 9,
+            vto_sigma: 0.0,
+            kp_sigma: 0.0,
+            avt: 50e-9,
+            abeta: 0.0,
+            mismatch: Some(mm),
+            ..Default::default()
+        };
+        let ms = [Measure { analysis: "op".into(), expr: "v(a) - v(b)".into() }];
+        let r = monte_carlo(deck, &[], &ms, &spec, None).unwrap();
+        assert!((r.stats[0].sigma / 8e-3 - 1.0).abs() < 0.1, "{:?}", r.stats[0]);
     }
 }

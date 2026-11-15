@@ -209,6 +209,8 @@ mod tests {
             "load_pdk",
             "project_info",
             "get_netlist",
+            "import_cdl",
+            "export_skill_schematic",
             "write_schematic",
             "set_simulation",
             "simulate",
@@ -231,6 +233,7 @@ mod tests {
             "correlate_silicon",
             "process_cross_section",
             "process_data",
+            "extract_mismatch",
             "extract_corners",
             "place_like",
             "diff_layout",
@@ -352,6 +355,20 @@ mod tests {
         );
         assert_eq!(cor["variation"]["params"].as_array().unwrap().len(), 4, "{cor}");
         assert_eq!(cor["applied"], false);
+
+        let mm = call(&mut s, "extract_mismatch", json!({})).unwrap();
+        let n = &mm["devices"][0];
+        assert_eq!(n["device"], "nmos", "{mm}");
+        assert!((n["vt"]["a"].as_f64().unwrap() * 1e3 - 4.0).abs() < 0.8, "{mm}");
+        let mm = call(&mut s, "extract_mismatch", json!({"apply": true})).unwrap();
+        assert_eq!(mm["applied"], true);
+
+        let cdl = ".SUBCKT inv in out\n*.PININFO in:I out:O\nMM1 out in vdd! vdd! pch W=2u L=180n\nMM0 out in gnd! gnd! nch W=1u L=180n\n.ENDS\n.SUBCKT buf a y\nXI0 a mid / inv\nXI1 mid y / inv\n.ENDS\n";
+        let ci = call(&mut s, "import_cdl", json!({"cdl": cdl})).unwrap();
+        assert_eq!((ci["cell"].as_str(), ci["devices"].as_u64()), (Some("work/buf"), Some(4)), "{ci}");
+        let sk = call(&mut s, "export_skill_schematic", json!({"cell": "work/buf"})).unwrap();
+        let il = sk["script"].as_str().unwrap();
+        assert!(il.contains("\"MI0/M1\"") && il.contains("analogLib"), "{il}");
 
         let drc = call(&mut s, "run_drc", json!({"cell": "cmos_inverter"})).unwrap();
         assert!(drc["rules_run"].as_u64().unwrap() > 0, "{drc}");

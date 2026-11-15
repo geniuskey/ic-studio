@@ -206,6 +206,11 @@ pub enum Command {
     /// Replace the technology with a PDK file (see `ics_core::pdk`); `None` asks for the file.
     LoadPdk(Option<PathBuf>),
     ExportNetlist,
+    /// Import a hierarchical CDL netlist (Virtuoso auCdl) as a new cell's schematic; `None`
+    /// asks for the file.
+    ImportCdl(Option<PathBuf>),
+    /// Write the active schematic as a SKILL script that recreates it in Virtuoso.
+    ExportSkill,
     ToggleTheme,
     ToggleConsole,
     Settings,
@@ -1068,6 +1073,8 @@ impl IcStudio {
             Command::ExportLefDef(def) => self.export_lef_def(def),
             Command::ImportLefDef(def, path) => self.import_lef_def(def, path),
             Command::ImportTech => self.import_tech(),
+            Command::ImportCdl(path) => self.import_cdl(path),
+            Command::ExportSkill => self.export_skill(),
             Command::LoadSkill(path) => self.load_skill(path),
             Command::Ciw => {
                 self.show_console = true;
@@ -1497,7 +1504,9 @@ impl IcStudio {
                 let opts = self.sim_options(backend);
                 let mc = &self.sweep.setup.monte_carlo;
                 self.sweep.plan = match (mc.runs > 0, self.active_cell().and_then(|c| c.schematic.as_ref())) {
-                    (true, Some(sch)) => ics_core::sweep::mc_plan(mc, sch).ok(),
+                    (true, Some(sch)) => {
+                        ics_core::sweep::mc_plan(mc, sch, self.project.as_ref().and_then(|p| p.tech.variation.as_ref())).ok()
+                    }
                     _ => None,
                 };
                 self.sweep.start(ctx, decks, analyses, opts);
@@ -1525,6 +1534,7 @@ impl IcStudio {
         };
         let mut notes = vec![];
         self.monte_carlo.process = self.project.as_ref().and_then(|p| p.tech.variation.clone());
+        self.monte_carlo.mismatch = self.project.as_ref().and_then(|p| p.tech.mismatch.clone());
         let res = self.mc_deck(&r, &mut notes).and_then(|(deck, analyses)| self.monte_carlo.start(ctx, deck, analyses));
         for n in notes {
             self.warn(n);
@@ -1564,6 +1574,10 @@ impl IcStudio {
             let v = self.project.as_ref().and_then(|p| p.tech.variation.as_ref());
             if self.monte_carlo.process.as_ref() != v {
                 self.monte_carlo.process = v.cloned();
+            }
+            let m = self.project.as_ref().and_then(|p| p.tech.mismatch.as_ref());
+            if self.monte_carlo.mismatch.as_ref() != m {
+                self.monte_carlo.mismatch = m.cloned();
             }
         }
         let (changed, run, stop) = self.monte_carlo.window(ctx);
@@ -1645,6 +1659,31 @@ impl IcStudio {
                     v.params.len(),
                     v.source
                 ));
+                return;
+            }
+            Some(ProcessDataAction::ApplyMismatch(m)) => {
+                let Some(p) = self.project.as_mut() else {
+                    self.warn("Open a project to store the mismatch in its technology".into());
+                    return;
+                };
+                p.tech.mismatch = Some(m.clone());
+                self.mark_dirty();
+                let txt: Vec<String> = m.devices.iter().map(|d| format!("{} Avt {:.2} mV·µm", d.device, d.avt * 1e9)).collect();
+                self.ok(format!("Mismatch: {} stored in the technology; Monte Carlo draws it", txt.join(", ")));
+                return;
+            }
+            Some(ProcessDataAction::LoadPairs) => {
+                let mut dialog = rfd::FileDialog::new().set_title("Matched-pair data").add_filter("CSV", &["csv", "txt", "tsv"]);
+                if let Some(r) = self.project.as_ref().and_then(|p| p.root.clone()) {
+                    dialog = dialog.set_directory(r);
+                }
+                if let Some(path) = dialog.pick_file() {
+                    let name = path.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
+                    match std::fs::read_to_string(&path) {
+                        Ok(t) => self.process_data.set_pairs_text(&t, &name),
+                        Err(e) => self.error(format!("{}: {e}", path.display())),
+                    }
+                }
                 return;
             }
             Some(ProcessDataAction::SaveLibrary(text)) => {
@@ -1744,7 +1783,7 @@ impl IcStudio {
         if analyses.is_empty() {
             return Err("no analyses enabled".into());
         }
-        let points = setup.sweep.expand(&setup, sch)?;
+        let points = setup.sweep.expand(&setup, sch, p.tech.variation.as_ref())?;
         let pex = if setup.parasitics && cell.layout.is_some() {
             match ics_core::pex::post_layout(p, r) {
                 Ok(pl) => Some(pl),
@@ -1985,6 +2024,94 @@ impl IcStudio {
         }
     }
 
+    fn import_cdl(&mut self, path: Option<PathBuf>) {
+        let Some(path) = path.or_else(|| {
+            rfd::FileDialog::new().add_filter("CDL / SPICE netlist", &["cdl", "cir", "sp", "spi", "net"]).pick_file()
+        }) else {
+            return;
+        };
+        let Some(p) = self.project.as_mut() else { return };
+        let res = std::fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|t| ics_core::cadence::import_cdl(&t, &p.tech, None));
+        let imp = match res {
+            Ok(i) => i,
+            Err(e) => return self.error(format!("Cannot import {}: {e}", path.display())),
+        };
+        let base = if imp.flat.top.is_empty() {
+            path.file_stem().unwrap_or_default().to_string_lossy().to_string()
+        } else {
+            imp.flat.top.clone()
+        };
+        if p.library_mut("work").is_none()
+            && let Err(e) = p.add_library("work")
+        {
+            return self.error(e);
+        }
+        // A free cell name.
+        let mut name = base.clone();
+        let mut k = 1;
+        while p.cell(&CellRef::new("work", &name)).is_some() {
+            name = format!("{base}_{k}");
+            k += 1;
+        }
+        let mut cell = ics_core::Cell::new(&name);
+        cell.schematic = Some(imp.imported.schematic);
+        match p.add_cell("work", cell) {
+            Ok(r) => {
+                self.hier.clear();
+                self.mark_dirty();
+                self.ok(format!(
+                    "CDL: {} device(s) of {} imported as {r} (subcircuits: {})",
+                    imp.flat.devices,
+                    if imp.flat.top.is_empty() { "the top level" } else { &imp.flat.top },
+                    imp.subckts.join(", ")
+                ));
+                for w in imp.imported.warnings {
+                    self.warn(format!("CDL: {w}"));
+                }
+                self.queue.push(Command::OpenCell(r, Some(Workspace::Schematic)));
+            }
+            Err(e) => self.error(e),
+        }
+    }
+
+    fn export_skill(&mut self) {
+        let (Some(p), Some(r)) = (self.project.as_ref(), self.active.clone()) else { return };
+        let Some(sch) = p.cell(&r).and_then(|c| c.schematic.as_ref()) else {
+            return self.warn("Open a cell with a schematic to export it to Virtuoso".into());
+        };
+        // A symbol map next to the project (virtuoso_symbols.toml), else analogLib.
+        let map_file = p.root.as_ref().map(|d| d.join("virtuoso_symbols.toml")).filter(|f| f.exists());
+        let map = match &map_file {
+            Some(f) => match std::fs::read_to_string(f)
+                .map_err(|e| e.to_string())
+                .and_then(|t| ics_core::cadence::SymbolMap::from_toml(&t))
+            {
+                Ok(m) => m,
+                Err(e) => return self.error(format!("{}: {e}", f.display())),
+            },
+            None => ics_core::cadence::SymbolMap::analog_lib(),
+        };
+        let (il, warnings) = ics_core::cadence::skill_schematic(sch, &r.lib, &r.cell, &map, 0.1875);
+        let Some(path) =
+            rfd::FileDialog::new().add_filter("Cadence SKILL", &["il"]).set_file_name(format!("{}.il", r.cell)).save_file()
+        else {
+            return;
+        };
+        match std::fs::write(&path, il) {
+            Ok(()) => self.ok(format!(
+                "Wrote {} (load it in the Virtuoso CIW; symbols: {})",
+                path.display(),
+                map_file.map_or("analogLib".into(), |f| f.display().to_string())
+            )),
+            Err(e) => self.error(format!("{}: {e}", path.display())),
+        }
+        for w in warnings {
+            self.warn(format!("SKILL export: {w}"));
+        }
+    }
+
     fn import_tech(&mut self) {
         let Some(p) = self.project.as_mut() else { return };
         let Some(path) = rfd::FileDialog::new().add_filter("KLayout layer properties", &["lyp"]).pick_file() else { return };
@@ -2200,10 +2327,16 @@ impl IcStudio {
                     if ui.add_enabled(has_project, egui::Button::new("PDK…")).clicked() {
                         q.push(Command::LoadPdk(None));
                     }
+                    if ui.add_enabled(has_project, egui::Button::new("CDL netlist (Virtuoso)…")).clicked() {
+                        q.push(Command::ImportCdl(None));
+                    }
                 });
                 ui.menu_button("Export", |ui| {
                     if ui.add_enabled(has_project, egui::Button::new("SPICE netlist…")).clicked() {
                         q.push(Command::ExportNetlist);
+                    }
+                    if ui.add_enabled(has_project, egui::Button::new("Virtuoso schematic (SKILL)…")).clicked() {
+                        q.push(Command::ExportSkill);
                     }
                     if ui.add_enabled(has_project, egui::Button::new("Cell GDSII…")).clicked() {
                         q.push(Command::ExportGds);
@@ -3344,6 +3477,8 @@ impl IcStudio {
             ("Design copilot (AI chat)".into(), "", Command::Copilot),
             ("AI models (provider, model, API key)…".into(), "", Command::AiModels),
             ("Export SPICE netlist…".into(), "", Command::ExportNetlist),
+            ("Import CDL netlist (Virtuoso)…".into(), "", Command::ImportCdl(None)),
+            ("Export Virtuoso schematic (SKILL)…".into(), "", Command::ExportSkill),
             ("Toggle light / dark theme".into(), "", Command::ToggleTheme),
             ("Toggle console".into(), "⌘J", Command::ToggleConsole),
             ("Fit view".into(), "F", Command::FitView),

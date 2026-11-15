@@ -416,10 +416,10 @@ impl SweepManager {
         if ui.button("+ Spec").clicked() {
             self.setup.specs.push(Spec { name: format!("spec{}", self.setup.specs.len() + 1), ..Default::default() });
         }
-        self.monte_carlo_ui(ui, pal);
+        self.monte_carlo_ui(ui, pal, project.tech.variation.as_ref());
     }
 
-    fn monte_carlo_ui(&mut self, ui: &mut egui::Ui, pal: &Palette) {
+    fn monte_carlo_ui(&mut self, ui: &mut egui::Ui, pal: &Palette, measured: Option<&ics_core::process_data::ProcessVariation>) {
         theme::section(ui, "Monte Carlo");
         let mc = &mut self.setup.monte_carlo;
         ui.horizontal(|ui| {
@@ -435,6 +435,24 @@ impl SweepManager {
             .small()
             .color(pal.text_weak),
         );
+        let hint = match measured {
+            Some(v) => format!(
+                "Draw the technology's measured process variation ({}): {}, correlated, one draw per run shared by every device",
+                if v.source.is_empty() { "silicon" } else { v.source.as_str() },
+                v.params.join(", ")
+            ),
+            None => {
+                "The technology has no measured process variation: Process Data > Extract corners > Use for Monte Carlo".into()
+            }
+        };
+        let r =
+            ui.add_enabled(measured.is_some() || mc.process, egui::Checkbox::new(&mut mc.process, "Measured process variation"));
+        if r.on_hover_text(hint).on_disabled_hover_text("Process Data > Extract corners > Use for Monte Carlo").changed()
+            && mc.process
+            && mc.runs == 0
+        {
+            mc.runs = 50;
+        }
         let mut remove = None;
         for (i, v) in mc.vars.iter_mut().enumerate() {
             egui::Frame::new().fill(pal.bg_widget).corner_radius(6).inner_margin(6).show(ui, |ui| {

@@ -5,6 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::netlist::netlist_for;
+use crate::process_data::ProcessVariation;
 use crate::schematic::Schematic;
 use crate::sim_setup::SimSetup;
 use crate::tech::Tech;
@@ -38,11 +39,15 @@ pub struct MonteCarlo {
     pub runs: u32,
     pub seed: u64,
     pub vars: Vec<McVar>,
+    /// Also draw the technology's measured process variation (`Tech::variation`): its model
+    /// parameters, correlated, shared by every device (`model:NAME.PARAM` targets).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub process: bool,
 }
 
 impl MonteCarlo {
     pub fn is_off(&self) -> bool {
-        self.runs == 0 && self.vars.is_empty()
+        self.runs == 0 && self.vars.is_empty() && !self.process
     }
 }
 
@@ -221,7 +226,12 @@ impl SweepSetup {
 impl SweepSetup {
     /// [`SweepSetup::points`] with every point repeated for each Monte Carlo run, its sampled
     /// values appended.
-    pub fn expand(&self, base: &SimSetup, sch: &Schematic) -> Result<Vec<SweepPoint>, String> {
+    pub fn expand(
+        &self,
+        base: &SimSetup,
+        sch: &Schematic,
+        variation: Option<&ProcessVariation>,
+    ) -> Result<Vec<SweepPoint>, String> {
         let points = self.points(base)?;
         let mc = &self.monte_carlo;
         if mc.runs == 0 {
@@ -231,7 +241,7 @@ impl SweepSetup {
         if total > MAX_POINTS {
             return Err(format!("{total} points exceed the limit of {MAX_POINTS}"));
         }
-        let samples = mc_samples(mc, sch)?;
+        let samples = mc_samples(mc, sch, variation)?;
         let mut out = Vec::with_capacity(total);
         for p in points {
             for (k, s) in samples.iter().enumerate() {
@@ -262,19 +272,23 @@ pub struct McPlan {
 struct McTarget {
     name: String,
     nominal: f64,
-    sigma: f64,
-    input: usize,
+    /// (input, coefficient): the value is `nominal + Σ coefficient · draw[input]`.
+    terms: Vec<(usize, f64)>,
 }
 
 impl McPlan {
     /// The parameter values of the draws `x` (one per input).
     pub fn assign(&self, x: &[f64]) -> Vec<(String, String)> {
-        self.targets.iter().map(|t| (t.name.clone(), format!("{:.6e}", t.nominal + t.sigma * x[t.input]))).collect()
+        self.targets
+            .iter()
+            .map(|t| (t.name.clone(), format!("{:.6e}", t.nominal + t.terms.iter().map(|(i, c)| c * x[*i]).sum::<f64>())))
+            .collect()
     }
 }
 
-/// The inputs and draws of a Monte Carlo setup on `sch`.
-pub fn mc_plan(mc: &MonteCarlo, sch: &Schematic) -> Result<McPlan, String> {
+/// The inputs and draws of a Monte Carlo setup on `sch`; `variation` is the technology's
+/// measured process variation, drawn when the setup asks for it.
+pub fn mc_plan(mc: &MonteCarlo, sch: &Schematic, variation: Option<&ProcessVariation>) -> Result<McPlan, String> {
     let mut plan = McPlan::default();
     for v in mc.vars.iter().filter(|v| !v.target.trim().is_empty()) {
         let t = v.target.trim();
@@ -308,7 +322,7 @@ pub fn mc_plan(mc: &MonteCarlo, sch: &Schematic) -> Result<McPlan, String> {
                         }
                         shared
                     };
-                    plan.targets.push(McTarget { name, nominal, sigma: sigma_of(nominal)?, input });
+                    plan.targets.push(McTarget { name, nominal, terms: vec![(input, sigma_of(nominal)?)] });
                     hit = true;
                 }
                 if !hit {
@@ -317,8 +331,25 @@ pub fn mc_plan(mc: &MonteCarlo, sch: &Schematic) -> Result<McPlan, String> {
             }
             None => {
                 let nominal = parse_spice(&v.nominal).ok_or_else(|| format!("{t}: invalid nominal '{}'", v.nominal))?;
-                plan.targets.push(McTarget { name: t.to_string(), nominal, sigma: sigma_of(nominal)?, input: shared });
+                plan.targets.push(McTarget { name: t.to_string(), nominal, terms: vec![(shared, sigma_of(nominal)?)] });
             }
+        }
+    }
+    if mc.process {
+        let v = variation.ok_or("the technology has no measured process variation (Process Data > Use for Monte Carlo)")?;
+        v.validate()?;
+        let l = v.factor().expect("validated");
+        let n = v.params.len();
+        // One standard normal input per parameter; parameter i is its nominal plus row i of
+        // the Cholesky factor times the inputs, so the draws have the measured covariance.
+        let first = plan.inputs.len();
+        for p in &v.params {
+            plan.inputs.push(format!("{p} (process)"));
+            plan.dists.push(Dist::Gauss);
+        }
+        for i in 0..n {
+            let terms = (0..=i).filter(|&j| l[i * n + j] != 0.0).map(|j| (first + j, l[i * n + j])).collect();
+            plan.targets.push(McTarget { name: format!("model:{}", v.params[i]), nominal: v.mean[i], terms });
         }
     }
     let mut rng = Rng(mc.seed ^ 0x9e37_79b9_7f4a_7c15);
@@ -328,8 +359,12 @@ pub fn mc_plan(mc: &MonteCarlo, sch: &Schematic) -> Result<McPlan, String> {
 
 /// The sampled assignments of every Monte Carlo run (the same for every sweep point, so corners
 /// compare on equal samples).
-pub fn mc_samples(mc: &MonteCarlo, sch: &Schematic) -> Result<Vec<Vec<(String, String)>>, String> {
-    let plan = mc_plan(mc, sch)?;
+pub fn mc_samples(
+    mc: &MonteCarlo,
+    sch: &Schematic,
+    variation: Option<&ProcessVariation>,
+) -> Result<Vec<Vec<(String, String)>>, String> {
+    let plan = mc_plan(mc, sch, variation)?;
     Ok(plan.draws.iter().map(|x| plan.assign(x)).collect())
 }
 
@@ -423,7 +458,13 @@ pub fn point_deck(
 ) -> Result<(String, Vec<String>), String> {
     let mut sch = sch.clone();
     let mut design = vec![];
+    let mut models = vec![];
     for (name, value) in &pt.vars {
+        if let Some(mp) = name.strip_prefix("model:") {
+            let (m, p) = mp.split_once('.').ok_or_else(|| format!("{name}: write model:NAME.PARAM"))?;
+            models.push((m, p, value));
+            continue;
+        }
         match name.split_once('.') {
             Some((inst, param)) => {
                 let i = sch
@@ -443,6 +484,11 @@ pub fn point_deck(
     let mut deck = nl.deck(title, &setup);
     for (name, value) in design {
         deck = deck.replace(&format!("{{{name}}}"), value);
+    }
+    for (m, p, value) in models {
+        let v = parse_spice(value).ok_or_else(|| format!("model:{m}.{p}: invalid value '{value}'"))?;
+        deck = crate::silicon::set_model_param(&deck, m, p, v)
+            .map_err(|e| format!("model:{m}.{p}: {e} (the measured variation needs the models inline, not a .lib)"))?;
     }
     Ok((deck, nl.warnings))
 }
@@ -535,8 +581,9 @@ mod tests {
             runs: 4000,
             seed: 7,
             vars: vec![McVar { target: "R*.r".into(), sigma: "10%".into(), ..Default::default() }],
+            ..Default::default()
         };
-        let s = mc_samples(&mc, &sch).unwrap();
+        let s = mc_samples(&mc, &sch, None).unwrap();
         assert_eq!(s.len(), 4000);
         let val = |run: &Vec<(String, String)>, k: usize| parse_spice(&run[k].1).unwrap();
         let r1: Vec<f64> = s.iter().map(|run| val(run, 0)).collect();
@@ -544,9 +591,9 @@ mod tests {
         assert!((st.mean - 1000.0).abs() < 10.0 && (st.std - 100.0).abs() < 6.0, "{st:?}");
         assert!(s.iter().all(|run| (val(run, 1) / val(run, 0) - 2.0).abs() < 1e-5), "process variation is shared");
         let mis = MonteCarlo { vars: vec![McVar { mismatch: true, ..mc.vars[0].clone() }], ..mc.clone() };
-        let s = mc_samples(&mis, &sch).unwrap();
+        let s = mc_samples(&mis, &sch, None).unwrap();
         assert!(s.iter().any(|run| (val(run, 1) / val(run, 0) - 2.0).abs() > 0.01), "mismatch draws independently");
-        assert_eq!(mc_samples(&mc, &sch).unwrap(), mc_samples(&mc, &sch).unwrap(), "deterministic per seed");
+        assert_eq!(mc_samples(&mc, &sch, None).unwrap(), mc_samples(&mc, &sch, None).unwrap(), "deterministic per seed");
         let uni = MonteCarlo {
             runs: 500,
             vars: vec![McVar {
@@ -558,13 +605,13 @@ mod tests {
             }],
             ..mc
         };
-        assert!(mc_samples(&uni, &sch).unwrap().iter().all(|run| (val(run, 0) - 1.0).abs() <= 0.1));
+        assert!(mc_samples(&uni, &sch, None).unwrap().iter().all(|run| (val(run, 0) - 1.0).abs() <= 0.1));
         let bad = MonteCarlo {
             runs: 1,
             vars: vec![McVar { target: "Q*.r".into(), sigma: "1".into(), ..Default::default() }],
             ..Default::default()
         };
-        assert!(mc_samples(&bad, &sch).is_err());
+        assert!(mc_samples(&bad, &sch, None).is_err());
     }
 
     #[test]
@@ -576,10 +623,11 @@ mod tests {
                 runs: 3,
                 seed: 1,
                 vars: vec![McVar { target: "R1.r".into(), sigma: "1%".into(), ..Default::default() }],
+                ..Default::default()
             },
             ..Default::default()
         };
-        let pts = s.expand(&SimSetup::default(), &sch).unwrap();
+        let pts = s.expand(&SimSetup::default(), &sch, None).unwrap();
         assert_eq!(pts.len(), 6);
         assert_eq!(pts[0].vars[0].1, pts[3].vars[0].1, "same samples at every point");
         assert_eq!(pts[2].label(), "0°C mc#3");

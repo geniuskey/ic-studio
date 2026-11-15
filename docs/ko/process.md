@@ -144,7 +144,8 @@ Process variation (global, wafer to wafer):
 
 - **IC Studio의 Monte Carlo.** 테크놀로지에 저장합니다. Process Data 창의 **Use for Monte Carlo**,
   `ics corners --project P --apply`, 또는 `apply`를 준 `extract_corners`를 씁니다. 그러면 Monte Carlo(창과
-  `ics mc`)가 일반값 **Vto sigma** / **kp sigma** 대신 이 변동을 뽑습니다. `ics mc --variation FILE`은
+  `ics mc`)가 일반값 **Vto sigma** / **kp sigma** 대신 이 변동을 뽑습니다. Corner / Sweep Manager에서는 **Measured
+  process variation**이 수율 예측용으로 이 변동을 뽑습니다(`ics yield --process`, `process`를 준 MCP `predict_yield`). `ics mc --variation FILE`은
   `ics corners --variation FILE`로 쓴 파일을 대신 쓰고, `ics mc --generic`은 저장된 변동을 무시합니다.
 - **코너 라이브러리.** 라이브러리에는 `mc` 절이 있습니다. 이 절의 노브는 명목값 + Σ_k의 Cholesky 인수 × 표준정규
   파라미터 `ics_z1` ... `ics_zN`입니다. 이 파라미터들은 0이므로, Monte Carlo 루프가 매 실행 전에 값을 넣기 전까지
@@ -155,3 +156,31 @@ Process variation (global, wafer to wafer):
 
 예제 데이터에서 idsat_n 테스트 구조를 `mc` 절로 ngspice에서 1000번 돌리면 σ = 29.4 µA/µm(데이터는 29.6), 평균은
 591(데이터는 590)입니다.
+
+## 매칭 쌍에서 미스매치 구하기
+
+![Process Data: 예제 매칭 쌍의 Pelgrom 피팅](../screenshots/tool_mismatch.png)
+
+소자 간 미스매치는 매칭 쌍(나란히 놓은 같은 트랜지스터 두 개)을 여러 크기로 측정해서 구합니다. 쌍마다 한 행씩
+CSV로 줍니다. 열은 다음과 같습니다.
+
+- `device`: `nmos`, `pmos` 또는 모델 이름. `p`로 시작하면 p 채널입니다.
+- `w`, `l`: 크기(µm).
+- `dvt`: 두 트랜지스터의 문턱 전압 차이(V).
+- `dbeta`: 상대 전류 계수 차이(0.01 = 1 %). 생략할 수 있습니다.
+
+추출은 소자와 크기마다 차이의 σ를 구하고, Pelgrom 법칙 σ²(ΔVt) = Avt² / (W L) + σ0²를 최소제곱으로 피팅합니다.
+각 크기는 표본 분산의 불확도로 가중합니다. 데이터가 뒷받침하지 않으면 바닥값 σ0는 뺍니다. Δβ/β도 같은 방식으로
+피팅합니다. 계수마다 표준오차가 붙고, 그래프는 측정 σ를 1 / √(W L)에 대해 피팅한 법칙과 함께 보여 줍니다.
+
+- GUI: Process Data 창의 **Mismatch (matched pairs)**: **Load pairs...** 또는 **Example pairs**, 그다음 **Use mismatch
+  for Monte Carlo**
+- CLI: `ics mismatch [CSV] [--project P --apply] [--json]`
+- MCP: `extract_mismatch`
+
+번들된 쌍 데이터(`process/generic180_mismatch.csv`)는 합성 데이터입니다. Avt 4.0 / 3.5 mV·µm, Aβ 1.0 / 0.9 %·µm로
+만들었고, 피팅은 이 값을 오차 안에서 되찾습니다(4.13 ± 0.24, 3.48 ± 0.25 mV·µm).
+
+Avt는 Pelgrom **쌍** 계수입니다. Monte Carlo는 각 소자를 자기 공칭값 주변에서 바꾸므로, 테크놀로지에 저장하면 각
+소자를 Avt / √(2 W L)로 뽑습니다. 그러면 한 쌍의 차이는 측정대로 Avt / √(W L)이 됩니다. 극성별 계수는 Monte Carlo
+창과 `ics mc`의 일반값 **Avt** / **Abeta**를 대신하며, `ics mc --generic`은 이를 무시합니다.

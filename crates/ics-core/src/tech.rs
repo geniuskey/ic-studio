@@ -403,6 +403,10 @@ pub struct Tech {
     /// drawn by Monte Carlo in place of its generic threshold / current factor sigmas.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variation: Option<crate::process_data::ProcessVariation>,
+    /// Device mismatch measured on matched pairs (Pelgrom coefficients per polarity, from
+    /// `ics mismatch`), drawn by Monte Carlo in place of its generic Avt / Abeta.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mismatch: Option<crate::mismatch::MismatchModel>,
 }
 
 /// The process cross-section over the silicon, from which a pixel's optical stack follows
@@ -740,6 +744,7 @@ impl Tech {
             stream_map: vec![],
             cross_section: Some(CrossSection::generic180()),
             variation: None,
+            mismatch: None,
         }
     }
 }

@@ -123,6 +123,48 @@ SPICE 문자열이며, SPICE 배율 접미사(`10k`, `2.2p`, `180n`, `1meg`)를 
   모델은 PDK 소자로 매핑되고(서브서킷 소자는 `X` 접두사), 라이브러리는 선택한 코너로
   로드됩니다.
 
+## Virtuoso와 회로도 주고받기
+
+OpenAccess는 바이너리 C++ 데이터베이스이므로, IC Studio와 Cadence Virtuoso는 Virtuoso가 직접 읽고 쓰는 텍스트
+형식으로 회로도를 주고받습니다.
+
+- **Virtuoso에서 가져오기: CDL.** Virtuoso에서 CDL 넷리스트를 내보냅니다(Calibre LVS 때처럼 auCdl 넷리스터).
+  IC Studio에서는 **File > Import > CDL netlist (Virtuoso)...**(또는 `ics import-cdl`, MCP `import_cdl`)를 씁니다.
+  임포터는 다음을 읽습니다.
+
+  - `*.PININFO` 방향이 있는 `.SUBCKT`
+  - `/ cell`이 있거나 없는 `X` 인스턴스
+  - 식을 포함한 서브서킷 파라미터(`W='wp/2'`)
+  - `.GLOBAL`과 `!` 전역 넷(`gnd!`는 접지)
+  - `$` 주석
+
+  최상위 서브서킷부터 평탄화해 회로도 하나로 만듭니다. 소자 이름에는 인스턴스 경로가 붙고(`MI0/M0`은 `XI0`
+  안의 `MM0`), 로컬 넷에도 경로가 붙습니다(`I0/net7`). SPICE 넷리스트처럼 모든 핀에 넷 레이블이 붙습니다.
+  `$[model]`과 크기만 있는 저항·커패시터는 임시 값과 경고를 받습니다. `ics import-cdl --all`은 모든 서브서킷을
+  각각 셀로 가져옵니다.
+- **Virtuoso로 내보내기: SKILL.** **File > Export > Virtuoso schematic (SKILL)...**(또는 `ics export-skill`, MCP
+  `export_skill_schematic`)는 스크립트를 씁니다. CIW에서 `load("inv.il")`로 읽으면 analogLib 심볼(`nmos4`, `pmos4`,
+  `res`, `cap`, `ind`, `vdc`, `idc`, `diode`)로 회로도를 만들고 파라미터를 설정합니다. 각 단자에는 짧은 와이어와
+  넷 이름 와이어 레이블이 붙는데, 스크립트가 실행될 때 심볼이 정의한 핀 위치를 찾아 붙이므로 연결은 심볼
+  형상과 무관합니다. 끝나면 **Check and Save**를 하고, 원하면 배치를 정리합니다.
+
+  PDK 심볼을 쓰려면 프로젝트 옆에 `virtuoso_symbols.toml`을 두거나 `--map`으로 줍니다.
+
+  ```toml
+  [[symbol]]
+  kind = "nmos"            # nmos, pmos, resistor, capacitor, inductor, vsource, isource, diode
+  model = "nch"            # 선택: 이 모델의 인스턴스만
+  lib = "gpdk180"
+  cell = "nmos1v"
+  terms = { d = "D", g = "G", s = "S", b = "B" }
+  params = { w = "w", l = "l", m = "m" }   # IC Studio 파라미터 = CDF 파라미터
+  ```
+
+  IC Studio의 **CDL** 넷리스트(`ics netlist --format cdl`)를 Virtuoso의 CDL 가져오기로 읽는 방법도 있습니다.
+
+CDL 임포트는 계층 auCdl 형식 넷리스트와 데모 셀의 CDL 왕복으로 테스트했습니다. SKILL 스크립트는 IC Studio의
+SKILL 리더로 문법을 확인했지만, 아직 Virtuoso 세션에서 실행해 보지는 않았습니다.
+
 ## 동작점 표시
 
 동작점 시뮬레이션 후 **Annotate OP**(기본으로 켜짐)를 사용하면 각 노드 전압이 회로도에 태그로

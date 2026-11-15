@@ -104,6 +104,15 @@ Each **varied parameter** has:
 - **Mismatch**: draw every matching instance independently. Off, all of them share one draw
   per run (process variation).
 
+**Measured process variation** also draws the technology's process variation measured on
+silicon ([from WAT data](process.md#statistical-models-the-process-variation)). It varies
+the model parameters it covers (`nmos.vto`, `nmos.kp` …) with their measured σ and
+correlations, one draw per run for every device. The yield prediction lists them as inputs
+such as `nmos.vto (process)`, so its sensitivities show which process parameter limits a
+spec. The models must be inline in the deck (the generic models, or a PDK whose
+`[models]` text holds the cards), not loaded with `.lib`. The checkbox is greyed out until
+the technology has a variation (Process Data > Extract corners > Use for Monte Carlo).
+
 With Monte Carlo results, **Statistics** lists mean, σ, min, max, count and yield of every
 spec, and a histogram of the selected spec marks the bins outside its limits in red.
 

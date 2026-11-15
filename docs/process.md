@@ -258,7 +258,9 @@ You can use the variation in three ways:
 - **Monte Carlo in IC Studio.** Store it in the technology: **Use for Monte Carlo** in the
   Process Data window, `ics corners --project P --apply`, or `extract_corners` with
   `apply`. Monte Carlo (the window and `ics mc`) then draws it in place of the generic
-  **Vto sigma** / **kp sigma**. `ics mc --variation FILE` uses a file written by
+  **Vto sigma** / **kp sigma**. In the Corner / Sweep Manager, **Measured process
+  variation** draws it for yield prediction (`ics yield --process`, MCP `predict_yield`
+  with `process`). `ics mc --variation FILE` uses a file written by
   `ics corners --variation FILE` instead, and `ics mc --generic` ignores the stored one.
 - **The corner library.** The library has an `mc` section. Its knobs are the nominal plus
   the Cholesky factor of Σ_k times standard normal parameters `ics_z1` ... `ics_zN`. These
@@ -287,3 +289,51 @@ You can use the variation in three ways:
 
 On the example data, 1000 ngspice runs of the idsat_n test structure with the `mc` section
 give σ = 29.4 µA/µm (the data has 29.6) and a mean of 591 (the data has 590).
+
+## Mismatch from matched pairs
+
+![Process Data: Pelgrom fit of the example matched pairs](screenshots/tool_mismatch.png)
+
+Device-to-device mismatch comes from matched pairs: two identical transistors side by side,
+measured at several sizes. Give the pairs as CSV with one row per pair:
+
+```text
+device,w,l,pair,dvt,dbeta
+nmos,0.5,0.18,1,0.012841,-0.019604
+nmos,10,2,1,-0.000377,0.002115
+```
+
+The columns are:
+
+- `device`: `nmos`, `pmos` or a model name; a name starting with `p` is p-channel;
+- `w`, `l`: the size in µm;
+- `dvt`: the threshold difference of the two transistors, in V;
+- `dbeta`: the relative current factor difference (0.01 = 1 %), optional.
+
+For each device and size, the extraction computes the σ of the differences and fits
+Pelgrom's law, σ²(ΔVt) = Avt² / (W L) + σ0², by least squares. The fit weights each size by
+the uncertainty of its sample variance. The floor σ0 is dropped when the data does not
+support it. Δβ/β gets the same fit. Each coefficient comes with its standard error, and the
+plot shows the measured σ against 1 / √(W L) with the fitted law.
+
+- GUI: **Mismatch (matched pairs)** in the Process Data window: **Load pairs...** or
+  **Example pairs**, then **Use mismatch for Monte Carlo**
+- CLI: `ics mismatch [CSV] [--project P --apply] [--json]`
+- MCP: `extract_mismatch`
+
+```text
+$ ics mismatch
+generic180 pairs (built in): 400 pairs
+  nmos   Avt 4.132 ± 0.239 mV·µm (floor 0.410 mV)   Abeta 1.013 ± 0.055 %·µm
+         W/L   0.5/0.18  n  40  σ(ΔVt) 13.375 mV (fit 13.778)  mean  +1.394 mV
+         ...
+  pmos   Avt 3.477 ± 0.248 mV·µm (floor 0.344 mV)   Abeta 0.867 ± 0.044 %·µm
+```
+
+The bundled pairs (`process/generic180_mismatch.csv`) are synthetic. They were generated
+with Avt 4.0 / 3.5 mV·µm and Aβ 1.0 / 0.9 %·µm, which the fit recovers within its error.
+
+Avt is the Pelgrom **pair** coefficient. Monte Carlo varies every device about its own
+nominal, so stored in the technology it draws each device with Avt / √(2 W L). A pair then
+differs by Avt / √(W L), as measured. The per-polarity coefficients replace the generic
+**Avt** / **Abeta** of the Monte Carlo window and `ics mc`; `ics mc --generic` ignores them.

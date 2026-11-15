@@ -127,6 +127,53 @@ as you edit. Export it with **File > Export > SPICE netlist...**. The netlister 
   library, MOS models map to the PDK devices (subcircuit devices get an `X` prefix) and the
   library is loaded at the chosen corner.
 
+## Exchanging schematics with Virtuoso
+
+OpenAccess is a binary C++ database, so schematics move between IC Studio and Cadence
+Virtuoso through the text formats Virtuoso writes and reads itself:
+
+- **From Virtuoso: CDL.** Export a CDL netlist in Virtuoso (the auCdl netlister, as for
+  Calibre LVS). In IC Studio, use **File > Import > CDL netlist (Virtuoso)...** (or
+  `ics import-cdl`, MCP `import_cdl`). The importer reads:
+
+  - `.SUBCKT` with `*.PININFO` directions;
+  - `X` instances with or without `/ cell`;
+  - subcircuit parameters with expressions (`W='wp/2'`);
+  - `.GLOBAL` and `!` global nets (`gnd!` is ground);
+  - `$` annotations.
+
+  It flattens the netlist from the top subcircuit into one schematic. Element names carry
+  the instance path (`MI0/M0` is `MM0` inside `XI0`), and local nets get it too
+  (`I0/net7`). Every pin gets a net label, as with SPICE netlists. A resistor or capacitor
+  given only by a `$[model]` and its size gets a placeholder value and a warning.
+  `ics import-cdl --all` imports every subcircuit as its own cell.
+- **To Virtuoso: SKILL.** **File > Export > Virtuoso schematic (SKILL)...** (or
+  `ics export-skill`, MCP `export_skill_schematic`) writes a script. Loaded in the CIW
+  (`load("inv.il")`), it creates the schematic with analogLib symbols (`nmos4`, `pmos4`,
+  `res`, `cap`, `ind`, `vdc`, `idc`, `diode`) and sets their parameters. Each terminal gets a
+  short wire and a wire label with its net, placed at the pin the symbol defines (looked up
+  when the script runs), so connectivity does not depend on symbol geometry. Run
+  **Check and Save** afterwards and tidy the placement if you like.
+
+  For PDK symbols, put a `virtuoso_symbols.toml` next to the project (or pass `--map`):
+
+  ```toml
+  [[symbol]]
+  kind = "nmos"            # nmos, pmos, resistor, capacitor, inductor, vsource, isource, diode
+  model = "nch"            # optional: only instances of this model
+  lib = "gpdk180"
+  cell = "nmos1v"
+  terms = { d = "D", g = "G", s = "S", b = "B" }
+  params = { w = "w", l = "l", m = "m" }   # IC Studio parameter = CDF parameter
+  ```
+
+  IC Studio's own **CDL** netlist (`ics netlist --format cdl`) also goes the other way
+  through Virtuoso's CDL import.
+
+The CDL import is tested on hierarchical auCdl-style netlists and on CDL round trips of the
+demo cells. The SKILL script was checked for syntax with IC Studio's SKILL reader; it has not
+yet been run in a Virtuoso session.
+
 ## Operating point annotation
 
 After an operating point simulation, **Annotate OP** (on by default) shows each node

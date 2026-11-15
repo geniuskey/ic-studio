@@ -73,10 +73,13 @@ npx skills add geniuskey/ic-studio
 | `run_drc` | 테크놀로지 덱으로 DRC |
 | `fix_drc` | 더 고칠 것이 없을 때까지 셀의 최상위 지오메트리에 검증된 빠른 수정 적용 |
 | `compact` | 최상위 항목을 각 방향으로 룰에 막힐 때까지 밀기. 제약 조건 유지 |
-| `predict_yield` | 몬테카를로 수율 예측: 조건별 시뮬레이션·예측 수율, 스펙별 Cpk, 모델 Q², 민감도 |
+| `predict_yield` | 몬테카를로 수율 예측: 조건별 시뮬레이션·예측 수율, 스펙별 Cpk, 모델 Q², 민감도. `process`는 측정 공정 변동도 뽑음 |
 | `correlate_silicon` | 측정 곡선(CSV)과 시뮬레이션 비교, 모델·인스턴스·설계 파라미터 피팅 |
+| `import_cdl` | 계층 CDL 넷리스트(Virtuoso auCdl)를 셀의 평탄한 회로도로 가져오기 |
+| `export_skill_schematic` | 회로도를 Virtuoso에서 다시 만드는 SKILL 스크립트(analogLib 또는 매핑한 PDK 심볼) |
 | `process_cross_section` | 공정 에뮬레이션: 공정 흐름 후 레이아웃 컷의 재료 스택, 도핑된 층(형, 깊이, 최대 농도, 면저항)과 접합 깊이, 선택적으로 SVG |
 | `process_data` | WAT / PCM 데이터와 공정 사양 비교: 공정 능력, 관리 경보, 코너 포함 여부, 상관된 파라미터 |
+| `extract_mismatch` | 매칭 쌍에서 미스매치: 소자별 Pelgrom Avt / Abeta와 표준오차(`apply`는 Monte Carlo용으로 테크놀로지에 저장) |
 | `extract_corners` | WAT 데이터로 코너 모델 생성: tt / ff / ss / fs / sf 모델 카드, Monte Carlo용 공정 변동(`apply`는 테크놀로지에 저장), 코너 라이브러리 |
 | `optimize` | 스펙을 만족하도록 소자 파라미터 사이징(선택적으로 레이아웃 이후). `apply`는 최적 값을 씀 |
 | `place_like` | 예제 기반 레이아웃: 같은 회로 토폴로지를 가진 완성된 셀처럼 배치, 선택적으로 배선 |

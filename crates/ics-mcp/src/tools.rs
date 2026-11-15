@@ -555,6 +555,32 @@ pub fn definitions() -> Vec<Value> {
             &["cell"],
         ),
         tool(
+            "import_cdl",
+            &format!(
+                "Import a hierarchical CDL netlist as Cadence Virtuoso writes it (auCdl: .SUBCKT with *.PININFO, X instances with '/ cell', subcircuit parameters and expressions, .GLOBAL and '!' global nets, $ annotations) as the flat schematic of one cell. The top subcircuit is the one no other instantiates unless 'top' is given; instance paths become element names (MI0/M0 is MM0 inside XI0) and local nets get the path (I0/net7). Returns the top, its pins with directions, the device count, all subcircuits and warnings. {NOT_SAVED}"
+            ),
+            json!({
+                "cell": {"type": "string", "description": "Cell to create or replace (default work/<top>)."},
+                "cdl": {"type": "string", "description": "CDL text."},
+                "path": {"type": "string", "description": "A CDL file instead of the text."},
+                "top": {"type": "string", "description": "Subcircuit to import."},
+                "overwrite": {"type": "boolean", "description": "Replace an existing schematic (default false)."}
+            }),
+            &[],
+        ),
+        tool(
+            "export_skill_schematic",
+            "Write a cell's schematic as a SKILL script that recreates it in Cadence Virtuoso (load it in the CIW). Devices become analogLib symbols (nmos4, pmos4, res, cap, ind, vdc, idc, diode) or the symbols of a map; every terminal gets a wire stub and a wire label with its net at the symbol's pin, found when the script runs. Returns the script (and writes it to path when given) with warnings for devices without a symbol.",
+            json!({
+                "cell": cell(),
+                "path": {"type": "string", "description": "Write the script to this file."},
+                "lib": {"type": "string", "description": "Virtuoso library (default: the cell's library)."},
+                "map": {"type": "string", "description": "Symbol map TOML: [[symbol]] entries with kind, model (optional), lib, cell, view, terms = { d = \"D\", ... }, params = { w = \"w\", ... }."},
+                "scale": {"type": "number", "description": "Virtuoso user units per schematic grid point (default 0.1875)."}
+            }),
+            &["cell"],
+        ),
+        tool(
             "write_schematic",
             "Create or replace a cell's schematic from a flat SPICE netlist (R, C, L, V, I, D, M lines; X lines for PDK MOS subcircuits). Node 0 or gnd is ground. Every pin gets a net label and devices are laid out in rows (PMOS, NMOS, passives, sources). Analysis lines (.op, .dc, .ac dec, .tran) and .temp set the cell's simulation setup; other dot lines (.model, .include, .param, .ic, .meas) become its extra lines. Lengths are SPICE metres (w=2u). Returns the generated deck to check. Changes stay in memory until save_project is called.",
             json!({
@@ -776,6 +802,7 @@ pub fn definitions() -> Vec<Value> {
                 }, "required": ["name", "analysis", "expr"]}},
                 "runs": {"type": "integer", "minimum": 4, "description": "Monte Carlo runs per condition."},
                 "temps": {"type": "string", "description": "Temperatures, e.g. \"-40 27 125\"."},
+                "process": {"type": "boolean", "description": "Also draw the technology's measured process variation (extract_corners with apply): correlated model parameters such as nmos.vto, one draw per run."},
                 "samples": {"type": "integer", "minimum": 1000, "description": "Model samples per condition (default 100000)."}
             }),
             &["cell"],
@@ -827,6 +854,18 @@ pub fn definitions() -> Vec<Value> {
                 "path": {"type": "string", "description": "A CSV file instead of the text."},
                 "spec": {"type": "string", "description": "Specification TOML text (see process/generic180_wat.toml)."},
                 "spec_path": {"type": "string", "description": "A specification file instead of the text."}
+            }),
+            &[],
+        ),
+        tool(
+            "extract_mismatch",
+            &format!(
+                "Mismatch from silicon: fit Pelgrom's law (sigma^2 = A^2 / (W L) + floor^2) to matched-pair data per device. CSV columns: device (nmos / pmos or a model name; names starting with p are p-channel), w and l (um), dvt (V, threshold difference of the pair), dbeta (relative current factor difference, optional). Without data, the synthetic generic 180 nm pairs. Returns per device Avt (V*um) and Abeta (1*um) with standard errors, the size-independent floor, and the measured against fitted sigma of every size. Avt is the pair coefficient; Monte Carlo draws each device with Avt / sqrt(2 W L). apply stores the coefficients in the open project's technology so Monte Carlo draws them in place of its generic Avt / Abeta. {NOT_SAVED}"
+            ),
+            json!({
+                "csv": {"type": "string", "description": "Matched-pair CSV text."},
+                "path": {"type": "string", "description": "A CSV file instead of the text."},
+                "apply": {"type": "boolean", "description": "Store the coefficients in the open project's technology (default false)."}
             }),
             &[],
         ),
@@ -1032,6 +1071,8 @@ impl State {
             "project_info" => self.project_info(),
             "get_netlist" => self.get_netlist(a),
             "write_schematic" => self.write_schematic(a),
+            "import_cdl" => self.import_cdl(a),
+            "export_skill_schematic" => self.export_skill_schematic(a),
             "set_simulation" => self.set_simulation(a),
             "simulate" => self.simulate(a),
             "run_spice" => self.run_spice(a),
@@ -1052,6 +1093,7 @@ impl State {
             "optimize" => self.optimize(a),
             "place_like" => self.place_like(a),
             "extract_corners" => self.extract_corners(a),
+            "extract_mismatch" => self.extract_mismatch(a),
             "process_data" => process_data(a),
             "process_cross_section" => self.process_cross_section(a),
             "correlate_silicon" => self.correlate_silicon(a),
@@ -1243,6 +1285,50 @@ impl State {
         let format: ics_core::netlist::Format = a.opt_str("format")?.unwrap_or("spice").parse()?;
         let (deck, warnings) = ics_core::netlist::write(sch, &p.tech, &c.sim, &r.to_string(), format);
         Ok(json!({"cell": r.to_string(), "deck": deck, "warnings": warnings}))
+    }
+
+    fn import_cdl(&mut self, a: &Args) -> Result<Value, String> {
+        let text = match (a.opt_str("cdl")?, a.opt_str("path")?) {
+            (Some(t), _) => t.to_string(),
+            (None, Some(p)) => std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))?,
+            _ => return Err("give the CDL as cdl or path".into()),
+        };
+        let imp = ics_core::cadence::import_cdl(&text, &self.project()?.tech, a.opt_str("top")?)?;
+        let cell = match a.opt_str("cell")? {
+            Some(c) => c.to_string(),
+            None => format!("work/{}", if imp.flat.top.is_empty() { "cdl" } else { &imp.flat.top }),
+        };
+        if let Some(r) = find(self.project()?, &cell)
+            && self.project()?.cell(&r).is_some_and(|c| c.schematic.is_some())
+            && !a.opt_bool("overwrite")?.unwrap_or(false)
+        {
+            return Err(format!("'{r}' already has a schematic; pass overwrite: true to replace it"));
+        }
+        let (r, created) = self.target_cell(&cell)?;
+        let p = self.project_mut()?;
+        p.cell_mut(&r).expect("resolved").schematic = Some(imp.imported.schematic);
+        self.dirty = true;
+        Ok(json!({
+            "cell": r.to_string(), "created": created, "top": imp.flat.top, "devices": imp.flat.devices,
+            "pins": imp.flat.pins.iter().map(|(n, d)| json!({"name": n, "direction": d})).collect::<Vec<_>>(),
+            "subckts": imp.subckts, "warnings": imp.imported.warnings,
+        }))
+    }
+
+    fn export_skill_schematic(&mut self, a: &Args) -> Result<Value, String> {
+        let (p, r) = self.cell_arg(a)?;
+        let sch = p.cell(&r).and_then(|c| c.schematic.as_ref()).ok_or_else(|| format!("{r} has no schematic"))?;
+        let map = match a.opt_str("map")? {
+            Some(t) => ics_core::cadence::SymbolMap::from_toml(t)?,
+            None => ics_core::cadence::SymbolMap::analog_lib(),
+        };
+        let scale = a.0.get("scale").and_then(Value::as_f64).unwrap_or(0.1875);
+        let lib = a.opt_str("lib")?.unwrap_or(&r.lib).to_string();
+        let (il, warnings) = ics_core::cadence::skill_schematic(sch, &lib, &r.cell, &map, scale);
+        if let Some(path) = a.opt_str("path")? {
+            std::fs::write(path, &il).map_err(|e| format!("{path}: {e}"))?;
+        }
+        Ok(json!({"cell": r.to_string(), "lib": lib, "script": il, "warnings": warnings}))
     }
 
     fn write_schematic(&mut self, a: &Args) -> Result<Value, String> {
@@ -1819,11 +1905,16 @@ impl State {
         if let Some(t) = a.0.get("temps").and_then(Value::as_str) {
             sw.temps = t.to_string();
         }
+        if let Some(b) = a.0.get("process").and_then(Value::as_bool) {
+            sw.monte_carlo.process = b;
+        }
         if sw.monte_carlo.runs == 0 {
             sw.monte_carlo.runs = 100;
         }
-        if sw.monte_carlo.vars.is_empty() || sw.specs.is_empty() {
-            return Err("give the varied parameters (vars) and the specs, or save them in the cell's sweep setup".into());
+        if (sw.monte_carlo.vars.is_empty() && !sw.monte_carlo.process) || sw.specs.is_empty() {
+            return Err(
+                "give the varied parameters (vars or process) and the specs, or save them in the cell's sweep setup".into()
+            );
         }
         let specs = sw.specs.clone();
         self.dirty = true;
@@ -1996,6 +2087,32 @@ impl State {
             "materials": s.materials,
             "columns": columns,
         }))
+    }
+
+    fn extract_mismatch(&mut self, a: &Args) -> Result<Value, String> {
+        use ics_core::mismatch::{GENERIC180_PAIRS, MismatchModel, PairData, Pelgrom, fit};
+        let (text, name) = match (a.0.get("csv").and_then(Value::as_str), a.0.get("path").and_then(Value::as_str)) {
+            (Some(t), _) => (t.to_string(), "pairs".to_string()),
+            (None, Some(p)) => (std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))?, p.to_string()),
+            _ => (GENERIC180_PAIRS.to_string(), "generic180 pairs (built in)".to_string()),
+        };
+        let d = PairData::parse(&text)?;
+        let fits = fit(&d)?;
+        let pel = |p: &Pelgrom| {
+            json!({"a": sig(p.a), "a_err": sig(p.a_err), "floor": sig(p.floor),
+                "sizes": p.sizes.iter().map(|s| json!({"w": s.w, "l": s.l, "n": s.n, "mean": sig(s.mean), "sigma": sig(s.sigma), "fitted": sig(s.fitted)})).collect::<Vec<_>>()})
+        };
+        let devices: Vec<Value> = fits
+            .iter()
+            .map(|f| json!({"device": f.device, "pmos": f.pmos, "vt": pel(&f.vt), "beta": f.beta.as_ref().map(pel)}))
+            .collect();
+        let apply = a.0.get("apply").and_then(Value::as_bool).unwrap_or(false);
+        if apply {
+            self.project_mut().map_err(|_| "apply needs an open project")?.tech.mismatch =
+                Some(MismatchModel::from_fits(&fits, &name));
+            self.dirty = true;
+        }
+        Ok(json!({"data": name, "pairs": d.rows.len(), "devices": devices, "applied": apply}))
     }
 
     fn extract_corners(&mut self, a: &Args) -> Result<Value, String> {

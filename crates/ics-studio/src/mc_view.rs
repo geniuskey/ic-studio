@@ -27,6 +27,8 @@ pub struct MonteCarlo {
     pub selected: usize,
     /// The technology's measured process variation; replaces the generic global sigmas.
     pub process: Option<ics_core::process_data::ProcessVariation>,
+    /// The technology's measured mismatch; replaces the generic Avt / Abeta.
+    pub mismatch: Option<ics_core::mismatch::MismatchModel>,
     rx: Option<Receiver<Result<McResult, String>>>,
     ctl: Option<Arc<McControl>>,
 }
@@ -58,6 +60,7 @@ impl MonteCarlo {
             avt,
             abeta,
             process: self.process.clone(),
+            mismatch: self.mismatch.clone(),
         })
     }
 
@@ -159,6 +162,7 @@ impl MonteCarlo {
                     changed |= ui.add(egui::DragValue::new(&mut self.setup.seed)).labelled_by(l.id).changed();
                     ui.end_row();
                     let measured = self.process.is_some();
+                    let measured_mm = self.mismatch.is_some();
                     for (k, (label, text, hint)) in [
                         ("Vto sigma", &mut self.setup.vto_sigma, "Global threshold shift per polarity (V, one sigma)"),
                         ("kp sigma", &mut self.setup.kp_sigma, "Global relative transconductance shift per polarity"),
@@ -170,15 +174,26 @@ impl MonteCarlo {
                     {
                         let l = ui.label(label);
                         let edit = egui::TextEdit::singleline(text).desired_width(80.0);
-                        let r = ui.add_enabled(!(measured && k < 2), edit).labelled_by(l.id);
-                        let hint =
-                            if measured && k < 2 { "Replaced by the technology's measured process variation" } else { hint };
+                        let replaced = (measured && k < 2) || (measured_mm && k >= 2);
+                        let r = ui.add_enabled(!replaced, edit).labelled_by(l.id);
+                        let hint = match (replaced, k < 2) {
+                            (true, true) => "Replaced by the technology's measured process variation",
+                            (true, false) => "Replaced by the technology's measured mismatch",
+                            _ => hint,
+                        };
                         changed |= r.on_hover_text(hint).changed();
                         if k % 2 == 1 {
                             ui.end_row();
                         }
                     }
                 });
+                if let Some(m) = &self.mismatch {
+                    let src = if m.source.is_empty() { "matched pairs" } else { m.source.as_str() };
+                    let txt: Vec<String> =
+                        m.devices.iter().map(|d| format!("{} Avt {:.2} mV·µm", d.device, d.avt * 1e9)).collect();
+                    ui.label(RichText::new(format!("Mismatch: measured ({src}): {}", txt.join(", "))).small())
+                        .on_hover_text("Pelgrom pair coefficients; each device is drawn with Avt / √(2 W L) about its nominal");
+                }
                 if let Some(v) = &self.process {
                     let src = if v.source.is_empty() { "silicon" } else { v.source.as_str() };
                     ui.label(RichText::new(format!("Global variation: measured ({src}): {}", v.params.join(", "))).small())

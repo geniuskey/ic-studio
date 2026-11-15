@@ -139,7 +139,10 @@ statistics of calculator measurements. Every run draws:
   instead;
 - a per-device **mismatch** scaled by gate area (Pelgrom): σ(ΔVth) = **Avt** / √(W L) and
   σ(Δβ/β) = **Abeta** / √(W L), with **Avt** default `5n` (5 mV·µm) and **Abeta** default
-  `10n` (1 %·µm).
+  `10n` (1 %·µm). These are per device, so a pair differs by √2 times as much. With
+  mismatch measured on matched pairs in the technology
+  ([Mismatch](process.md#mismatch-from-matched-pairs)), the window says "Mismatch:
+  measured", and each polarity uses its measured coefficients instead.
 
 1. Set **Runs** (default 100) and **Seed** (runs are reproducible for a seed).
 2. Add a measurement with **+ Measurement**: an analysis (`op`, `dc`, `ac`, `tran`,
