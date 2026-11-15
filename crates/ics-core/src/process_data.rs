@@ -343,20 +343,24 @@ pub fn correlation(data: &WatData, a: usize, b: usize) -> f64 {
     sxy / (sxx * syy).sqrt()
 }
 
-/// The target value of every simulated parameter in one corner.
+/// Mean and covariance of the parameters that have an [`EtestMeasure`], over the sites where
+/// all of them were measured.
 #[derive(Debug, Clone, PartialEq)]
-pub struct CornerTargets {
-    /// `tt` for the nominal (the means), else the corner's name.
-    pub name: String,
-    /// (parameter, target value, z-score, standard deviation of the data).
-    pub targets: Vec<(String, f64, f64, f64)>,
+pub struct MeasuredStats {
+    pub names: Vec<String>,
+    pub mean: Vec<f64>,
+    /// Row-major `names.len()` × `names.len()`.
+    pub cov: Vec<f64>,
+    pub sites: usize,
 }
 
-/// The targets of the nominal and every corner of `spec`'s extraction: the parameters with a
-/// [`EtestMeasure`] at their mean (`tt`) or, in a corner, the primary parameters at mean + zσ and
-/// the others at their mean conditioned on the primaries (linear regression over the sites).
-pub fn corner_targets(data: &WatData, spec: &ProcessSpec) -> Result<Vec<CornerTargets>, String> {
-    let ex = spec.extraction.as_ref().ok_or("the spec has no [extraction]")?;
+impl MeasuredStats {
+    pub fn sigma(&self, i: usize) -> f64 {
+        self.cov[i * self.names.len() + i].sqrt()
+    }
+}
+
+pub fn measured_stats(data: &WatData, spec: &ProcessSpec) -> Result<MeasuredStats, String> {
     let names: Vec<String> = spec.params.iter().filter(|p| p.measure.is_some()).map(|p| p.name.clone()).collect();
     if names.is_empty() {
         return Err("no parameter of the spec has a measure".into());
@@ -383,6 +387,131 @@ pub fn corner_targets(data: &WatData, spec: &ProcessSpec) -> Result<Vec<CornerTa
                     / (nf - 1.0);
         }
     }
+    Ok(MeasuredStats { names, mean, cov, sites: rows.len() })
+}
+
+/// Statistical variation of model parameters: their nominal values and covariance, from which
+/// Monte Carlo draws the global (wafer-to-wafer) process shift of every run.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProcessVariation {
+    /// Where it came from (shown to the user).
+    #[serde(default)]
+    pub source: String,
+    /// Model parameters as `MODEL.PARAM` (e.g. `nmos.vto`).
+    pub params: Vec<String>,
+    pub mean: Vec<f64>,
+    /// Row-major `params.len()` × `params.len()` covariance.
+    pub cov: Vec<f64>,
+}
+
+impl ProcessVariation {
+    pub fn validate(&self) -> Result<(), String> {
+        let n = self.params.len();
+        if n == 0 || self.mean.len() != n || self.cov.len() != n * n {
+            return Err(format!(
+                "process variation: {n} parameter(s), {} mean(s), {} covariance entries",
+                self.mean.len(),
+                self.cov.len()
+            ));
+        }
+        if let Some(p) = self.params.iter().find(|p| p.split_once('.').is_none()) {
+            return Err(format!("process variation: '{p}' is not MODEL.PARAM"));
+        }
+        self.factor().map(|_| ()).ok_or_else(|| "process variation: the covariance is not positive semi-definite".into())
+    }
+
+    /// `(model, param)` of parameter `i`.
+    pub fn param(&self, i: usize) -> (&str, &str) {
+        self.params[i].split_once('.').unwrap_or((&self.params[i], ""))
+    }
+
+    pub fn sigma(&self, i: usize) -> f64 {
+        self.cov[i * self.params.len() + i].max(0.0).sqrt()
+    }
+
+    pub fn correlation(&self, i: usize, j: usize) -> f64 {
+        let d = self.sigma(i) * self.sigma(j);
+        if d > 0.0 { self.cov[i * self.params.len() + j] / d } else { 0.0 }
+    }
+
+    /// Lower-triangular factor `L` with `L Lᵀ = cov` (a little jitter admits singular covariances).
+    pub fn factor(&self) -> Option<Vec<f64>> {
+        let n = self.params.len();
+        let mut a = self.cov.clone();
+        let scale = (0..n).map(|i| a[i * n + i].abs()).fold(0.0, f64::max).max(1e-300);
+        for i in 0..n {
+            a[i * n + i] += 1e-12 * scale;
+        }
+        crate::predict::cholesky(&a, n)
+    }
+
+    /// The parameter values for standard normal draws `z`, with factor `l` from [`Self::factor`].
+    pub fn sample(&self, l: &[f64], z: &[f64]) -> Vec<f64> {
+        let n = self.params.len();
+        (0..n).map(|i| self.mean[i] + (0..=i).map(|j| l[i * n + j] * z[j]).sum::<f64>()).collect()
+    }
+}
+
+/// Backward propagation of variance: the covariance of `n` model parameters that, through the
+/// sensitivities `s` (row-major `m` × `n`, ∂measured/∂parameter), best reproduces the measured
+/// covariance `cov_m` (`m` × `m`). Weighted least squares with weights 1/σ²:
+/// `Σ_k = A Σ_m Aᵀ`, `A = (SᵀWS)⁻¹ SᵀW`; exact when `m == n` and `S` is regular.
+pub fn backward_propagation(s: &[f64], m: usize, n: usize, cov_m: &[f64]) -> Option<Vec<f64>> {
+    let w: Vec<f64> = (0..m).map(|i| 1.0 / cov_m[i * m + i].max(1e-300)).collect();
+    let mut sws = vec![0.0; n * n];
+    for a in 0..n {
+        for b in 0..n {
+            sws[a * n + b] = (0..m).map(|i| s[i * n + a] * w[i] * s[i * n + b]).sum();
+        }
+    }
+    let l = crate::predict::cholesky(&sws, n)?;
+    // A (n × m): column i solves (SᵀWS) x = Sᵀ W e_i.
+    let mut amat = vec![0.0; n * m];
+    for i in 0..m {
+        let mut x: Vec<f64> = (0..n).map(|a| s[i * n + a] * w[i]).collect();
+        crate::predict::forward(&l, n, &mut x);
+        crate::predict::backward(&l, n, &mut x);
+        for a in 0..n {
+            amat[a * m + i] = x[a];
+        }
+    }
+    let mut out = vec![0.0; n * n];
+    for a in 0..n {
+        for b in 0..n {
+            out[a * n + b] =
+                (0..m).map(|i| amat[a * m + i] * (0..m).map(|j| cov_m[i * m + j] * amat[b * m + j]).sum::<f64>()).sum();
+        }
+    }
+    Some(out)
+}
+
+/// The covariance `S Σ_k Sᵀ` of the measured parameters that `cov_k` predicts.
+pub fn forward_propagation(s: &[f64], m: usize, n: usize, cov_k: &[f64]) -> Vec<f64> {
+    let mut out = vec![0.0; m * m];
+    for i in 0..m {
+        for j in 0..m {
+            out[i * m + j] = (0..n).map(|a| s[i * n + a] * (0..n).map(|b| cov_k[a * n + b] * s[j * n + b]).sum::<f64>()).sum();
+        }
+    }
+    out
+}
+
+/// The target value of every simulated parameter in one corner.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CornerTargets {
+    /// `tt` for the nominal (the means), else the corner's name.
+    pub name: String,
+    /// (parameter, target value, z-score, standard deviation of the data).
+    pub targets: Vec<(String, f64, f64, f64)>,
+}
+
+/// The targets of the nominal and every corner of `spec`'s extraction: the parameters with a
+/// [`EtestMeasure`] at their mean (`tt`) or, in a corner, the primary parameters at mean + zσ and
+/// the others at their mean conditioned on the primaries (linear regression over the sites).
+pub fn corner_targets(data: &WatData, spec: &ProcessSpec) -> Result<Vec<CornerTargets>, String> {
+    let ex = spec.extraction.as_ref().ok_or("the spec has no [extraction]")?;
+    let MeasuredStats { names, mean, cov, .. } = measured_stats(data, spec)?;
+    let k = names.len();
     let sd: Vec<f64> = (0..k).map(|a| cov[a * k + a].sqrt()).collect();
     let mut out =
         vec![CornerTargets { name: "tt".into(), targets: (0..k).map(|a| (names[a].clone(), mean[a], 0.0, sd[a])).collect() }];
@@ -491,5 +620,31 @@ mod tests {
     fn generic_spec_parses() {
         let s = ProcessSpec::from_toml(GENERIC180_SPEC).unwrap();
         assert!(s.param("vtn").is_some_and(|p| p.corners.len() == 3));
+    }
+
+    #[test]
+    fn backward_propagation_recovers_the_parameter_covariance() {
+        // Two parameters, correlated; three measurements (over-determined but consistent).
+        let cov_k = [4e-4, -1e-4, -1e-4, 9e-4];
+        let s = [2.0, 0.5, -1.0, 3.0, 0.3, 1.2];
+        let cov_m = forward_propagation(&s, 3, 2, &cov_k);
+        let back = backward_propagation(&s, 3, 2, &cov_m).unwrap();
+        for (a, b) in back.iter().zip(&cov_k) {
+            assert!((a - b).abs() < 1e-12, "{back:?}");
+        }
+        let v = ProcessVariation {
+            source: String::new(),
+            params: vec!["nmos.vto".into(), "nmos.kp".into()],
+            mean: vec![0.4, 1e-4],
+            cov: back,
+        };
+        v.validate().unwrap();
+        assert!((v.sigma(0) - 0.02).abs() < 1e-9 && (v.correlation(0, 1) + 1.0 / 6.0).abs() < 1e-9);
+        let l = v.factor().unwrap();
+        let x = v.sample(&l, &[1.0, 0.0]);
+        assert!((x[0] - 0.42).abs() < 1e-6 && x[1] < 1e-4, "{x:?}");
+        assert_eq!(v.param(1), ("nmos", "kp"));
+        let bad = ProcessVariation { params: vec!["vto".into()], mean: vec![0.0], cov: vec![1.0], ..v };
+        assert!(bad.validate().is_err());
     }
 }

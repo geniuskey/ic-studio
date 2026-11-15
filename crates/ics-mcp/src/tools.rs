@@ -832,13 +832,16 @@ pub fn definitions() -> Vec<Value> {
         ),
         tool(
             "extract_corners",
-            "Corner models from silicon: fit model card parameters (the spec's [extraction] knobs) so that simulated test structures (each parameter's measure: netlist, analysis, expression) reproduce the WAT data's means (tt) and its corners (ff, ss, fs, sf: primary parameters at mean ± z sigma, the other measured parameters following their correlation with them). Uses the open project's technology models as the start (the generic 180 nm models without a project). Returns every corner's knob values, the simulated against target parameters, and the corner library (.lib sections of .model cards); lib_path writes it.",
+            &format!(
+                "Corner models from silicon: fit model card parameters (the spec's [extraction] knobs) so that simulated test structures (each parameter's measure: netlist, analysis, expression) reproduce the WAT data's means (tt) and its corners (ff, ss, fs, sf: primary parameters at mean ± z sigma, the other measured parameters following their correlation with them). Uses the open project's technology models as the start (the generic 180 nm models without a project). Returns every corner's knob values, the simulated against target parameters, the global process variation of the knobs (sigma and correlation, by backward propagation of the measured covariance through the test-structure sensitivities) and the corner library (.lib sections of .model cards, plus an mc section driven by standard normal parameters ics_z1... that a Monte Carlo loop sets, e.g. with ngspice alterparam); lib_path writes it. apply stores the variation in the open project's technology so Monte Carlo draws it. {NOT_SAVED}"
+            ),
             json!({
                 "csv": {"type": "string", "description": "WAT CSV text."},
                 "path": {"type": "string", "description": "A WAT CSV file instead of the text."},
                 "spec": {"type": "string", "description": "Specification TOML text with measures and [extraction] (see process/generic180_wat.toml)."},
                 "spec_path": {"type": "string", "description": "A specification file instead of the text."},
-                "lib_path": {"type": "string", "description": "Write the corner library to this file."}
+                "lib_path": {"type": "string", "description": "Write the corner library to this file."},
+                "apply": {"type": "boolean", "description": "Store the process variation in the open project's technology (default false)."}
             }),
             &[],
         ),
@@ -2012,7 +2015,29 @@ impl State {
         };
         let ex = ics_sim::corners::Extraction::new(p, &spec, &d, &ics_sim::SimOptions::default())?;
         let fits = ex.run(40, &mut |_| {});
-        let library = ex.library(&fits, &format!("{} corners", spec.name))?;
+        let var = fits.first().map(|tt| ex.variation(tt, &format!("{} WAT", spec.name)));
+        let (var, var_error) = match var {
+            Some(Ok(v)) => (Some(v), None),
+            Some(Err(e)) => (None, Some(e)),
+            None => (None, None),
+        };
+        let library = ex.library(&fits, var.as_ref().map(|v| &v.variation), &format!("{} corners", spec.name))?;
+        let variation = var.as_ref().map(|v| {
+            let pv = &v.variation;
+            json!({
+                "params": (0..pv.params.len()).map(|i| json!({"name": pv.params[i], "mean": sig(pv.mean[i]), "sigma": sig(pv.sigma(i))})).collect::<Vec<_>>(),
+                "correlation": (0..pv.params.len()).map(|i| (0..pv.params.len()).map(|j| sig(pv.correlation(i, j))).collect::<Vec<_>>()).collect::<Vec<_>>(),
+                "reproduced": v.params.iter().map(|(n, d, g)| json!({"name": n, "data_sigma": sig(*d), "sigma": sig(*g)})).collect::<Vec<_>>(),
+            })
+        });
+        let apply = a.0.get("apply").and_then(Value::as_bool).unwrap_or(false);
+        if apply {
+            let v = var
+                .as_ref()
+                .ok_or_else(|| format!("no process variation to apply: {}", var_error.clone().unwrap_or_default()))?;
+            self.project_mut().map_err(|_| "apply needs an open project")?.tech.variation = Some(v.variation.clone());
+            self.dirty = true;
+        }
         if let Some(path) = a.0.get("lib_path").and_then(Value::as_str) {
             std::fs::write(path, &library).map_err(|e| format!("{path}: {e}"))?;
         }
@@ -2024,7 +2049,9 @@ impl State {
                     "params": f.params.iter().map(|(n, t, g)| json!({"name": n, "target": sig(*t), "simulated": g.as_ref().ok().map(|v| sig(*v))})).collect::<Vec<_>>()})
             })
             .collect();
-        Ok(json!({"spec": spec.name, "corners": corners, "library": library}))
+        Ok(
+            json!({"spec": spec.name, "corners": corners, "variation": variation, "variation_error": var_error, "applied": apply, "library": library}),
+        )
     }
 
     fn place_like(&mut self, a: &Args) -> Result<Value, String> {

@@ -14,6 +14,8 @@ pub enum ProcessDataAction {
     ExtractCorners,
     /// Save the corner library text.
     SaveLibrary(String),
+    /// Store the process variation in the project's technology for Monte Carlo.
+    ApplyVariation(ics_core::process_data::ProcessVariation),
 }
 
 /// The result of a corner extraction.
@@ -22,6 +24,8 @@ pub struct CornerResult {
     pub knobs: Vec<String>,
     pub fits: Vec<ics_sim::corners::CornerFit>,
     pub library: String,
+    /// The global process variation of the knobs, or why there is none.
+    pub variation: Result<ics_sim::corners::VariationFit, String>,
 }
 
 #[derive(Default)]
@@ -86,8 +90,11 @@ impl ProcessDataView {
             let run = || -> Result<CornerResult, String> {
                 let ex = ics_sim::corners::Extraction::new(&project, &spec, &data, &ics_sim::SimOptions::default())?;
                 let fits = ex.run(40, &mut |_| {});
-                let library = ex.library(&fits, &format!("{} corners", spec.name))?;
-                Ok(CornerResult { knobs: ex.knobs.iter().map(|k| k.target.clone()).collect(), fits, library })
+                let variation =
+                    fits.first().ok_or("no corners".to_string()).and_then(|tt| ex.variation(tt, &format!("{} WAT", spec.name)));
+                let library =
+                    ex.library(&fits, variation.as_ref().ok().map(|v| &v.variation), &format!("{} corners", spec.name))?;
+                Ok(CornerResult { knobs: ex.knobs.iter().map(|k| k.target.clone()).collect(), fits, library, variation })
             };
             let _ = tx.send(run());
             ctx.request_repaint();
@@ -255,7 +262,61 @@ impl ProcessDataView {
                             }
                         },
                     );
+                    match &c.variation {
+                        Ok(v) => {
+                            let pv = &v.variation;
+                            crate::theme::section(ui, "Process variation (global, wafer to wafer)");
+                            let n = pv.params.len();
+                            egui::Grid::new("pd_variation").striped(true).num_columns(n + 3).spacing([12.0, 3.0]).show(ui, |ui| {
+                                for h in ["PARAMETER", "NOMINAL", "SIGMA"] {
+                                    ui.label(RichText::new(h).small().strong().color(pal.text_weak));
+                                }
+                                for p in &pv.params {
+                                    ui.label(RichText::new(format!("r {p}")).small().strong().color(pal.text_weak));
+                                }
+                                ui.end_row();
+                                for i in 0..n {
+                                    ui.label(RichText::new(&pv.params[i]).strong());
+                                    ui.label(RichText::new(format_eng(pv.mean[i], "")).monospace());
+                                    let rel = 100.0 * pv.sigma(i) / pv.mean[i].abs().max(1e-300);
+                                    ui.label(RichText::new(format!("{} ({rel:.1} %)", format_eng(pv.sigma(i), ""))).monospace());
+                                    for j in 0..n {
+                                        let r = pv.correlation(i, j);
+                                        let t = RichText::new(format!("{r:+.2}")).monospace();
+                                        ui.label(if i == j { t.color(pal.text_weak) } else { t });
+                                    }
+                                    ui.end_row();
+                                }
+                            });
+                            let worst = v.params.iter().map(|(_, d, g)| (g / d - 1.0).abs()).fold(0.0, f64::max);
+                            ui.label(RichText::new(format!(
+                                "Reproduces the measured σ of {} within {:.1} %.",
+                                v.params.iter().map(|p| p.0.as_str()).collect::<Vec<_>>().join(", "),
+                                100.0 * worst
+                            ))
+                            .small()
+                            .color(pal.text_weak))
+                            .on_hover_text(
+                                v.params
+                                    .iter()
+                                    .map(|(n, d, g)| format!("{n}: σ {} (data {})", format_eng(*g, ""), format_eng(*d, "")))
+                                    .collect::<Vec<_>>()
+                                    .join("\n"),
+                            );
+                        }
+                        Err(e) => {
+                            ui.colored_label(pal.warning, format!("No process variation: {e}"));
+                        }
+                    }
                     ui.horizontal(|ui| {
+                        if let Ok(v) = &c.variation
+                            && ui
+                                .button("Use for Monte Carlo")
+                                .on_hover_text("Store the variation in the project's technology: Monte Carlo then draws it in place of the generic sigmas")
+                                .clicked()
+                        {
+                            action = Some(ProcessDataAction::ApplyVariation(v.variation.clone()));
+                        }
                         if ui.button("Save library…").clicked() {
                             action = Some(ProcessDataAction::SaveLibrary(c.library.clone()));
                         }

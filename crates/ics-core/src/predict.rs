@@ -42,7 +42,7 @@ fn features(x: &[f64], quadratic: bool, out: &mut Vec<f64>) {
 }
 
 /// Lower-triangular Cholesky factor of a symmetric positive definite `p` × `p` matrix.
-fn cholesky(a: &[f64], p: usize) -> Option<Vec<f64>> {
+pub fn cholesky(a: &[f64], p: usize) -> Option<Vec<f64>> {
     let mut l = vec![0.0; p * p];
     for i in 0..p {
         for j in 0..=i {
@@ -70,14 +70,14 @@ pub fn solve_spd(a: &mut [f64], b: &[f64], n: usize) -> Option<Vec<f64>> {
 }
 
 /// Solve L z = b in place.
-fn forward(l: &[f64], p: usize, b: &mut [f64]) {
+pub(crate) fn forward(l: &[f64], p: usize, b: &mut [f64]) {
     for i in 0..p {
         b[i] = (b[i] - (0..i).map(|k| l[i * p + k] * b[k]).sum::<f64>()) / l[i * p + i];
     }
 }
 
 /// Solve Lᵀ z = b in place.
-fn backward(l: &[f64], p: usize, b: &mut [f64]) {
+pub(crate) fn backward(l: &[f64], p: usize, b: &mut [f64]) {
     for i in (0..p).rev() {
         b[i] = (b[i] - (i + 1..p).map(|k| l[k * p + i] * b[k]).sum::<f64>()) / l[i * p + i];
     }

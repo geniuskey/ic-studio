@@ -2176,4 +2176,15 @@ fn process_data() {
     assert!(c.library.contains(".lib ff"));
     h.run_steps(2);
     shot(&mut h, "41_corner_models");
+    // The process variation goes to the technology, and Monte Carlo draws it.
+    use egui_kittest::kittest::Queryable;
+    let v = c.variation.clone().unwrap();
+    assert_eq!(v.variation.params.len(), 4);
+    h.get_by_label("Use for Monte Carlo").click();
+    h.run_steps(3);
+    assert_eq!(h.state().project().unwrap().tech.variation.as_ref(), Some(&v.variation));
+    h.state_mut().command(Command::MonteCarlo);
+    h.run_steps(3);
+    assert!(h.state_mut().monte_carlo().spec().unwrap().process.is_some());
+    assert!(h.query_by_label_contains("Global variation: measured").is_some());
 }

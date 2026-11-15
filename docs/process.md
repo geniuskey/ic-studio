@@ -165,7 +165,7 @@ threshold that goes with the higher current. Each corner is fitted by Levenberg-
 from the nominal; the error is the RMS miss in units of the data's σ.
 
 - GUI: **Extract corners** in the Process Data window, then **Save library...**
-- CLI: `ics corners <CSV> [--spec FILE] [--project P] [--lib FILE] [--json]`
+- CLI: `ics corners <CSV> [--spec FILE] [--project P] [--lib FILE] [--variation FILE] [--apply] [--json]`
 - MCP: `extract_corners`
 
 The result is a corner library, one `.lib` section per corner. Load it with
@@ -186,3 +186,61 @@ On the example data the generic models give 1620 µA/µm where silicon has 590. 
 matches the means, and ff / ss sit at ±3σ of the measured idsat. The bundled spec fits two
 knobs per device to two parameters per device, so the fit is exact; with more measured
 parameters than knobs it is a least-squares compromise, and the error column shows how good.
+
+### Statistical models: the process variation
+
+Corners are fixed points. Monte Carlo also needs how the model parameters vary from wafer to
+wafer, and how they move together. The extraction gets these by **backward propagation of
+variance**: it simulates how much each measured parameter moves per unit of each knob
+(sensitivity matrix S, at tt), then chooses the knob covariance Σ_k whose propagation
+S Σ_k Sᵀ best reproduces the measured covariance of the parameters. This is weighted least
+squares with weights 1/σ², and it is exact when there are as many knobs as parameters.
+
+```text
+Process variation (global, wafer to wafer):
+  nmos.vto       408.7m σ     10.47m (  2.6 %)   r [+1.00 -0.90 -0.39 -0.29]
+  nmos.kp        95.94µ σ     3.474µ (  3.6 %)   r [-0.90 +1.00 +0.41 +0.29]
+  pmos.vto      -380.4m σ     9.325m (  2.5 %)   r [-0.39 +0.41 +1.00 +0.37]
+  pmos.kp         39.2µ σ     1.744µ (  4.5 %)   r [-0.29 +0.29 +0.37 +1.00]
+  reproduces vtn σ 11.7m (data 11.7m), vtp σ 9.916m (data 9.916m), idsat_n σ 29.59 (data 29.59), idsat_p σ 13.17 (data 13.17)
+```
+
+The "reproduces" line checks the result: it gives the σ of each measured parameter that the
+variation predicts, next to the σ of the data. A gap means the knobs cannot explain all of
+the measured spread. The variation is global (the same shift for every device of a wafer);
+device-to-device mismatch stays with the Pelgrom coefficients of the Monte Carlo setup.
+
+You can use the variation in three ways:
+
+- **Monte Carlo in IC Studio.** Store it in the technology: **Use for Monte Carlo** in the
+  Process Data window, `ics corners --project P --apply`, or `extract_corners` with
+  `apply`. Monte Carlo (the window and `ics mc`) then draws it in place of the generic
+  **Vto sigma** / **kp sigma**. `ics mc --variation FILE` uses a file written by
+  `ics corners --variation FILE` instead, and `ics mc --generic` ignores the stored one.
+- **The corner library.** The library has an `mc` section. Its knobs are the nominal plus
+  the Cholesky factor of Σ_k times standard normal parameters `ics_z1` ... `ics_zN`. These
+  are 0, so the section simulates as tt until a Monte Carlo loop sets them before each run.
+  In ngspice:
+
+  ```spice
+  .lib "corners.lib" mc
+  .control
+  let k = 0
+  while k < 1000
+    let z = sgauss(0)
+    alterparam ics_z1 = $&z
+    * ... the same for ics_z2 ... ics_zN
+    reset
+    op
+    let k = k + 1
+  end
+  .endc
+  ```
+
+  The library does not use `agauss()`, because ngspice draws it anew at every place a
+  parameter is used, and that would lose the correlations between the knobs.
+- **Other tools.** `ics corners --variation FILE` writes the nominals and the covariance as
+  JSON.
+
+On the example data, 1000 ngspice runs of the idsat_n test structure with the `mc` section
+give σ = 29.4 µA/µm (the data has 29.6) and a mean of 591 (the data has 590).

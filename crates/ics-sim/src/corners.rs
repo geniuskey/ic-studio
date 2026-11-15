@@ -4,7 +4,10 @@
 //! (`.lib tt` ... `.endl` sections of `.model` cards).
 
 use ics_core::optimize::Bounds;
-use ics_core::process_data::{CornerTargets, ProcessSpec, WatData, corner_targets};
+use ics_core::process_data::{
+    CornerTargets, MeasuredStats, ProcessSpec, ProcessVariation, WatData, backward_propagation, corner_targets,
+    forward_propagation, measured_stats,
+};
 use ics_core::silicon::{self, FitParam};
 use ics_core::{CellRef, Project};
 
@@ -26,6 +29,18 @@ pub struct CornerFit {
     pub error_sigma: f64,
 }
 
+/// The global process variation of the knobs, by backward propagation of the WAT covariance.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VariationFit {
+    pub variation: ProcessVariation,
+    /// Row-major (measured parameter × knob) sensitivities ∂parameter/∂knob at the nominal.
+    pub sensitivity: Vec<f64>,
+    /// (parameter, σ of the data, σ the variation reproduces).
+    pub params: Vec<(String, f64, f64)>,
+    /// (parameter a, parameter b, correlation of the data, reproduced correlation).
+    pub correlations: Vec<(String, String, f64, f64)>,
+}
+
 /// A simulated WAT parameter: its test-structure cell and expression.
 struct Etest {
     name: String,
@@ -41,6 +56,8 @@ pub struct Extraction {
     pub knobs: Vec<FitParam>,
     bounds: Vec<Bounds>,
     pub targets: Vec<CornerTargets>,
+    /// Mean and covariance of the measured parameters.
+    pub stats: MeasuredStats,
     opts: SimOptions,
 }
 
@@ -78,7 +95,8 @@ impl Extraction {
         }
         let bounds = ex.knobs.iter().map(|k| Bounds::of(&k.as_opt_var())).collect::<Result<Vec<_>, _>>()?;
         let opts = SimOptions { backend: ics_core::Backend::Builtin, ..opts.clone() };
-        Ok(Self { project: p, etests, knobs: ex.knobs.clone(), bounds, targets, opts })
+        let stats = measured_stats(data, spec)?;
+        Ok(Self { project: p, etests, knobs: ex.knobs.clone(), bounds, targets, stats, opts })
     }
 
     fn model(&self, values: &[f64]) -> Vec<(String, String, f64)> {
@@ -189,9 +207,57 @@ impl Extraction {
         out
     }
 
+    /// The global variation of the knobs around the nominal `tt` that reproduces the measured
+    /// spread and correlation of the parameters (backward propagation of variance through the
+    /// sensitivities of the simulated test structures).
+    pub fn variation(&self, tt: &CornerFit, source: &str) -> Result<VariationFit, String> {
+        let (m, n) = (self.stats.names.len(), self.knobs.len());
+        let value = |r: &[(String, Result<f64, String>)], name: &str| -> Result<f64, String> {
+            r.iter().find(|(x, _)| x == name).ok_or_else(|| format!("{name}: not measured"))?.1.clone()
+        };
+        let mut sens = vec![0.0; m * n];
+        for j in 0..n {
+            let x = tt.values[j];
+            let h = (x.abs() * 1e-3).max(1e-12);
+            let (mut lo, mut hi) = (tt.values.clone(), tt.values.clone());
+            lo[j] -= h;
+            hi[j] += h;
+            let (a, b) = (self.measure(&lo), self.measure(&hi));
+            for (i, name) in self.stats.names.iter().enumerate() {
+                sens[i * n + j] = (value(&b, name)? - value(&a, name)?) / (2.0 * h);
+            }
+        }
+        let cov = backward_propagation(&sens, m, n, &self.stats.cov)
+            .ok_or("the knobs are not identifiable from the measured parameters (singular sensitivities)")?;
+        let params = self.knobs.iter().filter_map(|k| k.model_param().map(|(m, p)| format!("{m}.{p}"))).collect::<Vec<_>>();
+        let variation = ProcessVariation { source: source.to_string(), params, mean: tt.values.clone(), cov };
+        let pred = forward_propagation(&sens, m, n, &variation.cov);
+        let sd = |c: &[f64], i: usize| c[i * m + i].max(0.0).sqrt();
+        let corr = |c: &[f64], i: usize, j: usize| {
+            let d = sd(c, i) * sd(c, j);
+            if d > 0.0 { c[i * m + j] / d } else { 0.0 }
+        };
+        let names = &self.stats.names;
+        let mut correlations = vec![];
+        for i in 0..m {
+            for j in i + 1..m {
+                correlations.push((names[i].clone(), names[j].clone(), corr(&self.stats.cov, i, j), corr(&pred, i, j)));
+            }
+        }
+        Ok(VariationFit {
+            params: (0..m).map(|i| (names[i].clone(), sd(&self.stats.cov, i), sd(&pred, i))).collect(),
+            variation,
+            sensitivity: sens,
+            correlations,
+        })
+    }
+
     /// The fitted corners as a SPICE corner library: one `.lib NAME` section per corner with
-    /// the `.model` cards of every model the knobs touch.
-    pub fn library(&self, fits: &[CornerFit], title: &str) -> Result<String, String> {
+    /// the `.model` cards of every model the knobs touch, and with a `variation`, an `mc` section
+    /// whose knobs are the nominal plus the Cholesky factor of their covariance times standard
+    /// normal parameters `ics_z1` ... (0 unless a Monte Carlo loop sets them), so the section
+    /// simulates as `tt` until a loop draws them.
+    pub fn library(&self, fits: &[CornerFit], variation: Option<&ProcessVariation>, title: &str) -> Result<String, String> {
         let mut models: Vec<String> = self.knobs.iter().filter_map(|k| k.model_param().map(|m| m.0.to_string())).collect();
         models.sort();
         models.dedup();
@@ -207,6 +273,40 @@ impl Extraction {
                 }
             }
             out += &format!(".endl {}\n", f.name);
+        }
+        if let Some(v) = variation {
+            let l = v.factor().ok_or("the variation's covariance is not positive semi-definite")?;
+            let n = v.params.len();
+            let id = |i: usize| {
+                let (m, p) = v.param(i);
+                format!("ics_{m}_{p}").chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect::<String>()
+            };
+            let mut deck = cell_deck(&self.project, &e.cell, vec![], &[], self.opts.deck_dir.as_deref())?;
+            out += "\n.lib mc\n* Global process variation from the WAT covariance. ics_z1 ... are independent standard\n";
+            out += "* normal draws, 0 (the nominal) unless a Monte Carlo loop sets them before each run, e.g. in\n";
+            out += "* ngspice: let z = sgauss(0)  alterparam ics_z1 = $&z  reset  (one shared draw per run; an\n";
+            out += "* agauss() here would be drawn anew at every reference and lose the correlations).\n";
+            for i in 0..n {
+                out += &format!(".param ics_z{}=0\n", i + 1);
+            }
+            for i in 0..n {
+                let mut expr = format!("{:.6e}", v.mean[i]);
+                for j in 0..=i {
+                    if l[i * n + j] != 0.0 {
+                        expr += &format!("{:+.6e}*ics_z{}", l[i * n + j], j + 1);
+                    }
+                }
+                out += &format!(".param {}={{{expr}}}\n", id(i));
+                let (m, p) = v.param(i);
+                deck = ics_core::silicon::set_model_param_text(&deck, m, p, &format!("{{{}}}", id(i)))?;
+            }
+            for m in &models {
+                for c in silicon::model_cards(&deck, m) {
+                    out += &c;
+                    out.push('\n');
+                }
+            }
+            out += ".endl mc\n";
         }
         Ok(out)
     }
@@ -241,8 +341,47 @@ mod tests {
         for f in &fits {
             assert!(f.error_sigma < 0.2, "{} misses its targets: {f:?}", f.name);
         }
-        let lib = ex.library(&fits, "generic180").unwrap();
+        let lib = ex.library(&fits, None, "generic180").unwrap();
         assert!(lib.contains(".lib tt\n.model nmos nmos") && lib.contains(".endl sf"), "{lib}");
         assert_eq!(lib.matches(".model pmos").count(), 5);
+
+        // Four knobs, four parameters: the variation reproduces the data's spread exactly.
+        let v = ex.variation(tt, "generic180 WAT").unwrap();
+        v.variation.validate().unwrap();
+        assert_eq!(v.variation.params, ["nmos.vto", "nmos.kp", "pmos.vto", "pmos.kp"]);
+        for (n, data, got) in &v.params {
+            assert!((got / data - 1.0).abs() < 1e-3, "{n}: {got} vs {data}");
+        }
+        for (a, b, data, got) in &v.correlations {
+            assert!((got - data).abs() < 1e-3, "{a}/{b}: {got} vs {data}");
+        }
+        // Linearisation check: ff (idsat at +3σ) sits close to tt + 3σ of the variation.
+        let i = v.variation.params.iter().position(|p| p == "nmos.vto").unwrap();
+        assert!(v.variation.sigma(i) > 1e-3 && v.variation.sigma(i) < 0.1, "{v:?}");
+        let lib = ex.library(&fits, Some(&v.variation), "generic180").unwrap();
+        assert!(lib.contains(".lib mc\n") && lib.contains(".param ics_z4=0\n") && lib.contains("vto={ics_nmos_vto}"), "{lib}");
+        // The built-in engine reads the mc section as the nominal: tt's drain current.
+        let mc = lib.split(".lib mc").nth(1).unwrap();
+        let tt_vto = silicon::model_param(&lib, "nmos", "vto").unwrap();
+        assert!(mc.contains(&format!("ics_nmos_vto={{{tt_vto:.6e}")), "{mc}");
+
+        // Round trip: Monte Carlo of the idsat_n test structure with the variation (no mismatch)
+        // reproduces the spread of the data.
+        let e = ex.etests.iter().find(|e| e.name == "idsat_n").unwrap();
+        let deck = cell_deck(&ex.project, &e.cell, vec![], &[], None).unwrap();
+        let spec = crate::montecarlo::McSpec {
+            runs: 600,
+            seed: 7,
+            avt: 0.0,
+            abeta: 0.0,
+            process: Some(v.variation.clone()),
+            ..Default::default()
+        };
+        let ms = [crate::montecarlo::Measure { analysis: "op".into(), expr: e.expr.clone() }];
+        let r = crate::montecarlo::monte_carlo(&deck, &[], &ms, &spec, None).unwrap();
+        let data = v.params.iter().find(|p| p.0 == "idsat_n").unwrap().1;
+        let mean = ex.stats.mean[ex.stats.names.iter().position(|n| n == "idsat_n").unwrap()];
+        assert!((r.stats[0].sigma / data - 1.0).abs() < 0.1, "MC σ {} vs data {data}", r.stats[0].sigma);
+        assert!((r.stats[0].mean / mean - 1.0).abs() < 0.01, "MC mean {} vs data {mean}", r.stats[0].mean);
     }
 }

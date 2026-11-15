@@ -79,10 +79,47 @@
 차이입니다.
 
 - GUI: Process Data 창의 **Extract corners**, 그다음 **Save library...**
-- CLI: `ics corners <CSV> [--spec FILE] [--project P] [--lib FILE] [--json]`
+- CLI: `ics corners <CSV> [--spec FILE] [--project P] [--lib FILE] [--variation FILE] [--apply] [--json]`
 - MCP: `extract_corners`
 
 결과는 코너마다 `.lib` 절이 하나씩 있는 코너 라이브러리입니다. `.lib "corners.lib" ff`로 읽거나, PDK 파일의
 `[models]`가 이 파일을 가리키게 하고 `corners = ["tt", "ff", "ss", "fs", "sf"]`로 두면 Corner / Sweep Manager가 코너를
 돌립니다. 예제 데이터에서 기본 모델은 실리콘의 590 µA/µm 대신 1620을 주지만, 피팅한 tt는 평균과 맞고 ff / ss는 측정
 idsat의 ±3σ에 놓입니다.
+
+### 통계 모델: 공정 변동
+
+코너는 고정된 점입니다. Monte Carlo에는 모델 파라미터가 웨이퍼마다 얼마나 변하고 서로 어떻게 함께 움직이는지도
+필요합니다. 추출은 이것을 **분산 역전파(backward propagation of variance)**로 구합니다. 먼저 각 노브를 단위만큼
+바꿀 때 측정 파라미터가 얼마나 움직이는지 시뮬레이션합니다(tt에서의 감도 행렬 S). 그다음 S Σ_k Sᵀ가 측정 파라미터의
+공분산을 가장 잘 재현하는 노브 공분산 Σ_k를 고릅니다. 가중치 1/σ²의 가중 최소제곱이며, 노브 수와 파라미터 수가
+같으면 정확합니다.
+
+```text
+Process variation (global, wafer to wafer):
+  nmos.vto       408.7m σ     10.47m (  2.6 %)   r [+1.00 -0.90 -0.39 -0.29]
+  nmos.kp        95.94µ σ     3.474µ (  3.6 %)   r [-0.90 +1.00 +0.41 +0.29]
+  pmos.vto      -380.4m σ     9.325m (  2.5 %)   r [-0.39 +0.41 +1.00 +0.37]
+  pmos.kp         39.2µ σ     1.744µ (  4.5 %)   r [-0.29 +0.29 +0.37 +1.00]
+  reproduces vtn σ 11.7m (data 11.7m), vtp σ 9.916m (data 9.916m), idsat_n σ 29.59 (data 29.59), idsat_p σ 13.17 (data 13.17)
+```
+
+"reproduces" 줄로 결과를 확인합니다. 이 변동이 예측하는 측정 파라미터별 σ를 데이터의 σ와 나란히 보여 줍니다. 둘이
+다르면 노브만으로는 측정된 퍼짐을 다 설명하지 못한다는 뜻입니다. 이 변동은 전역 변동(한 웨이퍼의 모든 소자에 같은
+이동)입니다. 소자 간 미스매치는 계속 Monte Carlo 설정의 Pelgrom 계수가 맡습니다.
+
+변동은 세 가지로 쓸 수 있습니다.
+
+- **IC Studio의 Monte Carlo.** 테크놀로지에 저장합니다. Process Data 창의 **Use for Monte Carlo**,
+  `ics corners --project P --apply`, 또는 `apply`를 준 `extract_corners`를 씁니다. 그러면 Monte Carlo(창과
+  `ics mc`)가 일반값 **Vto sigma** / **kp sigma** 대신 이 변동을 뽑습니다. `ics mc --variation FILE`은
+  `ics corners --variation FILE`로 쓴 파일을 대신 쓰고, `ics mc --generic`은 저장된 변동을 무시합니다.
+- **코너 라이브러리.** 라이브러리에는 `mc` 절이 있습니다. 이 절의 노브는 명목값 + Σ_k의 Cholesky 인수 × 표준정규
+  파라미터 `ics_z1` ... `ics_zN`입니다. 이 파라미터들은 0이므로, Monte Carlo 루프가 매 실행 전에 값을 넣기 전까지
+  이 절은 tt처럼 시뮬레이션됩니다. ngspice에서는 루프에서 `let z = sgauss(0)`, `alterparam ics_z1 = $&z`, ...,
+  `reset`으로 넣습니다. ngspice는 `agauss()`를 파라미터가 쓰이는 곳마다 새로 뽑아 노브 사이의 상관을 잃게 하므로
+  라이브러리는 `agauss()`를 쓰지 않습니다.
+- **다른 도구.** `ics corners --variation FILE`은 명목값과 공분산을 JSON으로 씁니다.
+
+예제 데이터에서 idsat_n 테스트 구조를 `mc` 절로 ngspice에서 1000번 돌리면 σ = 29.4 µA/µm(데이터는 29.6), 평균은
+591(데이터는 590)입니다.

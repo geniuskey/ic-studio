@@ -26,7 +26,7 @@ it with `cargo build --release -p ics-cli` (binary `target/release/ics`) or run 
 | `ics schematic <PROJECT> <CELL> <NETLIST> [--overwrite]` | Create or replace a cell's schematic from a SPICE netlist file and save |
 | `ics sim <PROJECT> <CELL> [--backend builtin\|ngspice\|auto] [--json] [--parasitics] [--compare [--tol T]]` | Simulate with the cell's saved setup; `--compare` correlates the built-in engine against ngspice |
 | `ics spice <FILE> [--backend builtin\|ngspice\|auto] [--json] [--compare [--tol T]]` | Simulate a SPICE or Spectre file (`.scs`, or `simulator lang=spectre`) with its own analyses |
-| `ics mc <PROJECT> <CELL> --measure ANALYSIS:EXPR... [--runs N] [--seed S] [--avt V] [--abeta V] [--vto-sigma V] [--kp-sigma V] [--parasitics] [--json]` | Monte Carlo on the built-in engine with process variation and Pelgrom mismatch |
+| `ics mc <PROJECT> <CELL> --measure ANALYSIS:EXPR... [--runs N] [--seed S] [--avt V] [--abeta V] [--vto-sigma V] [--kp-sigma V] [--variation FILE] [--generic] [--parasitics] [--json]` | Monte Carlo on the built-in engine with process variation and Pelgrom mismatch |
 | `ics gds <PROJECT> <CELL> -o <FILE>` | Export the cell and every cell it places to GDSII, or to OASIS when `FILE` ends in `.oas` / `.oasis` |
 | `ics gds-info <FILE>` | Print hierarchy statistics and timings of a GDSII or OASIS file |
 | `ics import-gds <PROJECT> <FILE> [--lib NAME] [--skip-unknown-layers] [--json]` | Import a GDSII or OASIS file as a new library |
@@ -53,7 +53,7 @@ it with `cargo build --release -p ics-cli` (binary `target/release/ics`) or run 
 | `ics correlate <PROJECT> <CELL> [--data CSV] [--x COL] [--analysis A] [--trace COL=EXPR[@BIAS]]... [--param TARGET=MIN:MAX[:log]]... [--log] [--fit] [--write-models FILE] [--apply] [--save] [--json]` | Compare measured curves with the simulation and fit model, instance or design parameters to them |
 | `ics xsection <PROJECT> <CELL> [--flow FILE] [--cut x0,y0,x1,y1] [--steps N] [--at X]... [--svg FILE] [--json]` | Process emulation: the layout's cross-section along a cut after a process flow (see [Process emulation](process.md)) |
 | `ics process-data <CSV> [--spec FILE] [--json]` | WAT / PCM data against the process spec: Cp / Cpk, out-of-spec sites, control-chart alarms, corner coverage (see [Process data](process.md#process-data)); exit 1 on out-of-spec sites or alarms |
-| `ics corners <CSV> [--spec FILE] [--project P] [--lib FILE] [--json]` | Corner models from WAT data: fit tt and ff / ss / fs / sf model cards to the data and write a corner library (see [Corner models](process.md#corner-models-from-silicon)) |
+| `ics corners <CSV> [--spec FILE] [--project P] [--lib FILE] [--variation FILE] [--apply] [--json]` | Corner models from WAT data: fit tt and ff / ss / fs / sf model cards to the data and write a corner library, with the process variation for Monte Carlo (see [Corner models](process.md#corner-models-from-silicon)) |
 | `ics optimize <PROJECT> <CELL> [--post-layout] [--apply] [--json]` | Size devices to meet the cell's specs; exit 1 if no point meets every spec |
 | `ics place-like <PROJECT> <CELL> --from <CELL> [--route]` | Place the cell like a finished cell with the same circuit and save |
 | `ics skill <PROJECT> <FILE.il> [--no-save] [--json]` | Run a Cadence SKILL script on the project and save; exit 1 on a SKILL error |
@@ -112,7 +112,9 @@ above `--tol` (default `0.05`). See
 with a global threshold and transconductance shift per polarity (`--vto-sigma` default
 `20m` V, `--kp-sigma` default `0.03`) and per-device mismatch σ(ΔVth) = `avt` / √(W L),
 σ(Δβ/β) = `abeta` / √(W L) (`--avt` default `5n` = 5 mV·µm, `--abeta` default `10n` =
-1 %·µm). Each `--measure` is an analysis and a
+1 %·µm). When the technology has a measured process variation
+([from WAT data](process.md#statistical-models-the-process-variation)), or `--variation FILE`
+gives one, it replaces the two global sigmas; `--generic` ignores it. Each `--measure` is an analysis and a
 [calculator](tools.md#waveform-calculator) expression with a scalar result; the command
 prints mean, sigma, min and max of each. The same runs from the app's
 [Monte Carlo window](simulation.md#monte-carlo-window).

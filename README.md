@@ -197,7 +197,8 @@ Linux needs the usual windowing libraries:
   measured spread (`ics process-data`, MCP `process_data`)
 - Corner models from silicon: fit tt and ff / ss / fs / sf model cards to WAT data through
   simulated test structures, with correlated parameters following by regression, and write a
-  corner library (`ics corners`, MCP `extract_corners`)
+  corner library (`ics corners`, MCP `extract_corners`); the process variation of the model
+  parameters by backward propagation of variance, for Monte Carlo and the library's `mc` section
 
 **Technology**
 - `tech.json` with layers, GDS numbers, colours, fill patterns, width / spacing, vias,

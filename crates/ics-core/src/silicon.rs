@@ -186,13 +186,18 @@ fn logical_lines(deck: &str) -> Vec<String> {
 /// Set `param` of every `.model` card named `model` (or a bin of it) to `value`, adding the
 /// parameter where a card lacks it. Errors when the deck has no such card.
 pub fn set_model_param(deck: &str, model: &str, param: &str, value: f64) -> Result<String, String> {
+    set_model_param_text(deck, model, param, &format!("{value:.6e}"))
+}
+
+/// [`set_model_param`] with the value as text, e.g. an expression `{vth_n}`.
+pub fn set_model_param_text(deck: &str, model: &str, param: &str, value: &str) -> Result<String, String> {
     let mut hit = false;
     let mut out = String::with_capacity(deck.len() + 64);
     for l in logical_lines(deck) {
         match model_tokens(&l) {
             Some((name, kind, mut params)) if card_matches(&name, model) => {
                 hit = true;
-                let v = format!("{value:.6e}");
+                let v = value.to_string();
                 match params.iter_mut().find(|(k, _)| k.eq_ignore_ascii_case(param)) {
                     Some(p) => p.1 = v,
                     None => params.push((param.to_ascii_lowercase(), v)),

@@ -341,7 +341,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(cor["corners"].as_array().unwrap().len(), 5, "{cor}");
-        assert!(cor["library"].as_str().unwrap().contains(".lib ss"), "{cor}");
+        assert!(
+            cor["library"].as_str().unwrap().contains(".lib ss") && cor["library"].as_str().unwrap().contains(".lib mc"),
+            "{cor}"
+        );
+        assert_eq!(cor["variation"]["params"].as_array().unwrap().len(), 4, "{cor}");
+        assert_eq!(cor["applied"], false);
 
         let drc = call(&mut s, "run_drc", json!({"cell": "cmos_inverter"})).unwrap();
         assert!(drc["rules_run"].as_u64().unwrap() > 0, "{drc}");

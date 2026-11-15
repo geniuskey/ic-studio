@@ -1524,6 +1524,7 @@ impl IcStudio {
             return;
         };
         let mut notes = vec![];
+        self.monte_carlo.process = self.project.as_ref().and_then(|p| p.tech.variation.clone());
         let res = self.mc_deck(&r, &mut notes).and_then(|(deck, analyses)| self.monte_carlo.start(ctx, deck, analyses));
         for n in notes {
             self.warn(n);
@@ -1559,6 +1560,12 @@ impl IcStudio {
     }
 
     fn monte_carlo_window(&mut self, ctx: &egui::Context) {
+        if self.monte_carlo.open {
+            let v = self.project.as_ref().and_then(|p| p.tech.variation.as_ref());
+            if self.monte_carlo.process.as_ref() != v {
+                self.monte_carlo.process = v.cloned();
+            }
+        }
         let (changed, run, stop) = self.monte_carlo.window(ctx);
         if let Some(s) = changed
             && let Some(c) = self.monte_carlo.cell.clone().and_then(|r| self.project.as_mut()?.cell_mut(&r))
@@ -1624,6 +1631,20 @@ impl IcStudio {
                     Ok(()) => self.info("Corner models: fitting".into()),
                     Err(e) => self.error(format!("Corner models: {e}")),
                 }
+                return;
+            }
+            Some(ProcessDataAction::ApplyVariation(v)) => {
+                let Some(p) = self.project.as_mut() else {
+                    self.warn("Open a project to store the process variation in its technology".into());
+                    return;
+                };
+                p.tech.variation = Some(v.clone());
+                self.mark_dirty();
+                self.ok(format!(
+                    "Process variation: {} parameter(s) from {} stored in the technology; Monte Carlo draws them",
+                    v.params.len(),
+                    v.source
+                ));
                 return;
             }
             Some(ProcessDataAction::SaveLibrary(text)) => {

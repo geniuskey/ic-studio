@@ -25,6 +25,8 @@ pub struct MonteCarlo {
     pub error: Option<String>,
     /// Measure whose histogram is shown.
     pub selected: usize,
+    /// The technology's measured process variation; replaces the generic global sigmas.
+    pub process: Option<ics_core::process_data::ProcessVariation>,
     rx: Option<Receiver<Result<McResult, String>>>,
     ctl: Option<Arc<McControl>>,
 }
@@ -48,7 +50,15 @@ impl MonteCarlo {
 
     pub fn spec(&self) -> Result<McSpec, String> {
         let (vto_sigma, kp_sigma, avt, abeta) = self.setup.sigmas()?;
-        Ok(McSpec { runs: self.setup.runs, seed: self.setup.seed, vto_sigma, kp_sigma, avt, abeta })
+        Ok(McSpec {
+            runs: self.setup.runs,
+            seed: self.setup.seed,
+            vto_sigma,
+            kp_sigma,
+            avt,
+            abeta,
+            process: self.process.clone(),
+        })
     }
 
     /// Run the setup's measures on `deck` in a background thread.
@@ -148,6 +158,7 @@ impl MonteCarlo {
                     let l = ui.label("Seed");
                     changed |= ui.add(egui::DragValue::new(&mut self.setup.seed)).labelled_by(l.id).changed();
                     ui.end_row();
+                    let measured = self.process.is_some();
                     for (k, (label, text, hint)) in [
                         ("Vto sigma", &mut self.setup.vto_sigma, "Global threshold shift per polarity (V, one sigma)"),
                         ("kp sigma", &mut self.setup.kp_sigma, "Global relative transconductance shift per polarity"),
@@ -158,13 +169,28 @@ impl MonteCarlo {
                     .enumerate()
                     {
                         let l = ui.label(label);
-                        let r = ui.add(egui::TextEdit::singleline(text).desired_width(80.0)).labelled_by(l.id);
+                        let edit = egui::TextEdit::singleline(text).desired_width(80.0);
+                        let r = ui.add_enabled(!(measured && k < 2), edit).labelled_by(l.id);
+                        let hint =
+                            if measured && k < 2 { "Replaced by the technology's measured process variation" } else { hint };
                         changed |= r.on_hover_text(hint).changed();
                         if k % 2 == 1 {
                             ui.end_row();
                         }
                     }
                 });
+                if let Some(v) = &self.process {
+                    let src = if v.source.is_empty() { "silicon" } else { v.source.as_str() };
+                    ui.label(RichText::new(format!("Global variation: measured ({src}): {}", v.params.join(", "))).small())
+                        .on_hover_text(
+                            (0..v.params.len())
+                                .map(|i| {
+                                    format!("{}: {} sigma {}", v.params[i], format_eng(v.mean[i], ""), format_eng(v.sigma(i), ""))
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                        );
+                }
                 ui.add_space(4.0);
                 ui.label(RichText::new("Measurements").strong());
                 let mut remove = None;

@@ -77,7 +77,7 @@ npx skills add geniuskey/ic-studio
 | `correlate_silicon` | 측정 곡선(CSV)과 시뮬레이션 비교, 모델·인스턴스·설계 파라미터 피팅 |
 | `process_cross_section` | 공정 에뮬레이션: 공정 흐름 후 레이아웃 컷의 재료 스택, 선택적으로 SVG |
 | `process_data` | WAT / PCM 데이터와 공정 사양 비교: 공정 능력, 관리 경보, 코너 포함 여부, 상관된 파라미터 |
-| `extract_corners` | WAT 데이터로 코너 모델 생성: tt / ff / ss / fs / sf 모델 카드와 코너 라이브러리 |
+| `extract_corners` | WAT 데이터로 코너 모델 생성: tt / ff / ss / fs / sf 모델 카드, Monte Carlo용 공정 변동(`apply`는 테크놀로지에 저장), 코너 라이브러리 |
 | `optimize` | 스펙을 만족하도록 소자 파라미터 사이징(선택적으로 레이아웃 이후). `apply`는 최적 값을 씀 |
 | `place_like` | 예제 기반 레이아웃: 같은 회로 토폴로지를 가진 완성된 셀처럼 배치, 선택적으로 배선 |
 | `diff_layout` | 셀의 레이아웃을 레이어별로 git 리비전(기본 `HEAD`) 또는 저장된 파일과 XOR |

@@ -132,7 +132,11 @@ the cell's setup many times on the built-in engine with random device variation,
 statistics of calculator measurements. Every run draws:
 
 - a **process** shift shared by all MOS devices of one polarity: threshold (**Vto sigma**,
-  V, default `20m`) and relative transconductance (**kp sigma**, default `0.03`);
+  V, default `20m`) and relative transconductance (**kp sigma**, default `0.03`). When the
+  technology has a process variation measured on silicon
+  ([from WAT data](process.md#statistical-models-the-process-variation)), the window says
+  "Global variation: measured", and every run draws the correlated model parameters from it
+  instead;
 - a per-device **mismatch** scaled by gate area (Pelgrom): σ(ΔVth) = **Avt** / √(W L) and
   σ(Δβ/β) = **Abeta** / √(W L), with **Avt** default `5n` (5 mV·µm) and **Abeta** default
   `10n` (1 %·µm).

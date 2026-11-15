@@ -399,6 +399,10 @@ pub struct Tech {
     /// Vertical structure over the silicon, for image sensor pixel optics.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cross_section: Option<CrossSection>,
+    /// Global process variation of model parameters (from WAT data, `ics corners --variation`),
+    /// drawn by Monte Carlo in place of its generic threshold / current factor sigmas.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variation: Option<crate::process_data::ProcessVariation>,
 }
 
 /// The process cross-section over the silicon, from which a pixel's optical stack follows
@@ -735,6 +739,7 @@ impl Tech {
             pin_labels: vec![],
             stream_map: vec![],
             cross_section: Some(CrossSection::generic180()),
+            variation: None,
         }
     }
 }

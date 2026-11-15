@@ -108,6 +108,13 @@ enum Cmd {
         /// Global relative kp sigma per polarity.
         #[arg(long, default_value = "0.03")]
         kp_sigma: String,
+        /// Global process variation (JSON from `ics corners --variation`). Without it, the
+        /// technology's variation is used if it has one, else --vto-sigma / --kp-sigma.
+        #[arg(long)]
+        variation: Option<PathBuf>,
+        /// Use --vto-sigma / --kp-sigma even when the technology has a measured variation.
+        #[arg(long)]
+        generic: bool,
         #[arg(long)]
         parasitics: bool,
         #[arg(long)]
@@ -297,9 +304,16 @@ enum Cmd {
         /// Project whose technology models are the starting point (default: generic 180 nm).
         #[arg(long)]
         project: Option<PathBuf>,
-        /// Write the corner library (`.lib tt` ... sections) to this file.
+        /// Write the corner library (`.lib tt` ... sections, and `.lib mc`) to this file.
         #[arg(long)]
         lib: Option<PathBuf>,
+        /// Write the global process variation (JSON, for `ics mc --variation`) to this file.
+        #[arg(long)]
+        variation: Option<PathBuf>,
+        /// Store the process variation in the project's technology (needs --project); Monte
+        /// Carlo then draws it in place of the generic sigmas.
+        #[arg(long)]
+        apply: bool,
         #[arg(long, default_value_t = 40)]
         iterations: usize,
         #[arg(long)]
@@ -767,7 +781,21 @@ fn run(cli: Cli) -> Result<(), String> {
             print!("{}", nl.deck(&r.to_string(), &c.sim));
             p.save().map_err(|e| e.to_string())?;
         }
-        Cmd::Mc { project, cell, runs, seed, measures, avt, abeta, vto_sigma, kp_sigma, parasitics, json } => {
+        Cmd::Mc {
+            project,
+            cell,
+            runs,
+            seed,
+            measures,
+            avt,
+            abeta,
+            vto_sigma,
+            kp_sigma,
+            variation,
+            generic,
+            parasitics,
+            json,
+        } => {
             let p = Project::open(&project).map_err(|e| e.to_string())?;
             let r = resolve(&p, &cell)?;
             let c = p.cell(&r).unwrap();
@@ -784,7 +812,24 @@ fn run(cli: Cli) -> Result<(), String> {
                 abeta: num("abeta", &abeta)?,
                 vto_sigma: num("vto-sigma", &vto_sigma)?,
                 kp_sigma: num("kp-sigma", &kp_sigma)?,
+                process: match &variation {
+                    Some(f) => {
+                        let t = std::fs::read_to_string(f).map_err(|e| format!("{}: {e}", f.display()))?;
+                        Some(serde_json::from_str(&t).map_err(|e| format!("{}: {e}", f.display()))?)
+                    }
+                    None if generic => None,
+                    None => p.tech.variation.clone(),
+                },
             };
+            if let Some(v) = &spec.process
+                && !json
+            {
+                eprintln!(
+                    "process variation: {} ({} parameters)",
+                    if v.source.is_empty() { "measured" } else { &v.source },
+                    v.params.len()
+                );
+            }
             let ms = measures
                 .iter()
                 .map(|m| {
@@ -1623,7 +1668,10 @@ fn run(cli: Cli) -> Result<(), String> {
                 return Err("out-of-spec sites or control-rule violations".into());
             }
         }
-        Cmd::Corners { data, spec, project, lib, iterations, json } => {
+        Cmd::Corners { data, spec, project, lib, variation, apply, iterations, json } => {
+            if apply && project.is_none() {
+                return Err("--apply needs --project".into());
+            }
             use ics_core::process_data::{GENERIC180_SPEC, ProcessSpec, WatData};
             let text = std::fs::read_to_string(&data).map_err(|e| format!("{}: {e}", data.display()))?;
             let d = WatData::parse(&text).map_err(|e| format!("{}: {e}", data.display()))?;
@@ -1632,7 +1680,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 None => GENERIC180_SPEC.to_string(),
             };
             let sp = ProcessSpec::from_toml(&st).map_err(|e| format!("spec: {e}"))?;
-            let p = match &project {
+            let mut p = match &project {
                 Some(dir) => Project::open(dir).map_err(|e| e.to_string())?,
                 None => ics_core::examples::demo_project(),
             };
@@ -1647,7 +1695,26 @@ fn run(cli: Cli) -> Result<(), String> {
                     eprintln!("{}: error {:.3}σ", f.name, f.error_sigma);
                 }
             });
-            let library = ex.library(&fits, &format!("{} corners from {}", sp.name, data.display()))?;
+            let source = format!("{} WAT, {}", sp.name, data.display());
+            let var = fits.first().map(|tt| ex.variation(tt, &source)).transpose();
+            let var = match var {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("warning: no process variation: {e}");
+                    None
+                }
+            };
+            let library =
+                ex.library(&fits, var.as_ref().map(|v| &v.variation), &format!("{} corners from {}", sp.name, data.display()))?;
+            let var_json = var.as_ref().map(|v| {
+                let pv = &v.variation;
+                serde_json::json!({
+                    "params": (0..pv.params.len()).map(|i| serde_json::json!({"name": pv.params[i], "mean": pv.mean[i], "sigma": pv.sigma(i)})).collect::<Vec<_>>(),
+                    "correlation": (0..pv.params.len()).map(|i| (0..pv.params.len()).map(|j| pv.correlation(i, j)).collect::<Vec<_>>()).collect::<Vec<_>>(),
+                    "reproduced": v.params.iter().map(|(n, d, g)| serde_json::json!({"name": n, "data_sigma": d, "sigma": g})).collect::<Vec<_>>(),
+                    "variation": pv,
+                })
+            });
             if json {
                 let cj: Vec<serde_json::Value> = fits
                     .iter()
@@ -1659,7 +1726,7 @@ fn run(cli: Cli) -> Result<(), String> {
                                 "error": g.as_ref().err()})).collect::<Vec<_>>()})
                     })
                     .collect();
-                println!("{}", serde_json::json!({"spec": sp.name, "corners": cj, "library": library}));
+                println!("{}", serde_json::json!({"spec": sp.name, "corners": cj, "variation": var_json, "library": library}));
             } else {
                 println!(
                     "{}: {} sites, {} corner(s) in {:.1} s",
@@ -1701,10 +1768,42 @@ fn run(cli: Cli) -> Result<(), String> {
                     println!("{line}");
                 }
                 println!("  (simulated, with the target in brackets)");
+                if let Some(v) = &var {
+                    let pv = &v.variation;
+                    println!("Process variation (global, wafer to wafer):");
+                    for i in 0..pv.params.len() {
+                        let corr: Vec<String> = (0..pv.params.len()).map(|j| format!("{:+.2}", pv.correlation(i, j))).collect();
+                        println!(
+                            "  {:<10} {:>10} σ {:>10} ({:>5.1} %)   r [{}]",
+                            pv.params[i],
+                            format_eng(pv.mean[i], ""),
+                            format_eng(pv.sigma(i), ""),
+                            100.0 * pv.sigma(i) / pv.mean[i].abs().max(1e-300),
+                            corr.join(" ")
+                        );
+                    }
+                    let fit: Vec<String> = v
+                        .params
+                        .iter()
+                        .map(|(n, d, g)| format!("{n} σ {} (data {})", format_eng(*g, ""), format_eng(*d, "")))
+                        .collect();
+                    println!("  reproduces {}", fit.join(", "));
+                }
             }
             if let Some(path) = &lib {
                 std::fs::write(path, &library).map_err(|e| format!("{}: {e}", path.display()))?;
                 eprintln!("wrote {}", path.display());
+            }
+            if let Some(path) = &variation {
+                let v = var.as_ref().ok_or("no process variation to write")?;
+                let t = serde_json::to_string_pretty(&v.variation).map_err(|e| e.to_string())?;
+                std::fs::write(path, t).map_err(|e| format!("{}: {e}", path.display()))?;
+                eprintln!("wrote {}", path.display());
+            }
+            if apply {
+                p.tech.variation = Some(var.ok_or("no process variation to apply")?.variation);
+                p.save().map_err(|e| e.to_string())?;
+                eprintln!("stored the process variation in the technology of {}", p.name);
             }
         }
         Cmd::Optimize { project, cell, post_layout, apply, json } => {

@@ -26,7 +26,7 @@
 | `ics schematic <PROJECT> <CELL> <NETLIST> [--overwrite]` | SPICE 넷리스트 파일로 셀의 회로도를 만들거나 교체하고 저장 |
 | `ics sim <PROJECT> <CELL> [--backend builtin\|ngspice\|auto] [--json] [--parasitics] [--compare [--tol T]]` | 셀에 저장된 설정으로 시뮬레이션. `--compare`는 내장 엔진을 ngspice와 대조 |
 | `ics spice <FILE> [--backend builtin\|ngspice\|auto] [--json] [--compare [--tol T]]` | SPICE 또는 Spectre 파일(`.scs`, `simulator lang=spectre`)을 파일 자체의 해석으로 시뮬레이션 |
-| `ics mc <PROJECT> <CELL> --measure ANALYSIS:EXPR... [--runs N] [--seed S] [--avt V] [--abeta V] [--vto-sigma V] [--kp-sigma V] [--parasitics] [--json]` | 공정 변동과 Pelgrom 미스매치를 적용한 내장 엔진 몬테카를로 |
+| `ics mc <PROJECT> <CELL> --measure ANALYSIS:EXPR... [--runs N] [--seed S] [--avt V] [--abeta V] [--vto-sigma V] [--kp-sigma V] [--variation FILE] [--generic] [--parasitics] [--json]` | 공정 변동과 Pelgrom 미스매치를 적용한 내장 엔진 몬테카를로 |
 | `ics gds <PROJECT> <CELL> -o <FILE>` | 셀과 그 셀이 배치하는 모든 셀을 GDSII로 내보냄. `FILE`이 `.oas` / `.oasis`로 끝나면 OASIS |
 | `ics gds-info <FILE>` | GDSII 또는 OASIS 파일의 계층 통계와 소요 시간 출력 |
 | `ics import-gds <PROJECT> <FILE> [--lib NAME] [--skip-unknown-layers] [--json]` | GDSII 또는 OASIS 파일을 새 라이브러리로 가져옴 |
@@ -53,7 +53,7 @@
 | `ics correlate <PROJECT> <CELL> [--data CSV] [--x COL] [--analysis A] [--trace COL=EXPR[@BIAS]]... [--param TARGET=MIN:MAX[:log]]... [--log] [--fit] [--write-models FILE] [--apply] [--save] [--json]` | 측정 곡선과 시뮬레이션 비교, 모델·인스턴스·설계 파라미터 피팅 |
 | `ics xsection <PROJECT> <CELL> [--flow FILE] [--cut x0,y0,x1,y1] [--steps N] [--at X]... [--svg FILE] [--json]` | 공정 에뮬레이션: 공정 흐름 후 컷을 따른 레이아웃 단면([공정 에뮬레이션](process.md) 참고) |
 | `ics process-data <CSV> [--spec FILE] [--json]` | WAT / PCM 데이터를 공정 사양과 비교: Cp / Cpk, 스펙 이탈, 관리도 경보, 코너 포함 여부([공정 데이터](process.md#공정-데이터) 참고). 스펙 이탈이나 경보가 있으면 1로 종료 |
-| `ics corners <CSV> [--spec FILE] [--project P] [--lib FILE] [--json]` | WAT 데이터로 코너 모델 생성: tt와 ff / ss / fs / sf 모델 카드를 피팅하고 코너 라이브러리 작성([코너 모델](process.md#실리콘에서-코너-모델-만들기) 참고) |
+| `ics corners <CSV> [--spec FILE] [--project P] [--lib FILE] [--variation FILE] [--apply] [--json]` | WAT 데이터로 코너 모델 생성: tt와 ff / ss / fs / sf 모델 카드를 피팅하고 코너 라이브러리와 Monte Carlo용 공정 변동 작성([코너 모델](process.md#실리콘에서-코너-모델-만들기) 참고) |
 | `ics optimize <PROJECT> <CELL> [--post-layout] [--apply] [--json]` | 셀의 스펙을 만족하도록 소자 사이징. 모든 스펙을 만족하는 포인트가 없으면 1로 종료 |
 | `ics place-like <PROJECT> <CELL> --from <CELL> [--route]` | 같은 회로를 가진 완성된 셀처럼 배치하고 저장 |
 | `ics skill <PROJECT> <FILE.il> [--no-save] [--json]` | 프로젝트에 Cadence SKILL 스크립트를 실행하고 저장. SKILL 오류가 나면 1로 종료 |

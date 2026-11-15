@@ -6,6 +6,7 @@
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use ics_core::Analysis;
+use ics_core::process_data::ProcessVariation;
 
 use crate::calc::{self, CalcValue};
 use crate::circuit::{Element, parse_deck};
@@ -25,11 +26,14 @@ pub struct McSpec {
     pub avt: f64,
     /// Current factor mismatch coefficient (m): 1 %·µm is 1e-8.
     pub abeta: f64,
+    /// Global variation of model parameters measured on silicon; when set it replaces
+    /// `vto_sigma` / `kp_sigma` (mismatch still applies).
+    pub process: Option<ProcessVariation>,
 }
 
 impl Default for McSpec {
     fn default() -> Self {
-        Self { runs: 100, seed: 1, vto_sigma: 0.02, kp_sigma: 0.03, avt: 5e-9, abeta: 1e-8 }
+        Self { runs: 100, seed: 1, vto_sigma: 0.02, kp_sigma: 0.03, avt: 5e-9, abeta: 1e-8, process: None }
     }
 }
 
@@ -122,6 +126,18 @@ pub fn monte_carlo(
         )));
     }
     let base = parse_deck(deck)?;
+    let process = match &spec.process {
+        Some(v) => {
+            v.validate().map_err(SimError::Engine)?;
+            for i in 0..v.params.len() {
+                let (m, p) = v.param(i);
+                ics_core::silicon::set_model_param(deck, m, p, v.mean[i])
+                    .map_err(|e| SimError::Engine(format!("process variation {}: {e}", v.params[i])))?;
+            }
+            Some((v, v.factor().expect("validated")))
+        }
+        None => None,
+    };
     let analyses: Vec<Analysis> = if analyses.is_empty() { base.analyses.clone() } else { analyses.to_vec() };
     if analyses.is_empty() {
         return Err(SimError::Engine("no analyses to run".into()));
@@ -137,10 +153,24 @@ pub fn monte_carlo(
             }
         }
         out.runs = run + 1;
-        // Global shifts per polarity: (nmos, pmos).
-        let dvto = [rng.normal() * spec.vto_sigma, rng.normal() * spec.vto_sigma];
-        let dkp = [rng.normal() * spec.kp_sigma, rng.normal() * spec.kp_sigma];
-        let mut c = base.clone();
+        // Global shifts per polarity: (nmos, pmos), or the measured process variation.
+        let (mut c, dvto, dkp) = match &process {
+            Some((v, l)) => {
+                let z: Vec<f64> = (0..v.params.len()).map(|_| rng.normal()).collect();
+                let x = v.sample(l, &z);
+                let mut d = deck.to_string();
+                for (i, x) in x.iter().enumerate() {
+                    let (m, p) = v.param(i);
+                    d = ics_core::silicon::set_model_param(&d, m, p, *x).map_err(SimError::Engine)?;
+                }
+                (parse_deck(&d)?, [0.0; 2], [0.0; 2])
+            }
+            None => (
+                base.clone(),
+                [rng.normal() * spec.vto_sigma, rng.normal() * spec.vto_sigma],
+                [rng.normal() * spec.kp_sigma, rng.normal() * spec.kp_sigma],
+            ),
+        };
         for e in &mut c.elements {
             if let Element::M { model, w, l, m, .. } = e {
                 let p = model.pmos as usize;
@@ -196,7 +226,7 @@ mod tests {
     #[test]
     fn mismatch_scales_with_area() {
         let deck = |w: &str| format!("* t\nI1 0 g 10u\nM1 g g 0 0 nm w={w} l=1u\n.model nm nmos (vto=0.5 kp=100u)\n.op\n.end\n");
-        let spec = McSpec { runs: 400, seed: 3, vto_sigma: 0.0, kp_sigma: 0.0, avt: 5e-9, abeta: 0.0 };
+        let spec = McSpec { runs: 400, seed: 3, vto_sigma: 0.0, kp_sigma: 0.0, avt: 5e-9, abeta: 0.0, process: None };
         let ms = [Measure { analysis: "op".into(), expr: "v(g)".into() }];
         let small = monte_carlo(&deck("1u"), &[], &ms, &spec, None).unwrap();
         let big = monte_carlo(&deck("4u"), &[], &ms, &spec, None).unwrap();
@@ -206,6 +236,35 @@ mod tests {
         assert!((s1 / s4 - 2.0).abs() < 0.3, "4x area halves sigma: {s1} vs {s4}");
         let again = monte_carlo(&deck("1u"), &[], &ms, &spec, None).unwrap();
         assert_eq!(again.values, small.values, "a seed reproduces the runs");
+    }
+
+    #[test]
+    fn measured_process_variation_replaces_the_generic_shifts() {
+        let deck = "* t\nI1 0 g 10u\nM1 g g 0 0 nm w=10u l=1u\n.model nm nmos (vto=0.5 kp=100u)\n.op\n.end\n";
+        let process = ProcessVariation {
+            source: "test".into(),
+            params: vec!["nm.vto".into(), "nm.kp".into()],
+            mean: vec![0.6, 100e-6],
+            cov: vec![1e-4, 0.0, 0.0, 0.0],
+        };
+        let spec = McSpec { runs: 400, seed: 5, avt: 0.0, abeta: 0.0, process: Some(process), ..Default::default() };
+        let ms = [Measure { analysis: "op".into(), expr: "v(g)".into() }];
+        let r = monte_carlo(deck, &[], &ms, &spec, None).unwrap();
+        let s = &r.stats[0];
+        // v(g) = vto + sqrt(2 I L / (kp W)) = vto + 0.141: the mean moves to the measured vto, and
+        // the generic 20 mV global sigma gives way to the measured 10 mV.
+        assert!((s.mean - 0.741).abs() < 3e-3, "{s:?}");
+        assert!((s.sigma / 0.01 - 1.0).abs() < 0.12, "{s:?}");
+        let bad = McSpec {
+            process: Some(ProcessVariation {
+                params: vec!["other.vto".into()],
+                mean: vec![0.5],
+                cov: vec![1e-4],
+                source: String::new(),
+            }),
+            ..spec
+        };
+        assert!(monte_carlo(deck, &[], &ms, &bad, None).unwrap_err().to_string().contains("other.vto"));
     }
 
     #[test]
