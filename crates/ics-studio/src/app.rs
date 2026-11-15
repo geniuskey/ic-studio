@@ -24,6 +24,7 @@ use crate::icons::{self, Icon};
 use crate::layout_view::{EipContext, LayAction, LayCtx, LayRequest, LayTool, LayoutEditor, Verify, fmt_count, um};
 use crate::net_view::{NetAction, NetBrowser};
 use crate::opc_view::OpcTool;
+use crate::pixel_view::{PixelAction, PixelOptics};
 use crate::rule_designer::{DesignerAction, RuleDesigner};
 use crate::schematic_view::{SchTool, SchematicEditor, device_palette};
 use crate::sim_view::{self, SimEvent, SimState};
@@ -95,6 +96,13 @@ pub enum Command {
     RunSimulation,
     /// Open the Waveform Calculator on the active cell's results.
     Calculator,
+    /// Image sensor pixel optics: QE, crosstalk and photocurrent of a pixel stack.
+    PixelOptics,
+    /// Run the pixel model of the Pixel Optics window.
+    RunPixelOptics,
+    /// Write the photocurrent of a Bayer colour (0 R, 1 Gr, 2 Gb, 3 B) into a current source of
+    /// the active cell's schematic.
+    ApplyPhotocurrent(String, usize),
     /// Evaluate a calculator expression on the active cell's shown dataset and plot waveforms.
     CalcPlot(String),
     /// Open the Corner / Sweep Manager on the active cell.
@@ -521,6 +529,7 @@ pub struct IcStudio {
     /// that undo and redo of the layout also remove and restore their definitions.
     opc_layers: (Vec<String>, Vec<ics_core::LayerDef>),
     calc: Calculator,
+    pixel: PixelOptics,
     sweep: SweepManager,
     monte_carlo: crate::mc_view::MonteCarlo,
     results_open: bool,
@@ -583,6 +592,7 @@ impl IcStudio {
             opc: OpcTool::default(),
             opc_layers: Default::default(),
             calc: Calculator::default(),
+            pixel: PixelOptics::default(),
             sweep: SweepManager::default(),
             monte_carlo: Default::default(),
             results_open: false,
@@ -882,6 +892,20 @@ impl IcStudio {
             Command::SetWorkspace(w) => self.workspace = w,
             Command::RunSimulation => self.run_simulation(ctx),
             Command::Calculator => self.calc.show(),
+            Command::PixelOptics => self.pixel.show(),
+            Command::RunPixelOptics => {
+                self.pixel.show();
+                self.pixel.run();
+                match &self.pixel.result {
+                    Some(Err(e)) => self.warn(format!("Pixel optics: {e}")),
+                    Some(Ok(r)) => self.info(format!("Pixel optics: {} at CRA {} deg", r.name, r.cra)),
+                    None => {}
+                }
+            }
+            Command::ApplyPhotocurrent(source, color) => match self.pixel.currents {
+                Some(cur) if color < 4 => self.set_photocurrent(&source, cur[color]),
+                _ => self.warn("Run the pixel optics model first".into()),
+            },
             Command::SweepManager => match (self.active.clone(), self.active_cell()) {
                 (Some(r), Some(c)) if c.schematic.is_some() => {
                     let setup = c.sim.sweep.clone();
@@ -1280,6 +1304,32 @@ impl IcStudio {
         }
         self.workspace = Workspace::Layout;
         self.info(msg);
+    }
+
+    /// Set current source `source` of the active cell's schematic to `amps` (undoable).
+    fn set_photocurrent(&mut self, source: &str, amps: f64) {
+        let (Some(r), Some(p)) = (self.active.clone(), self.project.as_mut()) else {
+            self.warn("Open the pixel circuit's schematic first".into());
+            return;
+        };
+        let Some(sch) = p.cell_mut(&r).and_then(|c| c.schematic.as_mut()) else {
+            self.warn(format!("{r} has no schematic"));
+            return;
+        };
+        let before = sch.clone();
+        let Some(inst) = sch
+            .instances
+            .iter_mut()
+            .find(|i| i.name.eq_ignore_ascii_case(source) && i.kind == ics_core::schematic::DeviceKind::ISource)
+        else {
+            self.warn(format!("{r} has no current source '{source}'"));
+            return;
+        };
+        let value = format!("{amps:.4e}");
+        inst.params.insert("dc".into(), value.clone());
+        self.sch_eds.entry(r.clone()).or_default().history.push(&before);
+        self.mark_dirty();
+        self.info(format!("{r}: {source} = {value} A (photocurrent)"));
     }
 
     fn import_signoff_results(&mut self, path: Option<PathBuf>) {
@@ -2026,6 +2076,9 @@ impl IcStudio {
                 ui.separator();
                 if ui.button("Waveform Calculator…").clicked() {
                     q.push(Command::Calculator);
+                }
+                if ui.button("Pixel Optics…").clicked() {
+                    q.push(Command::PixelOptics);
                 }
                 if ui.button("Corner / Sweep Manager…").clicked() {
                     q.push(Command::SweepManager);
@@ -3020,6 +3073,8 @@ impl IcStudio {
             ("Dummy fill (metal density)".into(), "", Command::DummyFill),
             ("OPC (optical proximity correction)".into(), "", Command::Opc),
             ("Waveform calculator".into(), "", Command::Calculator),
+            ("Pixel optics (QE, crosstalk, photocurrent)".into(), "", Command::PixelOptics),
+            ("Run pixel optics model".into(), "", Command::RunPixelOptics),
             ("Corner / sweep manager".into(), "", Command::SweepManager),
             ("Monte Carlo (process and mismatch of device models)".into(), "", Command::MonteCarlo),
             ("Run Monte Carlo".into(), "", Command::RunMonteCarlo),
@@ -4302,6 +4357,10 @@ impl IcStudio {
         &mut self.opc
     }
 
+    pub fn pixel_optics(&self) -> &PixelOptics {
+        &self.pixel
+    }
+
     pub fn calculator(&self) -> &Calculator {
         &self.calc
     }
@@ -4575,6 +4634,17 @@ impl eframe::App for IcStudio {
         let active = self.active.clone();
         let sim = active.as_ref().and_then(|r| self.sims.get_mut(r));
         self.calc.window(&ctx, active.as_ref(), sim);
+        match self.pixel.window(&ctx) {
+            Some(PixelAction::Load) => {
+                if let Some(path) = rfd::FileDialog::new().add_filter("Pixel stack", &["toml"]).pick_file()
+                    && let Err(e) = self.pixel.load(path)
+                {
+                    self.warn(e);
+                }
+            }
+            Some(PixelAction::SetSource { source, amps }) => self.set_photocurrent(&source, amps),
+            None => {}
+        }
         self.sweep_window(&ctx);
         self.monte_carlo_window(&ctx);
         self.results_window(&ctx);

@@ -1,0 +1,41 @@
+# Back-side illuminated 1.4 µm pixel (generic, for illustration).
+# Layers are listed top to bottom below the microlens; the anti-reflection films sit on the
+# silicon. Materials and all keys: see the Pixel Optics page of the user guide.
+name = "BSI 1.4 um"
+pitch = 1.4
+
+[microlens]
+height = 0.55            # gapless cap (base radius = half the pixel diagonal)
+
+[[layers]]
+name = "planarisation"
+material = "resin"
+thickness = 0.1
+
+[[layers]]
+name = "colour filter"
+kind = "color_filter"
+thickness = 0.6
+
+[[layers]]
+name = "metal grid"
+material = "sio2"
+thickness = 0.25
+grid = { material = "w", width = 0.1 }
+
+[[layers]]
+name = "buffer oxide"
+material = "sio2"
+thickness = 0.1
+
+[[arc]]
+material = "ta2o5"
+thickness = 0.055
+
+[[arc]]
+material = "hfo2"
+thickness = 0.01
+
+[photodiode]
+top = 0.05               # µm below the silicon surface
+bottom = 3.0

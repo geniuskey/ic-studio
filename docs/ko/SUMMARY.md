@@ -19,6 +19,7 @@
 - [회로도 기반 레이아웃](schematic-driven-layout.md)
 - [공정 기술(Technology)](technology.md)
 - [도구: 계산기, 스윕, 생성기 등](tools.md)
+- [픽셀 광학: QE, 크로스토크, 광전류](pixel-optics.md)
 
 # 자동화
 

@@ -1,0 +1,110 @@
+<!-- seo title="Image Sensor Pixel Optics: QE, Crosstalk, Photocurrent" description="Simulate an image sensor pixel stack in IC Studio: microlens, colour filters, metal grid and anti-reflection films give quantum efficiency, optical crosstalk at a chief ray angle, and the photocurrent of the pixel circuit." -->
+
+# Pixel optics
+
+IC Studio models the optics of an image sensor pixel from its stack: microlens, colour
+filters, dielectrics and metal grid, anti-reflection films and the silicon photodiode. It
+gives the quantum efficiency (QE) of each Bayer colour, the optical crosstalk at a chief ray
+angle (CRA), where the light is lost, and the photocurrent for an illuminance, which goes
+straight into the pixel circuit's simulation.
+
+![Pixel Optics window](screenshots/tool_pixel_optics.png)
+
+- GUI: **Simulation > Pixel Optics…** (or the command palette). Edit the stack, set the CRA
+  and the illumination, **Run**, then **Apply to schematic** to write the photocurrent of a
+  colour into a current source of the open cell (undoable).
+- CLI: `ics pixel pixels/bsi_1p4um.toml --cra 20 --lux 100 --cct 5000`, with `--json` for
+  the full result and `--set PROJECT CELL I1 --color Gr` to write the photocurrent into a
+  current source.
+
+Example stacks ship in `pixels/`: a back-side illuminated 1.4 µm pixel and a front-side
+illuminated 2.8 µm pixel with three metal levels.
+
+## The model
+
+Rays start uniformly over one 2 × 2 Bayer cell of an infinite array, as a plane wave at the
+chief ray angle. Each ray
+
+1. refracts at its pixel's spherical-cap microlens (or between caps onto the lens base),
+2. passes the thick layers top to bottom, refracting at each interface and losing the
+   Fresnel reflection; in the colour filter it is absorbed according to the filter it is in
+   at each depth, so light crossing into a neighbour's filter is filtered by that filter;
+   metal grid lines stop it,
+3. enters silicon with the transmission of the anti-reflection films at its angle (coherent
+   thin-film optics, s and p averaged),
+4. is absorbed along its path in silicon. Carriers generated between the photodiode's top
+   and bottom depth count for the pixel above the point of generation.
+
+QE is carriers collected per photon incident on the pixel. Crosstalk is the fraction of the
+light entering through a pixel's microlens that another pixel collects. The budget splits the
+light into reflected, absorbed in the colour filter, metal, other layers, silicon above the
+photodiode, collected, and silicon below it (or transmitted).
+
+Limits: this is geometric optics. Diffraction matters once the pitch nears the wavelength
+(sub-micron pixels), and is not modelled; nor are electrical crosstalk (carrier diffusion),
+reflections back up from the grid or the silicon, or thin-film interference inside the thick
+layers. Treat the result as a first-order design aid; an RCWA / FDTD solver is planned.
+
+## Stack file
+
+```toml
+name = "BSI 1.4 um"
+pitch = 1.4                    # µm
+
+[microlens]
+height = 0.55                  # cap height
+# radius = 0.99                # base radius; default half the pixel diagonal (gapless)
+# material = "resin"
+
+[[layers]]                     # thick layers below the lens, top to bottom
+name = "colour filter"
+kind = "color_filter"          # takes each pixel's filter
+thickness = 0.6
+
+[[layers]]
+name = "metal grid"
+material = "sio2"
+thickness = 0.25
+grid = { material = "w", width = 0.1 }   # lines centred on the pixel boundaries
+
+[[arc]]                        # thin films on the silicon, top to bottom
+material = "ta2o5"
+thickness = 0.055
+
+[photodiode]
+top = 0.05                     # collection depth below the surface (µm)
+bottom = 3.0
+
+[color_filters]                # optional: own filter materials
+# red = "my_red"
+
+[materials.my_red]             # optional: own materials
+# n = 1.6, k = 0.0, or a table of [wavelength µm, n, k] rows:
+# table = [[0.40, 1.62, 0.30], [0.60, 1.60, 0.002], [0.80, 1.59, 0.0]]
+```
+
+`ambient` sets the medium above the lens (default `air`).
+
+## Materials
+
+| Name | Data |
+|---|---|
+| `si` | crystalline silicon at 300 K, M. A. Green (2008) |
+| `sio2` | fused silica, I. H. Malitson (1965) |
+| `si3n4` | K. Luke et al. (2015) |
+| `hfo2` | M. F. Al-Kuhaili (2004) |
+| `ta2o5` | L. Gao et al. (2012) |
+| `w`, `al` | A. D. Rakić et al. (1998) |
+| `resin` | generic microlens resin, n = 1.55 + 0.005/λ² |
+| `cf_red`, `cf_green`, `cf_blue` | generic pigment filters (passbands with a few % leakage, transparent in the near infrared) |
+| `air` | 1 |
+
+Tabulated data come from the refractiveindex.info database (public domain), 0.30 - 1.20 µm.
+The colour filters are generic shapes, not a vendor's dyes: use measured `n, k` of your filter
+materials for real designs.
+
+## Photocurrent
+
+The illuminant is a blackbody at the colour temperature, scaled to the illuminance at the
+pixel with the CIE 1924 photopic curve; light above the IR-cut edge (default 650 nm, 0 for
+none) is removed. The photocurrent of a pixel is q ∫ QE(λ) E(λ) λ / (hc) dλ times its area.

@@ -155,6 +155,12 @@ Linux needs the usual windowing libraries:
   ripping up and rerouting nets that block each other
 - Cross-probing: selecting a device in one view selects it in the other
 
+**Image sensor pixels** ([guide](https://pages.euiyun.com/ic-studio/pixel-optics.html))
+- Pixel optics: microlens, colour filters, metal grid and anti-reflection films over the
+  silicon photodiode give the QE of each Bayer colour, optical crosstalk at a chief ray angle
+  and the light budget; the photocurrent for an illuminance goes into the pixel circuit
+  (`ics pixel`, **Pixel Optics** window). Material data from refractiveindex.info
+
 **Tools** ([guide](https://pages.euiyun.com/ic-studio/tools.html))
 - Waveform calculator: `bandwidth`, `ugf`, `phasemargin`, `risetime`, `cross`, `delay`,
   `rms`, `deriv`, ... on simulation results, with derived waveforms plotted
@@ -348,9 +354,10 @@ fit for production use, including the optics of image sensors.
 2. **Fit into existing flows**: Done: Virtuoso technology files (`.tf`, `display.drf`, layer
    map), sign-off results from runs made elsewhere (Calibre, KLayout, netgen), DSPF
    post-layout netlists, Spectre / CDL netlists. Next: OpenAccess / Virtuoso design data.
-3. **Image sensor pixels**: a pixel stack (microlens, colour filter, dielectrics, metal,
-   silicon) with thin-film and ray optics, later RCWA / FDTD; QE, crosstalk and chief-ray
-   angle; photocurrent into the pixel circuit simulation, metal layers from the layout.
+3. **Image sensor pixels**: Done: a pixel stack (microlens, colour filter, dielectrics, metal
+   grid, anti-reflection films, silicon) with ray and thin-film optics giving QE, crosstalk
+   at a chief ray angle and the photocurrent of the pixel circuit (`ics pixel`, **Pixel
+   Optics**). Next: RCWA / FDTD for sub-micron pitches, metal layers from the layout.
 4. **Prediction and process**: surrogate models for yield and specs, silicon-to-simulation
    correlation, process emulation (3-D cross-sections from layout and process steps) and
    process data management.

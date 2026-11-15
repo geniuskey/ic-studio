@@ -19,6 +19,7 @@
 - [Schematic-driven layout](schematic-driven-layout.md)
 - [Technology](technology.md)
 - [Tools: calculator, sweeps, generators and more](tools.md)
+- [Pixel optics: QE, crosstalk, photocurrent](pixel-optics.md)
 
 # Automation
 

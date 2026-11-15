@@ -1,0 +1,63 @@
+# Front-side illuminated 2.8 µm pixel (generic): the light passes the metal stack, whose
+# lines narrow the opening over the photodiode.
+name = "FSI 2.8 um"
+pitch = 2.8
+
+[microlens]
+height = 0.8
+
+[[layers]]
+name = "planarisation"
+material = "resin"
+thickness = 0.3
+
+[[layers]]
+name = "colour filter"
+kind = "color_filter"
+thickness = 0.8
+
+[[layers]]
+name = "passivation"
+material = "si3n4"
+thickness = 0.3
+
+[[layers]]
+name = "metal 3"
+material = "sio2"
+thickness = 0.5
+grid = { material = "al", width = 0.6 }
+
+[[layers]]
+name = "IMD 2"
+material = "sio2"
+thickness = 0.6
+
+[[layers]]
+name = "metal 2"
+material = "sio2"
+thickness = 0.4
+grid = { material = "al", width = 0.8 }
+
+[[layers]]
+name = "IMD 1"
+material = "sio2"
+thickness = 0.6
+
+[[layers]]
+name = "metal 1"
+material = "sio2"
+thickness = 0.3
+grid = { material = "al", width = 1.0 }
+
+[[layers]]
+name = "PMD"
+material = "sio2"
+thickness = 0.5
+
+[[arc]]
+material = "si3n4"
+thickness = 0.06
+
+[photodiode]
+top = 0.1
+bottom = 3.5

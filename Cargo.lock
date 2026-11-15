@@ -1782,6 +1782,7 @@ dependencies = [
  "clap",
  "ics-core",
  "ics-mcp",
+ "ics-optics",
  "ics-sim",
  "serde_json",
 ]
@@ -1808,6 +1809,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ics-optics"
+version = "0.2.4"
+dependencies = [
+ "num-complex",
+ "serde",
+ "serde_json",
+ "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
 name = "ics-sim"
 version = "0.2.4"
 dependencies = [
@@ -1827,6 +1838,7 @@ dependencies = [
  "egui_plot",
  "ics-core",
  "ics-mcp",
+ "ics-optics",
  "ics-sim",
  "rfd",
  "serde",

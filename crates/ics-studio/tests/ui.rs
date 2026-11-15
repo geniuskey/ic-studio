@@ -476,6 +476,28 @@ fn waveform_calculator() {
     shot(&mut h, "32_calculator");
 }
 
+/// Pixel Optics: the example BSI stack's colour responses, and its photocurrent written into
+/// the 3T pixel's current source.
+#[test]
+fn pixel_optics() {
+    let mut h = app(demo_args("aps3t", "schematic", false));
+    settle(&mut h, "pixel optics");
+    h.state_mut().command(Command::RunPixelOptics);
+    h.run_steps(3);
+    let px = h.state().pixel_optics();
+    let r = px.result.as_ref().unwrap().as_ref().unwrap();
+    let at = |c: usize, l: f64| r.qe[c][r.wavelengths.iter().position(|&x| (x - l).abs() < 1e-9).unwrap()];
+    assert!(at(3, 0.45) > 0.5 && at(1, 0.54) > 0.5 && at(0, 0.63) > 0.4, "{:?}", r.qe);
+    let green = px.currents.unwrap()[1];
+    h.state_mut().command(Command::ApplyPhotocurrent("I1".into(), 1));
+    h.run_steps(2);
+    let cell = h.state().project().unwrap().cell(&ics_core::CellRef::new("work", "aps3t")).unwrap();
+    let i1 = cell.schematic.as_ref().unwrap().instances.iter().find(|i| i.name == "I1").unwrap();
+    let dc = ics_core::units::parse_spice(i1.param("dc")).unwrap();
+    assert!((dc / green - 1.0).abs() < 1e-3, "{dc} vs {green}");
+    shot(&mut h, "34_pixel_optics");
+}
+
 /// Corner / Sweep Manager: sweep R1 and check the bandwidth spec on every point.
 #[test]
 fn sweep_manager() {

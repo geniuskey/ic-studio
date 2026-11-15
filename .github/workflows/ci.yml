@@ -39,7 +39,7 @@ jobs:
       - name: Build all crates
         run: cargo build --workspace --all-targets
       - name: Core, simulator and CLI tests
-        run: cargo test -p ics-core -p ics-sim -p ics-cli
+        run: cargo test -p ics-core -p ics-sim -p ics-optics -p ics-cli
       - name: Headless UI tests (software Vulkan)
         if: runner.os == 'Linux'
         run: cargo test -p ics-studio --test ui -- --test-threads=1

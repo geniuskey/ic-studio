@@ -40,6 +40,7 @@ it with `cargo build --release -p ics-cli` (binary `target/release/ics`) or run 
 | `ics drc <PROJECT> <CELL> [--deck FILE] [--fix]` | Run DRC (the deck may be SVRF); exit 1 on violations |
 | `ics extract <PROJECT> <CELL>` | Print the extracted netlist as SPICE |
 | `ics lvs <PROJECT> <CELL>` | Compare layout and schematic; exit 1 on differences |
+| `ics pixel <STACK> [--cra DEG] [--lux L --cct K --ir-cut NM] [--set PROJECT CELL INST --color C] [--json]` | Image sensor pixel optics: QE, crosstalk, photocurrent (see [Pixel optics](pixel-optics.md)) |
 | `ics results <PROJECT> <CELL> <FILE>` | Show sign-off results made elsewhere (Calibre, KLayout, netgen); exit 1 on violations or a mismatch |
 | `ics emir <PROJECT> <CELL> --net NET [--currents FILE] [--json]` | IR drop and electromigration of a net from its labelled pins; currents per layout device (JSON) or from the schematic's operating point; exit 1 on EM violations |
 | `ics opc <PROJECT> <CELL> --layer LAYER [--apply] [--sigma UM] [--threshold T] [--fragment UM] [--max-out UM] [--max-in UM] [--iterations N] [--gain G] [--json]` | Optical proximity correction of a layer: EPE without and with correction; `--apply` writes the mask to `<LAYER>_opc` (replacing the previous mask; the drawn layer is never changed) and saves |

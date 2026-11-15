@@ -328,6 +328,41 @@ enum Cmd {
     /// Calibre ASCII results database or LVS report, netgen report. Non-zero exit on violations
     /// or an LVS mismatch.
     Results { project: PathBuf, cell: String, file: PathBuf },
+    /// Image sensor pixel optics: quantum efficiency, crosstalk and losses of a pixel stack
+    /// (TOML, see `pixels/`), and with `--lux` the photocurrent, optionally written into a
+    /// current source of a pixel circuit (`--set PROJECT CELL INSTANCE`).
+    Pixel {
+        stack: PathBuf,
+        /// Chief ray angle (degrees) and its azimuth from +x (degrees).
+        #[arg(long, default_value_t = 0.0)]
+        cra: f64,
+        #[arg(long, default_value_t = 0.0)]
+        azimuth: f64,
+        /// Wavelength range and step (nm).
+        #[arg(long, default_value = "380:1000:10")]
+        range: String,
+        /// Rays per pixel side.
+        #[arg(long, default_value_t = 40)]
+        rays: usize,
+        /// Illuminance at the pixel (lux) for the photocurrent.
+        #[arg(long)]
+        lux: Option<f64>,
+        /// Colour temperature of the (blackbody) illuminant (K).
+        #[arg(long, default_value_t = 5000.0)]
+        cct: f64,
+        /// IR-cut filter edge (nm); 0 for none.
+        #[arg(long, default_value_t = 650.0)]
+        ir_cut: f64,
+        /// Write the photocurrent of `--color` into the DC value of a current source:
+        /// PROJECT CELL INSTANCE. Saves the project.
+        #[arg(long, num_args = 3, value_names = ["PROJECT", "CELL", "INSTANCE"])]
+        set: Option<Vec<String>>,
+        /// Pixel colour for `--set`: R, Gr, Gb or B.
+        #[arg(long, default_value = "Gr")]
+        color: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Replace the technology with a PDK file (TOML: layers, vias, devices, models; see
     /// `pdks/sky130A.toml`). Variables like ${PDK_ROOT} in its paths come from the environment.
     LoadPdk { project: PathBuf, pdk: PathBuf },
@@ -773,6 +808,79 @@ fn run(cli: Cli) -> Result<(), String> {
             print_drc(&rep, &d, p.tech.dbu_per_um);
             if !rep.violations.is_empty() {
                 return Err("DRC failed".into());
+            }
+        }
+        Cmd::Pixel { stack, cra, azimuth, range, rays, lux, cct, ir_cut, set, color, json } => {
+            use ics_optics::pixel::{COLORS, Settings};
+            let text = std::fs::read_to_string(&stack).map_err(|e| format!("{}: {e}", stack.display()))?;
+            let st = ics_optics::PixelStack::from_toml(&text).map_err(|e| format!("{}: {e}", stack.display()))?;
+            let r: Vec<f64> = range
+                .split(':')
+                .map(|v| v.parse::<f64>().map_err(|_| format!("bad --range '{range}'")))
+                .collect::<Result<_, _>>()?;
+            let [a, b, step] = r[..] else { return Err("--range is START:STOP:STEP in nm".into()) };
+            if !(step > 0.0 && b >= a) {
+                return Err("--range is START:STOP:STEP in nm".into());
+            }
+            let n = ((b - a) / step + 1e-9).floor() as usize;
+            let wavelengths: Vec<f64> = (0..=n).map(|i| (a + i as f64 * step) / 1000.0).collect();
+            let res =
+                ics_optics::simulate(&st, &Settings { wavelengths: wavelengths.clone(), cra, azimuth, rays_per_side: rays })?;
+            let currents: Option<Vec<f64>> = lux.map(|lux| {
+                let cut = (ir_cut > 0.0).then_some(ir_cut / 1000.0);
+                let sp = ics_optics::light::Spectrum::blackbody(&wavelengths, cct, lux, cut);
+                (0..4).map(|c| sp.photocurrent(&res.qe[c], st.pitch * st.pitch)).collect()
+            });
+            if json {
+                let mut v = serde_json::to_value(&res).map_err(|e| e.to_string())?;
+                if let Some(cur) = &currents {
+                    v["photocurrent"] = serde_json::json!({"lux": lux, "cct": cct, "ir_cut_nm": ir_cut, "amps": cur});
+                }
+                println!("{v}");
+            } else {
+                println!("{}: pitch {} um, CRA {cra} deg, {} rays per Bayer cell", st.name, st.pitch, res.rays);
+                println!("{:>6} {:>7} {:>7} {:>7} {:>7}   crosstalk (Gr)", "nm", "QE R", "QE Gr", "QE Gb", "QE B");
+                let every = ((20.0 / step).round() as usize).max(1);
+                for (i, l) in wavelengths.iter().enumerate().step_by(every) {
+                    println!(
+                        "{:>6.0} {:>7.3} {:>7.3} {:>7.3} {:>7.3}   {:.3}",
+                        l * 1000.0,
+                        res.qe[0][i],
+                        res.qe[1][i],
+                        res.qe[2][i],
+                        res.qe[3][i],
+                        res.crosstalk[1][i]
+                    );
+                }
+                for (c, name) in COLORS.iter().enumerate() {
+                    let (k, peak) = res.qe[c].iter().enumerate().fold((0, 0.0), |m, (k, &q)| if q > m.1 { (k, q) } else { m });
+                    println!("peak {name:<2} {:.3} at {:.0} nm", peak, wavelengths[k] * 1000.0);
+                }
+                if let Some(cur) = &currents {
+                    println!("photocurrent at {} lux, {cct} K, IR cut {ir_cut} nm:", lux.unwrap_or(0.0));
+                    for (c, name) in COLORS.iter().enumerate() {
+                        println!("  {name:<2} {:.4e} A", cur[c]);
+                    }
+                }
+            }
+            if let Some(set) = set {
+                let cur = currents.ok_or("--set needs --lux")?;
+                let c = COLORS
+                    .iter()
+                    .position(|n| n.eq_ignore_ascii_case(&color))
+                    .ok_or(format!("--color must be one of {COLORS:?}"))?;
+                let mut p = Project::open(std::path::Path::new(&set[0])).map_err(|e| e.to_string())?;
+                let r = resolve(&p, &set[1])?;
+                let sch = p.cell_mut(&r).and_then(|c| c.schematic.as_mut()).ok_or("cell has no schematic")?;
+                let inst = sch
+                    .instances
+                    .iter_mut()
+                    .find(|i| i.name.eq_ignore_ascii_case(&set[2]) && i.kind == ics_core::schematic::DeviceKind::ISource)
+                    .ok_or(format!("no current source '{}' in {r}", set[2]))?;
+                let value = format!("{:.6e}", cur[c]);
+                inst.params.insert("dc".into(), value.clone());
+                p.save().map_err(|e| e.to_string())?;
+                eprintln!("{r}: {} dc = {value} A ({} pixel)", set[2], COLORS[c]);
             }
         }
         Cmd::Results { project, cell, file } => {
