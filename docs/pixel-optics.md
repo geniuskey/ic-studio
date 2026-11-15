@@ -17,8 +17,49 @@ straight into the pixel circuit's simulation.
   the full result and `--set PROJECT CELL I1 --color Gr` to write the photocurrent into a
   current source. `--method rcwa [--harmonics 11]` selects the rigorous solver.
 
-Example stacks ship in `pixels/`: a back-side illuminated 1.4 µm pixel and a front-side
-illuminated 2.8 µm pixel with three metal levels.
+Example stacks ship in `pixels/`: a back-side illuminated 1.4 µm pixel, a front-side
+illuminated 2.8 µm pixel with three metal levels, and the demo 3T pixel read from its layout.
+
+## From the layout
+
+A stack can take its pitch, metal patterns and photodiode from a pixel cell's layout:
+
+```toml
+[layout]
+cell = "aps3t"
+boundary = "boundary"                 # the pixel frame; the pitch follows from it
+
+[microlens]
+height = 2.5
+center = "photodiode"                 # or offset = [dx, dy] in µm
+
+[[layers]]
+name = "metal 1"
+material = "sio2"
+thickness = 0.5
+pattern = { material = "al", layout = "metal1" }
+
+[photodiode]
+top = 0.1
+bottom = 3.0
+layout = "active not interact poly"   # diffusion without a gate
+```
+
+`layout` takes a technology layer or a derived-layer expression of the DRC deck syntax
+(`and`, `not`, `interact`, `inside`, `size`, ...). The shapes are clipped to the frame and
+repeated in every pixel. Patterns can also be written directly as
+`rects = [[x0, y0, x1, y1], ...]` (µm from the pixel's corner). The photodiode area limits
+collection laterally; light absorbed beside it is reported as lost. `center = "photodiode"`
+shifts each microlens over the photodiode's centre.
+
+- CLI: `ics pixel pixels/aps3t_fsi.toml --project <project> --lux 100`
+- GUI: **Demo pixel (layout)** in the Pixel Optics window reads the open project. The plan
+  view shows the patterns, the photodiode and the lens.
+
+On the demo pixel, whose photodiode sits at the edge of the 10.2 µm pixel, centring the
+lens raises the green QE at 530 nm from 0.106 to 0.176.
+
+![Pixel Optics with the demo pixel's layout](screenshots/tool_pixel_optics_layout.png)
 
 ## Two solvers
 
@@ -29,10 +70,11 @@ illuminated 2.8 µm pixel with three metal levels.
   cell, so it includes diffraction, interference in every layer and the near field of the
   grid; use it for pixels around 1.5 µm and below. The microlens is staircased in 8 slices.
   Accuracy grows with the harmonics per direction (`--harmonics`, the **Harmonics** field):
-  for the 1.4 µm example the green peak moves 0.576 → 0.585 → 0.586 → 0.591 for 9, 11, 15, 19
-  harmonics. 11 harmonics over 63 wavelengths take about 8 s on 10 cores. Metal grids converge
-  more slowly (permittivities use Laurent's rule). RCWA reports no per-lens crosstalk, and
-  absorption above the silicon is one figure.
+  for the 1.4 µm example the green QE at 550 nm is 0.589, 0.596, 0.592 and 0.594 for 9, 11,
+  15 and 19 harmonics. 11 harmonics over 63 wavelengths take about 8 s on 10 cores. In-plane
+  permittivities follow Li's factorisation rules, so metal patterns converge; a pattern needs
+  enough harmonics to resolve its smallest opening against the 2 × 2 cell. RCWA reports no
+  per-lens crosstalk, and absorption above the silicon is one figure.
 
 The solvers agree exactly without patterned layers (both reduce to thin-film optics); on the
 1.4 µm example the ray model gives a green peak of 0.71 and RCWA 0.61, the difference being

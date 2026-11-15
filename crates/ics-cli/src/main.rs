@@ -344,6 +344,9 @@ enum Cmd {
         /// Rays per pixel side (ray model).
         #[arg(long, default_value_t = 40)]
         rays: usize,
+        /// Project whose layout fills the stack's `layout` entries (`[layout] cell = ...`).
+        #[arg(long)]
+        project: Option<PathBuf>,
         /// Solver: `ray` (geometric rays, fast) or `rcwa` (rigorous coupled-wave analysis,
         /// includes diffraction; slower).
         #[arg(long, default_value = "ray")]
@@ -817,7 +820,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 return Err("DRC failed".into());
             }
         }
-        Cmd::Pixel { stack, cra, azimuth, range, rays, method, harmonics, lux, cct, ir_cut, set, color, json } => {
+        Cmd::Pixel { stack, cra, azimuth, range, rays, project, method, harmonics, lux, cct, ir_cut, set, color, json } => {
             use ics_optics::pixel::{COLORS, Method, Settings};
             let method = match method.to_ascii_lowercase().as_str() {
                 "ray" => Method::Ray,
@@ -825,7 +828,21 @@ fn run(cli: Cli) -> Result<(), String> {
                 other => return Err(format!("unknown --method '{other}' (ray, rcwa)")),
             };
             let text = std::fs::read_to_string(&stack).map_err(|e| format!("{}: {e}", stack.display()))?;
-            let st = ics_optics::PixelStack::from_toml(&text).map_err(|e| format!("{}: {e}", stack.display()))?;
+            let mut st = ics_optics::PixelStack::from_toml(&text).map_err(|e| format!("{}: {e}", stack.display()))?;
+            if let Some(src) = st.layout.clone() {
+                let pdir =
+                    project.as_ref().ok_or(format!("{}: reads the layout of {}; give --project", stack.display(), src.cell))?;
+                let p = Project::open(pdir).map_err(|e| e.to_string())?;
+                let r = resolve(&p, &src.cell)?;
+                let px = ics_core::pixel_layout::PixelLayout::new(&p, &r, src.boundary.as_deref())?;
+                st.fill_from_layout(px.size_um(), |e| px.rects_um(e))?;
+                eprintln!(
+                    "{r}: {:.2} x {:.2} um pixel, photodiode {} rectangle(s)",
+                    px.size_um().0,
+                    px.size_um().1,
+                    st.photodiode.rects.len()
+                );
+            }
             let r: Vec<f64> = range
                 .split(':')
                 .map(|v| v.parse::<f64>().map_err(|_| format!("bad --range '{range}'")))

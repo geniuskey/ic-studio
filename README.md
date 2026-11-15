@@ -358,8 +358,8 @@ fit for production use, including the optics of image sensors.
 3. **Image sensor pixels**: Done: a pixel stack (microlens, colour filter, dielectrics, metal
    grid, anti-reflection films, silicon) with ray and thin-film optics giving QE, crosstalk
    at a chief ray angle and the photocurrent of the pixel circuit (`ics pixel`, **Pixel
-   Optics**); an RCWA solver for small pitches. Next: metal layers from the layout, electrical
-   crosstalk.
+   Optics**); an RCWA solver for small pitches; metal patterns, photodiode and pitch read from
+   the pixel's layout. Next: electrical crosstalk.
 4. **Prediction and process**: surrogate models for yield and specs, silicon-to-simulation
    correlation, process emulation (3-D cross-sections from layout and process steps) and
    process data management.

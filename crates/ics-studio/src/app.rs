@@ -895,7 +895,7 @@ impl IcStudio {
             Command::PixelOptics => self.pixel.show(),
             Command::RunPixelOptics => {
                 self.pixel.show();
-                self.pixel.run(None);
+                self.pixel.run(None, self.project.as_ref());
                 // Automation waits for an RCWA run to finish.
                 self.pixel.wait();
                 match &self.pixel.result {
@@ -4642,12 +4642,14 @@ impl eframe::App for IcStudio {
         self.calc.window(&ctx, active.as_ref(), sim);
         match self.pixel.window(&ctx) {
             Some(PixelAction::Load) => {
-                if let Some(path) = rfd::FileDialog::new().add_filter("Pixel stack", &["toml"]).pick_file()
-                    && let Err(e) = self.pixel.load(path)
-                {
-                    self.warn(e);
+                if let Some(path) = rfd::FileDialog::new().add_filter("Pixel stack", &["toml"]).pick_file() {
+                    match self.pixel.load(path) {
+                        Ok(()) => self.pixel.run(Some(&ctx), self.project.as_ref()),
+                        Err(e) => self.warn(e),
+                    }
                 }
             }
+            Some(PixelAction::Run) => self.pixel.run(Some(&ctx), self.project.as_ref()),
             Some(PixelAction::SetSource { source, amps }) => self.set_photocurrent(&source, amps),
             None => {}
         }

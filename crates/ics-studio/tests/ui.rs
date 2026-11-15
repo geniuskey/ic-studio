@@ -510,6 +510,21 @@ fn pixel_optics() {
         h.run_steps(3);
         shot(&mut h, "35_pixel_optics_rcwa");
     }
+    // The demo pixel itself: metals and photodiode from the open project's layout, with the
+    // lens centred over the photodiode.
+    h.state_mut().pixel_optics_mut().rcwa = false;
+    h.state_mut().pixel_optics_mut().text = include_str!("../../../pixels/aps3t_fsi.toml").to_string();
+    h.state_mut().command(Command::RunPixelOptics);
+    h.run_steps(3);
+    let px = h.state().pixel_optics();
+    let r = px.result.as_ref().unwrap().as_ref().unwrap();
+    let st = px.stack.as_ref().unwrap();
+    assert!((st.pitch - 10.2).abs() < 1e-9 && st.photodiode.rects.len() == 1);
+    assert!(st.layers.iter().filter(|l| l.pattern.as_ref().is_some_and(|p| !p.rects.is_empty())).count() == 3);
+    assert!(st.microlens.as_ref().unwrap().offset[0] < -3.0, "lens over the photodiode");
+    let g = r.qe[1][r.wavelengths.iter().position(|&l| (l - 0.53).abs() < 1e-9).unwrap()];
+    assert!((0.1..0.4).contains(&g), "{g}");
+    shot(&mut h, "36_pixel_optics_layout");
 }
 
 /// Corner / Sweep Manager: sweep R1 and check the bandwidth spec on every point.

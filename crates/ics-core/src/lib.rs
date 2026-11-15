@@ -29,6 +29,7 @@ pub mod optimize;
 pub mod pcell;
 pub mod pdk;
 pub mod pex;
+pub mod pixel_layout;
 pub mod polybool;
 pub mod project;
 pub mod region;

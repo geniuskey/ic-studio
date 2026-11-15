@@ -2,7 +2,10 @@
 //! with a permittivity pattern each, between a semi-infinite incidence medium and a
 //! semi-infinite substrate. Scattering-matrix formulation after R. C. Rumpf, "Improved
 //! formulation of scattering matrices for semi-analytical methods that is consistent with
-//! convention", PIER B 35, 241 (2011); permittivities in Fourier space with Laurent's rule.
+//! convention", PIER B 35, 241 (2011). In patterned layers the in-plane permittivities follow
+//! L. Li's factorisation rules for crossed gratings (J. Opt. Soc. Am. A 14, 2758 (1997)): the
+//! inverse rule across the field's discontinuities and Laurent's rule along them, which makes
+//! metal patterns converge; εzz uses Laurent's rule.
 //!
 //! Units: µm. Inputs are physical complex indices `n + ik`; internally the engineering sign
 //! convention of the formulation (loss as negative imaginary permittivity) is used. The result
@@ -152,6 +155,52 @@ fn fourier(nx: usize, ny: usize, s: &[C], px: i64, py: i64) -> Vec<C> {
     out
 }
 
+/// 1-D Fourier coefficients c(d) = mean of f exp(-i 2π d k / n) for |d| ≤ dmax, indexed d + dmax.
+fn fourier_1d(f: &[C], dmax: i64) -> Vec<C> {
+    let n = f.len();
+    let tau = 2.0 * std::f64::consts::PI;
+    (-dmax..=dmax)
+        .map(|d| {
+            let mut acc = C::new(0.0, 0.0);
+            for (k, v) in f.iter().enumerate() {
+                let ph = -tau * d as f64 * (k as f64 + 0.5) / n as f64;
+                acc += v * C::new(ph.cos(), ph.sin());
+            }
+            acc / n as f64
+        })
+        .collect()
+}
+
+/// Li's mixed rule for a sampled pattern: the inverse rule along `inv_axis` (0 = x, 1 = y),
+/// Laurent's rule along the other; returned on the (p, q) order list.
+fn li_matrix(nx: usize, ny: usize, s: &[C], px: i64, py: i64, pq: &[(i64, i64)], inv_axis: usize) -> M {
+    let n = pq.len();
+    let (h_inv, n_inv, n_lau) = if inv_axis == 0 { (px, nx, ny) } else { (py, ny, nx) };
+    let hi = (2 * h_inv + 1) as usize;
+    // For every line along the inverse axis: the inverse of the Toeplitz matrix of 1/ε.
+    let lines: Vec<M> = (0..n_lau)
+        .map(|l| {
+            let f: Vec<C> =
+                (0..n_inv).map(|k| C::new(1.0, 0.0) / if inv_axis == 0 { s[l * nx + k] } else { s[k * nx + l] }).collect();
+            let c = fourier_1d(&f, 2 * h_inv);
+            inv(&Mat::from_fn(hi, hi, |a, b| c[(a as i64 - b as i64 + 2 * h_inv) as usize]))
+        })
+        .collect();
+    // Laurent's rule across the lines.
+    let tau = 2.0 * std::f64::consts::PI;
+    Mat::from_fn(n, n, |i, j| {
+        let ((pi, qi), (pj, qj)) = (pq[i], pq[j]);
+        let (a, b, d) = if inv_axis == 0 { (pi, pj, qi - qj) } else { (qi, qj, pi - pj) };
+        let (ra, rb) = ((a + h_inv) as usize, (b + h_inv) as usize);
+        let mut acc = C::new(0.0, 0.0);
+        for (l, m) in lines.iter().enumerate() {
+            let ph = -tau * d as f64 * (l as f64 + 0.5) / n_lau as f64;
+            acc += m[(ra, rb)] * C::new(ph.cos(), ph.sin());
+        }
+        acc / n_lau as f64
+    })
+}
+
 /// Longitudinal wave number for `kz² = z` (engineering convention, field exp(-i kz z)): the
 /// root that propagates forward (Re ≥ 0) or decays (Im ≤ 0). Chosen explicitly, not by the
 /// sign of a zero imaginary part.
@@ -267,10 +316,13 @@ impl Problem {
                     let p21 = diag_scale_cols(&diag_scale_rows(&ky, &ei), &ky) - identity(n);
                     let p22 = -diag_scale_cols(&diag_scale_rows(&ky, &ei), &kx);
                     let p = blocks(&p11, &p12, &p21, &p22);
+                    // εxx: Ex jumps across x boundaries (inverse rule in x); εyy likewise in y.
+                    let exx = li_matrix(*nx, *ny, &conj, px, py, &pq, 0);
+                    let eyy = li_matrix(*nx, *ny, &conj, px, py, &pq, 1);
                     let q = blocks(
                         &diag(&kxy),
-                        &(&erc - diag(&kx2)),
-                        &(diag(&ky2) - &erc),
+                        &(&eyy - diag(&kx2)),
+                        &(diag(&ky2) - &exx),
                         &diag(&kxy.iter().map(|k| -k).collect::<Vec<_>>()),
                     );
                     let omega2 = &p * &q;

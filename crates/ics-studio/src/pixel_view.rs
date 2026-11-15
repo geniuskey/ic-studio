@@ -12,6 +12,8 @@ use crate::theme;
 
 /// The bundled example stack, shown until another is loaded.
 const EXAMPLE: &str = include_str!("../../../pixels/bsi_1p4um.toml");
+/// The demo 3T pixel read from the open project's layout.
+const LAYOUT_EXAMPLE: &str = include_str!("../../../pixels/aps3t_fsi.toml");
 
 pub struct PixelOptics {
     pub open: bool,
@@ -32,6 +34,8 @@ pub struct PixelOptics {
     pub rcwa: bool,
     pub harmonics: usize,
     job: Option<std::sync::mpsc::Receiver<Outcome>>,
+    /// The stack of the last run, with its layout shapes filled in.
+    pub stack: Option<ics_optics::PixelStack>,
 }
 
 type Outcome = (Result<PixelResult, String>, Option<[f64; 4]>);
@@ -53,6 +57,7 @@ impl Default for PixelOptics {
             rcwa: false,
             harmonics: 11,
             job: None,
+            stack: None,
         }
     }
 }
@@ -65,6 +70,7 @@ pub enum PixelAction {
         amps: f64,
     },
     Load,
+    Run,
 }
 
 impl PixelOptics {
@@ -72,15 +78,41 @@ impl PixelOptics {
         self.open = true;
     }
 
+    /// The stack of the current text, with `layout` entries filled from `project`.
+    fn prepare(&self, project: Option<&ics_core::Project>) -> Result<ics_optics::PixelStack, String> {
+        let mut st = ics_optics::PixelStack::from_toml(&self.text)?;
+        if let Some(src) = st.layout.clone() {
+            let p = project.ok_or(format!("the stack reads the layout of {}; open a project", src.cell))?;
+            let r = match src.cell.split_once('/') {
+                Some((lib, cell)) => ics_core::CellRef::new(lib, cell),
+                None => {
+                    p.all_cells().find(|(_, c)| c.name == src.cell).map(|(r, _)| r).ok_or(format!("no cell '{}'", src.cell))?
+                }
+            };
+            let px = ics_core::pixel_layout::PixelLayout::new(p, &r, src.boundary.as_deref())?;
+            st.fill_from_layout(px.size_um(), |e| px.rects_um(e))?;
+        }
+        Ok(st)
+    }
+
     /// Run the model on the current stack text: at once for the ray model, on a worker thread
-    /// for RCWA (see [`Self::is_running`]).
-    pub fn run(&mut self, ctx: Option<&egui::Context>) {
-        let text = self.text.clone();
+    /// for RCWA (see [`Self::is_running`]). `layout` entries read `project`.
+    pub fn run(&mut self, ctx: Option<&egui::Context>, project: Option<&ics_core::Project>) {
+        let st = match self.prepare(project) {
+            Ok(st) => st,
+            Err(e) => {
+                self.result = Some(Err(e));
+                self.currents = None;
+                self.stack = None;
+                return;
+            }
+        };
+        self.stack = Some(st.clone());
         let (cra, lux, cct, ir_cut) = (self.cra, self.lux, self.cct, self.ir_cut);
         let method = if self.rcwa { Method::Rcwa { harmonics: self.harmonics } } else { Method::Ray };
         let work = move || -> Outcome {
             let wavelengths: Vec<f64> = (0..=62).map(|i| 0.38 + i as f64 * 0.01).collect();
-            let res = ics_optics::PixelStack::from_toml(&text).and_then(|st| {
+            let res = Ok(st).and_then(|st: ics_optics::PixelStack| {
                 let r = ics_optics::simulate(
                     &st,
                     &Settings { wavelengths: wavelengths.clone(), cra, azimuth: 0.0, rays_per_side: 32, method },
@@ -142,7 +174,6 @@ impl PixelOptics {
     pub fn load(&mut self, path: PathBuf) -> Result<(), String> {
         self.text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         self.path = Some(path);
-        self.run(None);
         Ok(())
     }
 
@@ -173,8 +204,16 @@ impl PixelOptics {
                     if ui.button("Load…").clicked() {
                         action = Some(PixelAction::Load);
                     }
-                    if ui.button("Example").clicked() {
+                    if ui.button("BSI example").clicked() {
                         self.text = EXAMPLE.to_string();
+                        self.path = None;
+                    }
+                    if ui
+                        .button("Demo pixel (layout)")
+                        .on_hover_text("The demo 3T pixel's metals and photodiode from the open project")
+                        .clicked()
+                    {
+                        self.text = LAYOUT_EXAMPLE.to_string();
                         self.path = None;
                     }
                 });
@@ -205,12 +244,11 @@ impl PixelOptics {
                         self.harmonics += 1;
                     }
                 }
-                let ctx = ui.ctx().clone();
                 if self.is_running() {
                     ui.add(egui::Spinner::new());
                     ui.label("Running…");
                 } else if ui.button("Run").clicked() {
-                    self.run(Some(&ctx));
+                    action = Some(PixelAction::Run);
                 }
             });
             ui.separator();
@@ -223,8 +261,13 @@ impl PixelOptics {
                 }
                 Some(Ok(r)) => {
                     let colors = [Color32::from_rgb(220, 60, 60), Color32::from_rgb(60, 170, 80), Color32::from_rgb(40, 120, 60), Color32::from_rgb(60, 110, 230)];
+                    let plot_h = ui.available_height() * 0.6;
+                    let stack = self.stack.clone();
+                    ui.horizontal(|ui| {
+                        let plan_w = if stack.is_some() { plot_h.min(260.0) } else { 0.0 };
                     Plot::new("pixel_qe")
-                        .height(ui.available_height() * 0.6)
+                        .height(plot_h)
+                        .width((ui.available_width() - plan_w - 8.0).max(200.0))
                         .legend(Legend::default())
                         .x_axis_label("wavelength (nm)")
                         .y_axis_label("QE")
@@ -243,6 +286,10 @@ impl PixelOptics {
                                 pu.line(Line::new("crosstalk G", pts).color(pal.text_weak).style(egui_plot::LineStyle::dashed_loose()));
                             }
                         });
+                        if let Some(st) = &stack {
+                            plan(ui, st, plan_w, &pal);
+                        }
+                    });
                     ui.horizontal_wrapped(|ui| {
                         for (c, name) in COLORS.iter().enumerate() {
                             let (k, peak) = r.qe[c].iter().enumerate().fold((0, 0.0), |m, (k, &q)| if q > m.1 { (k, q) } else { m });
@@ -253,12 +300,12 @@ impl PixelOptics {
                         let b = r.budget[i];
                         ui.label(
                             RichText::new(format!(
-                                "At 530 nm ({}): collected {:.0} %, reflected {:.0} %, absorbed above the silicon {:.0} %, silicon beyond the photodiode {:.0} %",
+                                "At 530 nm ({}): collected {:.0} %, reflected {:.0} %, absorbed above the silicon {:.0} %, in silicon outside the photodiode {:.0} %",
                                 r.method,
                                 b.collected * 100.0,
                                 b.reflected * 100.0,
                                 (b.color_filter + b.metal + b.other_layers) * 100.0,
-                                (b.silicon_shallow + b.silicon_deep) * 100.0
+                                (b.silicon_shallow + b.silicon_outside + b.silicon_deep) * 100.0
                             ))
                             .color(pal.text_weak),
                         );
@@ -289,4 +336,68 @@ impl PixelOptics {
         });
         action
     }
+}
+
+/// Top view of one pixel: patterned shapes per layer, the photodiode and the lens footprint.
+fn plan(ui: &mut egui::Ui, st: &ics_optics::PixelStack, size: f32, pal: &theme::Palette) {
+    use egui_plot::Polygon;
+    let p = st.pitch;
+    let rect = |r: &[f64; 4]| -> PlotPoints { vec![[r[0], r[1]], [r[2], r[1]], [r[2], r[3]], [r[0], r[3]]].into() };
+    let metal = [
+        Color32::from_rgb(120, 140, 200),
+        Color32::from_rgb(170, 120, 200),
+        Color32::from_rgb(200, 150, 90),
+        Color32::from_rgb(110, 180, 180),
+    ];
+    Plot::new("pixel_plan")
+        .width(size)
+        .height(size)
+        .data_aspect(1.0)
+        .legend(Legend::default())
+        .allow_scroll(false)
+        .allow_drag(false)
+        .show(ui, |pu| {
+            pu.line(
+                Line::new("pixel", PlotPoints::from(vec![[0.0, 0.0], [p, 0.0], [p, p], [0.0, p], [0.0, 0.0]]))
+                    .color(pal.text_weak),
+            );
+            let mut k = 0;
+            for l in &st.layers {
+                if let Some(pt) = &l.pattern {
+                    let c = metal[k % metal.len()];
+                    for r in &pt.rects {
+                        pu.polygon(
+                            Polygon::new(l.name.clone(), rect(r))
+                                .fill_color(c.gamma_multiply(0.35))
+                                .stroke(egui::Stroke::new(1.0, c)),
+                        );
+                    }
+                    k += 1;
+                }
+            }
+            for r in &st.photodiode.rects {
+                let c = Color32::from_rgb(90, 200, 110);
+                pu.polygon(
+                    Polygon::new("photodiode", rect(r)).fill_color(c.gamma_multiply(0.25)).stroke(egui::Stroke::new(2.0, c)),
+                );
+            }
+            if let Some(ml) = &st.microlens {
+                let a = ml.radius.unwrap_or(p / std::f64::consts::SQRT_2);
+                let (cx, cy) = (p / 2.0 + ml.offset[0], p / 2.0 + ml.offset[1]);
+                let circle: Vec<[f64; 2]> = (0..=64)
+                    .map(|i| {
+                        let t = i as f64 / 64.0 * std::f64::consts::TAU;
+                        [
+                            (cx + a * t.cos()).clamp(cx - p / 2.0, cx + p / 2.0),
+                            (cy + a * t.sin()).clamp(cy - p / 2.0, cy + p / 2.0),
+                        ]
+                    })
+                    .collect();
+                pu.line(
+                    Line::new("microlens", PlotPoints::from(circle))
+                        .color(pal.accent)
+                        .style(egui_plot::LineStyle::dashed_dense()),
+                );
+            }
+        });
 }
