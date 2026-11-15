@@ -14,6 +14,7 @@
 | [Optimizer](#optimizer) | ADE GXL Optimization | 활성 셀의 회로도와 스펙 |
 | [Waveform Calculator](#waveform-calculator) | ViVA Calculator | 활성 셀의 시뮬레이션 결과 |
 | [Corner / Sweep Manager](#corner--sweep-manager) | ADE Explorer / Assembler | 활성 셀의 회로도 |
+| [Silicon Correlation](#silicon-correlation) | 측정 데이터와의 모델 보정 / 상관 | 활성 셀의 회로도와 측정 데이터 |
 | [Results Browser](#results-browser) | Results Browser | 활성 셀의 이전 시뮬레이션 실행 |
 | [Check Schematic](#check-schematic) | Check and Save | 활성 회로도 |
 | [Hierarchy Browser](#hierarchy-browser) | Design Hierarchy | 프로젝트의 모든 레이아웃 |
@@ -146,6 +147,37 @@ Q²가 낮으면 스펙이 입력을 매끄럽게 따르지 않는다는 뜻입�
 
 **Run optimizer**는 매 평가의 목적 함수 값을 플롯합니다. **Stop**은 실행을 일찍 끝내고, **Apply best
 to schematic**은 최적 값을 회로도에 씁니다.
+
+## Silicon Correlation
+
+![Silicon Correlation: NMOS 모델 피팅 전후의 Id-Vd 곡선](../screenshots/tool_silicon_correlation.png)
+
+**Tools > Silicon Correlation**은 측정 곡선을 활성 셀의 시뮬레이션과 비교하고, 둘이 맞을 때까지 파라미터를
+피팅합니다. 테스트 구조의 Id-Vd / Id-Vg 곡선으로 모델 카드 보정, 웨이퍼 데이터로 PDK 모델 확인, 측정한
+주파수 응답으로 기생 성분 피팅 등에 씁니다.
+
+- **Measured data**: 헤더 행이 있는 CSV 파일(쉼표, 세미콜론, 탭 구분, `#` 주석 줄, SPICE 접미사 허용).
+  **Load CSV...**는 경로를 프로젝트 기준 상대 경로로 저장합니다.
+- **X column**과 **Analysis**: 스윕한 양이 든 열과 그 스윕을 하는 해석(`dc`, `ac`, `tran`). 셀의 시뮬레이션
+  설정에서 그 스윕을 설정합니다.
+- **Traces**: 측정 열마다 비교할 **시뮬레이션 식**(파형 계산기, 예: `-i(vd)`)과 측정 **바이어스**를
+  `INST.param=value` 또는 `variable=value`(`VG.dc=0.9`)로 씁니다. **Log**는 로그 스케일로 비교합니다(여러
+  디케이드에 걸친 전류).
+- **Parameters**: 모델 카드 파라미터는 `model:NAME.PARAM`(이름이 같은 모든 카드, 빈 카드 `NAME.1`, `NAME.2`
+  포함. PDK 라이브러리는 먼저 평탄화), 인스턴스 파라미터는 `INST.param`, 또는 설계 변수. 각각 **Min** /
+  **Max**와 로그 스케일 탐색용 **Log**가 있습니다.
+
+**Compare**는 모든 바이어스를 시뮬레이션하고 트레이스별 RMS 오차를 보여 줍니다(트레이스의 가장 큰 측정값
+대비 상대 오차, 로그 트레이스는 로그 비). **Fit**은 현재 값에서 시작해 범위 안에서 Levenberg-Marquardt를
+실행합니다(전진 차분 야코비안, 병렬 시뮬레이션). 그래프에 측정점, 피팅 전 모델(점선), 피팅 후 모델이
+표시됩니다. **Copy model cards**는 피팅한 `.model` 카드를 복사하고, **Apply to schematic**은 피팅한 인스턴스
+파라미터를 회로도에 씁니다.
+
+`silicon/`에 예제가 있습니다. `nmos_iv.sp`(게이트와 드레인 전원이 있는 NMOS)와 `nmos_idvd.csv`(vto = 0.52 V,
+kp = 240 µA/V², lambda = 0.05 V⁻¹인 level-1 NMOS에 잡음을 더한 합성 Id-Vd 곡선)입니다. 기본 모델에서 vto, kp,
+lambda를 피팅하면 오차가 81 %에서 0.5 %(잡음 수준)로 줄고 0.520 V, 241 µA/V², 0.048 V⁻¹을 되찾습니다.
+
+명령줄에서는 `ics correlate`([CLI](cli.md#실리콘-상관) 참고), MCP에서는 `correlate_silicon` 도구를 씁니다.
 
 ## Results Browser
 

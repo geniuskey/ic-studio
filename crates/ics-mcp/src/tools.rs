@@ -781,6 +781,31 @@ pub fn definitions() -> Vec<Value> {
             &["cell"],
         ),
         tool(
+            "correlate_silicon",
+            &format!(
+                "Silicon-to-simulation correlation: compare measured curves (CSV with a header row) with the cell's simulation and optionally fit parameters to them by Levenberg-Marquardt. Each trace maps a measured column to a waveform-calculator expression on the analysis dataset (e.g. \"-i(vd)\" on \"dc\") at its bias (\"VG.dc=0.9\"); the x axis is the analysis sweep. Parameters are model card parameters (\"model:nmos.vto\"), instance parameters (\"M1.w\") or design variables, each with min / max bounds. Returns the RMS relative error per trace before and after the fit, the fitted values and the fitted model cards. Given fields replace the cell's saved setup (sim.silicon). {NOT_SAVED}"
+            ),
+            json!({
+                "cell": cell(),
+                "data": {"type": "string", "description": "CSV file, relative to the project directory or absolute."},
+                "csv": {"type": "string", "description": "The CSV text itself, instead of a file."},
+                "x": {"type": "string", "description": "Column of the x values (default: the first)."},
+                "analysis": {"type": "string", "enum": ["dc", "ac", "tran"]},
+                "traces": {"type": "array", "items": {"type": "object", "properties": {
+                    "column": {"type": "string"}, "expr": {"type": "string"},
+                    "bias": {"type": "string", "description": "INST.param=value or design_var=value, space separated"},
+                    "log": {"type": "boolean", "description": "Compare on a log scale"}
+                }, "required": ["column", "expr"]}},
+                "params": {"type": "array", "items": {"type": "object", "properties": {
+                    "target": {"type": "string", "description": "model:NAME.PARAM, INST.param or a design variable"},
+                    "min": {"type": "string"}, "max": {"type": "string"}, "log": {"type": "boolean"}
+                }, "required": ["target", "min", "max"]}},
+                "fit": {"type": "boolean", "description": "Fit the parameters (default false: compare only)."},
+                "iterations": {"type": "integer", "minimum": 1, "description": "Most fit iterations (default 40)."}
+            }),
+            &["cell"],
+        ),
+        tool(
             "place_like",
             &format!(
                 "Layout by example: place a cell's devices like a finished reference cell with the same circuit topology. Devices and nets are matched by topology (names and sizes may differ); every MOS device goes where its counterpart is in the reference, sized from this cell's schematic, with the reference's wells, implants and taps. The cell's layout is replaced. Optionally route afterwards. {NOT_SAVED}"
@@ -986,6 +1011,7 @@ impl State {
             "diff_layout" => self.diff_layout(a),
             "optimize" => self.optimize(a),
             "place_like" => self.place_like(a),
+            "correlate_silicon" => self.correlate_silicon(a),
             "predict_yield" => self.predict_yield(a),
             "extract" => self.extract(a),
             "run_lvs" => self.run_lvs(a),
@@ -1794,6 +1820,84 @@ impl State {
             })
             .collect();
         Ok(json!({"cell": r.to_string(), "points": run.points.len(), "notes": run.notes, "conditions": conds}))
+    }
+
+    fn correlate_silicon(&mut self, a: &Args) -> Result<Value, String> {
+        use ics_core::silicon::{FitParam, Measured, Trace};
+        let (_, r) = self.cell_arg(a)?;
+        let get = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
+        let flag = |v: &Value, k: &str| v.get(k).and_then(Value::as_bool).unwrap_or(false);
+        let p = self.project_mut()?;
+        let si = &mut p.cell_mut(&r).expect("resolved").sim.silicon;
+        if let Some(d) = a.0.get("data").and_then(Value::as_str) {
+            si.data = d.to_string();
+        }
+        if let Some(x) = a.0.get("x").and_then(Value::as_str) {
+            si.x = x.to_string();
+        }
+        if let Some(x) = a.0.get("analysis").and_then(Value::as_str) {
+            si.analysis = x.to_string();
+        }
+        if let Some(ts) = a.0.get("traces").and_then(Value::as_array) {
+            si.traces = ts
+                .iter()
+                .map(|t| Trace { column: get(t, "column"), expr: get(t, "expr"), bias: get(t, "bias"), log: flag(t, "log") })
+                .collect();
+        }
+        if let Some(ps) = a.0.get("params").and_then(Value::as_array) {
+            si.params = ps
+                .iter()
+                .map(|q| FitParam { target: get(q, "target"), min: get(q, "min"), max: get(q, "max"), log: flag(q, "log") })
+                .collect();
+        }
+        let setup = si.clone();
+        self.dirty = true;
+        let p = self.project()?;
+        let mut opts = ics_sim::SimOptions::default();
+        if let Some(exe) = &p.settings.ngspice_path {
+            opts.ngspice_exe = exe.clone();
+        }
+        let cor = match a.0.get("csv").and_then(Value::as_str) {
+            Some(text) => ics_sim::silicon::Correlation::with_data(p, &r, setup, Measured::parse(text)?, &opts)?,
+            None => ics_sim::silicon::Correlation::new(p, &r, &opts)?,
+        };
+        let start_values = cor.start_values();
+        let iterations = a.0.get("iterations").and_then(Value::as_u64).unwrap_or(40) as usize;
+        let (start, best) = if a.0.get("fit").and_then(Value::as_bool).unwrap_or(false) {
+            let rep = cor.fit(iterations, &mut |_, _| true)?;
+            (rep.start, Some(rep.best))
+        } else {
+            (cor.evaluate(&start_values), None)
+        };
+        let traces = |e: &ics_sim::silicon::Evaluation| -> Vec<Value> {
+            e.traces
+                .iter()
+                .zip(&cor.setup.traces)
+                .map(|(t, s)| match t {
+                    Ok(t) => json!({"column": t.column, "error": sig(t.error), "points": t.x.len()}),
+                    Err(e) => json!({"column": s.column, "failed": e}),
+                })
+                .collect()
+        };
+        let params: Vec<Value> = cor
+            .params()
+            .iter()
+            .enumerate()
+            .map(|(i, q)| json!({"target": q.target, "start": sig(start_values[i]), "fitted": best.as_ref().map(|b| sig(b.values[i]))}))
+            .collect();
+        let cards = match &best {
+            Some(b) => cor.fitted_cards(&b.values)?,
+            None => String::new(),
+        };
+        Ok(json!({
+            "cell": r.to_string(),
+            "error_start": sig(start.error()),
+            "traces_start": traces(&start),
+            "error_fitted": best.as_ref().map(|b| sig(b.error())),
+            "traces_fitted": best.as_ref().map(traces),
+            "params": params,
+            "model_cards": cards,
+        }))
     }
 
     fn place_like(&mut self, a: &Args) -> Result<Value, String> {

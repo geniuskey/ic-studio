@@ -50,6 +50,7 @@
 | `ics compact <PROJECT> <CELL> [--dir left,down] [--no-infer]` | 지정한 방향으로 레이아웃을 압축하고 저장 |
 | `ics diff <PROJECT> <CELL> [--rev REV \| --against DIR]` | 레이아웃을 git 리비전(기본 `HEAD`) 또는 다른 프로젝트와 비교. 다르면 1로 종료 |
 | `ics yield <PROJECT> <CELL> [--runs N] [--samples N] [--target Y] [--json]` | 셀의 몬테카를로 스윕 설정을 실행하고 조건별 수율과 스펙별 민감도를 예측. `--target` 미만이면 1로 종료 |
+| `ics correlate <PROJECT> <CELL> [--data CSV] [--x COL] [--analysis A] [--trace COL=EXPR[@BIAS]]... [--param TARGET=MIN:MAX[:log]]... [--log] [--fit] [--write-models FILE] [--apply] [--save] [--json]` | 측정 곡선과 시뮬레이션 비교, 모델·인스턴스·설계 파라미터 피팅 |
 | `ics optimize <PROJECT> <CELL> [--post-layout] [--apply] [--json]` | 셀의 스펙을 만족하도록 소자 사이징. 모든 스펙을 만족하는 포인트가 없으면 1로 종료 |
 | `ics place-like <PROJECT> <CELL> --from <CELL> [--route]` | 같은 회로를 가진 완성된 셀처럼 배치하고 저장 |
 | `ics skill <PROJECT> <FILE.il> [--no-save] [--json]` | 프로젝트에 Cadence SKILL 스크립트를 실행하고 저장. SKILL 오류가 나면 1로 종료 |
@@ -156,6 +157,15 @@ ics mc demo ota5t --runs 200 --measure "op:v(out)" --measure "ac:bandwidth(v(out
 랜덤 입력에 대한 각 스펙의 모델을 맞춰 샘플링합니다([수율 예측](tools.md#수율-예측) 참고). 대괄호 안은 스펙
 분산에서 비율이 가장 큰 입력입니다. `--runs`는 실행 수를 바꾸고, `--target 0.99`는 어떤 조건의 예측 수율이 그보다
 낮으면 1로 종료하며, `--json`은 모든 조건을 스펙과 민감도와 함께 출력합니다.
+
+### 실리콘 상관
+
+`ics correlate`는 측정 곡선을 셀의 시뮬레이션과 비교하고([Silicon Correlation](tools.md#silicon-correlation) 참고),
+`--fit`이면 파라미터를 피팅합니다. 설정은 셀의 것(`sim.silicon`, 앱에서 작성)을 쓰고, 옵션은 그 일부를 바꾸며
+`--save`는 바꾼 설정을 저장합니다. 예: `ics correlate myproj nmos_iv --data silicon/nmos_idvd.csv --x vd --trace
+"id_vg0.9=-i(vd)@VG.dc=0.9" --param model:nmos.vto=0.3:0.7 --fit`. `--write-models`는 피팅한 `.model` 카드를
+파일로 쓰고, `--apply`는 피팅한 인스턴스 파라미터를 회로도에 써서 저장하며, `--json`은 오차, 값, 카드를
+출력합니다.
 
 ### SKILL 스크립트
 

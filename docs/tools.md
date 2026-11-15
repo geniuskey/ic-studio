@@ -14,6 +14,7 @@ back; the choice is remembered per tool. Every tool is also in the command palet
 | [Optimizer](#optimizer) | ADE GXL Optimization | Active cell's schematic and specs |
 | [Waveform Calculator](#waveform-calculator) | ViVA Calculator | Simulation results of the active cell |
 | [Corner / Sweep Manager](#corner--sweep-manager) | ADE Explorer / Assembler | Active cell's schematic |
+| [Silicon Correlation](#silicon-correlation) | Model calibration / correlation to measurements | Active cell's schematic and measured data |
 | [Results Browser](#results-browser) | Results Browser | Earlier simulation runs of the active cell |
 | [Check Schematic](#check-schematic) | Check and Save | Active schematic |
 | [Hierarchy Browser](#hierarchy-browser) | Design Hierarchy | Every layout of the project |
@@ -153,6 +154,44 @@ min / mean / max / σ and yield), the predicted yield of each condition and the 
 
 **Run optimizer** plots the objective of every evaluation; **Stop** ends the run early and
 **Apply best to schematic** writes the best values into the schematic.
+
+## Silicon Correlation
+
+![Silicon Correlation: Id-Vd curves before and after fitting the NMOS model](screenshots/tool_silicon_correlation.png)
+
+**Tools > Silicon Correlation** sets measured curves against the active cell's simulation and
+fits parameters until they agree. Typical uses: calibrate a model card to a test structure's
+Id-Vd / Id-Vg curves, check a PDK model against wafer data, or fit a parasitic to a measured
+frequency response.
+
+- **Measured data**: a CSV file with a header row (comma, semicolon or tab separated; `#`
+  comment lines; SPICE suffixes allowed). **Load CSV...** stores its path relative to the
+  project.
+- **X column** and **Analysis**: the column holding the swept quantity and the analysis whose
+  sweep it is (`dc`, `ac` or `tran`); set up that sweep in the cell's simulation setup.
+- **Traces**: one measured column each, the **simulated expression** it is compared with
+  (waveform calculator, e.g. `-i(vd)`) and the **bias** it was measured at, as
+  `INST.param=value` or `variable=value` pairs (`VG.dc=0.9`). **Log** compares on a log
+  scale (currents over decades).
+- **Parameters**: `model:NAME.PARAM` for a model card parameter (every card of that name,
+  binned cards `NAME.1`, `NAME.2`, ... included; PDK libraries are flattened first),
+  `INST.param` for an instance parameter or a design variable, each with **Min** / **Max**
+  and **Log** for a log-scale search.
+
+**Compare** simulates every bias and lists the RMS error of each trace: relative to the
+trace's largest measured value, or the log ratio on a log trace. **Fit** runs
+Levenberg-Marquardt within the bounds (forward-difference Jacobian, simulated in parallel)
+from the present values. The plot shows the measured points, the model before (dashed) and
+after the fit. **Copy model cards** copies the fitted `.model` cards; **Apply to schematic**
+writes fitted instance parameters.
+
+`silicon/` has an example: `nmos_iv.sp` (an NMOS with gate and drain sources) and
+`nmos_idvd.csv`, synthetic Id-Vd curves of a level-1 NMOS with vto = 0.52 V, kp = 240 µA/V²
+and lambda = 0.05 V⁻¹ plus noise. Fitting vto, kp and lambda from the generic model brings
+the error from 81 % to 0.5 % (the noise) and recovers 0.520 V, 241 µA/V² and 0.048 V⁻¹.
+
+The same from the command line: `ics correlate` (see [CLI](cli.md#silicon-correlation)) and
+the MCP tool `correlate_silicon`.
 
 ## Results Browser
 

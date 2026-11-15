@@ -77,6 +77,7 @@ The server has 40 tools:
 | `fix_drc` | Apply verified quick fixes to the cell's top-level geometry until nothing more can be fixed |
 | `compact` | Slide top-level items toward each direction until the rules stop them; constraints hold |
 | `predict_yield` | Monte Carlo yield prediction: simulated and predicted yield per condition, per spec Cpk, model Q² and sensitivities |
+| `correlate_silicon` | Compare measured curves (CSV) with the simulation; fit model, instance or design parameters |
 | `optimize` | Size device parameters to meet specs (optionally after layout); `apply` writes the best values |
 | `place_like` | Layout by example: place a cell like a finished cell with the same circuit topology, optionally route |
 | `diff_layout` | XOR a cell's layout per layer against a git revision (default `HEAD`) or the saved files |

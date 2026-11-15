@@ -40,6 +40,7 @@ pub mod sch_check;
 pub mod schematic;
 pub mod sdl;
 pub mod signoff;
+pub mod silicon;
 pub mod sim_setup;
 pub mod skill;
 pub mod spectre;

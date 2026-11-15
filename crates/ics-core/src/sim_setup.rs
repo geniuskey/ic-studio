@@ -171,6 +171,9 @@ pub struct SimSetup {
     /// Process / mismatch Monte Carlo of the built-in engine's device models.
     #[serde(default, skip_serializing_if = "McSetup::is_default")]
     pub montecarlo: McSetup,
+    /// Measured data to correlate with and the parameters to fit.
+    #[serde(default, skip_serializing_if = "crate::silicon::SiliconSetup::is_empty")]
+    pub silicon: crate::silicon::SiliconSetup,
 }
 
 /// Device-model Monte Carlo: global shifts per polarity plus Pelgrom mismatch. Numbers are
@@ -266,6 +269,7 @@ impl Default for SimSetup {
             sweep: Default::default(),
             optimize: Default::default(),
             montecarlo: Default::default(),
+            silicon: Default::default(),
         }
     }
 }

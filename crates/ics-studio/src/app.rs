@@ -116,6 +116,12 @@ pub enum Command {
     MonteCarlo,
     /// Run the Monte Carlo window's setup on its cell.
     RunMonteCarlo,
+    /// Open the Silicon Correlation window for the active cell.
+    SiliconCorrelation,
+    /// Compare the measured curves with the simulation.
+    CompareSilicon,
+    /// Fit the correlation parameters to the measured curves.
+    FitSilicon,
     /// Stop a running Monte Carlo after its current sample, keeping the samples so far.
     StopMonteCarlo,
     /// Open the Results Browser (earlier runs of the active cell, for comparison).
@@ -535,6 +541,7 @@ pub struct IcStudio {
     pixel: PixelOptics,
     sweep: SweepManager,
     monte_carlo: crate::mc_view::MonteCarlo,
+    silicon: crate::silicon_view::SiliconView,
     results_open: bool,
     checks: Vec<ics_core::sch_check::Finding>,
     nets: NetBrowser,
@@ -598,6 +605,7 @@ impl IcStudio {
             pixel: PixelOptics::default(),
             sweep: SweepManager::default(),
             monte_carlo: Default::default(),
+            silicon: Default::default(),
             results_open: false,
             checks: vec![],
             nets: NetBrowser::default(),
@@ -928,6 +936,16 @@ impl IcStudio {
                 _ => self.warn("Open a cell with a schematic for Monte Carlo".into()),
             },
             Command::RunMonteCarlo => self.run_monte_carlo(ctx),
+            Command::SiliconCorrelation => match (self.active.clone(), self.active_cell()) {
+                (Some(r), Some(c)) if c.schematic.is_some() => {
+                    let setup = c.sim.silicon.clone();
+                    let root = self.project.as_ref().and_then(|p| p.root.clone());
+                    self.silicon.show(&r, &setup, root.as_deref());
+                }
+                _ => self.warn("Open a cell with a schematic to correlate with measurements".into()),
+            },
+            Command::CompareSilicon => self.run_silicon(ctx, false),
+            Command::FitSilicon => self.run_silicon(ctx, true),
             Command::StopMonteCarlo => {
                 if !self.monte_carlo.stop() {
                     self.warn("No Monte Carlo is running".into());
@@ -1547,6 +1565,75 @@ impl IcStudio {
         &mut self.monte_carlo
     }
 
+    pub fn silicon(&mut self) -> &mut crate::silicon_view::SiliconView {
+        &mut self.silicon
+    }
+
+    fn run_silicon(&mut self, ctx: &egui::Context, fit: bool) {
+        let Some(p) = self.project.clone() else { return };
+        let backend = self.silicon.cell.as_ref().and_then(|r| p.cell(r)).map_or(ics_core::Backend::Builtin, |c| c.sim.backend);
+        let opts = self.sim_options(backend);
+        match self.silicon.start(ctx, p, fit, opts) {
+            Ok(()) => self.info(format!("Silicon correlation: {}", if fit { "fitting" } else { "comparing" })),
+            Err(e) => {
+                self.silicon.error = Some(e.clone());
+                self.error(format!("Silicon correlation: {e}"));
+            }
+        }
+    }
+
+    fn silicon_window(&mut self, ctx: &egui::Context) {
+        use crate::silicon_view::SiliconAction;
+        match self.silicon.window(ctx) {
+            Some(SiliconAction::Changed(s)) => {
+                if let Some(c) = self.silicon.cell.clone().and_then(|r| self.project.as_mut()?.cell_mut(&r)) {
+                    c.sim.silicon = s;
+                    self.mark_dirty();
+                }
+            }
+            Some(SiliconAction::LoadData) => {
+                let root = self.project.as_ref().and_then(|p| p.root.clone());
+                let mut dialog = rfd::FileDialog::new().set_title("Measured data").add_filter("CSV", &["csv", "txt", "tsv"]);
+                if let Some(r) = &root {
+                    dialog = dialog.set_directory(r);
+                }
+                if let Some(path) = dialog.pick_file() {
+                    let rel = root.as_ref().and_then(|r| path.strip_prefix(r).ok()).map_or(path.clone(), |p| p.to_path_buf());
+                    self.silicon.setup.data = rel.to_string_lossy().into_owned();
+                    match self.silicon.load_data(root.as_deref()) {
+                        Ok(()) => {
+                            let s = self.silicon.setup.clone();
+                            if let Some(c) = self.silicon.cell.clone().and_then(|r| self.project.as_mut()?.cell_mut(&r)) {
+                                c.sim.silicon = s;
+                                self.mark_dirty();
+                            }
+                        }
+                        Err(e) => {
+                            self.silicon.error = Some(e.clone());
+                            self.error(e);
+                        }
+                    }
+                }
+            }
+            Some(SiliconAction::Compare) => self.queue.push(Command::CompareSilicon),
+            Some(SiliconAction::Fit) => self.queue.push(Command::FitSilicon),
+            Some(SiliconAction::Apply(r, values)) => {
+                if let Some(sch) = self.project.as_mut().and_then(|p| p.cell_mut(&r)).and_then(|c| c.schematic.as_mut()) {
+                    for (t, x) in &values {
+                        if let Some((inst, param)) = t.split_once('.')
+                            && let Some(i) = sch.instances.iter_mut().find(|i| i.name.eq_ignore_ascii_case(inst))
+                        {
+                            i.params.insert(param.to_ascii_lowercase(), ics_core::optimize::spice_number(*x));
+                        }
+                    }
+                    self.mark_dirty();
+                    self.ok(format!("Silicon correlation: applied {} parameter(s) to {r}", values.len()));
+                }
+            }
+            None => {}
+        }
+    }
+
     /// The decks of every point of the sweep draft on cell `r`.
     #[allow(clippy::type_complexity)]
     fn sweep_decks(
@@ -2117,6 +2204,9 @@ impl IcStudio {
                 if ui.button("Monte Carlo…").clicked() {
                     q.push(Command::MonteCarlo);
                 }
+                if ui.button("Silicon Correlation…").clicked() {
+                    q.push(Command::SiliconCorrelation);
+                }
             });
             ui.menu_button("Verify", |ui| {
                 if ui.button("Run DRC").clicked() {
@@ -2163,6 +2253,9 @@ impl IcStudio {
                 }
                 if ui.button("Monte Carlo…").clicked() {
                     q.push(Command::MonteCarlo);
+                }
+                if ui.button("Silicon Correlation…").clicked() {
+                    q.push(Command::SiliconCorrelation);
                 }
                 if ui.button("Results Browser…").clicked() {
                     q.push(Command::ResultsBrowser);
@@ -3110,6 +3203,8 @@ impl IcStudio {
             ("Corner / sweep manager".into(), "", Command::SweepManager),
             ("Monte Carlo (process and mismatch of device models)".into(), "", Command::MonteCarlo),
             ("Run Monte Carlo".into(), "", Command::RunMonteCarlo),
+            ("Silicon correlation (measured curves, model fitting)".into(), "", Command::SiliconCorrelation),
+            ("Fit the correlation parameters to the measurements".into(), "", Command::FitSilicon),
             ("Stop Monte Carlo".into(), "", Command::StopMonteCarlo),
             ("Optimizer (size devices to meet specs)".into(), "", Command::Optimizer),
             ("Results browser (compare runs)".into(), "", Command::ResultsBrowser),
@@ -3998,6 +4093,11 @@ impl IcStudio {
         self.project.as_ref()
     }
 
+    /// The open project for automation and tests (mark it dirty after editing).
+    pub fn project_mut(&mut self) -> Option<&mut Project> {
+        self.project.as_mut()
+    }
+
     /// Settings > Interaction.
     pub fn set_interaction(&mut self, p: Profile) {
         self.settings.interaction = p;
@@ -4033,6 +4133,7 @@ impl IcStudio {
             || self.bridge.as_ref().is_some_and(|b| b.job.is_some() || !b.waiting.is_empty())
             || self.rule_designer.is_checking()
             || self.sweep.is_running()
+            || self.silicon.is_running()
             || self.copilot.busy()
             || self.optimizer.is_running()
             || self.monte_carlo.is_running()
@@ -4580,6 +4681,9 @@ impl eframe::App for IcStudio {
         if let Some((ok, m)) = self.monte_carlo.poll() {
             if ok { self.ok(m) } else { self.warn(m) }
         }
+        if let Some((ok, m)) = self.silicon.poll() {
+            if ok { self.ok(m) } else { self.warn(m) }
+        }
         self.copilot.poll();
         if let Some(rx) = &self.copilot.calls {
             let calls: Vec<Pending> = rx.try_iter().collect();
@@ -4686,6 +4790,7 @@ impl eframe::App for IcStudio {
         }
         self.sweep_window(&ctx);
         self.monte_carlo_window(&ctx);
+        self.silicon_window(&ctx);
         self.results_window(&ctx);
         self.net_window(&ctx);
         self.hier_window(&ctx);

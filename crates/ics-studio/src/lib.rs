@@ -22,6 +22,7 @@ pub mod optimizer_view;
 pub mod pixel_view;
 pub mod rule_designer;
 pub mod schematic_view;
+pub mod silicon_view;
 pub mod sim_view;
 pub mod stream_map_view;
 pub mod sweep_view;

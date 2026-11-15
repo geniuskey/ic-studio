@@ -228,6 +228,7 @@ mod tests {
             "compact",
             "optimize",
             "predict_yield",
+            "correlate_silicon",
             "place_like",
             "diff_layout",
             "extract",
@@ -299,6 +300,21 @@ mod tests {
         assert!(c["predicted_yield"].as_f64().unwrap() > 0.3, "{y}");
         assert!(c["specs"][0]["q2"].as_f64().unwrap() > 0.95, "{y}");
         assert!(c["specs"][0]["sensitivity"][0]["input"].as_str().unwrap().starts_with('M'), "{y}");
+
+        let csv = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../silicon/nmos_idvd.csv")).unwrap();
+        let net = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../silicon/nmos_iv.sp")).unwrap();
+        call(&mut s, "write_schematic", json!({"cell": "nmos_iv", "netlist": net})).unwrap();
+        let cor = call(
+            &mut s,
+            "correlate_silicon",
+            json!({"cell": "nmos_iv", "csv": csv, "x": "vd", "analysis": "dc", "fit": true,
+                "traces": [{"column": "id_vg0.9", "expr": "-i(vd)", "bias": "VG.dc=0.9"}, {"column": "id_vg1.2", "expr": "-i(vd)", "bias": "VG.dc=1.2"}],
+                "params": [{"target": "model:nmos.vto", "min": "0.3", "max": "0.7"}, {"target": "model:nmos.kp", "min": "100u", "max": "500u", "log": true}]}),
+        )
+        .unwrap();
+        assert!(cor["error_start"].as_f64().unwrap() > 0.1 && cor["error_fitted"].as_f64().unwrap() < 0.05, "{cor}");
+        assert!((cor["params"][0]["fitted"].as_f64().unwrap() - 0.52).abs() < 0.02, "{cor}");
+        assert!(cor["model_cards"].as_str().unwrap().starts_with(".model nmos"), "{cor}");
 
         let drc = call(&mut s, "run_drc", json!({"cell": "cmos_inverter"})).unwrap();
         assert!(drc["rules_run"].as_u64().unwrap() > 0, "{drc}");

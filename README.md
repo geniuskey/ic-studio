@@ -175,6 +175,9 @@ Linux needs the usual windowing libraries:
 - Yield prediction: a response-surface model of every spec over the Monte Carlo inputs,
   sampled 10⁵ times per condition, gives the predicted yield, Cpk and each varied
   parameter's share of the spread (`ics yield`, MCP `predict_yield`)
+- Silicon correlation: measured curves (CSV) against the simulation, with a
+  Levenberg-Marquardt fit of model card, instance or design parameters and the fitted
+  `.model` cards (`ics correlate`, MCP `correlate_silicon`)
 - Results browser: keep earlier runs and overlay them, e.g. pre- versus post-layout
 - Layout generators: guard rings, via arrays, common-centroid / interdigitated matched
   placement with dummies; dummy metal fill to a density target
@@ -369,9 +372,8 @@ fit for production use, including the optics of image sensors.
    the pixel's layout; carrier diffusion with electrical crosstalk and deep trench isolation; stacks generated
    from the PDK's back-end cross section and the layout.
 4. **Prediction and process**: Done: yield prediction from Monte Carlo with surrogate models
-   and sensitivities. Next: silicon-to-simulation
-   correlation, process emulation (3-D cross-sections from layout and process steps) and
-   process data management.
+   and sensitivities; silicon-to-simulation correlation with model fitting. Next: process
+   emulation (3-D cross-sections from layout and process steps) and process data management.
 
 Also: Python API (PyO3), non-Manhattan DRC and extraction, resistor / capacitor definitions
 in the bundled PDKs.

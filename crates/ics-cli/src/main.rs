@@ -207,6 +207,47 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Silicon-to-simulation correlation: compare measured curves (CSV) with the cell's
+    /// simulation and, with `--fit`, fit model, instance or design parameters to them. The
+    /// setup comes from the cell (`sim.silicon`); the options below replace parts of it.
+    Correlate {
+        project: PathBuf,
+        cell: String,
+        /// Measured data, CSV with a header row.
+        #[arg(long)]
+        data: Option<PathBuf>,
+        /// Column of the x values (default: the first).
+        #[arg(long)]
+        x: Option<String>,
+        /// Analysis giving the x axis: dc, ac or tran.
+        #[arg(long)]
+        analysis: Option<String>,
+        /// `COLUMN=EXPR[@BIAS]`, e.g. `id_vg0.9=-i(vd)@VG.dc=0.9` (repeatable).
+        #[arg(long = "trace")]
+        traces: Vec<String>,
+        /// Compare every trace on a log scale.
+        #[arg(long)]
+        log: bool,
+        /// `TARGET=MIN:MAX[:log]`, e.g. `model:nmos.vto=0.3:0.7` or `M1.w=1u:4u` (repeatable).
+        #[arg(long = "param")]
+        params: Vec<String>,
+        /// Fit the parameters to the measurements.
+        #[arg(long)]
+        fit: bool,
+        #[arg(long, default_value_t = 40)]
+        iterations: usize,
+        /// Write the fitted model cards to this file.
+        #[arg(long)]
+        write_models: Option<PathBuf>,
+        /// Write fitted instance parameters into the schematic; also saves the setup.
+        #[arg(long)]
+        apply: bool,
+        /// Save the setup given by the options with the cell.
+        #[arg(long)]
+        save: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Size the cell's devices to meet its specs (`sim.sweep.specs`) with the variables of its
     /// optimizer setup (`sim.optimize`); `--apply` writes the best values into the schematic.
     Optimize {
@@ -1191,6 +1232,177 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             if below {
                 return Err(format!("a condition's predicted yield is below {}", pct(target.unwrap())));
+            }
+        }
+        Cmd::Correlate {
+            project,
+            cell,
+            data,
+            x,
+            analysis,
+            traces,
+            log,
+            params,
+            fit,
+            iterations,
+            write_models,
+            apply,
+            save,
+            json,
+        } => {
+            use ics_core::silicon::{FitParam, Trace};
+            let mut p = Project::open(&project).map_err(|e| e.to_string())?;
+            let r = resolve(&p, &cell)?;
+            let c = p.cell_mut(&r).unwrap();
+            let si = &mut c.sim.silicon;
+            if let Some(d) = &data {
+                let abs = std::fs::canonicalize(d).map_err(|e| format!("{}: {e}", d.display()))?;
+                let root = std::fs::canonicalize(&project).unwrap_or(project.clone());
+                si.data = abs.strip_prefix(&root).map_or(abs.clone(), |r| r.to_path_buf()).to_string_lossy().into_owned();
+            }
+            if let Some(x) = x {
+                si.x = x;
+            }
+            if let Some(a) = analysis {
+                si.analysis = a;
+            }
+            if !traces.is_empty() {
+                si.traces = traces
+                    .iter()
+                    .map(|t| {
+                        let (col, rest) = t.split_once('=').ok_or(format!("--trace '{t}': write COLUMN=EXPR[@BIAS]"))?;
+                        let (expr, bias) = rest.split_once('@').unwrap_or((rest, ""));
+                        Ok(Trace { column: col.trim().into(), expr: expr.trim().into(), bias: bias.trim().into(), log })
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+            } else if log {
+                si.traces.iter_mut().for_each(|t| t.log = true);
+            }
+            if !params.is_empty() {
+                si.params = params
+                    .iter()
+                    .map(|q| {
+                        let (target, range) = q.rsplit_once('=').ok_or(format!("--param '{q}': write TARGET=MIN:MAX[:log]"))?;
+                        let parts: Vec<&str> = range.split(':').collect();
+                        match parts.as_slice() {
+                            [lo, hi] | [lo, hi, "log"] => Ok(FitParam {
+                                target: target.trim().into(),
+                                min: lo.trim().into(),
+                                max: hi.trim().into(),
+                                log: parts.len() == 3,
+                            }),
+                            _ => Err(format!("--param '{q}': write TARGET=MIN:MAX[:log]")),
+                        }
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+            }
+            if save || apply {
+                p.save().map_err(|e| e.to_string())?;
+            }
+            let mut opts = SimOptions::default();
+            if let Some(exe) = &p.settings.ngspice_path {
+                opts.ngspice_exe = exe.clone();
+            }
+            let cor = ics_sim::silicon::Correlation::new(&p, &r, &opts)?;
+            let start_values = cor.start_values();
+            let (start, best, iters) = if fit {
+                let rep = cor.fit(iterations, &mut |k, e| {
+                    if !json {
+                        eprintln!("iteration {k}: error {:.3}%", e.error() * 100.0);
+                    }
+                    true
+                })?;
+                (rep.start, Some(rep.best), rep.iterations)
+            } else {
+                (cor.evaluate(&start_values), None, 0)
+            };
+            let fitted = best.as_ref().map(|b| b.values.clone());
+            let cards = match &fitted {
+                Some(v) => cor.fitted_cards(v)?,
+                None => String::new(),
+            };
+            let pct = |v: f64| format!("{:.3}%", v * 100.0);
+            if json {
+                let tr = |e: &ics_sim::silicon::Evaluation| -> Vec<serde_json::Value> {
+                    e.traces
+                        .iter()
+                        .zip(&cor.setup.traces)
+                        .map(|(t, s)| match t {
+                            Ok(t) => serde_json::json!({"column": t.column, "error": t.error}),
+                            Err(e) => serde_json::json!({"column": s.column, "error_message": e}),
+                        })
+                        .collect()
+                };
+                let ps: Vec<serde_json::Value> = cor
+                    .params()
+                    .iter()
+                    .enumerate()
+                    .map(|(i, q)| serde_json::json!({"target": q.target, "start": start_values[i], "fitted": fitted.as_ref().map(|v| v[i])}))
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::json!({"cell": r.to_string(), "error_start": start.error(), "traces_start": tr(&start),
+                        "error_fitted": best.as_ref().map(|b| b.error()), "traces_fitted": best.as_ref().map(tr),
+                        "iterations": iters, "params": ps, "model_cards": cards})
+                );
+            } else {
+                println!("{r}: {} trace(s) against {}", cor.setup.traces.len(), cor.setup.data);
+                for (i, t) in start.traces.iter().enumerate() {
+                    let after = best.as_ref().map(|b| match &b.traces[i] {
+                        Ok(t) => pct(t.error),
+                        Err(e) => e.clone(),
+                    });
+                    match t {
+                        Ok(t) => println!(
+                            "  {:<16} error {:>9}{}",
+                            t.column,
+                            pct(t.error),
+                            after.map_or(String::new(), |a| format!(" -> {a}"))
+                        ),
+                        Err(e) => println!("  {:<16} {e}", cor.setup.traces[i].column),
+                    }
+                }
+                match &best {
+                    Some(b) => {
+                        println!("RMS error {} -> {} in {iters} iteration(s)", pct(start.error()), pct(b.error()));
+                        for (i, q) in cor.params().iter().enumerate() {
+                            println!(
+                                "  {:<24} {:>10} -> {}",
+                                q.target,
+                                format_eng(start_values[i], ""),
+                                format_eng(b.values[i], "")
+                            );
+                        }
+                        if !cards.is_empty() {
+                            println!("{}", cards.trim_end());
+                        }
+                    }
+                    None => println!("RMS error {}", pct(start.error())),
+                }
+            }
+            if let (Some(path), false) = (&write_models, cards.is_empty()) {
+                let head = format!("* Model cards fitted to {} ({})\n", cor.setup.data, r);
+                std::fs::write(path, head + &cards).map_err(|e| format!("{}: {e}", path.display()))?;
+                eprintln!("wrote {}", path.display());
+            }
+            if apply && let Some(v) = &fitted {
+                let targets: Vec<(String, f64)> = cor
+                    .params()
+                    .iter()
+                    .zip(v)
+                    .filter(|(q, _)| q.model_param().is_none())
+                    .map(|(q, x)| (q.target.clone(), *x))
+                    .collect();
+                drop(cor);
+                let sch = p.cell_mut(&r).unwrap().schematic.as_mut().ok_or("cell has no schematic")?;
+                for (t, x) in targets {
+                    if let Some((inst, param)) = t.split_once('.')
+                        && let Some(i) = sch.instances.iter_mut().find(|i| i.name.eq_ignore_ascii_case(inst))
+                    {
+                        i.params.insert(param.to_ascii_lowercase(), ics_core::optimize::spice_number(x));
+                    }
+                }
+                p.save().map_err(|e| e.to_string())?;
             }
         }
         Cmd::Optimize { project, cell, post_layout, apply, json } => {

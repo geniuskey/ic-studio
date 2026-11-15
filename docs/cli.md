@@ -50,6 +50,7 @@ it with `cargo build --release -p ics-cli` (binary `target/release/ics`) or run 
 | `ics compact <PROJECT> <CELL> [--dir left,down] [--no-infer]` | Compact the layout toward the given directions and save |
 | `ics diff <PROJECT> <CELL> [--rev REV \| --against DIR]` | Compare the layout with a git revision (default `HEAD`) or another project; exit 1 if they differ |
 | `ics yield <PROJECT> <CELL> [--runs N] [--samples N] [--target Y] [--json]` | Run the cell's Monte Carlo sweep setup and predict the yield of every condition with each spec's sensitivities; exit 1 below `--target` |
+| `ics correlate <PROJECT> <CELL> [--data CSV] [--x COL] [--analysis A] [--trace COL=EXPR[@BIAS]]... [--param TARGET=MIN:MAX[:log]]... [--log] [--fit] [--write-models FILE] [--apply] [--save] [--json]` | Compare measured curves with the simulation and fit model, instance or design parameters to them |
 | `ics optimize <PROJECT> <CELL> [--post-layout] [--apply] [--json]` | Size devices to meet the cell's specs; exit 1 if no point meets every spec |
 | `ics place-like <PROJECT> <CELL> --from <CELL> [--route]` | Place the cell like a finished cell with the same circuit and save |
 | `ics skill <PROJECT> <FILE.il> [--no-save] [--json]` | Run a Cadence SKILL script on the project and save; exit 1 on a SKILL error |
@@ -177,6 +178,32 @@ work/current_mirror: 300 point(s) in 0.1 s, 100000 surrogate samples per conditi
 The brackets list the inputs with the largest share of the spec's variance. `--runs`
 overrides the number of runs, `--target 0.99` exits 1 when a condition's predicted yield is
 lower, and `--json` gives every condition with its specs and sensitivities.
+
+### Silicon correlation
+
+`ics correlate` compares measured curves with the cell's simulation (see
+[Silicon Correlation](tools.md#silicon-correlation)) and with `--fit` fits the parameters. The
+setup is the cell's (`sim.silicon`, made in the app); the options replace parts of it, and
+`--save` stores them:
+
+```text
+$ ics schematic myproj nmos_iv silicon/nmos_iv.sp
+$ ics correlate myproj nmos_iv --data silicon/nmos_idvd.csv --x vd \
+    --trace "id_vg0.7=-i(vd)@VG.dc=0.7" --trace "id_vg0.9=-i(vd)@VG.dc=0.9" --trace "id_vg1.2=-i(vd)@VG.dc=1.2" \
+    --param model:nmos.vto=0.3:0.7 --param model:nmos.kp=100u:500u:log --param model:nmos.lambda=0.01:0.3:log \
+    --fit --write-models fitted.lib
+work/nmos_iv: 3 trace(s) against silicon/nmos_idvd.csv
+  id_vg0.7         error  120.268% -> 0.541%
+  id_vg0.9         error   60.649% -> 0.440%
+  id_vg1.2         error   39.027% -> 0.439%
+RMS error 80.965% -> 0.476% in 5 iteration(s)
+  model:nmos.vto                 450m -> 519.9m
+  model:nmos.kp                  280µ -> 240.7µ
+  model:nmos.lambda               80m -> 47.74m
+```
+
+`--write-models` writes the fitted `.model` cards to a file, `--apply` writes fitted instance
+parameters into the schematic and saves, `--json` prints the errors, values and cards.
 
 ### SKILL scripts
 

@@ -2069,3 +2069,56 @@ fn text_prompts_do_not_interrupt_ime_every_frame() {
         h.run_steps(2);
     }
 }
+
+/// Silicon correlation: the example NMOS Id-Vd data against an imported characterisation cell,
+/// compared and then fitted.
+#[test]
+fn silicon_correlation() {
+    let mut h = app(demo_args("rc_lowpass", "simulation", false));
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../silicon");
+    let net = std::fs::read_to_string(format!("{root}/nmos_iv.sp")).unwrap();
+    {
+        let p = h.state_mut().project_mut().unwrap();
+        let imp = ics_core::spice_import::import(&net, &p.tech).unwrap();
+        let r = p.add_cell("work", ics_core::Cell::new("nmos_iv")).unwrap();
+        let c = p.cell_mut(&r).unwrap();
+        imp.apply_to(&mut c.sim);
+        c.schematic = Some(imp.schematic);
+        use ics_core::silicon::{FitParam, SiliconSetup, Trace};
+        c.sim.silicon = SiliconSetup {
+            data: format!("{root}/nmos_idvd.csv"),
+            analysis: "dc".into(),
+            x: "vd".into(),
+            traces: ["0.7", "0.9", "1.2"]
+                .iter()
+                .map(|v| Trace { column: format!("id_vg{v}"), expr: "-i(vd)".into(), bias: format!("VG.dc={v}"), log: false })
+                .collect(),
+            params: vec![
+                FitParam { target: "model:nmos.vto".into(), min: "0.3".into(), max: "0.7".into(), log: false },
+                FitParam { target: "model:nmos.kp".into(), min: "100u".into(), max: "500u".into(), log: true },
+                FitParam { target: "model:nmos.lambda".into(), min: "0.01".into(), max: "0.3".into(), log: true },
+            ],
+        };
+    }
+    h.state_mut().command(Command::OpenCell(ics_core::CellRef::new("work", "nmos_iv"), None));
+    h.run_steps(2);
+    h.state_mut().command(Command::SiliconCorrelation);
+    h.run_steps(2);
+    assert_eq!(h.state_mut().silicon().data.as_ref().map(|d| d.columns.len()), Some(4));
+    h.state_mut().command(Command::CompareSilicon);
+    h.run_steps(2);
+    settle(&mut h, "compare");
+    let err = h.state_mut().silicon().error.clone();
+    let start = h.state_mut().silicon().outcome.as_ref().unwrap_or_else(|| panic!("{err:?}")).start.error();
+    assert!(start > 0.2, "{start}");
+    h.state_mut().command(Command::FitSilicon);
+    h.run_steps(2);
+    settle(&mut h, "fit");
+    let o = h.state_mut().silicon().outcome.clone().unwrap();
+    let best = o.best.as_ref().unwrap();
+    assert!(best.error() < 0.01, "{}", best.error());
+    assert!((best.values[0] - 0.52).abs() < 0.01, "{:?}", best.values);
+    assert!(o.cards.starts_with(".model nmos nmos"), "{}", o.cards);
+    h.run_steps(3);
+    shot(&mut h, "38_silicon_correlation");
+}
