@@ -276,6 +276,9 @@ enum Cmd {
         /// Write the cross-section as SVG.
         #[arg(long)]
         svg: Option<PathBuf>,
+        /// Write the dopant depth profile at the first --at position (or the middle) as CSV.
+        #[arg(long)]
+        profile: Option<PathBuf>,
         #[arg(long)]
         json: bool,
     },
@@ -1514,7 +1517,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 p.save().map_err(|e| e.to_string())?;
             }
         }
-        Cmd::Xsection { project, cell, flow, cut, steps, at, svg, json } => {
+        Cmd::Xsection { project, cell, flow, cut, steps, at, svg, profile, json } => {
             use ics_core::process::{Cut, GENERIC180, ProcessFlow, default_cut, emulate_cell};
             let p = Project::open(&project).map_err(|e| e.to_string())?;
             let r = resolve(&p, &cell)?;
@@ -1530,13 +1533,17 @@ fn run(cli: Cli) -> Result<(), String> {
             let started = std::time::Instant::now();
             let s = emulate_cell(&p, &r, &fl, &cut, steps)?;
             let len = cut.length();
+            let profile_at = at.first().copied().unwrap_or(len / 2.0);
             let at = if at.is_empty() { (1..=5).map(|k| len * k as f64 / 6.0).collect() } else { at };
             if json {
                 let st: Vec<serde_json::Value> = at
                     .iter()
                     .map(|x| {
                         serde_json::json!({"x": x, "surface": s.surface_at(*x),
-                            "stack": s.stack_at(*x).iter().map(|(m, t)| serde_json::json!({"material": m, "thickness": t})).collect::<Vec<_>>()})
+                            "stack": s.stack_at(*x).iter().map(|(m, t)| serde_json::json!({"material": m, "thickness": t})).collect::<Vec<_>>(),
+                            "doping": s.doped_layers(*x).iter().map(|l| serde_json::json!({"material": l.material, "type": if l.n_type { "n" } else { "p" },
+                                "top": l.top, "bottom": l.bottom, "peak": l.peak, "sheet_resistance": l.sheet_resistance.is_finite().then_some(l.sheet_resistance)})).collect::<Vec<_>>(),
+                            "junctions": s.junctions(*x)})
                     })
                     .collect();
                 println!(
@@ -1564,7 +1571,41 @@ fn run(cli: Cli) -> Result<(), String> {
                 for x in &at {
                     let stack: Vec<String> = s.stack_at(*x).iter().map(|(m, t)| format!("{m} {t:.3}")).collect();
                     println!("  x = {x:>7.3}  surface {:>6.3}  {}", s.surface_at(*x), stack.join(" | "));
+                    let layers: Vec<String> = s
+                        .doped_layers(*x)
+                        .iter()
+                        .map(|l| {
+                            format!(
+                                "{} {} {:.3}..{:.3} peak {:.1e} {} Ω/sq",
+                                if l.n_type { "n" } else { "p" },
+                                l.material,
+                                l.top,
+                                l.bottom,
+                                l.peak,
+                                format_eng(l.sheet_resistance, "")
+                            )
+                        })
+                        .collect();
+                    if !layers.is_empty() {
+                        println!("                       doping  {}", layers.join(" | "));
+                    }
                 }
+            }
+            if let Some(path) = &profile {
+                let mut t = format!("# dopant profile at x = {profile_at} µm (cm^-3; net > 0 is n-type)\nz_um,net");
+                for (sp, _) in &s.dopants {
+                    t += &format!(",{}", sp.name());
+                }
+                t.push('\n');
+                for (z, net, cs) in s.profile(profile_at) {
+                    t += &format!("{z:.4},{net:.4e}");
+                    for c in cs {
+                        t += &format!(",{c:.4e}");
+                    }
+                    t.push('\n');
+                }
+                std::fs::write(path, t).map_err(|e| format!("{}: {e}", path.display()))?;
+                eprintln!("wrote {}", path.display());
             }
             if let Some(path) = &svg {
                 let px_per_um = (1200.0 / len).clamp(50.0, 2000.0);

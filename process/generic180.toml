@@ -1,11 +1,15 @@
 # Process flow of the generic 180 nm technology for the process emulator (`ics xsection`,
 # Tools > Process Emulation). Masks are layout layers or derived-layer expressions of the
 # technology; `mask` acts where the layer is drawn, `keep` where it is not. Thicknesses in µm;
-# a few are exaggerated (gate oxide) so that they show at the grid resolution.
+# a few are exaggerated (gate oxide) so that they show at the grid resolution. Implants with a
+# species, dose (cm^-2) and energy (keV) add dopants; anneal and oxidize diffuse them (times in
+# minutes, temperatures in °C). Diffusion is intrinsic: transient enhanced diffusion after the
+# S/D implants is not modelled, so junctions come out a little shallow.
 name = "generic180 FEOL + 3 metals"
 substrate = "si"
 substrate_depth = 1.2
 resolution = 0.005
+substrate_doping = { species = "boron", concentration = 1e15 }
 
 # Shallow trench isolation
 [[step]]
@@ -32,16 +36,31 @@ height = 0.0
 name = "n-well"
 op = "implant"
 mask = "nwell"
-material = "nwell"
-into = ["si"]
-depth = 0.9
+species = "phosphorus"
+dose = 2e13
+energy = 300
+
+[[step]]
+name = "p-well"
+op = "implant"
+keep = "nwell"
+species = "boron"
+dose = 1.5e13
+energy = 180
+
+[[step]]
+name = "well drive-in"
+op = "anneal"
+temperature = 1050
+time = 30
 
 # Gate
 [[step]]
 name = "gate oxide"
-op = "deposit"
+op = "oxidize"
+temperature = 1000
+time = 15
 material = "gox"
-thickness = 0.01
 
 [[step]]
 name = "poly"
@@ -72,18 +91,24 @@ depth = 0.06
 [[step]]
 name = "n+ implant"
 op = "implant"
-mask = "nplus and active"
-material = "n+"
-into = ["si", "nwell"]
-depth = 0.15
+mask = "nplus"
+species = "arsenic"
+dose = 5e15
+energy = 40
 
 [[step]]
 name = "p+ implant"
 op = "implant"
-mask = "pplus and active"
-material = "p+"
-into = ["si", "nwell"]
-depth = 0.15
+mask = "pplus"
+species = "bf2"
+dose = 3e15
+energy = 30
+
+[[step]]
+name = "S/D anneal (RTA)"
+op = "anneal"
+temperature = 1050
+time = 1
 
 # Contacts and metal 1
 [[step]]

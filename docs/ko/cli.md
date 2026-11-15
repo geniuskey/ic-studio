@@ -51,7 +51,7 @@
 | `ics diff <PROJECT> <CELL> [--rev REV \| --against DIR]` | 레이아웃을 git 리비전(기본 `HEAD`) 또는 다른 프로젝트와 비교. 다르면 1로 종료 |
 | `ics yield <PROJECT> <CELL> [--runs N] [--samples N] [--target Y] [--json]` | 셀의 몬테카를로 스윕 설정을 실행하고 조건별 수율과 스펙별 민감도를 예측. `--target` 미만이면 1로 종료 |
 | `ics correlate <PROJECT> <CELL> [--data CSV] [--x COL] [--analysis A] [--trace COL=EXPR[@BIAS]]... [--param TARGET=MIN:MAX[:log]]... [--log] [--fit] [--write-models FILE] [--apply] [--save] [--json]` | 측정 곡선과 시뮬레이션 비교, 모델·인스턴스·설계 파라미터 피팅 |
-| `ics xsection <PROJECT> <CELL> [--flow FILE] [--cut x0,y0,x1,y1] [--steps N] [--at X]... [--svg FILE] [--json]` | 공정 에뮬레이션: 공정 흐름 후 컷을 따른 레이아웃 단면([공정 에뮬레이션](process.md) 참고) |
+| `ics xsection <PROJECT> <CELL> [--flow FILE] [--cut x0,y0,x1,y1] [--steps N] [--at X]... [--svg FILE] [--profile CSV] [--json]` | 공정 에뮬레이션: 공정 흐름 후 컷을 따른 레이아웃 단면, 도핑된 층·접합 깊이·면저항. `--profile`은 도펀트 깊이 프로파일 작성([공정 에뮬레이션](process.md) 참고) |
 | `ics process-data <CSV> [--spec FILE] [--json]` | WAT / PCM 데이터를 공정 사양과 비교: Cp / Cpk, 스펙 이탈, 관리도 경보, 코너 포함 여부([공정 데이터](process.md#공정-데이터) 참고). 스펙 이탈이나 경보가 있으면 1로 종료 |
 | `ics corners <CSV> [--spec FILE] [--project P] [--lib FILE] [--variation FILE] [--apply] [--json]` | WAT 데이터로 코너 모델 생성: tt와 ff / ss / fs / sf 모델 카드를 피팅하고 코너 라이브러리와 Monte Carlo용 공정 변동 작성([코너 모델](process.md#실리콘에서-코너-모델-만들기) 참고) |
 | `ics optimize <PROJECT> <CELL> [--post-layout] [--apply] [--json]` | 셀의 스펙을 만족하도록 소자 사이징. 모든 스펙을 만족하는 포인트가 없으면 1로 종료 |

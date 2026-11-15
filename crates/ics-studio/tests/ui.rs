@@ -2131,9 +2131,13 @@ fn process_emulation() {
     h.run_steps(3);
     let pe = h.state_mut().process_emulation();
     let s = pe.section.as_ref().unwrap_or_else(|| panic!("{:?}", pe.error));
-    for m in ["si", "nwell", "p+", "poly", "w", "al"] {
+    for m in ["si", "gox", "poly", "w", "al"] {
         assert!(s.materials.iter().any(|x| x == m), "{m}: {:?}", s.materials);
     }
+    // Doped: the PMOS source / drain junction in the n-well and the well junction.
+    assert!(s.dopants.len() == 3, "{:?}", s.dopants.iter().map(|d| d.0).collect::<Vec<_>>());
+    let w = s.nx as f64 * s.h;
+    assert!((1..40).any(|k| s.junctions(w * k as f64 / 40.0).len() == 2));
     h.run_steps(2);
     shot(&mut h, "39_process_emulation");
     let pe = h.state_mut().process_emulation();

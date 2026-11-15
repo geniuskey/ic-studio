@@ -78,7 +78,7 @@ The server has 40 tools:
 | `compact` | Slide top-level items toward each direction until the rules stop them; constraints hold |
 | `predict_yield` | Monte Carlo yield prediction: simulated and predicted yield per condition, per spec Cpk, model Q² and sensitivities |
 | `correlate_silicon` | Compare measured curves (CSV) with the simulation; fit model, instance or design parameters |
-| `process_cross_section` | Process emulation: material stacks along a cut through the layout after a process flow; optional SVG |
+| `process_cross_section` | Process emulation: material stacks, doped layers (type, depth, peak, sheet resistance) and junction depths along a cut through the layout after a process flow; optional SVG |
 | `process_data` | WAT / PCM data against the process spec: capability, control alarms, corner coverage, correlated parameters |
 | `extract_corners` | Corner models from WAT data: tt / ff / ss / fs / sf model cards, the process variation for Monte Carlo (`apply` stores it in the technology) and the corner library |
 | `optimize` | Size device parameters to meet specs (optionally after layout); `apply` writes the best values |

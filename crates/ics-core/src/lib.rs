@@ -7,6 +7,7 @@ pub mod by_example;
 pub mod compact;
 pub mod connectivity;
 pub mod constraints;
+pub mod dopants;
 pub mod drc;
 pub mod drc_fix;
 pub mod emir;

@@ -1,4 +1,4 @@
-<!-- seo title="Process Emulation: Cross-Sections from Layout and Process Flow" description="IC Studio builds the cross-section of a layout along a cut line by running a process flow: deposition, etching, implantation and CMP on a 2-D grid." -->
+<!-- seo title="Process Emulation: Cross-Sections from Layout and Process Flow" description="IC Studio builds the cross-section of a layout along a cut line by running a process flow: deposition, etching, implantation, diffusion, oxidation and CMP on a 2-D grid." -->
 
 # Process emulation and process data
 
@@ -8,29 +8,46 @@ The process emulator builds the cross-section of a layout along a cut line by ru
 process flow step by step on a 2-D grid of material cells: x along the cut, z up, 0 at the
 original silicon surface. Masks are layout layers or derived-layer expressions. Use it to
 check what a layout becomes in silicon (STI next to a contact, a via landing on metal,
-spacer and implant overlap), to explain a process to a design team, or to make the
-dielectric and metal stack of a [pixel](pixel-optics.md) or a parasitic model.
+spacer and implant overlap, junction depths and how far source and drain reach under a
+gate), to explain a process to a design team, or to make the dielectric and metal stack of
+a [pixel](pixel-optics.md) or a parasitic model.
 
 - GUI: **Tools > Process Emulation** for the open layout. Set the cut (µm, layout
   coordinates; **Across the diffusion** cuts horizontally through the largest diffusion
   area), move **After step** to see the wafer after any step, and click the section to list
-  the material stack at that point. **Edit flow** edits the flow, **Load...** reads a flow
-  file.
-- CLI: `ics xsection <project> <cell> [--flow FILE] [--cut x0,y0,x1,y1] [--steps N] [--at X]... [--svg FILE] [--json]`
+  the material stack at that point. With dopants in the flow, **Doping** colours silicon and
+  poly by net doping (red n-type, blue p-type, darker with the concentration, junctions as
+  dark lines). The plot beside the section is the dopant profile at the probe, and the lines
+  below it list the doped layers and the junction depths. **Edit flow** edits the flow,
+  **Load...** reads a flow file.
+- CLI: `ics xsection <project> <cell> [--flow FILE] [--cut x0,y0,x1,y1] [--steps N] [--at X]... [--svg FILE] [--profile CSV] [--json]`
 - MCP: `process_cross_section`
 
 ```text
 $ ics xsection myproj cmos_inverter --at 1.7 --svg inv.svg
-work/cmos_inverter: generic180 FEOL + 3 metals along (-0.600, 3.400) - (2.800, 3.400), 3.400 µm, 33 of 33 steps, 680 x 1474 cells in 0.09 s
+work/cmos_inverter: generic180 FEOL + 3 metals along (-0.600, 3.400) - (2.800, 3.400), 3.400 µm, 36 of 36 steps, 680 x 1474 cells in 1.43 s
 after: passivation: deposit 0.5 µm si3n4 (conformal)
-  x =   1.700  surface  3.250  si 0.300 | nwell 0.900 | gox 0.010 | poly 0.180 | sio2 2.560 | si3n4 0.500
+  x =   1.700  surface  3.250  si 1.195 | gox 0.010 | poly 0.180 | sio2 2.565 | si3n4 0.500
+                       doping  p poly 0.185..0.005 peak 5.8e20 45.76 Ω/sq | n si -0.005..-0.985 peak 4.6e17 649.6 Ω/sq | p si -0.985..-1.200 peak 9.9e14 811.5k Ω/sq
 ```
+
+At x = 1.7 µm the cut crosses the PMOS gate: p+ poly, then the n-well channel down to the
+well junction at 0.985 µm, then the p substrate. In the source and drain the p+ junction is
+0.14 µm deep with 46 Ω/□. `--profile FILE` writes the concentration of every species
+against depth at the first `--at` position as CSV, for comparison with SIMS data.
 
 ## Process flow
 
-A flow is a TOML file; `process/generic180.toml` is the generic 180 nm flow (STI, n-well,
-gate oxide and poly, nitride spacers, n+ / p+ implants, tungsten contacts and vias, three
-aluminium metals, passivation).
+A flow is a TOML file; `process/generic180.toml` is the generic 180 nm flow:
+
+- STI;
+- n-well and p-well implants with a drive-in;
+- thermal gate oxide and poly;
+- nitride spacers;
+- arsenic and BF₂ source/drain implants with an RTA;
+- tungsten contacts and vias;
+- three aluminium metals;
+- passivation.
 
 ```toml
 name = "my flow"
@@ -38,6 +55,8 @@ substrate = "si"
 substrate_depth = 1.2      # µm of substrate shown
 resolution = 0.005         # grid step (µm)
 colors = { gox = "#c080ff" }
+substrate_doping = { species = "boron", concentration = 1e15 }   # cm⁻³
+semiconductors = ["si", "poly"]   # materials that hold dopants (the default)
 
 [[step]]
 name = "STI etch"
@@ -51,7 +70,10 @@ depth = 0.35
 |---|---|---|
 | `deposit` | `material`, `thickness`, `conformal` | Add a layer on top of every column, or conformally (also on sidewalls and under overhangs; trenches narrower than twice the thickness close, leaving seams) |
 | `etch` | `mask` / `keep`, `materials`, `depth`, `isotropic` | Remove the listed materials where the mask is open: anisotropically from the surface down by `depth` (without a depth, until another material), or isotropically within `depth` of the opening (undercut) |
-| `implant` | `mask` / `keep`, `material`, `into`, `depth` | Turn the `into` materials within `depth` below the surface into `material`; whatever lies on top counts towards the depth, so a gate masks its channel |
+| `implant` | `mask` / `keep`, `species`, `dose`, `energy` | Add a Gaussian dopant profile (`dose` cm⁻², `energy` keV; `boron`, `bf2`, `phosphorus`, `arsenic`, `antimony`) below the surface. Whatever lies on top stops ions like silicon, so a gate masks its channel (and is doped itself) and spacers offset the implant from the gate |
+| `implant` | `mask` / `keep`, `material`, `into`, `depth` | Geometric form, combinable with the doping form: turn the `into` materials within `depth` below the surface into `material` |
+| `anneal` | `temperature` (°C), `time` (minutes) | Diffuse every dopant within the semiconductors |
+| `oxidize` | `temperature`, `time`, `wet`, `material` | Thermal oxide (Deal-Grove, (100) silicon, dry or `wet`) where silicon or poly lies under oxide or air only: nitride masks it, existing oxide slows it, 44 % of the new oxide is consumed silicon. Dopants diffuse for the same time |
 | `planarize` | `height` or `stop` | Remove everything above a height, or above the highest point of a material (CMP) |
 | `strip` | `material` | Remove a material everywhere (resist) |
 
@@ -63,8 +85,29 @@ Conformal deposition and isotropic etching use the exact Euclidean distance tran
 the grid, so corners round and spacers form from the geometry; a spacer is a conformal
 deposition followed by an anisotropic blanket etch of the same thickness.
 
-Limits: the model is geometric. It has no diffusion profiles, oxidation consuming silicon,
-stress, topography effects of CMP or 3-D effects across the cut.
+### Doping
+
+Dopants live in the semiconductor cells: the substrate, the `semiconductors` of the flow and
+what geometric implants make of them. Etching or oxidising a cell removes its dopants.
+
+- **Implants.** The profile is Gaussian. The projected range Rp and straggle ΔRp in silicon
+  come from LSS / Gibbons tables, and the lateral straggle is 0.8 ΔRp. BF₂ carries 11/49 of
+  its energy on the boron.
+- **Diffusion.** Diffusion is intrinsic, `D = D0 exp(−Ea/kT)` per species. It is solved in 2-D
+  with no flux out of the semiconductors (so not through the gate oxide), by up to 100
+  backward-Euler steps per anneal.
+- **Sheet resistance.** Each doped layer's sheet resistance uses Caughey-Thomas mobility at
+  300 K.
+
+The junction depth of an arsenic implant (5e15 cm⁻², 40 keV, 10 minutes at 1000 °C) is
+within 6 nm of the analytic Gaussian. Lateral straggle and diffusion take the junction
+about 76 nm under the gate edge. Both are unit tests.
+
+Limits: the doping models are first-order. There is no transient enhanced, oxidation
+enhanced or concentration-dependent diffusion, no segregation at interfaces, and no
+channelling. Real junctions after an RTA come out deeper than the emulated ones. Oxidation
+is vertical only (no bird's beak). Also missing are stress, topography effects of CMP, and
+3-D effects across the cut.
 
 ## Process data
 

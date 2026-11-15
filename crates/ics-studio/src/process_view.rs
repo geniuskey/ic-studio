@@ -2,7 +2,7 @@
 //! built by a process flow step by step (`ics_core::process`).
 
 use eframe::egui::{self, Color32, ColorImage, RichText, TextureHandle, TextureOptions};
-use egui_plot::{Legend, Plot, PlotImage, PlotPoint, Points};
+use egui_plot::{Legend, Line, Plot, PlotImage, PlotPoint, PlotPoints, Points};
 use ics_core::process::{Cut, GENERIC180, ProcessFlow, Section, default_cut, emulate_cell};
 use ics_core::{CellRef, Project};
 
@@ -26,6 +26,8 @@ pub struct ProcessView {
     texture: Option<TextureHandle>,
     /// x (µm along the cut) of the stack shown below the picture.
     probe: Option<f64>,
+    /// Colour the semiconductors by net doping.
+    pub show_doping: bool,
 }
 
 impl Default for ProcessView {
@@ -43,6 +45,7 @@ impl Default for ProcessView {
             dirty: true,
             texture: None,
             probe: None,
+            show_doping: true,
         }
     }
 }
@@ -95,6 +98,18 @@ impl ProcessView {
         self.dirty = true;
     }
 
+    /// Colour of a net doping (cm⁻³): red for n, blue for p, deeper with the concentration
+    /// (1e14 to 1e21, log).
+    pub fn doping_color(net: f64) -> Color32 {
+        let t = ((net.abs().max(1.0).log10() - 14.0) / 7.0).clamp(0.0, 1.0) as f32;
+        let mix = |a: f32, b: f32| (a + (b - a) * t).round() as u8;
+        if net > 0.0 {
+            Color32::from_rgb(mix(250.0, 170.0), mix(215.0, 10.0), mix(215.0, 30.0))
+        } else {
+            Color32::from_rgb(mix(215.0, 20.0), mix(225.0, 60.0), mix(250.0, 170.0))
+        }
+    }
+
     fn image(&self, s: &Section, flow: &ProcessFlow) -> ColorImage {
         let colors: Vec<Color32> = s
             .materials
@@ -105,12 +120,22 @@ impl ProcessView {
             })
             .collect();
         let mut img = ColorImage::new([s.nx, s.nz], vec![Color32::TRANSPARENT; s.nx * s.nz]);
+        let doping = self.show_doping && !s.dopants.is_empty();
         for iz in 0..s.nz {
             let row = s.nz - 1 - iz;
             for ix in 0..s.nx {
                 let c = s.cells[iz * s.nx + ix];
                 if c > 0 {
                     img.pixels[row * s.nx + ix] = colors[c as usize - 1];
+                }
+                if doping && s.is_semi(ix, iz) {
+                    let net = s.doping(ix, iz).0;
+                    if net != 0.0 {
+                        // Junctions (sign change to the right or below) are drawn dark.
+                        let flips = |jx: usize, jz: usize| s.is_semi(jx, jz) && s.doping(jx, jz).0 * net < 0.0;
+                        let edge = (ix + 1 < s.nx && flips(ix + 1, iz)) || (iz > 0 && flips(ix, iz - 1));
+                        img.pixels[row * s.nx + ix] = if edge { Color32::from_gray(30) } else { Self::doping_color(net) };
+                    }
                 }
             }
         }
@@ -143,6 +168,14 @@ impl ProcessView {
                     self.set_text(GENERIC180.to_string());
                 }
                 ui.toggle_value(&mut self.show_flow, "Edit flow");
+                if self.section.as_ref().is_some_and(|s| !s.dopants.is_empty())
+                    && ui
+                        .toggle_value(&mut self.show_doping, "Doping")
+                        .on_hover_text("Colour silicon and poly by net doping: red n, blue p")
+                        .changed()
+                {
+                    self.texture = None;
+                }
             });
             if self.show_flow {
                 let l = ui.label(RichText::new("Process flow (TOML)").small().color(pal.text_weak));
@@ -202,37 +235,95 @@ impl ProcessView {
             };
             let (w, h) = (s.nx as f64 * s.h, s.nz as f64 * s.h);
             let mut probe = self.probe;
-            let stack_h = 64.0;
-            Plot::new("pe_plot")
-                .data_aspect(1.0)
-                .height((ui.available_height() - stack_h).max(220.0))
-                .legend(Legend::default().position(egui_plot::Corner::RightTop))
-                .x_axis_label("µm along the cut")
-                .y_axis_label("z (µm)")
-                .allow_scroll(false)
-                .show(ui, |pu| {
-                    pu.image(PlotImage::new(
-                        "",
-                        tex.id(),
-                        PlotPoint::new(w / 2.0, s.z0 + h / 2.0),
-                        egui::vec2(w as f32, h as f32),
-                    ));
-                    // Legend entries: one point per material, off to the side.
-                    for m in &s.materials {
-                        let c = f.color(m);
-                        pu.points(
-                            Points::new(m.clone(), vec![[w / 2.0, s.z0]]).color(Color32::from_rgb(c[0], c[1], c[2])).radius(0.0),
-                        );
-                    }
-                    if (pu.response().clicked() || pu.response().dragged())
-                        && let Some(pt) = pu.pointer_coordinate()
-                    {
-                        probe = Some(pt.x.clamp(0.0, w));
-                    }
-                    if let Some(x) = probe {
-                        pu.vline(egui_plot::VLine::new("probe", x).color(pal.accent).width(1.0));
-                    }
-                });
+            let doped = !s.dopants.is_empty();
+            let text_h = if doped { 64.0 + 44.0 } else { 64.0 };
+            let plot_h = (ui.available_height() - text_h).max(220.0);
+            let shown = self.probe.unwrap_or(w / 2.0);
+            let show_doping = self.show_doping;
+            ui.horizontal(|ui| {
+                let sec_w = if doped { ui.available_width() * 0.64 } else { ui.available_width() };
+                Plot::new("pe_plot")
+                    .data_aspect(1.0)
+                    .width(sec_w)
+                    .height(plot_h)
+                    .legend(Legend::default().position(egui_plot::Corner::RightTop))
+                    .x_axis_label("µm along the cut")
+                    .y_axis_label("z (µm)")
+                    .allow_scroll(false)
+                    .show(ui, |pu| {
+                        pu.image(PlotImage::new(
+                            "",
+                            tex.id(),
+                            PlotPoint::new(w / 2.0, s.z0 + h / 2.0),
+                            egui::vec2(w as f32, h as f32),
+                        ));
+                        // Legend entries: one point per material, off to the side; with the doping
+                        // shown, n and p in place of the semiconductors.
+                        let overlay = doped && show_doping;
+                        if overlay {
+                            for (name, net) in [("n-type", 1e19), ("p-type", -1e19)] {
+                                pu.points(Points::new(name, vec![[w / 2.0, s.z0]]).color(Self::doping_color(net)).radius(0.0));
+                            }
+                        }
+                        for (k, m) in s.materials.iter().enumerate() {
+                            if overlay && s.semi[k] {
+                                continue;
+                            }
+                            let c = f.color(m);
+                            pu.points(
+                                Points::new(m.clone(), vec![[w / 2.0, s.z0]])
+                                    .color(Color32::from_rgb(c[0], c[1], c[2]))
+                                    .radius(0.0),
+                            );
+                        }
+                        if (pu.response().clicked() || pu.response().dragged())
+                            && let Some(pt) = pu.pointer_coordinate()
+                        {
+                            probe = Some(pt.x.clamp(0.0, w));
+                        }
+                        if let Some(x) = probe {
+                            pu.vline(egui_plot::VLine::new("probe", x).color(pal.accent).width(1.0));
+                        }
+                    });
+                if doped {
+                    // The dopant depth profile at the probe, depth up the side like the section.
+                    let prof = s.profile(shown);
+                    let colors = [
+                        Color32::from_rgb(40, 90, 220),
+                        Color32::from_rgb(200, 60, 40),
+                        Color32::from_rgb(220, 130, 20),
+                        Color32::from_rgb(120, 60, 180),
+                    ];
+                    Plot::new("pe_profile")
+                        .width(ui.available_width())
+                        .height(plot_h)
+                        .legend(Legend::default().position(egui_plot::Corner::RightBottom))
+                        .x_axis_label(format!("cm⁻³ at x = {shown:.2} µm"))
+                        .y_axis_label("z (µm)")
+                        .x_axis_formatter(|m, _| {
+                            if (m.value - m.value.round()).abs() < 1e-6 { format!("1e{:.0}", m.value) } else { String::new() }
+                        })
+                        .include_x(14.0)
+                        .include_x(21.0)
+                        .allow_scroll(false)
+                        .show(ui, |pu| {
+                            let log = |v: f64| if v > 1e10 { Some(v.log10()) } else { None };
+                            for (k, (sp, _)) in s.dopants.iter().enumerate() {
+                                let pts: Vec<[f64; 2]> = prof.iter().filter_map(|(z, _, c)| log(c[k]).map(|l| [l, *z])).collect();
+                                pu.line(Line::new(sp.name(), PlotPoints::from(pts)).color(colors[k % colors.len()]));
+                            }
+                            let net: Vec<[f64; 2]> = prof.iter().filter_map(|(z, n, _)| log(n.abs()).map(|l| [l, *z])).collect();
+                            pu.line(
+                                Line::new("|net|", PlotPoints::from(net))
+                                    .color(pal.text_weak)
+                                    .style(egui_plot::LineStyle::dashed_dense()),
+                            );
+                            for z in s.junctions(shown) {
+                                pu.hline(egui_plot::HLine::new("junction", z).color(pal.text_weak).width(0.5));
+                            }
+                        });
+                }
+            });
             self.probe = probe;
             let x = self.probe.unwrap_or(w / 2.0);
             let stack: Vec<String> = s.stack_at(x).iter().rev().map(|(m, t)| format!("{m} {:.0} nm", t * 1000.0)).collect();
@@ -241,6 +332,28 @@ impl ProcessView {
                     .color(pal.text_weak),
             );
             ui.label(RichText::new(stack.join("  |  ")).monospace());
+            if doped {
+                let layers: Vec<String> = s
+                    .doped_layers(x)
+                    .iter()
+                    .map(|l| {
+                        format!(
+                            "{} {} to {:.0} nm, peak {:.1e}, {} Ω/□",
+                            if l.n_type { "n" } else { "p" },
+                            l.material,
+                            -l.bottom * 1000.0,
+                            l.peak,
+                            ics_core::units::format_eng(l.sheet_resistance, "")
+                        )
+                    })
+                    .collect();
+                let j: Vec<String> = s.junctions(x).iter().map(|z| format!("{:.0} nm", -z * 1000.0)).collect();
+                ui.label(RichText::new(layers.join("  |  ")).monospace());
+                ui.label(
+                    RichText::new(format!("junctions at {} below z = 0", if j.is_empty() { "—".into() } else { j.join(", ") }))
+                        .color(pal.text_weak),
+                );
+            }
         });
         self.open = open;
         action

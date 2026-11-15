@@ -322,7 +322,12 @@ mod tests {
         let xs = call(&mut s, "process_cross_section", json!({"cell": "cmos_inverter", "at": [1.7]})).unwrap();
         let stack = xs["columns"][0]["stack"].to_string();
         assert!(stack.contains("poly") && stack.contains("gox"), "{xs}");
-        assert_eq!(xs["steps_run"], 33, "{xs}");
+        assert_eq!(xs["steps_run"], 36, "{xs}");
+        // Under the PMOS gate: p+ poly over the n-well channel, the well over the p substrate.
+        let d = &xs["columns"][0]["doping"];
+        assert_eq!(d[0]["material"], "poly", "{xs}");
+        assert_eq!((d[0]["type"].as_str(), d[1]["type"].as_str()), (Some("p"), Some("n")), "{xs}");
+        assert_eq!(xs["columns"][0]["junctions"].as_array().unwrap().len(), 1, "{xs}");
 
         let wat = call(
             &mut s,

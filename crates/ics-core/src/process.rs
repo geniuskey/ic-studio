@@ -9,6 +9,10 @@
 //!
 //! The flow is TOML (see `process/generic180.toml`):
 //!
+//! Implants with a `species`, `dose` and `energy` add a dopant profile, `anneal` diffuses the
+//! dopants and `oxidize` grows thermal oxide (see [`crate::dopants`] for the models); the
+//! section then gives the net doping, junction depths and sheet resistance of every column.
+//!
 //! ```toml
 //! name = "generic180 FEOL + 2 metals"
 //! substrate = "si"
@@ -24,6 +28,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::dopants::Species;
 use crate::pixel_layout::PixelLayout;
 use crate::project::{CellRef, Project};
 
@@ -44,6 +49,13 @@ pub struct ProcessFlow {
     /// Material colours (`#rrggbb`) by name, over the defaults.
     #[serde(default)]
     pub colors: std::collections::BTreeMap<String, String>,
+    /// Background doping of the substrate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub substrate_doping: Option<Doping>,
+    /// Materials that hold dopants besides the substrate (and materials implants make from
+    /// them).
+    #[serde(default = "default_semiconductors")]
+    pub semiconductors: Vec<String>,
     #[serde(rename = "step")]
     pub steps: Vec<Step>,
 }
@@ -51,6 +63,23 @@ pub struct ProcessFlow {
 /// A finite positive number.
 fn positive(v: f64) -> bool {
     v.is_finite() && v > 0.0
+}
+
+fn default_semiconductors() -> Vec<String> {
+    vec!["si".into(), "poly".into()]
+}
+
+/// A uniform doping.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Doping {
+    pub species: String,
+    /// cm⁻³
+    pub concentration: f64,
+}
+
+fn default_oxide() -> String {
+    "sio2".into()
 }
 
 fn default_substrate() -> String {
@@ -100,16 +129,48 @@ pub enum Step {
         #[serde(default)]
         isotropic: bool,
     },
-    /// Turn the cells of `into` within `depth` below the surface into `material` where the
-    /// mask is open; anything on top counts towards the depth (a gate blocks the implant).
+    /// Where the mask is open: with `species`, `dose` (cm⁻²) and `energy` (keV), add a
+    /// Gaussian dopant profile below the surface (anything on top stops ions like silicon, so a
+    /// gate blocks the implant); with `material`, `into` and `depth`, turn the cells of `into`
+    /// within `depth` below the surface into `material`. Either or both.
     Implant {
         #[serde(default)]
         name: String,
         #[serde(flatten)]
         mask: Mask,
-        material: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        material: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         into: Vec<String>,
-        depth: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        depth: Option<f64>,
+        /// `boron`, `bf2`, `phosphorus`, `arsenic` or `antimony`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        species: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dose: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        energy: Option<f64>,
+    },
+    /// Diffuse the dopants for `time` minutes at `temperature` °C.
+    Anneal {
+        #[serde(default)]
+        name: String,
+        temperature: f64,
+        time: f64,
+    },
+    /// Thermal oxidation for `time` minutes at `temperature` °C (`wet` = steam): oxide of
+    /// `material` grows where silicon (or poly) lies under oxide or air only, so nitride masks
+    /// it; the dopants diffuse meanwhile.
+    Oxidize {
+        #[serde(default)]
+        name: String,
+        temperature: f64,
+        time: f64,
+        #[serde(default)]
+        wet: bool,
+        #[serde(default = "default_oxide")]
+        material: String,
     },
     /// Remove everything above `height`, or above the highest point of material `stop`.
     Planarize {
@@ -144,7 +205,20 @@ impl Step {
                     depth.map_or(String::new(), |d| format!(" {d} µm"))
                 ),
             ),
-            Step::Implant { name, material, depth, .. } => (name, format!("implant {material} {depth} µm")),
+            Step::Implant { name, material, depth, species, dose, energy, .. } => {
+                let mut w = vec![];
+                if let (Some(sp), Some(d), Some(e)) = (species, dose, energy) {
+                    w.push(format!("{sp} {d:.1e} cm⁻² {e} keV"));
+                }
+                if let (Some(m), Some(d)) = (material, depth) {
+                    w.push(format!("{m} {d} µm"));
+                }
+                (name, format!("implant {}", w.join(", ")))
+            }
+            Step::Anneal { name, temperature, time } => (name, format!("anneal {time} min at {temperature} °C")),
+            Step::Oxidize { name, temperature, time, wet, material } => {
+                (name, format!("{} oxidation {time} min at {temperature} °C ({material})", if *wet { "wet" } else { "dry" }))
+            }
             Step::Planarize { name, height, stop } => (
                 name,
                 match (height, stop) {
@@ -168,13 +242,32 @@ impl ProcessFlow {
         if !positive(f.substrate_depth) {
             return Err("substrate_depth must be positive".into());
         }
+        if let Some(d) = &f.substrate_doping
+            && (crate::dopants::Species::parse(&d.species).is_none() || !positive(d.concentration))
+        {
+            return Err(format!("substrate_doping: unknown species '{}' or invalid concentration", d.species));
+        }
         for (k, s) in f.steps.iter().enumerate() {
             let bad = match s {
                 Step::Deposit { thickness, .. } => !positive(*thickness),
                 Step::Etch { depth, isotropic, materials, .. } => {
                     materials.is_empty() || depth.is_some_and(|d| !positive(d)) || (*isotropic && depth.is_none())
                 }
-                Step::Implant { depth, into, .. } => !positive(*depth) || into.is_empty(),
+                Step::Implant { material, into, depth, species, dose, energy, .. } => {
+                    let convert = material.is_some() || depth.is_some() || !into.is_empty();
+                    let dope = species.is_some() || dose.is_some() || energy.is_some();
+                    let bad_convert = convert && (material.is_none() || into.is_empty() || !depth.is_some_and(positive));
+                    let bad_dope = dope
+                        && (species
+                            .as_deref()
+                            .and_then(|sp| crate::dopants::implant_range(sp, energy.unwrap_or(f64::NAN)))
+                            .is_none()
+                            || !dose.is_some_and(positive));
+                    !(convert || dope) || bad_convert || bad_dope
+                }
+                Step::Anneal { temperature, time, .. } | Step::Oxidize { temperature, time, .. } => {
+                    !(300.0..=1400.0).contains(temperature) || !positive(*time)
+                }
                 Step::Planarize { height, stop, .. } => height.is_none() && stop.is_none(),
                 Step::Strip { .. } => false,
             };
@@ -200,9 +293,18 @@ impl ProcessFlow {
         out
     }
 
-    /// Total deposited thickness (µm), an upper bound of the stack height.
+    /// Total deposited and grown thickness (µm), an upper bound of the stack height.
     fn deposited(&self) -> f64 {
-        self.steps.iter().map(|s| if let Step::Deposit { thickness, .. } = s { *thickness } else { 0.0 }).sum()
+        self.steps
+            .iter()
+            .map(|s| match s {
+                Step::Deposit { thickness, .. } => *thickness,
+                Step::Oxidize { temperature, time, wet, .. } => {
+                    0.56 * crate::dopants::oxide_growth(*temperature, *time, *wet, 0.0)
+                }
+                _ => 0.0,
+            })
+            .sum()
     }
 
     /// Colour of a material: the flow's, else a default.
@@ -281,6 +383,25 @@ pub struct Section {
     pub z0: f64,
     /// Cells, row-major from the bottom: `cells[iz * nx + ix]`.
     pub cells: Vec<u8>,
+    /// Per material: holds dopants.
+    pub semi: Vec<bool>,
+    /// Concentration (cm⁻³) of every species present, per cell like `cells`.
+    pub dopants: Vec<(Species, Vec<f64>)>,
+}
+
+/// A region of one carrier type in a column (between junctions or material boundaries).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DopedLayer {
+    /// Material at the top of the region.
+    pub material: String,
+    pub n_type: bool,
+    /// z (µm) of the top and bottom.
+    pub top: f64,
+    pub bottom: f64,
+    /// Highest net doping (cm⁻³).
+    pub peak: f64,
+    /// Ω/□ from the majority carriers (Caughey-Thomas mobility).
+    pub sheet_resistance: f64,
 }
 
 /// Squared Euclidean distance transform (in cells) of `seed` on an `nx` × `nz` grid.
@@ -350,6 +471,7 @@ impl Section {
             Some(k) => k as u8 + 1,
             None => {
                 self.materials.push(material.to_string());
+                self.semi.push(false);
                 self.materials.len() as u8
             }
         }
@@ -357,6 +479,34 @@ impl Section {
 
     fn ids(&self, materials: &[String]) -> Vec<u8> {
         materials.iter().filter_map(|m| self.materials.iter().position(|x| x == m).map(|k| k as u8 + 1)).collect()
+    }
+
+    fn refresh_semi(&mut self, names: &[String]) {
+        for (k, m) in self.materials.iter().enumerate() {
+            self.semi[k] = names.contains(m);
+        }
+    }
+
+    /// Drop the dopants of cells that are not semiconductors (etched, oxidised, or never were).
+    fn clear_outside(&mut self) {
+        let inside: Vec<bool> = self.cells.iter().map(|c| *c > 0 && self.semi[*c as usize - 1]).collect();
+        for (_, c) in &mut self.dopants {
+            for (v, i) in c.iter_mut().zip(&inside) {
+                if !i {
+                    *v = 0.0;
+                }
+            }
+        }
+    }
+
+    /// Diffuse every species for `minutes` at `celsius`, within the semiconductors.
+    fn anneal(&mut self, celsius: f64, minutes: f64) {
+        let inside: Vec<bool> = self.cells.iter().map(|c| *c > 0 && self.semi[*c as usize - 1]).collect();
+        let h_cm = self.h * 1e-4;
+        for (sp, c) in &mut self.dopants {
+            let dt = sp.diffusivity(celsius) * minutes * 60.0;
+            crate::dopants::diffuse(c, &inside, self.nx, self.nz, dt, h_cm);
+        }
     }
 
     /// Material at column `ix`, row `iz` (`None` for air).
@@ -395,6 +545,101 @@ impl Section {
     pub fn surface_at(&self, x: f64) -> f64 {
         let ix = ((x / self.h).floor().max(0.0) as usize).min(self.nx - 1);
         self.top(ix).map_or(self.z0, |iz| self.z_top(iz))
+    }
+
+    fn column(&self, x: f64) -> usize {
+        ((x / self.h).floor().max(0.0) as usize).min(self.nx - 1)
+    }
+
+    /// Net doping (cm⁻³; positive n-type, negative p-type) and total impurity concentration of
+    /// a cell.
+    pub fn doping(&self, ix: usize, iz: usize) -> (f64, f64) {
+        let k = iz * self.nx + ix;
+        self.dopants.iter().fold((0.0, 0.0), |(net, tot), (sp, c)| {
+            let v = c[k];
+            (if sp.is_donor() { net + v } else { net - v }, tot + v)
+        })
+    }
+
+    /// Whether the cell holds dopants (a semiconductor).
+    pub fn is_semi(&self, ix: usize, iz: usize) -> bool {
+        let c = self.cells[iz * self.nx + ix];
+        c > 0 && self.semi[c as usize - 1]
+    }
+
+    /// The regions of one carrier type in the column at `x`, top down. Undoped cells end a
+    /// region.
+    pub fn doped_layers(&self, x: f64) -> Vec<DopedLayer> {
+        let ix = self.column(x);
+        let mut out: Vec<DopedLayer> = vec![];
+        let mut conductance = 0.0;
+        let mut open = false;
+        let h_cm = self.h * 1e-4;
+        for iz in (0..self.nz).rev() {
+            let (net, tot) = if self.is_semi(ix, iz) { self.doping(ix, iz) } else { (0.0, 0.0) };
+            let n_type = net > 0.0;
+            let continues = open && net != 0.0 && out.last().is_some_and(|l| l.n_type == n_type);
+            if !continues {
+                if open && let Some(l) = out.last_mut() {
+                    l.sheet_resistance = 1.0 / conductance;
+                }
+                open = false;
+                if net == 0.0 {
+                    continue;
+                }
+                out.push(DopedLayer {
+                    material: self.material(ix, iz).unwrap_or("").to_string(),
+                    n_type,
+                    top: self.z_top(iz),
+                    bottom: self.z_top(iz) - self.h,
+                    peak: 0.0,
+                    sheet_resistance: f64::INFINITY,
+                });
+                conductance = 0.0;
+                open = true;
+            }
+            let l = out.last_mut().expect("open");
+            l.bottom = self.z_top(iz) - self.h;
+            l.peak = l.peak.max(net.abs());
+            conductance += crate::dopants::Q * crate::dopants::mobility(n_type, tot) * net.abs() * h_cm;
+        }
+        if open && let Some(l) = out.last_mut() {
+            l.sheet_resistance = 1.0 / conductance;
+        }
+        out
+    }
+
+    /// The dopant profile of the column at `x`, top down over its semiconductor cells: (z of the
+    /// cell centre µm, net doping, concentration of each species in [`Self::dopants`] order).
+    pub fn profile(&self, x: f64) -> Vec<(f64, f64, Vec<f64>)> {
+        let ix = self.column(x);
+        (0..self.nz)
+            .rev()
+            .filter(|&iz| self.is_semi(ix, iz))
+            .map(|iz| {
+                let k = iz * self.nx + ix;
+                (self.z_top(iz) - 0.5 * self.h, self.doping(ix, iz).0, self.dopants.iter().map(|(_, c)| c[k]).collect())
+            })
+            .collect()
+    }
+
+    /// z (µm) of the metallurgical junctions (net doping changes sign) in the column at `x`,
+    /// top down.
+    pub fn junctions(&self, x: f64) -> Vec<f64> {
+        let ix = self.column(x);
+        let mut out = vec![];
+        for iz in (1..self.nz).rev() {
+            if !(self.is_semi(ix, iz) && self.is_semi(ix, iz - 1)) {
+                continue;
+            }
+            let (a, b) = (self.doping(ix, iz).0, self.doping(ix, iz - 1).0);
+            if a * b < 0.0 {
+                // Linear between the cell centres.
+                let f = a / (a - b);
+                out.push(self.z_top(iz) - self.h * (0.5 + f));
+            }
+        }
+        out
     }
 
     /// The cells merged into rectangles per material: (material index, [x0, z0, x1, z1] µm).
@@ -492,11 +737,20 @@ pub fn emulate(flow: &ProcessFlow, length: f64, steps: Option<usize>, mask: &mut
     if nx.saturating_mul(nz) > 40_000_000 {
         return Err(format!("{nx} x {nz} cells: use a coarser resolution or a shorter cut"));
     }
-    let mut s = Section { materials: vec![], nx, nz, h, z0, cells: vec![0; nx * nz] };
+    let mut s = Section { materials: vec![], nx, nz, h, z0, cells: vec![0; nx * nz], semi: vec![], dopants: vec![] };
     let sub = s.id(&flow.substrate);
     let surface = (flow.substrate_depth / h).round() as usize; // rows of substrate
     for iz in 0..surface.min(nz) {
         s.cells[iz * nx..(iz + 1) * nx].fill(sub);
+    }
+    // Materials that hold dopants: the substrate, the flow's semiconductors and what implants
+    // make of them.
+    let mut semi_names: Vec<String> = flow.semiconductors.clone();
+    semi_names.push(flow.substrate.clone());
+    if let Some(d) = &flow.substrate_doping {
+        let sp = Species::parse(&d.species).ok_or_else(|| format!("unknown species '{}'", d.species))?;
+        let c: Vec<f64> = s.cells.iter().map(|c| if *c == sub { d.concentration } else { 0.0 }).collect();
+        s.dopants.push((sp, c));
     }
     let xs: Vec<f64> = (0..nx).map(|ix| (ix as f64 + 0.5) * h).collect();
     let open = |m: &Mask, mask: &mut MaskFn| -> Result<Vec<bool>, String> {
@@ -507,6 +761,7 @@ pub fn emulate(flow: &ProcessFlow, length: f64, steps: Option<usize>, mask: &mut
         }
     };
     let n = steps.unwrap_or(flow.steps.len()).min(flow.steps.len());
+    s.refresh_semi(&semi_names);
     for step in &flow.steps[..n] {
         match step {
             Step::Deposit { material, thickness, conformal, .. } => {
@@ -568,20 +823,99 @@ pub fn emulate(flow: &ProcessFlow, length: f64, steps: Option<usize>, mask: &mut
                     }
                 }
             }
-            Step::Implant { mask: m, material, into, depth, .. } => {
+            Step::Implant { mask: m, material, into, depth, species, dose, energy, .. } => {
                 let cols = open(m, mask)?;
-                let ids = s.ids(into);
-                let id = s.id(material);
-                let rows = (depth / h).round() as usize;
-                for ix in (0..nx).filter(|&ix| cols[ix]) {
-                    let Some(top) = s.top(ix) else { continue };
-                    for iz in (top + 1).saturating_sub(rows)..=top {
-                        let c = &mut s.cells[iz * nx + ix];
-                        if ids.contains(c) {
-                            *c = id;
+                if let (Some(sp), Some(dose), Some(energy)) = (species, dose, energy) {
+                    let species = Species::parse(sp).ok_or_else(|| format!("unknown species '{sp}'"))?;
+                    let (rp, drp) = crate::dopants::implant_range(sp, *energy).ok_or("implant energy")?;
+                    let peak = dose / ((2.0 * std::f64::consts::PI).sqrt() * drp * 1e-4);
+                    let mut add = vec![0.0; nx * nz];
+                    for ix in (0..nx).filter(|&ix| cols[ix]) {
+                        let Some(top) = s.top(ix) else { continue };
+                        for iz in 0..=top {
+                            let d = (top - iz) as f64 * h + 0.5 * h;
+                            let u = (d - rp) / drp;
+                            if u.abs() < 6.0 {
+                                add[iz * nx + ix] = peak * (-0.5 * u * u).exp();
+                            }
+                        }
+                    }
+                    crate::dopants::blur_rows(&mut add, nx, 0.8 * drp / h);
+                    let k = match s.dopants.iter().position(|(x, _)| *x == species) {
+                        Some(k) => k,
+                        None => {
+                            s.dopants.push((species, vec![0.0; nx * nz]));
+                            s.dopants.len() - 1
+                        }
+                    };
+                    for (c, a) in s.dopants[k].1.iter_mut().zip(&add) {
+                        *c += a;
+                    }
+                }
+                if let (Some(material), Some(depth)) = (material, depth) {
+                    let ids = s.ids(into);
+                    if into.iter().any(|i| semi_names.contains(i)) && !semi_names.contains(material) {
+                        semi_names.push(material.clone());
+                    }
+                    let id = s.id(material);
+                    let rows = (depth / h).round() as usize;
+                    for ix in (0..nx).filter(|&ix| cols[ix]) {
+                        let Some(top) = s.top(ix) else { continue };
+                        for iz in (top + 1).saturating_sub(rows)..=top {
+                            let c = &mut s.cells[iz * nx + ix];
+                            if ids.contains(c) {
+                                *c = id;
+                            }
                         }
                     }
                 }
+            }
+            Step::Anneal { temperature, time, .. } => {
+                s.refresh_semi(&semi_names);
+                s.anneal(*temperature, *time);
+            }
+            Step::Oxidize { temperature, time, wet, material, .. } => {
+                s.refresh_semi(&semi_names);
+                let ox = s.id(material);
+                let oxides: Vec<u8> = s.ids(&[material.clone(), "sio2".into(), "gox".into()]);
+                for ix in 0..nx {
+                    let Some(top) = s.top(ix) else { continue };
+                    // Down through the oxide to the first other material.
+                    let mut iz = top;
+                    while iz > 0 && oxides.contains(&s.cells[iz * nx + ix]) {
+                        iz -= 1;
+                    }
+                    if !s.is_semi(ix, iz) {
+                        continue;
+                    }
+                    let xi = (top - iz) as f64 * h;
+                    let dx = crate::dopants::oxide_growth(*temperature, *time, *wet, xi) - xi;
+                    let total = (dx / h).round() as usize;
+                    if total == 0 {
+                        continue;
+                    }
+                    // 0.44 of the new oxide is consumed silicon, the rest grows above it.
+                    let consumed = ((0.44 * dx / h).round() as usize).min(total);
+                    let grown = total - consumed;
+                    if top + grown >= nz {
+                        return Err("the oxide outgrows the grid".into());
+                    }
+                    for k in 0..consumed {
+                        if iz < k || !s.is_semi(ix, iz - k) {
+                            break;
+                        }
+                        s.cells[(iz - k) * nx + ix] = ox;
+                    }
+                    for r in (iz + 1..=top).rev() {
+                        s.cells[(r + grown) * nx + ix] = s.cells[r * nx + ix];
+                    }
+                    for r in iz + 1..=iz + grown {
+                        s.cells[r * nx + ix] = ox;
+                    }
+                }
+                s.refresh_semi(&semi_names);
+                s.clear_outside();
+                s.anneal(*temperature, *time);
             }
             Step::Planarize { height, stop, .. } => {
                 let cut_row = match (height, stop) {
@@ -608,6 +942,10 @@ pub fn emulate(flow: &ProcessFlow, length: f64, steps: Option<usize>, mask: &mut
                     }
                 }
             }
+        }
+        s.refresh_semi(&semi_names);
+        if !matches!(step, Step::Anneal { .. }) {
+            s.clear_outside();
         }
     }
     Ok(s)
@@ -836,8 +1174,134 @@ material = "resist"
         for m in ["si", "sio2", "poly", "al"] {
             assert!(s.materials.iter().any(|x| x == m), "{m} missing: {:?}", s.materials);
         }
+        // Doping along the cut through the PMOS in its n-well: p+ source / drain over the well,
+        // the channel under the gate still n-type, the well over the p substrate.
+        let xs: Vec<f64> = (0..s.nx).step_by(4).map(|ix| (ix as f64 + 0.5) * s.h).collect();
+        let sd = xs.iter().find(|x| {
+            let l = s.doped_layers(**x);
+            l.len() == 3 && !l[0].n_type && l[0].material == "si" && l[1].n_type
+        });
+        let sd = *sd.expect("a p+ source / drain column");
+        let l = s.doped_layers(sd);
+        let j = s.junctions(sd);
+        assert!((0.08..0.2).contains(&-j[0]) && (0.8..1.15).contains(&-j[1]), "{j:?}");
+        assert!((20.0..120.0).contains(&l[0].sheet_resistance) && l[0].peak > 1e20, "{l:?}");
+        let gate = xs.iter().find(|x| s.doped_layers(**x).first().is_some_and(|l| l.material == "poly")).expect("a gate column");
+        let channel = xs
+            .iter()
+            .filter(|x| s.doped_layers(**x).first().is_some_and(|l| l.material == "poly"))
+            .any(|x| s.doped_layers(*x).get(1).is_some_and(|l| l.n_type && l.top > -0.01));
+        assert!(channel, "the source and drain must not meet under the gate at {gate}");
         assert!(f.mask_exprs().iter().any(|e| e == "active"));
         assert!(ProcessFlow::from_toml("[[step]]\nop = \"deposit\"\nmaterial = \"x\"\nthickness = -1\n").is_err());
         assert!(Cut::parse("0,1,2").is_err() && Cut::parse("0,0,0,0").is_err());
+    }
+
+    #[test]
+    fn implant_and_anneal_make_a_junction() {
+        let f = ProcessFlow::from_toml(
+            r#"
+resolution = 0.002
+substrate_depth = 0.6
+substrate_doping = { species = "boron", concentration = 1e15 }
+[[step]]
+op = "deposit"
+material = "gox"
+thickness = 0.004
+[[step]]
+op = "deposit"
+material = "poly"
+thickness = 0.2
+[[step]]
+op = "etch"
+keep = "gate"
+materials = ["poly", "gox"]
+[[step]]
+op = "implant"
+species = "arsenic"
+dose = 5e15
+energy = 40
+[[step]]
+op = "anneal"
+temperature = 1000
+time = 10
+"#,
+        )
+        .unwrap();
+        let s = emulate(&f, 2.0, None, &mut masks(&[("gate", &[(1.0, 1.4)])])).unwrap();
+        // Analytic: sigma² = ΔRp² + 2Dt, junction where the Gaussian falls to 1e15.
+        let (rp, drp) = crate::dopants::implant_range("arsenic", 40.0).unwrap();
+        let sigma = (drp * drp + 2.0 * Species::Arsenic.diffusivity(1000.0) * 600.0 * 1e8).sqrt();
+        let peak = 5e15 / ((2.0 * std::f64::consts::PI).sqrt() * sigma * 1e-4);
+        let xj = rp + sigma * (2.0 * (peak / 1e15).ln()).sqrt();
+        let j = s.junctions(0.5);
+        assert_eq!(j.len(), 1, "{j:?}");
+        assert!((-j[0] - xj).abs() < 0.006, "junction at {} µm, analytic {xj}", -j[0]);
+        // The dose is all in the silicon of an open column.
+        let ix = s.column(0.5);
+        let as_k = s.dopants.iter().position(|(sp, _)| *sp == Species::Arsenic).unwrap();
+        let dose: f64 = (0..s.nz).map(|iz| s.dopants[as_k].1[iz * s.nx + ix]).sum::<f64>() * s.h * 1e-4;
+        assert!((dose / 5e15 - 1.0).abs() < 0.02, "{dose:e}");
+        let l = s.doped_layers(0.5);
+        assert!(l[0].n_type && !l[1].n_type, "{l:?}");
+        assert!((8.0..30.0).contains(&l[0].sheet_resistance), "{l:?}");
+        // The gate stops the implant: no junction under its middle, but the poly is n-type.
+        assert!(s.junctions(1.2).is_empty(), "{:?}", s.junctions(1.2));
+        let g = s.doped_layers(1.2);
+        assert!(g[0].material == "poly" && g[0].n_type && !g[1].n_type, "{g:?}");
+        // Lateral straggle (0.8 ΔRp) and diffusion take the junction under the gate edge: the
+        // edge profile is peak · erfc(x / (√2 σ_lat)) / 2, which falls to 1e15 at about 76 nm.
+        let lat = ((0.8 * drp).powi(2) + 2.0 * Species::Arsenic.diffusivity(1000.0) * 600.0 * 1e8).sqrt();
+        assert!((lat - 0.0159).abs() < 0.001, "{lat}");
+        let under = (0..100).map(|k| 1.0 + k as f64 * 0.002).take_while(|x| !s.junctions(*x).is_empty()).count() as f64 * 0.002;
+        assert!((under - 0.076).abs() < 0.012, "{under} µm under the gate");
+    }
+
+    #[test]
+    fn oxidation_follows_deal_grove_and_nitride_masks_it() {
+        let f = ProcessFlow::from_toml(
+            r#"
+resolution = 0.005
+substrate_depth = 0.5
+[[step]]
+op = "deposit"
+material = "si3n4"
+thickness = 0.1
+[[step]]
+op = "etch"
+keep = "active"
+materials = ["si3n4"]
+[[step]]
+op = "oxidize"
+temperature = 1000
+time = 60
+wet = true
+"#,
+        )
+        .unwrap();
+        let s = emulate(&f, 2.0, None, &mut masks(&[("active", &[(1.0, 2.0)])])).unwrap();
+        let x = crate::dopants::oxide_growth(1000.0, 60.0, true, 0.0);
+        let ox = |at: f64| s.stack_at(at).iter().filter(|(m, _)| m == "sio2").map(|(_, t)| t).sum::<f64>();
+        assert!((ox(0.5) - x).abs() < 0.011, "{} vs {x}", ox(0.5));
+        // 44 % of it below the original surface, the rest above.
+        assert!((s.surface_at(0.5) - 0.56 * x).abs() < 0.011, "{}", s.surface_at(0.5));
+        assert_eq!(ox(1.5), 0.0, "{:?}", s.stack_at(1.5));
+        assert!(s.surface_at(1.5) > 0.09);
+        // Growth from an existing oxide is slower.
+        let again = emulate(
+            &ProcessFlow::from_toml(&format!(
+                "{}\n[[step]]\nop = \"oxidize\"\ntemperature = 1000\ntime = 60\nwet = true\n",
+                "resolution = 0.005\nsubstrate_depth = 0.5"
+            ))
+            .unwrap(),
+            0.5,
+            None,
+            &mut masks(&[]),
+        )
+        .unwrap();
+        assert!((again.stack_at(0.2).iter().find(|m| m.0 == "sio2").unwrap().1 - x).abs() < 0.011);
+        assert!(ProcessFlow::from_toml("[[step]]\nop = \"anneal\"\ntemperature = 2000\ntime = 1\n").is_err());
+        assert!(ProcessFlow::from_toml("[[step]]\nop = \"implant\"\nspecies = \"xenon\"\ndose = 1e15\nenergy = 10\n").is_err());
+        assert!(ProcessFlow::from_toml("[[step]]\nop = \"implant\"\n").is_err());
     }
 }

@@ -189,8 +189,10 @@ Linux needs the usual windowing libraries:
 
 **Process** ([guide](https://pages.euiyun.com/ic-studio/process.html))
 - Process emulation: the cross-section of a layout along a cut line after a process flow
-  (deposit, conformal deposit, anisotropic / isotropic etch, implant, CMP, strip) with a
-  generic 180 nm flow; step through the flow, probe material stacks, export SVG
+  (deposit, conformal deposit, anisotropic / isotropic etch, implant, anneal, thermal
+  oxidation, CMP, strip) with a generic 180 nm flow; Gaussian implant profiles, 2-D dopant
+  diffusion and Deal-Grove oxidation give net doping, junction depths and sheet resistance;
+  step through the flow, probe material stacks and dopant profiles, export SVG and CSV
   (`ics xsection`, MCP `process_cross_section`)
 - Process data: WAT / PCM results against the process spec with Cp / Cpk, control charts
   of the wafer means (Western Electric rules) and a check that the model corners cover the

@@ -807,7 +807,7 @@ pub fn definitions() -> Vec<Value> {
         ),
         tool(
             "process_cross_section",
-            "Process emulation: the cross-section of a cell's layout along a cut line, built by running a process flow (deposit, etch, implant, planarize, strip on a 2-D grid; masks are layout layers or derived-layer expressions). Without a flow, the generic 180 nm flow (STI, wells, gate, spacers, S/D, contacts, three metals). Returns the materials and the material stack (bottom up, µm) at points along the cut; svg_path writes the picture.",
+            "Process emulation: the cross-section of a cell's layout along a cut line, built by running a process flow (deposit, etch, implant, anneal, oxidize, planarize, strip on a 2-D grid; masks are layout layers or derived-layer expressions; implants with species, dose and energy add Gaussian dopant profiles, anneal and oxidize diffuse them, oxidize grows Deal-Grove oxide). Without a flow, the generic 180 nm flow (STI, wells and drive-in, gate oxidation, spacers, S/D implants and RTA, contacts, three metals). Returns the materials and, at points along the cut, the material stack (bottom up, µm), the doped layers top down (n/p, top and bottom z, peak net doping cm^-3, sheet resistance ohm/sq) and the junction depths; svg_path writes the picture.",
             json!({
                 "cell": cell(),
                 "flow": {"type": "string", "description": "Process flow TOML text (see process/generic180.toml)."},
@@ -1979,7 +1979,11 @@ impl State {
             .iter()
             .map(|x| {
                 json!({"x": sig(*x), "surface": sig(s.surface_at(*x)),
-                    "stack": s.stack_at(*x).iter().map(|(m, t)| json!({"material": m, "thickness": sig(*t)})).collect::<Vec<_>>()})
+                    "stack": s.stack_at(*x).iter().map(|(m, t)| json!({"material": m, "thickness": sig(*t)})).collect::<Vec<_>>(),
+                    "doping": s.doped_layers(*x).iter().map(|l| json!({"material": l.material, "type": if l.n_type { "n" } else { "p" },
+                        "top": sig(l.top), "bottom": sig(l.bottom), "peak": sig(l.peak),
+                        "sheet_resistance": l.sheet_resistance.is_finite().then(|| sig(l.sheet_resistance))})).collect::<Vec<_>>(),
+                    "junctions": s.junctions(*x).iter().map(|z| sig(*z)).collect::<Vec<_>>()})
             })
             .collect();
         Ok(json!({
