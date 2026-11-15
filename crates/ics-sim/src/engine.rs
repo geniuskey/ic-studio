@@ -177,6 +177,9 @@ fn exp_iv(is: f64, nvt: f64, v: f64) -> (f64, f64) {
 }
 
 fn mos_eval(m: &MosModel, w: f64, l: f64, mult: f64, vd: f64, vg: f64, vs: f64, vb: f64) -> MosEval {
+    if let Some(inst) = m.bsim4.as_ref().and_then(|b| b.inst.as_deref()) {
+        return bsim4_eval(m.pmos, inst, mult, vd, vg, vs, vb);
+    }
     let sign = if m.pmos { -1.0 } else { 1.0 };
     let Frame { swapped, vgs, vds, vth, dvth_dvbs } = frame(m, vd, vg, vs, vb);
     let beta = m.kp * w / m.leff(l) * mult;
@@ -197,6 +200,29 @@ fn mos_eval(m: &MosModel, w: f64, l: f64, mult: f64, vd: f64, vg: f64, vs: f64, 
     let jn = [gds, gm, -(gm + gds + gmb), gmb];
     let (i, j) = if swapped { (-id, [-jn[2], -jn[1], -jn[0], -jn[3]]) } else { (id, jn) };
     MosEval { id: sign * i, j, region, vth: sign * vth, gm, gds }
+}
+
+fn bsim4_eval(pmos: bool, inst: &crate::bsim4::Inst, mult: f64, vd: f64, vg: f64, vs: f64, vb: f64) -> MosEval {
+    let sign = if pmos { -1.0 } else { 1.0 };
+    let (mut d, g, mut s, b) = (sign * vd, sign * vg, sign * vs, sign * vb);
+    let swapped = d < s;
+    if swapped {
+        std::mem::swap(&mut d, &mut s);
+    }
+    let (vds, vgs) = (d - s, g - s);
+    let e = inst.eval(vds, vgs, b - s);
+    let [gds, gm, gmb] = e.ids.d.map(|x| x * mult);
+    let id = e.ids.v * mult;
+    let region = if vgs < e.vth {
+        "subthreshold"
+    } else if vds < e.vdsat {
+        "triode"
+    } else {
+        "saturation"
+    };
+    let jn = [gds, gm, -(gm + gds + gmb), gmb];
+    let (i, j) = if swapped { (-id, [-jn[2], -jn[1], -jn[0], -jn[3]]) } else { (id, jn) };
+    MosEval { id: sign * i, j, region, vth: sign * e.vth, gm, gds }
 }
 
 fn diode_eval(m: &DiodeModel, vd: f64, vt: f64) -> (f64, f64) {
@@ -229,7 +255,20 @@ impl Engine {
         let temp = c.temp;
         for e in &mut c.elements {
             match e {
-                Element::M { model, .. } => *model = model.at_temp(temp),
+                Element::M { name, model, w, l, .. } => {
+                    *model = model.at_temp(temp);
+                    if let Some(b) = &mut model.bsim4 {
+                        let geo = crate::bsim4::Geometry { w: *w, l: *l, nf: b.nf };
+                        let inst =
+                            crate::bsim4::Inst::new(&b.card, geo, temp).map_err(|e| SimError::Engine(format!("{name}: {e}")))?;
+                        // Overlap capacitances as the engine applies them: per drawn width and
+                        // per effective length.
+                        model.cgso = inst.cgso * inst.weff_cv * b.nf / *w;
+                        model.cgdo = inst.cgdo * inst.weff_cv * b.nf / *w;
+                        model.cgbo = inst.cgbo * inst.leff_cv / *l;
+                        b.inst = Some(std::sync::Arc::new(inst));
+                    }
+                }
                 Element::D { model, .. } => *model = model.at_temp(temp),
                 _ => {}
             }

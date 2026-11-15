@@ -10,10 +10,47 @@ fn ngspice_exe() -> Option<String> {
     ngspice::detect(&exe).map(|_| exe)
 }
 
+/// A 45 nm-class BSIM4 card (PTM-style parameters) for both polarities.
+fn bsim4_models() -> String {
+    let common = "level=54 toxe=1.25e-9 toxp=1e-9 toxm=1.25e-9 epsrox=3.9 wint=5e-9 lint=3.75e-9 k1=0.4 k2=0 k3=0 \
+        dvt0=1 dvt1=2 dvt2=0 dsub=0.1 minv=0.05 dvtp0=1e-9 dvtp1=0.1 xj=1.4e-8 ngate=2e20 nsd=2e20 cdsc=0 voff=-0.13 \
+        nfactor=1.6 eta0=0.0125 etab=0 a0=1 keta=0.04 pdiblc1=0.001 pdiblc2=0.001 pdiblcb=-0.005 drout=0.5 \
+        pvag=1e-20 delta=0.01 pscbe1=8.14e8 pscbe2=1e-7 fprout=0.2 pdits=0.08 pditsd=0.23 pditsl=2.3e6 rdsw=155 \
+        kt1=-0.11 kt2=0.022 at=33000 ute=-1.5 ua1=4.31e-9 ub1=7.61e-18 uc1=-5.6e-11";
+    format!(
+        ".model n45 nmos {common} vth0=0.46893 ndep=3.4e18 vfb=-0.55 u0=0.049 ua=6e-10 ub=1.2e-18 vsat=130000 pclm=0.04\n\
+         .model p45 pmos {common} vth0=-0.49158 ndep=2.44e18 vfb=0.55 u0=0.0021 ua=2e-9 ub=0.5e-18 vsat=90000 pclm=0.12\n"
+    )
+}
+
 /// (name, deck, relative tolerance)
 fn suite() -> Vec<(&'static str, String, f64)> {
     let m = DEFAULT_MODELS;
+    let b4 = bsim4_models();
     vec![
+        (
+            "bsim4_nmos_id_vd",
+            format!("* id-vd\nVD d 0 1\nVG g 0 1\nVB b 0 0\nM1 d g 0 b n45 w=0.5u l=45n nf=2\n{b4}.dc VD 0 1 0.05\n.end\n"),
+            1e-3,
+        ),
+        (
+            "bsim4_nmos_id_vg_body",
+            format!("* id-vg\nVD d 0 0.05\nVG g 0 0\nVB b 0 -0.4\nM1 d g 0 b n45 w=1u l=0.1u\n{b4}.dc VG 0 1 0.05\n.end\n"),
+            1e-3,
+        ),
+        (
+            "bsim4_pmos_hot",
+            format!("* pmos 85C\n.temp 85\nVD d 0 -1\nVG g 0 -1\nM1 d g 0 0 p45 w=1u l=45n\n{b4}.dc VD 0 -1 -0.05\n.end\n"),
+            1e-3,
+        ),
+        (
+            "bsim4_inverter_dc",
+            format!(
+                "* bsim4 inv\nV1 vdd 0 1.8\nV2 in 0 0\nM1 out in vdd vdd p45 w=2u l=45n\nM2 out in 0 0 n45 w=0.5u l=45n\n{b4}\
+                 .dc V2 0 1.8 0.01\n.end\n"
+            ),
+            3e-3,
+        ),
         ("divider", "* divider\nV1 a 0 10\nR1 a b 1k\nR2 b 0 3k\n.op\n.dc V1 0 10 1\n.end\n".into(), 1e-6),
         ("rc", "* rc\nV1 in 0 DC 0 AC 1 PULSE(0 1 0 1n 1n 1 2)\nR1 in out 1k\nC1 out 0 1n\n.ac dec 10 1k 100meg\n.tran 10n 5u\n.end\n".into(), 0.01),
         ("rlc", "* rlc\nV1 in 0 DC 0 AC 1\nR1 in a 50\nL1 a out 1u\nC1 out 0 1n\nR2 out 0 1k\n.ac dec 20 100k 100meg\n.end\n".into(), 0.01),

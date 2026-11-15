@@ -78,6 +78,8 @@ Linux needs the usual windowing libraries:
   labels, live connectivity, property inspector, SPICE netlister
 - Operating point, DC sweep, AC and transient analyses on the built-in Rust MNA engine or
   ngspice; waveform viewer with Bode plots and automatic measurements
+- PDK decks on the built-in engine: `.include` / `.lib` sections, `.param` expressions,
+  subcircuits and model binning, and the BSIM4 drain current (matches ngspice)
 - Optional post-layout simulation: wire capacitance to substrate, lateral and overlap
   coupling between nets, MOS drain / source junctions (`ad as pd ps`) and an RC network of
   wire, via and gate resistance extracted from the layout are added to the matching
@@ -339,8 +341,8 @@ The goal is one environment for design, analysis, simulation, prediction and pro
 fit for production use, including the optics of image sensors.
 
 1. **Trust**: PDK-grade simulation. Done: a SPICE front-end for libraries, parameters,
-   subcircuits and model binning. Next: BSIM4 in the built-in engine, Spectre / HSPICE /
-   CDL netlists.
+   subcircuits and model binning; the BSIM4 drain current. Next: the BSIM4 charge model,
+   junctions and leakage currents, then Spectre / HSPICE / CDL netlists.
 2. **Fit into existing flows**: Calibre results (RVE / SVDB), OpenAccess / Virtuoso data.
 3. **Image sensor pixels**: a pixel stack (microlens, colour filter, dielectrics, metal,
    silicon) with thin-film and ray optics, later RCWA / FDTD; QE, crosstalk and chief-ray
@@ -351,6 +353,11 @@ fit for production use, including the optics of image sensors.
 
 Also: Python API (PyO3), non-Manhattan DRC and extraction, resistor / capacitor definitions
 in the bundled PDKs.
+
+## Acknowledgements
+
+The built-in BSIM4 model follows BSIM4 by the BSIM Research Group of the University of
+California, Berkeley.
 
 ## License
 

@@ -1,11 +1,13 @@
 //! SPICE deck parser (subset) producing a flat circuit for the built-in engine.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use ics_core::Analysis;
 use ics_core::units::parse_spice;
 
 use crate::SimError;
+use crate::bsim4;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Wave {
@@ -167,6 +169,18 @@ pub struct MosModel {
     pub af: f64,
     /// Temperature the parameters were measured at (°C).
     pub tnom: f64,
+    /// BSIM4 card (`level=14` / `54`): the drain current comes from it; the level-1 fields
+    /// above only describe junctions, overlap and Meyer capacitances.
+    pub bsim4: Option<Bsim4Dev>,
+}
+
+/// A BSIM4 device: the model card, the instance's finger count and, once the engine knows the
+/// temperature, the size- and temperature-dependent parameters.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Bsim4Dev {
+    pub card: Arc<bsim4::Card>,
+    pub nf: f64,
+    pub inst: Option<Arc<bsim4::Inst>>,
 }
 
 /// Drain / source junction geometry of a MOS instance (m², m), per device of `m`.
@@ -195,7 +209,8 @@ impl MosModel {
     /// and capacitance.
     pub fn at_temp(&self, temp: f64) -> MosModel {
         let (tnom, t) = (self.tnom + KELVIN, temp + KELVIN);
-        if (t - tnom).abs() < 1e-9 {
+        // BSIM4 scales with temperature itself (see `bsim4::Inst::new`).
+        if (t - tnom).abs() < 1e-9 || self.bsim4.is_some() {
             return self.clone();
         }
         let ty = if self.pmos { -1.0 } else { 1.0 };
@@ -331,6 +346,8 @@ const DIODE_PARAMS: &[&str] =
     &["is", "n", "cjo", "cj0", "vj", "m", "fc", "tt", "rs", "bv", "ibv", "kf", "af", "eg", "xti", "tnom"];
 /// MOS instance parameters the built-in engine evaluates.
 const MOS_INSTANCE_PARAMS: &[&str] = &["w", "l", "m", "ad", "as", "pd", "ps", "nrd", "nrs"];
+/// BSIM4 instance parameters the built-in engine evaluates.
+const BSIM4_INSTANCE_PARAMS: &[&str] = &["w", "l", "m", "nf", "ad", "as", "pd", "ps", "nrd", "nrs"];
 /// Dot-commands the built-in engine reads.
 const DOT_COMMANDS: &[&str] = &[".model", ".temp", ".end", ".title", ".op", ".dc", ".ac", ".tran", ".noise"];
 
@@ -541,11 +558,52 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
             "nmos" | "pmos" => Some(MOS_PARAMS),
             _ => None,
         };
-        if let Some(known) = known {
+        let bsim4_card = known == Some(MOS_PARAMS) && matches!(g("level", 1.0) as i64, 14 | 54);
+        if let Some(known) = known.filter(|_| !bsim4_card) {
             let ignored = ignored_params(&p, known);
             if !ignored.is_empty() {
                 c.warnings.push(format!("model {name}: parameters not evaluated by the built-in engine: {}", ignored.join(" ")));
             }
+        }
+        let is_bsim4 = known == Some(MOS_PARAMS) && matches!(g("level", 1.0) as i64, 14 | 54);
+        if is_bsim4 {
+            let card = bsim4::Card::new(ty == "pmos", p.clone());
+            for w in card.warnings() {
+                c.warnings.push(format!("model {name}: BSIM4 {w} is not evaluated by the built-in engine"));
+            }
+            c.warnings.push(format!("model {name}: BSIM4 gate charges are approximated by Meyer capacitances"));
+            let pmos = ty == "pmos";
+            let m = MosModel {
+                pmos,
+                vto: g("vth0", g("vtho", if pmos { -0.7 } else { 0.7 })),
+                kp: 0.0,
+                lambda: 0.0,
+                gamma: 0.0,
+                phi: 0.8,
+                tox: g("toxe", 3.0e-9),
+                ld: 0.0,
+                // Overlap capacitances are set per instance by the engine.
+                cgso: 0.0,
+                cgdo: 0.0,
+                cgbo: 0.0,
+                cj: g("cjs", g("cj", 5.0e-4)),
+                cjsw: g("cjsws", g("cjsw", 5.0e-10)),
+                mj: g("mjs", g("mj", 0.5)),
+                mjsw: g("mjsws", g("mjsw", 0.33)),
+                pb: g("pbs", g("pb", 1.0)),
+                fc: 0.5,
+                is: 0.0,
+                js: g("jss", g("js", 1.0e-4)),
+                rd: 0.0,
+                rs: 0.0,
+                rsh: 0.0,
+                kf: g("kf", 0.0),
+                af: g("af", 1.0),
+                tnom: g("tnom", 27.0),
+                bsim4: Some(Bsim4Dev { card: Arc::new(card), nf: 1.0, inst: None }),
+            };
+            mos_models.insert(name, m);
+            continue;
         }
         if known == Some(MOS_PARAMS) && g("level", 1.0) != 1.0 {
             c.warnings.push(format!("model {name}: level={} is evaluated as level 1", g("level", 1.0)));
@@ -606,6 +664,7 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
                     kf: g("kf", 0.0),
                     af: g("af", 1.0),
                     tnom: g("tnom", 27.0),
+                    bsim4: None,
                 };
                 mos_models.insert(name, m);
             }
@@ -691,12 +750,19 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
                 let g = node(t[2], &mut c);
                 let s = node(t[3], &mut c);
                 let b = node(t[4], &mut c);
-                let model = mos_models
+                let mut model = mos_models
                     .get(&t[5].to_ascii_lowercase())
                     .cloned()
                     .ok_or_else(|| err(ln, format!("unknown MOS model '{}'", t[5])))?;
                 let p = kv_params(&tokens(&t[6..].join(" ")));
-                let ignored = ignored_params(&p, MOS_INSTANCE_PARAMS);
+                let known: &[&str] = match &mut model.bsim4 {
+                    Some(b) => {
+                        b.nf = p.get("nf").copied().unwrap_or(1.0).max(1.0);
+                        BSIM4_INSTANCE_PARAMS
+                    }
+                    None => MOS_INSTANCE_PARAMS,
+                };
+                let ignored = ignored_params(&p, known);
                 if !ignored.is_empty() {
                     c.warnings.push(format!("{name}: instance parameters not evaluated: {}", ignored.join(" ")));
                 }
@@ -751,11 +817,11 @@ mod tests {
 
     #[test]
     fn warns_about_what_it_does_not_evaluate() {
-        let deck = "* t\n.param wn=1u\n.option reltol=1e-4\n.model nm nmos (level=54 vto=0.4 u0=0.03)\n\
+        let deck = "* t\n.param wn=1u\n.option reltol=1e-4\n.model nm nmos (level=8 vto=0.4 u0=0.03)\n\
                     .model dm d (is=1e-14 rs=10 trs=1e-3)\nM1 d g 0 0 nm w=1u l=1u nf=2 sa=0.2u\nV1 d 0 1\nV2 g 0 1\n.op\n.end\n";
         let c = parse_deck(deck).unwrap();
         let w = c.warnings.join("\n");
-        for s in ["'.param'", "'.option'", "level=54", "parameters not evaluated by the built-in engine: trs", "nf sa"] {
+        for s in ["'.param'", "'.option'", "level=8", "parameters not evaluated by the built-in engine: trs", "nf sa"] {
             assert!(w.contains(s), "{s} missing from\n{w}");
         }
         let clean = format!(

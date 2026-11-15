@@ -200,9 +200,22 @@ A modified nodal analysis engine written in Rust. It supports:
   - errors and warnings name the file and line they come from,
 - diode model: `is n cjo vj m fc tt rs bv ibv kf af eg xti tnom`,
 - MOS level 1: `vto kp u0 lambda gamma phi tox ld cgso cgdo cgbo cj cjsw mj mjsw pb fc is
-  js rd rs rsh kf af tnom`, with instance parameters `w l m ad as pd ps nrd nrs`.
+  js rd rs rsh kf af tnom`, with instance parameters `w l m ad as pd ps nrd nrs`,
+- MOS BSIM4 (`level=14` or `level=54`), the model of most foundry PDKs: the drain current
+  follows BSIM4 4.8 as in ngspice and matches it to the solver tolerance (threshold voltage
+  with short-channel, DIBL, narrow-width, body, pocket-implant and DITS terms, poly
+  depletion, mobility models 0 to 2, velocity saturation and overshoot, source-end velocity
+  limit, internal source / drain resistance, CLM / DIBL / DITS / SCBE output conductance,
+  temperature models 0 to 3, `l` / `w` / `p` size dependence and `nf` fingers). Gate charges
+  use Meyer capacitances with the card's overlap capacitances, so transient and AC results
+  are approximate and the automatic backend prefers ngspice for these decks. Gate tunnelling,
+  GIDL, substrate current, `rdsmod=1`, gate / body resistance networks and stress effects
+  are not evaluated and are reported as warnings.
 
-The models follow SPICE level 1 and the SPICE diode:
+The BSIM4 model is developed by the BSIM Research Group of the University of California,
+Berkeley (Copyright (c) University of California; Educational Community License 2.0).
+
+The level-1 models follow SPICE level 1 and the SPICE diode:
 
 - **Capacitances depend on bias.** MOS gate capacitance follows the Meyer model per region
   (accumulation, depletion, triode, saturation) when `tox` is given; junction and diode

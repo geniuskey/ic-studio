@@ -1,0 +1,1055 @@
+//! BSIM4 MOSFET model (`level=14` / `level=54`): drain current.
+//!
+//! The equations follow BSIM4 4.8 as implemented in ngspice (`b4temp.c`, `b4ld.c`),
+//! Copyright (c) University of California, BSIM Research Group (BSIM4 is licensed under the
+//! Educational Community License 2.0). Derivatives come from forward-mode automatic
+//! differentiation ([`D`]) instead of the hand-written chains of the reference code.
+//!
+//! Covered: threshold voltage with short-channel, DIBL, narrow-width, body, pocket-implant and
+//! DITS terms; poly depletion; the unified subthreshold-to-strong-inversion `Vgsteff`; bulk
+//! charge; mobility models 0, 1 and 2; velocity saturation and overshoot; source-end velocity
+//! limit; the internal source/drain resistance (`rdsmod=0`); CLM, DIBL, DITS and SCBE output
+//! conductance; temperature (`tempmod` 0 to 3); size dependence (`l*`, `w*`, `p*` binning);
+//! multiple fingers. Not covered (reported as warnings): gate tunnelling, GIDL / GISL,
+//! substrate current, external / bias-dependent `rdsmod=1` resistances, gate and body resistance
+//! networks, layout-dependent stress and well-proximity effects, high-k `mtrlmod`, and the BSIM4
+//! charge model (gate capacitances use the engine's Meyer model).
+
+use std::collections::HashMap;
+use std::ops::{Add, Div, Mul, Neg, Sub};
+
+const EPS0: f64 = 8.85418e-12;
+const EPSSI: f64 = 1.03594e-10;
+const Q: f64 = 1.60219e-19;
+const CHARGE: f64 = 1.6021766208e-19;
+const KBOQ: f64 = 8.617087e-5;
+const MAX_EXP: f64 = 5.834617425e14;
+const MIN_EXP: f64 = 1.713908431e-15;
+const EXP_THRESHOLD: f64 = 34.0;
+/// The reference code's value of pi, kept so results match it to the last digit.
+#[allow(clippy::approx_constant)]
+const PI: f64 = 3.141592654;
+
+/// A value with its derivatives with respect to (Vds, Vgs, Vbs).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct D {
+    pub v: f64,
+    pub d: [f64; 3],
+}
+
+impl D {
+    pub const fn c(v: f64) -> D {
+        D { v, d: [0.0; 3] }
+    }
+
+    fn var(v: f64, k: usize) -> D {
+        let mut d = [0.0; 3];
+        d[k] = 1.0;
+        D { v, d }
+    }
+
+    /// `f(self)` given `f(v)` and `f'(v)`.
+    fn chain(self, f: f64, df: f64) -> D {
+        D { v: f, d: self.d.map(|x| x * df) }
+    }
+
+    pub fn sqrt(self) -> D {
+        let s = self.v.sqrt();
+        self.chain(s, if s > 0.0 { 0.5 / s } else { 0.0 })
+    }
+
+    pub fn exp(self) -> D {
+        let e = self.v.exp();
+        self.chain(e, e)
+    }
+
+    pub fn ln(self) -> D {
+        self.chain(self.v.ln(), 1.0 / self.v)
+    }
+
+    pub fn powf(self, p: f64) -> D {
+        self.chain(self.v.powf(p), p * self.v.powf(p - 1.0))
+    }
+}
+
+macro_rules! ops {
+    ($tr:ident, $f:ident, $op:tt, |$a:ident, $b:ident| $d:expr) => {
+        #[allow(clippy::suspicious_arithmetic_impl)]
+        impl $tr for D {
+            type Output = D;
+            fn $f(self, $b: D) -> D {
+                let $a = self;
+                D { v: $a.v $op $b.v, d: std::array::from_fn(|k| $d(k)) }
+            }
+        }
+        impl $tr<f64> for D {
+            type Output = D;
+            fn $f(self, b: f64) -> D {
+                self $op D::c(b)
+            }
+        }
+        impl $tr<D> for f64 {
+            type Output = D;
+            fn $f(self, b: D) -> D {
+                D::c(self) $op b
+            }
+        }
+    };
+}
+
+ops!(Add, add, +, |a, b| |k: usize| a.d[k] + b.d[k]);
+ops!(Sub, sub, -, |a, b| |k: usize| a.d[k] - b.d[k]);
+ops!(Mul, mul, *, |a, b| |k: usize| a.d[k] * b.v + a.v * b.d[k]);
+ops!(Div, div, /, |a, b| |k: usize| (a.d[k] * b.v - a.v * b.d[k]) / (b.v * b.v));
+
+impl Neg for D {
+    type Output = D;
+    fn neg(self) -> D {
+        D { v: -self.v, d: self.d.map(|x| -x) }
+    }
+}
+
+/// `e^x / ((e^x - 1)² + 2 e^x MIN_EXP)`, the short-channel roll-off factor of BSIM4.
+fn theta(x: f64) -> f64 {
+    if x < EXP_THRESHOLD {
+        let e = x.exp();
+        e / ((e - 1.0).powi(2) + 2.0 * e * MIN_EXP)
+    } else {
+        1.0 / (MAX_EXP - 2.0)
+    }
+}
+
+/// Same as [`theta`] for a bias-dependent argument.
+fn theta_d(x: D) -> D {
+    if x.v < EXP_THRESHOLD {
+        let e = x.exp();
+        let t = e - 1.0;
+        e / (t * t + 2.0 * MIN_EXP * e)
+    } else {
+        D::c(1.0 / (MAX_EXP - 2.0))
+    }
+}
+
+/// A BSIM4 model card: its parameters by lower-case name.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Card {
+    pub pmos: bool,
+    pub p: HashMap<String, f64>,
+}
+
+/// Parameters whose values change behaviour the port does not model, with the value that
+/// keeps the model inside what it evaluates.
+const UNMODELLED: &[(&str, f64, &str)] = &[
+    ("igcmod", 0.0, "gate-to-channel tunnelling"),
+    ("igbmod", 0.0, "gate-to-body tunnelling"),
+    ("rdsmod", 0.0, "external source / drain resistances"),
+    ("rbodymod", 0.0, "body resistance network"),
+    ("rgatemod", 0.0, "gate resistance"),
+    ("trnqsmod", 0.0, "transient non-quasi-static model"),
+    ("acnqsmod", 0.0, "AC non-quasi-static model"),
+    ("mtrlmod", 0.0, "material (high-k) model"),
+    ("alpha0", 0.0, "substrate current"),
+    ("alpha1", 0.0, "substrate current"),
+    ("agidl", 0.0, "GIDL current"),
+    ("agisl", 0.0, "GISL current"),
+];
+
+impl Card {
+    pub fn new(pmos: bool, mut p: HashMap<String, f64>) -> Card {
+        if let Some(v) = p.remove("vtho") {
+            p.entry("vth0".into()).or_insert(v);
+        }
+        Card { pmos, p }
+    }
+
+    fn given(&self, k: &str) -> bool {
+        self.p.contains_key(k)
+    }
+
+    fn g(&self, k: &str, d: f64) -> f64 {
+        self.p.get(k).copied().unwrap_or(d)
+    }
+
+    /// What the built-in engine does not evaluate in this card.
+    pub fn warnings(&self) -> Vec<String> {
+        let mut w = vec![];
+        for (k, ok, what) in UNMODELLED {
+            if let Some(v) = self.p.get(*k)
+                && *v != *ok
+            {
+                w.push(format!("{what} ({k}={v})"));
+            }
+        }
+        let mobmod = self.g("mobmod", 0.0);
+        if mobmod > 2.0 {
+            w.push(format!("mobility model mobmod={mobmod} (evaluated as mobmod=0)"));
+        }
+        if let Some(v) = self.p.get("version")
+            && !(4.8..4.9).contains(v)
+        {
+            w.push(format!("version={v} (evaluated with BSIM4.8 equations)"));
+        }
+        w
+    }
+}
+
+/// Instance settings of a BSIM4 device that the model reads.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Geometry {
+    /// Drawn width (all fingers) and length, m.
+    pub w: f64,
+    pub l: f64,
+    /// Number of fingers.
+    pub nf: f64,
+}
+
+/// A BSIM4 device at one size and temperature: the size- and temperature-dependent parameters,
+/// ready for bias evaluation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Inst {
+    ty: f64,
+    mobmod: i32,
+    tempmod: i32,
+    nf: f64,
+    vtm: f64,
+    vtm0: f64,
+    toxe: f64,
+    toxp: f64,
+    coxe: f64,
+    coxp: f64,
+    factor1: f64,
+    temp_ratio: f64,
+    pub leff: f64,
+    pub weff: f64,
+    pub leff_cv: f64,
+    pub weff_cv: f64,
+    xj: f64,
+    phi: f64,
+    sqrt_phi: f64,
+    xdep0: f64,
+    vbi: f64,
+    litl: f64,
+    cdep0: f64,
+    mstar: f64,
+    voffcbn: f64,
+    k1: f64,
+    k1ox: f64,
+    k2ox: f64,
+    k3: f64,
+    k3b: f64,
+    w0: f64,
+    lpe0: f64,
+    lpeb: f64,
+    kt1: f64,
+    kt1l: f64,
+    kt2: f64,
+    dvt0: f64,
+    dvt1: f64,
+    dvt2: f64,
+    dvt0w: f64,
+    dvt1w: f64,
+    dvt2w: f64,
+    eta0: f64,
+    etab: f64,
+    theta0vb0: f64,
+    nfactor: f64,
+    cdsc: f64,
+    cdscb: f64,
+    cdscd: f64,
+    cit: f64,
+    dvtp0: f64,
+    dvtp1: f64,
+    dvtp4: f64,
+    dvtp2factor: f64,
+    vfb: f64,
+    ngate: f64,
+    pub vth0: f64,
+    dwg: f64,
+    dwb: f64,
+    rds0: f64,
+    rdswmin: f64,
+    prwg: f64,
+    prwb: f64,
+    a0: f64,
+    ags: f64,
+    b0: f64,
+    b1: f64,
+    keta: f64,
+    ua: f64,
+    ub: f64,
+    uc: f64,
+    ud: f64,
+    eu: f64,
+    u0temp: f64,
+    vsattemp: f64,
+    vtfbphi1: f64,
+    vtfbphi2: f64,
+    a1: f64,
+    a2: f64,
+    delta: f64,
+    lambda: Option<f64>,
+    pvag: f64,
+    pclm: f64,
+    fprout: f64,
+    theta_rout: f64,
+    pdiblb: f64,
+    pdits: f64,
+    pditsd: f64,
+    pditsl: f64,
+    pscbe1: f64,
+    pscbe2: f64,
+    ados: f64,
+    bdos: f64,
+    vtl: Option<f64>,
+    tfactor: f64,
+    vbsc: f64,
+    /// Overlap capacitances per width (F/m, gate-source and gate-drain including the fringe)
+    /// and gate-bulk per length (F/m).
+    pub cgso: f64,
+    pub cgdo: f64,
+    pub cgbo: f64,
+}
+
+/// Drain current of a BSIM4 device at one bias, in the device's own frame (NMOS polarity,
+/// drain the higher terminal).
+#[derive(Debug, Clone, Copy)]
+pub struct Eval {
+    /// Drain current and its derivatives with respect to (Vds, Vgs, Vbs).
+    pub ids: D,
+    pub vth: f64,
+    pub vdsat: f64,
+    pub vgsteff: f64,
+}
+
+impl Inst {
+    /// The device of `card` at size `geo` and temperature `temp` °C.
+    pub fn new(card: &Card, geo: Geometry, temp: f64) -> Result<Inst, String> {
+        let c = card;
+        let ty = if c.pmos { -1.0 } else { 1.0 };
+        let mobmod = c.g("mobmod", 0.0) as i32;
+        let mobmod = if (0..=2).contains(&mobmod) { mobmod } else { 0 };
+        let tempmod = c.g("tempmod", 0.0) as i32;
+        let binunit = c.g("binunit", 1.0);
+
+        // Oxide.
+        let dtox = c.g("dtox", 0.0);
+        let (toxe, toxp) = match (c.p.get("toxe"), c.p.get("toxp")) {
+            (Some(&e), Some(&p)) => (e, p),
+            (Some(&e), None) => (e, e - dtox),
+            (None, Some(&p)) => (p + dtox, p),
+            (None, None) => (30.0e-10, 30.0e-10 - dtox),
+        };
+        let toxm = c.g("toxm", toxe);
+        let epsrox = c.g("epsrox", 3.9);
+        let epssub = EPSSI;
+        let coxe = epsrox * EPS0 / toxe;
+        let coxp = epsrox * EPS0 / toxp;
+        let cf = c.g("cf", 2.0 * epsrox * EPS0 / PI * (1.0 + 0.4e-6 / toxe).ln());
+
+        // Temperatures (K).
+        let tnom = c.g("tnom", 27.0) + 273.15;
+        let t = temp + 273.15;
+        let tratio = t / tnom;
+        let del_temp = t - tnom;
+        let factor1 = (epssub / (epsrox * EPS0) * toxe).sqrt();
+        let vtm0 = KBOQ * tnom;
+        let vtm = KBOQ * t;
+        let eg0 = 1.16 - 7.02e-4 * tnom * tnom / (tnom + 1108.0);
+        let ni = 1.45e10 * (tnom / 300.15) * (tnom / 300.15).sqrt() * (21.5565981 - eg0 / (2.0 * vtm0)).exp();
+
+        // Effective size.
+        let nf = geo.nf.max(1.0);
+        let lnew = geo.l + c.g("xl", 0.0);
+        let wnew = geo.w / nf + c.g("xw", 0.0);
+        let (lint, wint) = (c.g("lint", 0.0), c.g("wint", 0.0));
+        let (ll, lw, lwl) = (c.g("ll", 0.0), c.g("lw", 0.0), c.g("lwl", 0.0));
+        let (wl, ww, wwl) = (c.g("wl", 0.0), c.g("ww", 0.0), c.g("wwl", 0.0));
+        let t0 = lnew.powf(c.g("lln", 1.0));
+        let t1 = wnew.powf(c.g("lwn", 1.0));
+        let dl = lint + ll / t0 + lw / t1 + lwl / (t0 * t1);
+        let dlc = c.g("dlc", lint) + c.g("llc", ll) / t0 + c.g("lwc", lw) / t1 + c.g("lwlc", lwl) / (t0 * t1);
+        let t2 = lnew.powf(c.g("wln", 1.0));
+        let t3 = wnew.powf(c.g("wwn", 1.0));
+        let dw = wint + wl / t2 + ww / t3 + wwl / (t2 * t3);
+        let tmp2 = c.g("wlc", wl) / t2 + c.g("wwc", ww) / t3 + c.g("wwlc", wwl) / (t2 * t3);
+        let dwc_model = c.g("dwc", wint);
+        let dwc = dwc_model + tmp2;
+        let dwj = c.g("dwj", dwc_model) + tmp2;
+        let leff = lnew - 2.0 * dl;
+        let weff = wnew - 2.0 * dw;
+        let leff_cv = lnew - 2.0 * dlc;
+        let weff_cv = wnew - 2.0 * dwc;
+        let weff_cj = wnew - 2.0 * dwj;
+        for (what, v) in [("length", leff), ("width", weff), ("length for C-V", leff_cv), ("width for C-V", weff_cv)] {
+            if v <= 0.0 {
+                return Err(format!("BSIM4: effective channel {what} <= 0 (w={} l={})", geo.w, geo.l));
+            }
+        }
+        let k = if binunit == 1.0 { 1e-6 } else { 1.0 };
+        let (inv_l, inv_w, inv_lw) = (k / leff, k / weff, k * k / (leff * weff));
+        // A size-dependent parameter: p + lp/L + wp/W + pp/(LW).
+        let b = |name: &str, d: f64| -> f64 {
+            c.g(name, d)
+                + c.g(&format!("l{name}"), 0.0) * inv_l
+                + c.g(&format!("w{name}"), 0.0) * inv_w
+                + c.g(&format!("p{name}"), 0.0) * inv_lw
+        };
+
+        let xj = b("xj", 0.15e-6);
+        let vsat = b("vsat", 8.0e4);
+        let at = b("at", 3.3e4);
+        let keta = b("keta", -0.047);
+        let mut ndep = b("ndep", 1.7e17);
+        let nsub = b("nsub", 6.0e16);
+        let nsd = b("nsd", 1.0e20);
+        let phin = b("phin", 0.0);
+        let ngate = b("ngate", 0.0);
+        let gamma1_given = c.given("gamma1");
+        let mut vbm = b("vbm", -3.0);
+        let mut ua = b("ua", if mobmod == 2 { 1.0e-15 } else { 1.0e-9 });
+        let mut ub = b("ub", 1.0e-19);
+        let mut uc = b("uc", if mobmod == 1 { -0.0465 } else { -0.0465e-9 });
+        let mut ud = b("ud", 0.0);
+        let (ua1, ub1) = (b("ua1", 1.0e-9), b("ub1", -1.0e-18));
+        let uc1 = b("uc1", if mobmod == 1 { -0.056 } else { -0.056e-9 });
+        let ud1 = b("ud1", 0.0);
+        let mut u0 = b("u0", if c.pmos { 0.025 } else { 0.067 });
+        let ute = b("ute", -1.5);
+        let mut eu = b("eu", if c.pmos { 1.0 } else { 1.67 });
+        let mut voff = b("voff", -0.08);
+        let mut nfactor = b("nfactor", 1.0);
+        let mut eta0 = b("eta0", 0.08);
+        let (rdsw, prt, wr) = (b("rdsw", 200.0), b("prt", 0.0), b("wr", 1.0));
+        let rdswmin_model = c.g("rdswmin", 0.0);
+
+        // Temperature.
+        let pow_weff_wr = (weff_cj * 1.0e6).powf(wr) * nf;
+        let tr1 = tratio - 1.0;
+        let (vsattemp, rds0, rdswmin);
+        if tempmod == 0 {
+            ua += ua1 * tr1;
+            ub += ub1 * tr1;
+            uc += uc1 * tr1;
+            ud += ud1 * tr1;
+            vsattemp = vsat - at * tr1;
+            let t10 = prt * tr1;
+            rds0 = (rdsw + t10) * nf / pow_weff_wr;
+            rdswmin = (rdswmin_model + t10) * nf / pow_weff_wr;
+        } else {
+            if tempmod == 3 {
+                ua *= tratio.powf(ua1);
+                ub *= tratio.powf(ub1);
+                uc *= tratio.powf(uc1);
+                ud *= tratio.powf(ud1);
+            } else {
+                ua *= 1.0 + ua1 * del_temp;
+                ub *= 1.0 + ub1 * del_temp;
+                uc *= 1.0 + uc1 * del_temp;
+                ud *= 1.0 + ud1 * del_temp;
+            }
+            vsattemp = vsat * (1.0 - at * del_temp);
+            let t10 = 1.0 + prt * del_temp;
+            rds0 = rdsw * t10 * nf / pow_weff_wr;
+            rdswmin = rdswmin_model * t10 * nf / pow_weff_wr;
+        }
+        if u0 > 1.0 {
+            u0 /= 1.0e4;
+        }
+        let t5 = 1.0 - b("up", 0.0) * (-leff / b("lp", 1.0e-8)).exp();
+        let u0temp = u0 * t5 * tratio.powf(ute);
+        eu = eu.max(0.0);
+        voff *= 1.0 + b("tvoff", 0.0) * del_temp;
+        nfactor += b("tnfactor", 0.0) * del_temp / tnom;
+        eta0 += b("teta0", 0.0) * del_temp / tnom;
+        let vtl = c.p.get("vtl").copied().filter(|v| *v > 0.0).map(|_| b("vtl", 2.0e5));
+        let tfactor = if vtl.is_some() {
+            let lc = c.g("lc", 5.0e-9).max(0.0);
+            let t0 = leff / (b("xn", 3.0) * leff + lc);
+            (1.0 - t0) / (1.0 + t0)
+        } else {
+            1.0
+        };
+
+        // Doping, potentials.
+        if !c.given("ndep") && gamma1_given {
+            let t0 = b("gamma1", 0.0) * coxe;
+            ndep = 3.01248e22 * t0 * t0;
+        }
+        let phi = vtm0 * (ndep / ni).ln() + phin + 0.4;
+        if phi <= 0.0 {
+            return Err(format!("BSIM4: phi = {phi} is not positive (phin={phin}, ndep={ndep})"));
+        }
+        let sqrt_phi = phi.sqrt();
+        let xdep0 = (2.0 * epssub / (Q * ndep * 1.0e6)).sqrt() * sqrt_phi;
+        let litl = (3.0 * 3.9 / epsrox * xj * toxe).sqrt();
+        let vbi = vtm0 * (nsd * ndep / (ni * ni)).ln();
+        let cdep0 = (Q * epssub * ndep * 1.0e6 / 2.0 / phi).sqrt();
+        let mstar = 0.5 + b("minv", 0.0).atan() / PI;
+        let voffcbn = voff + c.g("voffl", 0.0) / leff;
+
+        // Body effect coefficients.
+        let (k1, k2);
+        if c.given("k1") || c.given("k2") {
+            k1 = b("k1", 0.53);
+            k2 = b("k2", -0.0186);
+        } else {
+            let mut vbx = if c.given("vbx") { b("vbx", 0.0) } else { phi - 7.7348e-4 * ndep * b("xt", 1.55e-7).powi(2) };
+            if vbx > 0.0 {
+                vbx = -vbx;
+            }
+            if vbm > 0.0 {
+                vbm = -vbm;
+            }
+            let gamma1 = if gamma1_given { b("gamma1", 0.0) } else { 5.753e-12 * ndep.sqrt() / coxe };
+            let gamma2 = if c.given("gamma2") { b("gamma2", 0.0) } else { 5.753e-12 * nsub.sqrt() / coxe };
+            let t0 = gamma1 - gamma2;
+            let t1 = (phi - vbx).sqrt() - sqrt_phi;
+            let t2 = (phi * (phi - vbm)).sqrt() - phi;
+            k2 = t0 * t1 / (2.0 * t2 + vbm);
+            k1 = gamma2 - 2.0 * k2 * (phi - vbm).sqrt();
+        }
+        let vth0_given = c.given("vth0");
+        let vfb = if c.given("vfb") {
+            b("vfb", -1.0)
+        } else if vth0_given {
+            ty * b("vth0", 0.0) - phi - k1 * sqrt_phi
+        } else {
+            -1.0
+        };
+        let vth0 = if vth0_given { b("vth0", 0.0) } else { ty * (vfb + phi + k1 * sqrt_phi) };
+        let k1ox = k1 * toxe / toxm;
+        let k2ox = k2 * toxe / toxm;
+
+        let tmp = (epssub / (epsrox * EPS0) * toxe * xdep0).sqrt();
+        let drout = b("drout", 0.56);
+        let theta0vb0 = theta(b("dsub", drout) * leff / tmp);
+        let theta_rout = b("pdiblc1", 0.39) * theta(drout * leff / tmp) + b("pdiblc2", 0.0086);
+        let dvtp2factor = b("dvtp5", 0.0) + b("dvtp2", 0.0) * (-b("dvtp3", 0.0) * leff.ln()).exp();
+
+        let t3 = ty * vth0 - vfb - phi;
+        let vtfbphi1 = (if c.pmos { 2.5 * t3 } else { 2.0 * t3 }).max(0.0);
+        let vtfbphi2 = (4.0 * t3).max(0.0);
+        let mut vbsc = if k2 < 0.0 {
+            let t0 = 0.5 * k1 / k2;
+            (0.9 * (phi - t0 * t0)).clamp(-30.0, -3.0)
+        } else {
+            -30.0
+        };
+        if vbsc > vbm {
+            vbsc = vbm;
+        }
+
+        let cgdl = c.g("cgdl", 0.0);
+        let cgsl = c.g("cgsl", 0.0);
+        let dlc_model = c.g("dlc", lint);
+        let ov = |given: &str, cgxl: f64| match c.p.get(given) {
+            Some(v) => *v,
+            None if c.given("dlc") && dlc_model > 0.0 => dlc_model * coxe - cgxl,
+            None => 0.6 * c.g("xj", 0.15e-6) * coxe,
+        };
+        let cgso = ov("cgso", cgsl) + cf;
+        let cgdo = ov("cgdo", cgdl) + cf;
+        let cgbo = c.g("cgbo", 2.0 * dwc_model * coxe) * nf;
+
+        Ok(Inst {
+            ty,
+            mobmod,
+            tempmod,
+            nf,
+            vtm,
+            vtm0,
+            toxe,
+            toxp,
+            coxe,
+            coxp,
+            factor1,
+            temp_ratio: tratio - 1.0,
+            leff,
+            weff,
+            leff_cv,
+            weff_cv,
+            xj,
+            phi,
+            sqrt_phi,
+            xdep0,
+            vbi,
+            litl,
+            cdep0,
+            mstar,
+            voffcbn,
+            k1,
+            k1ox,
+            k2ox,
+            k3: b("k3", 80.0),
+            k3b: b("k3b", 0.0),
+            w0: b("w0", 2.5e-6),
+            lpe0: b("lpe0", 1.74e-7),
+            lpeb: b("lpeb", 0.0),
+            kt1: b("kt1", -0.11),
+            kt1l: b("kt1l", 0.0),
+            kt2: b("kt2", 0.022),
+            dvt0: b("dvt0", 2.2),
+            dvt1: b("dvt1", 0.53),
+            dvt2: b("dvt2", -0.032),
+            dvt0w: b("dvt0w", 0.0),
+            dvt1w: b("dvt1w", 5.3e6),
+            dvt2w: b("dvt2w", -0.032),
+            eta0,
+            etab: b("etab", -0.07),
+            theta0vb0,
+            nfactor,
+            cdsc: b("cdsc", 2.4e-4),
+            cdscb: b("cdscb", 0.0),
+            cdscd: b("cdscd", 0.0),
+            cit: b("cit", 0.0),
+            dvtp0: b("dvtp0", 0.0),
+            dvtp1: b("dvtp1", 0.0),
+            dvtp4: b("dvtp4", 0.0),
+            dvtp2factor,
+            vfb,
+            ngate,
+            vth0,
+            dwg: b("dwg", 0.0),
+            dwb: b("dwb", 0.0),
+            rds0,
+            rdswmin,
+            prwg: b("prwg", 1.0),
+            prwb: b("prwb", 0.0),
+            a0: b("a0", 1.0),
+            ags: b("ags", 0.0),
+            b0: b("b0", 0.0),
+            b1: b("b1", 0.0),
+            keta,
+            ua,
+            ub,
+            uc,
+            ud,
+            eu,
+            u0temp,
+            vsattemp,
+            vtfbphi1,
+            vtfbphi2,
+            a1: b("a1", 0.0),
+            a2: b("a2", 1.0),
+            delta: b("delta", 0.01),
+            lambda: c.p.get("lambda").copied().filter(|v| *v > 0.0).map(|_| b("lambda", 0.0)),
+            pvag: b("pvag", 0.0),
+            pclm: b("pclm", 1.3),
+            fprout: b("fprout", 0.0),
+            theta_rout,
+            pdiblb: b("pdiblcb", 0.0),
+            pdits: b("pdits", 0.0),
+            pditsd: b("pditsd", 0.0),
+            pditsl: c.g("pditsl", 0.0),
+            pscbe1: b("pscbe1", 4.24e8),
+            pscbe2: b("pscbe2", 1.0e-5),
+            ados: c.g("ados", 1.0),
+            bdos: c.g("bdos", 1.0),
+            vtl,
+            tfactor,
+            vbsc,
+            cgso,
+            cgdo,
+            cgbo,
+        })
+    }
+
+    /// Gate oxide capacitance per area (F/m²).
+    pub fn coxe(&self) -> f64 {
+        self.coxe
+    }
+
+    /// Drain current at `vds >= 0`, `vgs`, `vbs` (NMOS polarity: voltages already multiplied by
+    /// the device type), for all fingers.
+    pub fn eval(&self, vds: f64, vgs: f64, vbs: f64) -> Eval {
+        let vds_d = D::var(vds, 0);
+        let vgs_d = D::var(vgs, 1);
+        let vbs_d = D::var(vbs, 2);
+        let (ids, vth, vdsat, vgsteff) = self.ids(vds_d, vgs_d, vbs_d);
+        Eval { ids: ids * self.nf, vth, vdsat, vgsteff }
+    }
+
+    fn ids(&self, vds: D, vgs: D, vbs: D) -> (D, f64, f64, f64) {
+        let p = self;
+        let epssub = EPSSI;
+        let toxe = p.toxe;
+        let vtm = p.vtm;
+        let leff = p.leff;
+
+        // Effective body bias.
+        let t0 = vbs - p.vbsc - 0.001;
+        let t1 = (t0 * t0 - 0.004 * p.vbsc).sqrt();
+        let mut vbseff = if t0.v >= 0.0 { p.vbsc + 0.5 * (t0 + t1) } else { p.vbsc * (1.0 + (-0.002) / (t1 - t0)) };
+        let t9 = 0.95 * p.phi;
+        let t0 = t9 - vbseff - 0.001;
+        let t1 = (t0 * t0 + 0.004 * t9).sqrt();
+        vbseff = t9 - 0.5 * (t0 + t1);
+        let phis = p.phi - vbseff;
+        let sqrt_phis = phis.sqrt();
+        let xdep = p.xdep0 * sqrt_phis / p.sqrt_phi;
+
+        // Threshold voltage.
+        let t3 = xdep.sqrt();
+        let v0 = p.vbi - p.phi;
+        let smooth = |t0: D| if t0.v >= -0.5 { 1.0 + t0 } else { (1.0 + 3.0 * t0) / (3.0 + 8.0 * t0) };
+        let lt1 = p.factor1 * t3 * smooth(p.dvt2 * vbseff);
+        let ltw = p.factor1 * t3 * smooth(p.dvt2w * vbseff);
+        let theta0 = theta_d(p.dvt1 * leff / lt1);
+        let delt_vth = p.dvt0 * theta0 * v0;
+        let t2 = p.dvt0w * theta_d(p.dvt1w * p.weff * leff / ltw) * v0;
+        let t0 = (1.0 + p.lpe0 / leff).sqrt();
+        let t1 = p.k1ox * (t0 - 1.0) * p.sqrt_phi + (p.kt1 + p.kt1l / leff + p.kt2 * vbseff) * p.temp_ratio;
+        let vth_narrow_w = toxe * p.phi / (p.weff + p.w0);
+        let mut t3 = p.eta0 + p.etab * vbseff;
+        if t3.v < 1.0e-4 {
+            let t9 = 1.0 / (3.0 - 2.0e4 * t3);
+            t3 = (2.0e-4 - t3) * t9;
+        }
+        let dibl_sft = t3 * p.theta0vb0 * vds;
+        let lpe_vb = (1.0 + p.lpeb / leff).sqrt();
+        let mut vth = p.ty * p.vth0 + (p.k1ox * sqrt_phis - p.k1 * p.sqrt_phi) * lpe_vb - p.k2ox * vbseff - delt_vth - t2
+            + (p.k3 + p.k3b * vbseff) * vth_narrow_w
+            + t1
+            - dibl_sft;
+
+        // Subthreshold swing factor.
+        let tmp1 = epssub / xdep;
+        let tmp2 = p.nfactor * tmp1;
+        let tmp3 = p.cdsc + p.cdscb * vbseff + p.cdscd * vds;
+        let tmp4 = (tmp2 + tmp3 * theta0 + p.cit) / p.coxe;
+        let n = smooth(tmp4);
+
+        // Pocket implant.
+        if p.dvtp0 > 0.0 {
+            let t0 = -p.dvtp1 * vds;
+            let t2 = if t0.v < -EXP_THRESHOLD { D::c(MIN_EXP) } else { t0.exp() };
+            let t3 = leff + p.dvtp0 * (1.0 + t2);
+            let vt = if p.tempmod < 2 { vtm } else { p.vtm0 };
+            vth = vth - n * (vt * (leff / t3).ln());
+        }
+        // Drain-induced threshold shift (DITS).
+        if p.dvtp4 != 0.0 && p.dvtp2factor != 0.0 {
+            let t0 = dexp(2.0 * p.dvtp4 * vds);
+            vth = vth - p.dvtp2factor * (t0 - 1.0) / (t0 + 1.0);
+        }
+
+        // Poly depletion.
+        let vgs_eff = poly_depletion(p.vfb + p.phi, p.ngate, EPSSI, p.coxe, vgs);
+        let vgst = vgs_eff - vth;
+
+        // Vgsteff.
+        let t0 = n * vtm;
+        let t1 = p.mstar * vgst;
+        let t2 = t1 / t0;
+        let t10 = if t2.v > EXP_THRESHOLD {
+            t1
+        } else if t2.v < -EXP_THRESHOLD {
+            vtm * (1.0 + MIN_EXP).ln() * n
+        } else {
+            n * (vtm * (1.0 + t2.exp()).ln())
+        };
+        let t1 = p.voffcbn - (1.0 - p.mstar) * vgst;
+        let t2 = t1 / t0;
+        let t9 = if t2.v < -EXP_THRESHOLD {
+            p.mstar + n * (p.coxe * MIN_EXP / p.cdep0)
+        } else if t2.v > EXP_THRESHOLD {
+            p.mstar + n * (p.coxe * MAX_EXP / p.cdep0)
+        } else {
+            p.mstar + n * (p.coxe / p.cdep0 * t2.exp())
+        };
+        let vgsteff = t10 / t9;
+
+        // Effective width and source/drain resistance.
+        let t9 = sqrt_phis - p.sqrt_phi;
+        let mut weff = p.weff - 2.0 * (p.dwg * vgsteff + p.dwb * t9);
+        if weff.v < 2.0e-8 {
+            weff = 2.0e-8 * (4.0e-8 - weff) / (6.0e-8 - 2.0 * weff);
+        }
+        let rds = {
+            let t0 = 1.0 + p.prwg * vgsteff;
+            let t1 = p.prwb * t9;
+            let t2 = 1.0 / t0 + t1;
+            let t3 = t2 + (t2 * t2 + 0.01).sqrt();
+            p.rdswmin + t3 * (p.rds0 * 0.5)
+        };
+
+        // Bulk charge factor.
+        let t9 = 0.5 * p.k1ox * lpe_vb / sqrt_phis;
+        let t1 = t9 + p.k2ox - p.k3b * vth_narrow_w;
+        let t9 = (p.xj * xdep).sqrt();
+        let t5 = leff / (leff + 2.0 * t9);
+        let t2 = p.a0 * t5 + p.b0 / (p.weff + p.b1);
+        let t7 = t5 * t5 * t5;
+        let abulk0 = 1.0 + t1 * t2;
+        let dabulk_dvg = -t1 * (p.ags * p.a0 * t7);
+        let mut abulk = abulk0 + dabulk_dvg * vgsteff;
+        if abulk.v < 0.1 {
+            abulk = (0.2 - abulk) / (3.0 - 20.0 * abulk);
+        }
+        let t2 = p.keta * vbseff;
+        let t0 = if t2.v >= -0.9 { 1.0 / (1.0 + t2) } else { (17.0 + 20.0 * t2) / (0.8 + t2) };
+        abulk = abulk * t0;
+
+        // Mobility.
+        let t12 = (vth * vth + 0.0001).sqrt();
+        let t10 = toxe / (vgsteff + 2.0 * t12);
+        let t6 = p.ud * t10 * t10 * vth * vth;
+        let t5 = match p.mobmod {
+            1 => {
+                let t3 = (vgsteff + vth + vth) / toxe;
+                t3 * (p.ua + p.ub * t3) * (1.0 + p.uc * vbseff) + t6
+            }
+            2 => {
+                let t0 = (vgsteff + p.vtfbphi1) / toxe;
+                (p.eu * t0.ln()).exp() * (p.ua + p.uc * vbseff) + t6
+            }
+            _ => {
+                let t3 = (vgsteff + vth + vth) / toxe;
+                t3 * (p.ua + p.uc * vbseff + p.ub * t3) + t6
+            }
+        };
+        let denomi = if t5.v >= -0.8 { 1.0 + t5 } else { (0.6 + t5) / (7.0 + 10.0 * t5) };
+        let ueff = p.u0temp / denomi;
+
+        // Saturation voltage.
+        let wvcox = weff * (p.vsattemp * p.coxe);
+        let wvcox_rds = wvcox * rds;
+        let mut esat = 2.0 * p.vsattemp / ueff;
+        let mut esat_l = esat * leff;
+        let lambda = if p.a1 == 0.0 {
+            D::c(p.a2)
+        } else if p.a1 > 0.0 {
+            let t0 = 1.0 - p.a2;
+            let t1 = t0 - p.a1 * vgsteff - 0.0001;
+            let t2 = (t1 * t1 + 0.0004 * t0).sqrt();
+            p.a2 + t0 - 0.5 * (t1 + t2)
+        } else {
+            let t1 = p.a2 + p.a1 * vgsteff - 0.0001;
+            let t2 = (t1 * t1 + 0.0004 * p.a2).sqrt();
+            0.5 * (t1 + t2)
+        };
+        let vgst2vtm = vgsteff + 2.0 * vtm;
+        let vdsat = if rds.v == 0.0 && lambda.v == 1.0 {
+            esat_l * vgst2vtm / (abulk * esat_l + vgst2vtm)
+        } else {
+            let t9 = abulk * wvcox_rds;
+            let t7 = vgst2vtm * t9;
+            let t6 = vgst2vtm * wvcox_rds;
+            let t0 = 2.0 * abulk * (t9 - 1.0 + 1.0 / lambda);
+            let t1 = vgst2vtm * (2.0 / lambda - 1.0) + abulk * esat_l + 3.0 * t7;
+            let t2 = vgst2vtm * (esat_l + 2.0 * t6);
+            let t3 = (t1 * t1 - 2.0 * t0 * t2).sqrt();
+            (t1 - t3) / t0
+        };
+
+        // Effective drain voltage.
+        let t1 = vdsat - vds - p.delta;
+        let t2 = (t1 * t1 + 4.0 * p.delta * vdsat).sqrt();
+        let mut vdseff = if t1.v >= 0.0 {
+            vdsat - 0.5 * (t1 + t2)
+        } else {
+            let t4 = 2.0 * p.delta / (t2 - t1);
+            vdsat * (1.0 - t4)
+        };
+        if vds.v == 0.0 {
+            // As in the reference: the value is 0, only its drain derivative remains.
+            vdseff = D { v: 0.0, d: [vdseff.d[0], 0.0, 0.0] };
+        }
+        if vdseff.v > vds.v {
+            vdseff = vds;
+        }
+        let diff_vds = vds - vdseff;
+
+        // Velocity overshoot.
+        if let Some(lam) = p.lambda {
+            let t2 = lam / (leff * ueff);
+            let t5 = 1.0 / (esat * p.litl);
+            let t6 = 1.0 + diff_vds * t5;
+            let t8 = 1.0 - 2.0 / (t6 * t6 + 1.0);
+            esat_l = esat_l * (1.0 + t2 * t8);
+            esat = esat_l / leff;
+        }
+
+        // Vasat.
+        let tmp4 = 1.0 - 0.5 * abulk * vdsat / vgst2vtm;
+        let t9 = wvcox_rds * vgsteff;
+        let t0 = esat_l + vdsat + 2.0 * t9 * tmp4;
+        let t1 = 2.0 / lambda - 1.0 + wvcox_rds * abulk;
+        let vasat = t0 / t1;
+
+        // Linear-region current with the charge centroid correction of Cox.
+        let t0 = (vgsteff + p.vtfbphi2) / (2.0e8 * p.toxp);
+        let tmp3 = (p.bdos * 0.7 * t0.ln()).exp();
+        let tcen = p.ados * 1.9e-9 / (1.0 + tmp3);
+        let coxeff = epssub * p.coxp / (epssub + p.coxp * tcen);
+        let coxeff_wov_l = coxeff * weff / leff;
+        let beta = ueff * coxeff_wov_l;
+        let fgche1 = vgsteff * (1.0 - 0.5 * vdseff * abulk / vgst2vtm);
+        let fgche2 = 1.0 + vdseff / esat_l;
+        let gche = beta * fgche1 / fgche2;
+        let idl = gche / (1.0 + gche * rds);
+
+        // Output resistance.
+        let fp = if p.fprout <= 0.0 { D::c(1.0) } else { 1.0 / (1.0 + p.fprout * leff.sqrt() / vgst2vtm) };
+        let t9 = p.pvag / esat_l * vgsteff;
+        let pvag_term = if t9.v > -0.9 { 1.0 + t9 } else { (0.8 + t9) / (17.0 + 20.0 * t9) };
+        let (vaclm, cclm) = if p.pclm > MIN_EXP && diff_vds.v > 1.0e-10 {
+            let t0 = 1.0 + rds * idl;
+            let t1 = leff + vdsat / esat;
+            let cclm = fp * pvag_term * t0 * t1 / (p.pclm * p.litl);
+            (cclm * diff_vds, cclm)
+        } else {
+            (D::c(MAX_EXP), D::c(MAX_EXP))
+        };
+        let vadibl = if p.theta_rout > MIN_EXP {
+            let t8 = abulk * vdsat;
+            let t0 = vgst2vtm * t8;
+            let t1 = vgst2vtm + t8;
+            let v = (vgst2vtm - t0 / t1) / p.theta_rout;
+            let t7 = p.pdiblb * vbseff;
+            let v = if t7.v >= -0.9 { v / (1.0 + t7) } else { v * (17.0 + 20.0 * t7) / (0.8 + t7) };
+            v * pvag_term
+        } else {
+            D::c(MAX_EXP)
+        };
+        let va = vasat + vaclm;
+        let vadits = if p.pdits > MIN_EXP {
+            let t0 = p.pditsd * vds;
+            let t1 = if t0.v > EXP_THRESHOLD { D::c(MAX_EXP) } else { t0.exp() };
+            let t2 = 1.0 + p.pditsl * leff;
+            (1.0 + t2 * t1) / p.pdits * fp
+        } else {
+            D::c(MAX_EXP)
+        };
+        let vascbe = if p.pscbe2 > 0.0 && p.pscbe1 >= 0.0 {
+            if diff_vds.v > p.pscbe1 * p.litl / EXP_THRESHOLD {
+                leff * (p.pscbe1 * p.litl / diff_vds).exp() / p.pscbe2
+            } else {
+                D::c(MAX_EXP * leff / p.pscbe2)
+            }
+        } else {
+            D::c(MAX_EXP)
+        };
+        let mut idsa = idl * (1.0 + diff_vds / vadibl);
+        idsa = idsa * (1.0 + diff_vds / vadits);
+        idsa = idsa * (1.0 + (va / vasat).ln() / cclm);
+        let ids = idsa * (1.0 + diff_vds / vascbe);
+        let mut cdrain = ids * vdseff;
+
+        // Source-end velocity limit.
+        if let Some(vtl) = p.vtl {
+            let t11 = 1.0 / leff / coxeff_wov_l / vgsteff;
+            let vs = cdrain * t11;
+            let t0 = 6.0;
+            let t1 = vs / (vtl * p.tfactor);
+            if t1.v > 0.0 {
+                let t2 = 1.0 + (t0 * t1.ln()).exp();
+                let fsevl = 1.0 / (t2.ln() / t0).exp();
+                cdrain = cdrain * fsevl;
+            }
+        }
+        (cdrain, vth.v, vdsat.v, vgsteff.v)
+    }
+}
+
+/// `exp` limited as by the BSIM4 `DEXP` macro.
+fn dexp(x: D) -> D {
+    if x.v > EXP_THRESHOLD {
+        D { v: MAX_EXP * (1.0 + x.v - EXP_THRESHOLD), d: x.d.map(|d| d * MAX_EXP) }
+    } else if x.v < -EXP_THRESHOLD {
+        D::c(MIN_EXP)
+    } else {
+        x.exp()
+    }
+}
+
+fn poly_depletion(phi: f64, ngate: f64, epsgate: f64, coxe: f64, vgs: D) -> D {
+    if ngate > 1.0e18 && ngate < 1.0e25 && vgs.v > phi && epsgate != 0.0 {
+        let t1 = 1.0e6 * CHARGE * epsgate * ngate / (coxe * coxe);
+        let t8 = vgs - phi;
+        let t4 = (1.0 + 2.0 * t8 / t1).sqrt();
+        let t2 = 2.0 * t8 / (t4 + 1.0);
+        let t3 = 0.5 * t2 * t2 / t1;
+        let t7 = 1.12 - t3 - 0.05;
+        let t6 = (t7 * t7 + 0.224).sqrt();
+        let t5 = 1.12 - 0.5 * (t7 + t6);
+        vgs - t5
+    } else {
+        vgs
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn card(pmos: bool, p: &[(&str, f64)]) -> Card {
+        Card::new(pmos, p.iter().map(|(k, v)| (k.to_string(), *v)).collect())
+    }
+
+    fn nmos() -> Card {
+        card(false, &[("toxe", 4e-9), ("vth0", 0.4), ("u0", 0.04), ("vsat", 1e5), ("ndep", 2e17)])
+    }
+
+    #[test]
+    fn dual_numbers_differentiate() {
+        let x = D::var(2.0, 0);
+        let y = (x * x + 3.0 * x).sqrt().ln() / x;
+        let f = |x: f64| (x * x + 3.0 * x).sqrt().ln() / x;
+        let h = 1e-6;
+        assert!((y.d[0] - (f(2.0 + h) - f(2.0 - h)) / (2.0 * h)).abs() < 1e-8);
+        assert!((x.powf(2.5).d[0] - 2.5 * 2.0f64.powf(1.5)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn derivatives_match_finite_differences() {
+        let inst = Inst::new(&nmos(), Geometry { w: 1e-6, l: 0.1e-6, nf: 1.0 }, 27.0).unwrap();
+        let h = 1e-6;
+        for (vds, vgs, vbs) in [(0.05, 0.8, 0.0), (1.0, 1.0, -0.3), (0.6, 0.2, 0.0), (1.2, 0.6, -0.5), (0.0, 1.0, 0.0)] {
+            let e = inst.eval(vds, vgs, vbs);
+            let f = |a: f64, b: f64, c: f64| inst.eval(a, b, c).ids.v;
+            let num = [
+                (f(vds + h, vgs, vbs) - f((vds - h).max(0.0), vgs, vbs)) / (vds + h - (vds - h).max(0.0)),
+                (f(vds, vgs + h, vbs) - f(vds, vgs - h, vbs)) / (2.0 * h),
+                (f(vds, vgs, vbs + h) - f(vds, vgs, vbs - h)) / (2.0 * h),
+            ];
+            for k in 0..3 {
+                let tol = 1e-4 * num[k].abs().max(1e-9);
+                assert!((e.ids.d[k] - num[k]).abs() < tol, "bias {vds} {vgs} {vbs} k={k}: {} vs {}", e.ids.d[k], num[k]);
+            }
+        }
+    }
+
+    #[test]
+    fn current_behaves_like_a_transistor() {
+        let inst = Inst::new(&nmos(), Geometry { w: 1e-6, l: 0.1e-6, nf: 1.0 }, 27.0).unwrap();
+        let id = |vds, vgs| inst.eval(vds, vgs, 0.0).ids.v;
+        // Off, subthreshold slope, on; saturation flattens; body bias raises Vth.
+        assert!(id(1.0, 0.0) < 1e-8 && id(1.0, 1.0) > 1e-4, "{} {}", id(1.0, 0.0), id(1.0, 1.0));
+        let swing = 0.1 / (id(1.0, 0.25) / id(1.0, 0.15)).log10();
+        assert!((0.06..0.12).contains(&swing), "subthreshold swing {swing} V/dec");
+        let gds = |vds| inst.eval(vds, 1.0, 0.0).ids.d[0];
+        assert!(gds(1.0) < gds(0.05) / 3.0, "saturation: gds {} vs linear {}", gds(1.0), gds(0.05));
+        assert!(inst.eval(1.0, 1.0, -0.5).vth > inst.eval(1.0, 1.0, 0.0).vth);
+        // Two fingers carry twice the current of one finger of half the width.
+        let one = Inst::new(&nmos(), Geometry { w: 0.5e-6, l: 0.1e-6, nf: 1.0 }, 27.0).unwrap();
+        let two = Inst::new(&nmos(), Geometry { w: 1e-6, l: 0.1e-6, nf: 2.0 }, 27.0).unwrap();
+        assert!((two.eval(1.0, 1.0, 0.0).ids.v / one.eval(1.0, 1.0, 0.0).ids.v - 2.0).abs() < 1e-12);
+        // Hotter: lower mobility, less on-current.
+        let hot = Inst::new(&nmos(), Geometry { w: 1e-6, l: 0.1e-6, nf: 1.0 }, 125.0).unwrap();
+        assert!(hot.eval(1.0, 1.0, 0.0).ids.v < id(1.0, 1.0));
+    }
+
+    #[test]
+    fn binning_and_errors() {
+        let mut c = nmos();
+        c.p.insert("lvth0".into(), 0.01);
+        let a = Inst::new(&c, Geometry { w: 1e-6, l: 1e-6, nf: 1.0 }, 27.0).unwrap();
+        let b = Inst::new(&c, Geometry { w: 1e-6, l: 0.1e-6, nf: 1.0 }, 27.0).unwrap();
+        assert!((a.vth0 - 0.41).abs() < 1e-12 && (b.vth0 - 0.5).abs() < 1e-12, "{} {}", a.vth0, b.vth0);
+        c.p.insert("lint".into(), 0.1e-6);
+        assert!(Inst::new(&c, Geometry { w: 1e-6, l: 0.1e-6, nf: 1.0 }, 27.0).unwrap_err().contains("length"));
+        let w = card(false, &[("igcmod", 1.0), ("mobmod", 3.0), ("version", 4.5)]).warnings();
+        assert_eq!(w.len(), 3, "{w:?}");
+    }
+}

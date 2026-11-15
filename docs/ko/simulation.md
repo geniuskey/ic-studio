@@ -195,8 +195,18 @@ Rust로 작성한 수정 절점 해석(MNA) 엔진입니다. 다음을 지원합
 - 다이오드 모델: `is n cjo vj m fc tt rs bv ibv kf af eg xti tnom`,
 - MOS level 1: `vto kp u0 lambda gamma phi tox ld cgso cgdo cgbo cj cjsw mj mjsw pb fc is
   js rd rs rsh kf af tnom`, 인스턴스 파라미터 `w l m ad as pd ps nrd nrs`.
+- MOS BSIM4(`level=14` 또는 `level=54`, 대부분의 파운드리 PDK가 쓰는 모델): 드레인 전류는 ngspice의
+  BSIM4 4.8을 따르며 솔버 허용오차 이내로 일치합니다(단채널, DIBL, 협폭, 바디, 포켓 임플란트, DITS
+  항을 포함한 문턱전압, poly depletion, 이동도 모델 0~2, 속도 포화와 오버슈트, source-end 속도 제한,
+  내부 소스/드레인 저항, CLM / DIBL / DITS / SCBE 출력 컨덕턴스, 온도 모델 0~3, `l` / `w` / `p`
+  크기 의존성과 `nf` finger). 게이트 전하는 카드의 overlap 커패시턴스와 Meyer 커패시턴스로 근사하므로
+  과도 해석과 AC 결과는 근사값이며, 자동 백엔드는 이런 덱에 ngspice를 우선합니다. 게이트 터널링,
+  GIDL, 기판 전류, `rdsmod=1`, 게이트/바디 저항망, 응력 효과는 계산하지 않고 경고로 알립니다.
 
-모델은 SPICE level 1과 SPICE 다이오드를 따릅니다.
+BSIM4 모델은 UC Berkeley BSIM Research Group이 개발했습니다(Copyright (c) University of
+California; Educational Community License 2.0).
+
+level 1 모델은 SPICE level 1과 SPICE 다이오드를 따릅니다.
 
 - **커패시턴스는 바이어스에 따라 변합니다.** `tox`가 주어지면 MOS 게이트 커패시턴스는 영역별
   (accumulation, depletion, triode, saturation) Meyer 모델을 따르고, 접합 및 다이오드 공핍

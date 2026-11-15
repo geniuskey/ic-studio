@@ -7,6 +7,7 @@
 // Index-based loops read more naturally in the numerical kernels.
 #![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 
+pub mod bsim4;
 pub mod calc;
 pub mod circuit;
 pub mod correlate;
@@ -183,6 +184,26 @@ mod tests {
         let deck = "* t\n.control\npre_osdi m.osdi\n.endc\nR1 a 0 1k\n.op\n.end\n";
         let e = simulate(deck, &[], &SimOptions::default()).unwrap_err().to_string();
         assert!(e.contains("select ngspice"), "{e}");
+    }
+
+    #[test]
+    fn bsim4_decks_run_on_the_builtin_engine() {
+        let deck = "* b4\n.model n1 nmos level=54 toxe=4e-9 vth0=0.4 u0=0.04 vsat=1e5 ndep=2e17\n\
+                    .model p1 pmos level=54 toxe=4e-9 vth0=-0.4 u0=0.015 vsat=8e4 ndep=2e17\n\
+                    V1 vdd 0 1.2\nV2 in 0 0.6\nM1 out in vdd vdd p1 w=2u l=0.1u nf=2\nM2 out in 0 0 n1 w=1u l=0.1u sa=1u\n.op\n.end\n";
+        let r = simulate(deck, &[], &SimOptions::default()).unwrap();
+        let ds = &r.datasets[0];
+        let out = ds.get("v(out)").unwrap().re[0];
+        assert!(out > 0.0 && out < 1.2, "{out}");
+        let m2 = ds.devices.iter().find(|d| d.name == "m2").unwrap();
+        let id = m2.values.iter().find(|(k, _)| k == "id").unwrap().1;
+        assert!(id > 1e-9 && id < 1e-3, "{id}");
+        let w = r.warnings.join("\n");
+        assert!(w.contains("Meyer") && w.contains("m2: instance parameters not evaluated: sa"), "{w}");
+        // Auto prefers ngspice while the charges are approximated.
+        assert!(builtin_shortfall(deck).is_some());
+        let e = simulate(&deck.replace("nmos level=54", "nmos level=54 lint=0.06u"), &[], &SimOptions::default()).unwrap_err();
+        assert!(e.to_string().contains("m2: BSIM4: effective channel"), "{e}");
     }
 
     #[test]
