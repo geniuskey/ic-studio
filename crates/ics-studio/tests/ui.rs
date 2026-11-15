@@ -559,11 +559,20 @@ fn opc() {
     h.state_mut().command(Command::ApplyOpc);
     h.run_steps(3);
     assert_eq!(shape_count(&h, "cmos_inverter"), once, "applying again replaces the mask");
+    let has_mask_layer = |h: &Harness<'_, IcStudio>| h.state().project().unwrap().tech.layer_index("poly_opc").is_some();
+    let layers = h.state().project().unwrap().tech.layers.len();
     h.state_mut().command(Command::Undo);
     h.run_steps(2);
+    assert!(has_mask_layer(&h), "the first mask is still there");
     h.state_mut().command(Command::Undo);
     h.run_steps(2);
     assert_eq!(shape_count(&h, "cmos_inverter"), before);
+    assert!(!has_mask_layer(&h), "undo also removes the layer OPC added");
+    assert_eq!(h.state().project().unwrap().tech.layers.len(), layers - 1);
+    h.state_mut().command(Command::Redo);
+    h.run_steps(2);
+    assert!(has_mask_layer(&h), "redo restores it");
+    assert_eq!(shape_count(&h, "cmos_inverter"), once);
 }
 
 /// Monte Carlo on the RC filter: spread of the bandwidth, yield and the HTML datasheet.

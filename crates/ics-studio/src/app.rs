@@ -507,6 +507,9 @@ pub struct IcStudio {
     stream_map: StreamMapEditor,
     fill: FillTool,
     opc: OpcTool,
+    /// Mask layers OPC added to the technology (still there / taken out again by undo), so
+    /// that undo and redo of the layout also remove and restore their definitions.
+    opc_layers: (Vec<String>, Vec<ics_core::LayerDef>),
     calc: Calculator,
     sweep: SweepManager,
     monte_carlo: crate::mc_view::MonteCarlo,
@@ -562,6 +565,7 @@ impl IcStudio {
             stream_map: StreamMapEditor::default(),
             fill: FillTool::default(),
             opc: OpcTool::default(),
+            opc_layers: Default::default(),
             calc: Calculator::default(),
             sweep: SweepManager::default(),
             monte_carlo: Default::default(),
@@ -1090,6 +1094,9 @@ impl IcStudio {
                     if changed {
                         ed.layout_changed();
                         self.hier.invalidate(&r);
+                        if Self::sync_opc_layers(p, &mut self.opc_layers) {
+                            self.hier.clear();
+                        }
                     }
                 }
             }
@@ -4130,6 +4137,10 @@ impl IcStudio {
             }
         };
         let name = p.tech.layers[out].name.clone();
+        if added {
+            self.opc_layers.0.push(name.clone());
+            self.opc_layers.1.clear();
+        }
         let Some(lay) = p.cell_mut(&r).and_then(|c| c.layout.as_mut()) else { return };
         let ed = self.lay_eds.entry(r.clone()).or_default();
         ed.history.push(lay);
@@ -4142,6 +4153,31 @@ impl IcStudio {
         }
         self.mark_dirty();
         self.ok(format!("OPC on {r} → {name}: {summary}"));
+    }
+
+    /// After a layout undo / redo: drops trailing OPC mask layers that no shape uses any more
+    /// (undo) and restores those that shapes use again (redo). Layers are referenced by index,
+    /// so only the last layers are touched. Returns whether the technology changed.
+    fn sync_opc_layers(p: &mut Project, (added, parked): &mut (Vec<String>, Vec<ics_core::LayerDef>)) -> bool {
+        let used = |p: &Project, k: usize| {
+            p.all_cells().any(|(_, c)| c.layout.as_ref().is_some_and(|l| l.shapes.iter().any(|s| s.layer == k)))
+        };
+        let mut changed = false;
+        while let Some(last) = p.tech.layers.last()
+            && added.last() == Some(&last.name)
+            && !used(p, p.tech.layers.len() - 1)
+        {
+            added.pop();
+            parked.extend(p.tech.layers.pop());
+            changed = true;
+        }
+        while !parked.is_empty() && used(p, p.tech.layers.len()) {
+            let def = parked.pop().expect("not empty");
+            added.push(def.name.clone());
+            p.tech.layers.push(def);
+            changed = true;
+        }
+        changed
     }
 
     pub fn opc_tool(&mut self) -> &mut OpcTool {
