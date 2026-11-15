@@ -10,6 +10,7 @@
 pub mod bsim4;
 pub mod calc;
 pub mod circuit;
+pub mod corners;
 pub mod correlate;
 pub mod engine;
 pub mod expr;

@@ -60,6 +60,15 @@ fn cholesky(a: &[f64], p: usize) -> Option<Vec<f64>> {
     Some(l)
 }
 
+/// Solve the symmetric positive definite system `a` x = `b` (`a` is `n` × `n`, overwritten).
+pub fn solve_spd(a: &mut [f64], b: &[f64], n: usize) -> Option<Vec<f64>> {
+    let l = cholesky(a, n)?;
+    let mut x = b.to_vec();
+    forward(&l, n, &mut x);
+    backward(&l, n, &mut x);
+    Some(x)
+}
+
 /// Solve L z = b in place.
 fn forward(l: &[f64], p: usize, b: &mut [f64]) {
     for i in 0..p {

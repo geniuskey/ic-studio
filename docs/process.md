@@ -124,3 +124,65 @@ process/generic180_wat.csv: 120 sites on 24 wafers against generic180 WAT
 
 `ics process-data <CSV> [--spec FILE] [--json]` exits with 1 on out-of-spec sites or alarms;
 the MCP tool `process_data` returns the same summary.
+
+## Corner models from silicon
+
+![Process Data: corner models fitted to the WAT data](screenshots/tool_corner_models.png)
+
+When the corners do not cover silicon, or the models do not match it at all, fit new ones. Give
+the parameters of the spec a `measure`, a test-structure netlist with the analysis and the
+expression that gives the parameter, and add an `[extraction]` section with the model
+parameters to fit (the knobs) and the corners:
+
+```toml
+[[param]]
+name = "idsat_n"
+unit = "µA/µm"
+# ...
+measure = { analysis = "op", expr = "-i(vd) * 1e5", netlist = """
+VG g 0 DC 1.8
+VD d 0 DC 1.8
+M1 d g 0 0 nmos w=10u l=0.18u
+.op
+""" }
+
+[extraction]
+knobs = [
+  { target = "model:nmos.vto", min = "0.2", max = "0.8" },
+  { target = "model:nmos.kp", min = "20u", max = "500u", log = true },
+]
+
+[extraction.corners]
+ff = { idsat_n = 3.0, idsat_p = 3.0 }
+ss = { idsat_n = -3.0, idsat_p = -3.0 }
+```
+
+The netlists get the technology's models; knobs are `model:NAME.PARAM` (binned cards
+included). The nominal `tt` is fitted to the means of the measured parameters. In a corner,
+the primary parameters go to mean + zσ and every other measured parameter to its mean given
+the primaries (linear regression over the sites), so a fast corner also gets the lower
+threshold that goes with the higher current. Each corner is fitted by Levenberg-Marquardt
+from the nominal; the error is the RMS miss in units of the data's σ.
+
+- GUI: **Extract corners** in the Process Data window, then **Save library...**
+- CLI: `ics corners <CSV> [--spec FILE] [--project P] [--lib FILE] [--json]`
+- MCP: `extract_corners`
+
+The result is a corner library, one `.lib` section per corner. Load it with
+`.lib "corners.lib" ff`, or point a PDK file's `[models]` at it with
+`corners = ["tt", "ff", "ss", "fs", "sf"]` so that the Corner / Sweep Manager runs them:
+
+```text
+$ ics corners process/generic180_wat.csv --lib corners.lib
+  corner           nmos.vto            nmos.kp           pmos.vto            pmos.kp   error
+  tt                 408.7m             95.94µ            -380.4m              39.2µ   0.000σ
+  ff                   377m             105.5µ            -359.7m             43.89µ   0.000σ
+  ss                 439.8m             85.28µ            -399.9m             34.15µ   0.000σ
+                          vtn                  vtp              idsat_n              idsat_p
+  ff          420.5m (420.5m)    -427.1m (-427.1m)        678.9 (678.9)        298.4 (298.4)
+```
+
+On the example data the generic models give 1620 µA/µm where silicon has 590. The fitted tt
+matches the means, and ff / ss sit at ±3σ of the measured idsat. The bundled spec fits two
+knobs per device to two parameters per device, so the fit is exact; with more measured
+parameters than knobs it is a least-squares compromise, and the error column shows how good.

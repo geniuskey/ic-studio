@@ -22,6 +22,8 @@ pub struct Outcome {
     pub start: Evaluation,
     pub best: Option<Evaluation>,
     pub iterations: usize,
+    /// Standard errors of the fitted values (NaN where unknown).
+    pub std_errors: Vec<f64>,
     /// Fitted model cards.
     pub cards: String,
     /// The parameters of the run, in the order of the values.
@@ -114,7 +116,15 @@ impl SiliconView {
                 let params = cor.params().to_vec();
                 if !fit {
                     let start = cor.evaluate(&start_values);
-                    return Ok(Outcome { start_values, start, best: None, iterations: 0, cards: String::new(), params });
+                    return Ok(Outcome {
+                        start_values,
+                        start,
+                        best: None,
+                        iterations: 0,
+                        std_errors: vec![],
+                        cards: String::new(),
+                        params,
+                    });
                 }
                 let rep = cor.fit(60, &mut |k, _| {
                     iteration.store(k, Ordering::Relaxed);
@@ -122,7 +132,15 @@ impl SiliconView {
                     !cancel.load(Ordering::Relaxed)
                 })?;
                 let cards = cor.fitted_cards(&rep.best.values)?;
-                Ok(Outcome { start_values, start: rep.start, best: Some(rep.best), iterations: rep.iterations, cards, params })
+                Ok(Outcome {
+                    start_values,
+                    start: rep.start,
+                    best: Some(rep.best),
+                    iterations: rep.iterations,
+                    std_errors: rep.std_errors,
+                    cards,
+                    params,
+                })
             };
             let _ = tx.send(run());
             ctx.request_repaint();
@@ -264,7 +282,10 @@ impl SiliconView {
                 ui.add_space(4.0);
                 crate::theme::section(ui, "Parameters");
                 let mut remove = None;
-                let fitted = self.outcome.as_ref().map(|o| (o.start_values.clone(), o.best.as_ref().map(|b| b.values.clone())));
+                let fitted = self
+                    .outcome
+                    .as_ref()
+                    .map(|o| (o.start_values.clone(), o.best.as_ref().map(|b| b.values.clone()), o.std_errors.clone()));
                 egui::Grid::new("si_params").num_columns(7).spacing([6.0, 4.0]).show(ui, |ui| {
                     for h in ["#", "TARGET", "MIN", "MAX", "LOG", "START → FITTED", ""] {
                         ui.label(RichText::new(h).small().strong().color(pal.text_weak));
@@ -278,9 +299,13 @@ impl SiliconView {
                         changed |= ui.add_sized([64.0, 20.0], egui::TextEdit::singleline(&mut p.max)).labelled_by(l.id).changed();
                         changed |= ui.checkbox(&mut p.log, "").on_hover_text("Search on a log scale").changed();
                         match &fitted {
-                            Some((s, f)) if k < s.len() => {
+                            Some((s, f, se)) if k < s.len() => {
+                                let err = se
+                                    .get(k)
+                                    .filter(|e| e.is_finite())
+                                    .map_or(String::new(), |e| format!(" ± {}", format_eng(*e, "")));
                                 let t = match f {
-                                    Some(f) => format!("{} → {}", format_eng(s[k], ""), format_eng(f[k], "")),
+                                    Some(f) => format!("{} → {}{err}", format_eng(s[k], ""), format_eng(f[k], "")),
                                     None => format_eng(s[k], ""),
                                 };
                                 ui.label(RichText::new(t).monospace());

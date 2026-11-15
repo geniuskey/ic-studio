@@ -13,6 +13,13 @@ target = 0.45
 lsl = 0.38
 usl = 0.52
 corners = { ff = 0.40, tt = 0.45, ss = 0.50 }
+measure = { analysis = "dc", expr = "cross(-i(vd), 5.6u)", netlist = """
+* constant-current threshold (100 nA x W/L) at Vds = 0.1 V
+VG g 0 DC 0
+VD d 0 DC 0.1
+M1 d g 0 0 nmos w=10u l=0.18u
+.dc VG 0 1.8 0.005
+""" }
 
 [[param]]
 name = "vtp"
@@ -22,6 +29,13 @@ target = -0.45
 lsl = -0.52
 usl = -0.38
 corners = { ff = -0.40, tt = -0.45, ss = -0.50 }
+measure = { analysis = "dc", expr = "cross(abs(i(vd)), 5.6u)", netlist = """
+* constant-current threshold (100 nA x W/L) at Vds = -0.1 V
+VG g 0 DC 0
+VD d 0 DC -0.1
+M1 d g 0 0 pmos w=10u l=0.18u
+.dc VG -1.8 0 0.005
+""" }
 
 [[param]]
 name = "idsat_n"
@@ -31,6 +45,13 @@ target = 600
 lsl = 520
 usl = 680
 corners = { ff = 660, tt = 600, ss = 540 }
+measure = { analysis = "op", expr = "-i(vd) * 1e5", netlist = """
+* saturation current per µm of width (W = 10 µm)
+VG g 0 DC 1.8
+VD d 0 DC 1.8
+M1 d g 0 0 nmos w=10u l=0.18u
+.op
+""" }
 
 [[param]]
 name = "idsat_p"
@@ -40,6 +61,13 @@ target = 260
 lsl = 220
 usl = 300
 corners = { ff = 275, tt = 260, ss = 245 }
+measure = { analysis = "op", expr = "abs(i(vd)) * 1e5", netlist = """
+* saturation current per µm of width (W = 10 µm)
+VG g 0 DC -1.8
+VD d 0 DC -1.8
+M1 d g 0 0 pmos w=10u l=0.18u
+.op
+""" }
 
 [[param]]
 name = "tox"
@@ -72,3 +100,21 @@ description = "Metal 1 sheet resistance"
 target = 70
 lsl = 60
 usl = 80
+
+# Model extraction (`ics corners`, Process Data > Extract corners): the model parameters fitted
+# so that the simulated test structures (the `measure` of each parameter) match the data's
+# means (tt) and each corner. A corner sets primary parameters to mean + z sigma; the other
+# measured parameters follow from their correlation with them.
+[extraction]
+knobs = [
+  { target = "model:nmos.vto", min = "0.2", max = "0.8" },
+  { target = "model:nmos.kp", min = "20u", max = "500u", log = true },
+  { target = "model:pmos.vto", min = "-0.8", max = "-0.2" },
+  { target = "model:pmos.kp", min = "5u", max = "300u", log = true },
+]
+
+[extraction.corners]
+ff = { idsat_n = 3.0, idsat_p = 3.0 }
+ss = { idsat_n = -3.0, idsat_p = -3.0 }
+fs = { idsat_n = 3.0, idsat_p = -3.0 }
+sf = { idsat_n = -3.0, idsat_p = 3.0 }

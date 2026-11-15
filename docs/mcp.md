@@ -80,6 +80,7 @@ The server has 40 tools:
 | `correlate_silicon` | Compare measured curves (CSV) with the simulation; fit model, instance or design parameters |
 | `process_cross_section` | Process emulation: material stacks along a cut through the layout after a process flow; optional SVG |
 | `process_data` | WAT / PCM data against the process spec: capability, control alarms, corner coverage, correlated parameters |
+| `extract_corners` | Corner models from WAT data: tt / ff / ss / fs / sf model cards and the corner library |
 | `optimize` | Size device parameters to meet specs (optionally after layout); `apply` writes the best values |
 | `place_like` | Layout by example: place a cell like a finished cell with the same circuit topology, optionally route |
 | `diff_layout` | XOR a cell's layout per layer against a git revision (default `HEAD`) or the saved files |

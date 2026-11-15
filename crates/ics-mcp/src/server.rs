@@ -231,6 +231,7 @@ mod tests {
             "correlate_silicon",
             "process_cross_section",
             "process_data",
+            "extract_corners",
             "place_like",
             "diff_layout",
             "extract",
@@ -332,6 +333,15 @@ mod tests {
         let vtn = wat["params"].as_array().unwrap().iter().find(|p| p["name"] == "vtn").unwrap();
         assert_eq!(vtn["alarms"][0]["lot"], "L004", "{wat}");
         assert!(wat["correlations"].as_array().unwrap().iter().any(|c| c["a"] == "vtn" && c["b"] == "idsat_n"), "{wat}");
+
+        let cor = call(
+            &mut s,
+            "extract_corners",
+            json!({"path": concat!(env!("CARGO_MANIFEST_DIR"), "/../../process/generic180_wat.csv")}),
+        )
+        .unwrap();
+        assert_eq!(cor["corners"].as_array().unwrap().len(), 5, "{cor}");
+        assert!(cor["library"].as_str().unwrap().contains(".lib ss"), "{cor}");
 
         let drc = call(&mut s, "run_drc", json!({"cell": "cmos_inverter"})).unwrap();
         assert!(drc["rules_run"].as_u64().unwrap() > 0, "{drc}");

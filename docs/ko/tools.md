@@ -170,7 +170,7 @@ to schematic**은 최적 값을 회로도에 씁니다.
 **Compare**는 모든 바이어스를 시뮬레이션하고 트레이스별 RMS 오차를 보여 줍니다(트레이스의 가장 큰 측정값
 대비 상대 오차, 로그 트레이스는 로그 비). **Fit**은 현재 값에서 시작해 범위 안에서 Levenberg-Marquardt를
 실행합니다(전진 차분 야코비안, 병렬 시뮬레이션). 그래프에 측정점, 피팅 전 모델(점선), 피팅 후 모델이
-표시됩니다. **Copy model cards**는 피팅한 `.model` 카드를 복사하고, **Apply to schematic**은 피팅한 인스턴스
+표시되며, 피팅한 값마다 표준 오차(잔차와 야코비안에서 계산, 약 ±2배가 95 % 구간)가 붙습니다. **Copy model cards**는 피팅한 `.model` 카드를 복사하고, **Apply to schematic**은 피팅한 인스턴스
 파라미터를 회로도에 씁니다.
 
 `silicon/`에 예제가 있습니다. `nmos_iv.sp`(게이트와 드레인 전원이 있는 NMOS)와 `nmos_idvd.csv`(vto = 0.52 V,

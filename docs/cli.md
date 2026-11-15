@@ -53,6 +53,7 @@ it with `cargo build --release -p ics-cli` (binary `target/release/ics`) or run 
 | `ics correlate <PROJECT> <CELL> [--data CSV] [--x COL] [--analysis A] [--trace COL=EXPR[@BIAS]]... [--param TARGET=MIN:MAX[:log]]... [--log] [--fit] [--write-models FILE] [--apply] [--save] [--json]` | Compare measured curves with the simulation and fit model, instance or design parameters to them |
 | `ics xsection <PROJECT> <CELL> [--flow FILE] [--cut x0,y0,x1,y1] [--steps N] [--at X]... [--svg FILE] [--json]` | Process emulation: the layout's cross-section along a cut after a process flow (see [Process emulation](process.md)) |
 | `ics process-data <CSV> [--spec FILE] [--json]` | WAT / PCM data against the process spec: Cp / Cpk, out-of-spec sites, control-chart alarms, corner coverage (see [Process data](process.md#process-data)); exit 1 on out-of-spec sites or alarms |
+| `ics corners <CSV> [--spec FILE] [--project P] [--lib FILE] [--json]` | Corner models from WAT data: fit tt and ff / ss / fs / sf model cards to the data and write a corner library (see [Corner models](process.md#corner-models-from-silicon)) |
 | `ics optimize <PROJECT> <CELL> [--post-layout] [--apply] [--json]` | Size devices to meet the cell's specs; exit 1 if no point meets every spec |
 | `ics place-like <PROJECT> <CELL> --from <CELL> [--route]` | Place the cell like a finished cell with the same circuit and save |
 | `ics skill <PROJECT> <FILE.il> [--no-save] [--json]` | Run a Cadence SKILL script on the project and save; exit 1 on a SKILL error |

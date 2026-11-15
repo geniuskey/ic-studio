@@ -139,27 +139,15 @@ impl<'a> Correlation<'a> {
 
     /// The deck of one bias with the parameter `values` applied.
     pub fn deck(&self, bias: &str, values: &[f64]) -> Result<String, String> {
-        let c = self.project.cell(&self.cell).ok_or("no cell")?;
-        let sch = c.schematic.as_ref().ok_or_else(|| format!("{} has no schematic", self.cell))?;
         let mut vars = silicon::parse_bias(bias)?;
         let mut model = vec![];
         for (p, v) in self.setup.params.iter().zip(values) {
             match p.model_param() {
-                Some(mp) => model.push((mp, *v)),
+                Some((m, q)) => model.push((m.to_string(), q.to_string(), *v)),
                 None => vars.push((p.target.trim().to_string(), format!("{v:.6e}"))),
             }
         }
-        let pt = SweepPoint { corner: c.sim.corner.clone(), temp: c.sim.temp, vars, run: None, swept: 0 };
-        let (mut deck, _) = point_deck(sch, &self.project.tech, &self.cell.to_string(), &c.sim, &pt)?;
-        if !model.is_empty() {
-            if frontend::needs_expansion(&deck) {
-                deck = frontend::expand(&deck, self.opts.deck_dir.as_deref()).map_err(|e| e.to_string())?.deck;
-            }
-            for ((m, p), v) in model {
-                deck = silicon::set_model_param(&deck, m, p, v)?;
-            }
-        }
-        Ok(deck)
+        cell_deck(self.project, &self.cell, vars, &model, self.opts.deck_dir.as_deref())
     }
 
     /// The parameters' present values: model cards and instance parameters of the cell, the
@@ -247,75 +235,15 @@ impl<'a> Correlation<'a> {
             return Err("no parameters to fit".into());
         }
         let real = |u: &[f64]| u.iter().zip(&self.bounds).map(|(u, b)| b.to_real(*u)).collect::<Vec<_>>();
-        let mut u: Vec<f64> = self.start_values().iter().zip(&self.bounds).map(|(x, b)| b.to_unit(*x)).collect();
-        let (start, mut r) = self.residual_vector(&real(&u));
-        let mut best = start.clone();
-        let mut lambda = 1e-2;
-        let mut evals = 1;
-        let mut iterations = 0;
-        let h = 1e-4;
-        while iterations < max_iter {
-            iterations += 1;
-            // Jacobian by forward differences, the columns simulated in parallel.
-            let cols: Vec<Vec<f64>> = std::thread::scope(|s| {
-                let hs: Vec<_> = (0..n)
-                    .map(|j| {
-                        let mut up = u.clone();
-                        let step = if up[j] + h <= 1.0 { h } else { -h };
-                        up[j] += step;
-                        let x = real(&up);
-                        let r0 = &r;
-                        s.spawn(move || {
-                            let (_, rj) = self.residual_vector(&x);
-                            rj.iter().zip(r0).map(|(a, b)| (a - b) / step).collect::<Vec<f64>>()
-                        })
-                    })
-                    .collect();
-                hs.into_iter().map(|h| h.join().unwrap()).collect()
-            });
-            evals += n;
-            let m = r.len();
-            let mut jtj = vec![0.0; n * n];
-            let mut jtr = vec![0.0; n];
-            for a in 0..n {
-                for k in 0..m {
-                    jtr[a] += cols[a][k] * r[k];
-                }
-                for b in 0..=a {
-                    let v: f64 = (0..m).map(|k| cols[a][k] * cols[b][k]).sum();
-                    jtj[a * n + b] = v;
-                    jtj[b * n + a] = v;
-                }
-            }
-            let mut improved = false;
-            for _ in 0..8 {
-                let mut a = jtj.clone();
-                for d in 0..n {
-                    a[d * n + d] += lambda * jtj[d * n + d].max(1e-12);
-                }
-                let Some(delta) = solve(&mut a, &jtr.iter().map(|v| -v).collect::<Vec<_>>(), n) else {
-                    lambda *= 10.0;
-                    continue;
-                };
-                let un: Vec<f64> = u.iter().zip(&delta).map(|(u, d)| (u + d).clamp(0.0, 1.0)).collect();
-                let (e, rn) = self.residual_vector(&real(&un));
-                evals += 1;
-                if e.cost < best.cost {
-                    let gain = (best.cost - e.cost) / best.cost.max(1e-300);
-                    u = un;
-                    r = rn;
-                    best = e;
-                    lambda = (lambda / 3.0).max(1e-9);
-                    improved = gain > 1e-6;
-                    break;
-                }
-                lambda *= 4.0;
-            }
-            if !progress(iterations, &best) || !improved {
-                break;
-            }
-        }
-        Ok(FitReport { start, best, iterations, evaluations: evals })
+        let u0: Vec<f64> = self.start_values().iter().zip(&self.bounds).map(|(x, b)| b.to_unit(*x)).collect();
+        let eval = |u: &[f64]| {
+            let (e, r) = self.residual_vector(&real(u));
+            let cost = e.cost;
+            (e, r, cost)
+        };
+        let (start, best, lm) = levenberg_marquardt(u0, max_iter, &eval, progress);
+        let std_errors = std_errors(&self.bounds, &best.values, &lm);
+        Ok(FitReport { start, best, iterations: lm.iterations, evaluations: lm.evaluations, std_errors })
     }
 
     /// The model cards of the fitted model parameters at `values`, ready for a model file.
@@ -341,6 +269,168 @@ impl<'a> Correlation<'a> {
     pub fn params(&self) -> &[FitParam] {
         &self.setup.params
     }
+}
+
+/// The deck of `cell` with instance parameters / design variables `vars` set (as in a sweep
+/// point) and the model parameters `model` (model, parameter, value) written into the model
+/// cards (the deck is flattened first when it includes libraries).
+pub fn cell_deck(
+    project: &Project,
+    cell: &CellRef,
+    vars: Vec<(String, String)>,
+    model: &[(String, String, f64)],
+    deck_dir: Option<&std::path::Path>,
+) -> Result<String, String> {
+    let c = project.cell(cell).ok_or_else(|| format!("no cell {cell}"))?;
+    let sch = c.schematic.as_ref().ok_or_else(|| format!("{cell} has no schematic"))?;
+    let pt = SweepPoint { corner: c.sim.corner.clone(), temp: c.sim.temp, vars, run: None, swept: 0 };
+    let (mut deck, _) = point_deck(sch, &project.tech, &cell.to_string(), &c.sim, &pt)?;
+    if !model.is_empty() {
+        if frontend::needs_expansion(&deck) {
+            deck = frontend::expand(&deck, deck_dir).map_err(|e| e.to_string())?.deck;
+        }
+        for (m, p, v) in model {
+            deck = silicon::set_model_param(&deck, m, p, *v)?;
+        }
+    }
+    Ok(deck)
+}
+
+/// Outcome of [`levenberg_marquardt`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct Lm {
+    /// The solution in unit coordinates.
+    pub u: Vec<f64>,
+    pub iterations: usize,
+    pub evaluations: usize,
+    /// Covariance of `u` (n × n, row-major): s² (JᵀJ)⁻¹ at the solution with s² the residual
+    /// variance; `None` when JᵀJ is singular or there are no more residuals than parameters.
+    pub cov: Option<Vec<f64>>,
+}
+
+/// What [`levenberg_marquardt`] minimises: unit coordinates to an evaluation, its residuals and
+/// its cost.
+pub type LmEval<'a, E> = dyn Fn(&[f64]) -> (E, Vec<f64>, f64) + Sync + 'a;
+
+/// The Jacobian of `eval`'s residuals at `u` by forward differences, columns simulated in
+/// parallel.
+fn jacobian<E: Send>(u: &[f64], r: &[f64], eval: &LmEval<'_, E>) -> Vec<Vec<f64>> {
+    let h = 1e-4;
+    std::thread::scope(|s| {
+        let hs: Vec<_> = (0..u.len())
+            .map(|j| {
+                let mut up = u.to_vec();
+                let step = if up[j] + h <= 1.0 { h } else { -h };
+                up[j] += step;
+                s.spawn(move || {
+                    let (_, rj, _) = eval(&up);
+                    rj.iter().zip(r).map(|(a, b)| (a - b) / step).collect::<Vec<f64>>()
+                })
+            })
+            .collect();
+        hs.into_iter().map(|h| h.join().unwrap()).collect()
+    })
+}
+
+fn normal_equations(cols: &[Vec<f64>], r: &[f64]) -> (Vec<f64>, Vec<f64>) {
+    let n = cols.len();
+    let mut jtj = vec![0.0; n * n];
+    let mut jtr = vec![0.0; n];
+    for a in 0..n {
+        jtr[a] = cols[a].iter().zip(r).map(|(j, r)| j * r).sum();
+        for b in 0..=a {
+            let v: f64 = cols[a].iter().zip(&cols[b]).map(|(x, y)| x * y).sum();
+            jtj[a * n + b] = v;
+            jtj[b * n + a] = v;
+        }
+    }
+    (jtj, jtr)
+}
+
+/// Levenberg-Marquardt on unit coordinates in [0, 1]: `eval(u)` gives an evaluation, its
+/// residuals and its cost (the sum of squared residuals, plus any penalty). Returns the start,
+/// the best evaluation and the solution with its covariance. `progress(iteration, best)`
+/// returning false stops.
+pub fn levenberg_marquardt<E: Clone + Send>(
+    u0: Vec<f64>,
+    max_iter: usize,
+    eval: &LmEval<'_, E>,
+    progress: &mut dyn FnMut(usize, &E) -> bool,
+) -> (E, E, Lm) {
+    let n = u0.len();
+    let mut u = u0;
+    let (start, mut r, mut cost) = eval(&u);
+    let mut best = start.clone();
+    let (mut lambda, mut evals, mut iterations) = (1e-2, 1usize, 0usize);
+    while iterations < max_iter && n > 0 {
+        iterations += 1;
+        let cols = jacobian(&u, &r, eval);
+        evals += n;
+        let (jtj, jtr) = normal_equations(&cols, &r);
+        let mut improved = false;
+        for _ in 0..8 {
+            let mut a = jtj.clone();
+            for d in 0..n {
+                a[d * n + d] += lambda * jtj[d * n + d].max(1e-12);
+            }
+            let Some(delta) = solve(&mut a, &jtr.iter().map(|v| -v).collect::<Vec<_>>(), n) else {
+                lambda *= 10.0;
+                continue;
+            };
+            let un: Vec<f64> = u.iter().zip(&delta).map(|(u, d)| (u + d).clamp(0.0, 1.0)).collect();
+            let (e, rn, c) = eval(&un);
+            evals += 1;
+            if c < cost {
+                let gain = (cost - c) / cost.max(1e-300);
+                u = un;
+                r = rn;
+                cost = c;
+                best = e;
+                lambda = (lambda / 3.0).max(1e-9);
+                improved = gain > 1e-6;
+                break;
+            }
+            lambda *= 4.0;
+        }
+        if !progress(iterations, &best) || !improved {
+            break;
+        }
+    }
+    // Covariance from the Jacobian at the solution.
+    let m = r.len();
+    let cov = (n > 0 && m > n)
+        .then(|| {
+            let cols = jacobian(&u, &r, eval);
+            evals += n;
+            let (jtj, _) = normal_equations(&cols, &r);
+            let s2 = r.iter().map(|v| v * v).sum::<f64>() / (m - n) as f64;
+            let mut inv = vec![0.0; n * n];
+            for k in 0..n {
+                let mut e = vec![0.0; n];
+                e[k] = 1.0;
+                let x = solve(&mut jtj.clone(), &e, n)?;
+                for (i, v) in x.into_iter().enumerate() {
+                    inv[i * n + k] = v * s2;
+                }
+            }
+            Some(inv)
+        })
+        .flatten();
+    (start, best, Lm { u, iterations, evaluations: evals, cov })
+}
+
+/// Standard errors of real parameter values from the unit-coordinate covariance (NaN where
+/// unknown).
+pub fn std_errors(bounds: &[Bounds], values: &[f64], lm: &Lm) -> Vec<f64> {
+    let n = bounds.len();
+    (0..n)
+        .map(|i| {
+            let Some(cov) = &lm.cov else { return f64::NAN };
+            let b = &bounds[i];
+            let dxdu = if b.log && b.max > b.min { values[i] * (b.max / b.min).ln() } else { b.max - b.min };
+            cov[i * n + i].max(0.0).sqrt() * dxdu.abs()
+        })
+        .collect()
 }
 
 /// Gaussian elimination with partial pivoting.
@@ -377,6 +467,9 @@ pub struct FitReport {
     pub best: Evaluation,
     pub iterations: usize,
     pub evaluations: usize,
+    /// Standard error of every fitted value (from the residuals and the Jacobian; NaN where
+    /// unknown). A 95 % interval is about ±2 of them.
+    pub std_errors: Vec<f64>,
 }
 
 #[cfg(test)]
@@ -455,6 +548,9 @@ mod tests {
         assert!((v[0] - 0.52).abs() < 2e-3 && (v[1] / 240e-6 - 1.0).abs() < 1e-2 && (v[2] / 0.05 - 1.0).abs() < 2e-2, "{v:?}");
         let cards = cor.fitted_cards(v).unwrap();
         assert!(cards.starts_with(".model nmos nmos") && cards.contains("vto=5.2"), "{cards}");
+        // Noise-free data: the parameters are pinned down tightly.
+        assert!(rep.std_errors.iter().all(|e| e.is_finite() && *e >= 0.0), "{:?}", rep.std_errors);
+        assert!(rep.std_errors[0] < 1e-3, "{:?}", rep.std_errors);
     }
 
     #[test]

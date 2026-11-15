@@ -63,3 +63,26 @@
 `process/generic180_wat.csv`는 합성 예제 데이터(로트 4개 × 웨이퍼 6장 × 사이트 5개)로, 마지막 로트에 문턱 전압 이동이
 있습니다. `ics process-data <CSV> [--spec FILE] [--json]`은 스펙 이탈이나 경보가 있으면 1로 종료하고, MCP 도구
 `process_data`도 같은 요약을 돌려줍니다.
+
+## 실리콘에서 코너 모델 만들기
+
+![Process Data: WAT 데이터에 피팅한 코너 모델](../screenshots/tool_corner_models.png)
+
+코너가 실리콘을 덮지 못하거나 모델이 실리콘과 아예 맞지 않으면 새로 피팅합니다. 사양의 파라미터에 `measure`(테스트
+구조 넷리스트, 해석, 파라미터를 주는 식)를 주고, 피팅할 모델 파라미터(노브)와 코너를 담은 `[extraction]` 절을
+더합니다(`process/generic180_wat.toml` 참고). 넷리스트에는 테크놀로지의 모델이 붙고, 노브는 `model:NAME.PARAM`입니다
+(빈 카드 포함).
+
+명목값 `tt`는 측정 파라미터의 평균에 맞춥니다. 코너에서는 주 파라미터를 평균 + zσ로, 나머지 측정 파라미터는 주
+파라미터가 주어졌을 때의 평균(사이트에 대한 선형 회귀)으로 둡니다. 그래서 빠른 코너는 더 큰 전류와 함께 가는 더
+낮은 문턱 전압도 갖습니다. 각 코너는 명목값에서 시작해 Levenberg-Marquardt로 피팅하며, 오차는 데이터 σ 단위의 RMS
+차이입니다.
+
+- GUI: Process Data 창의 **Extract corners**, 그다음 **Save library...**
+- CLI: `ics corners <CSV> [--spec FILE] [--project P] [--lib FILE] [--json]`
+- MCP: `extract_corners`
+
+결과는 코너마다 `.lib` 절이 하나씩 있는 코너 라이브러리입니다. `.lib "corners.lib" ff`로 읽거나, PDK 파일의
+`[models]`가 이 파일을 가리키게 하고 `corners = ["tt", "ff", "ss", "fs", "sf"]`로 두면 Corner / Sweep Manager가 코너를
+돌립니다. 예제 데이터에서 기본 모델은 실리콘의 590 µA/µm 대신 1620을 주지만, 피팅한 tt는 평균과 맞고 ff / ss는 측정
+idsat의 ±3σ에 놓입니다.

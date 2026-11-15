@@ -182,7 +182,8 @@ frequency response.
 trace's largest measured value, or the log ratio on a log trace. **Fit** runs
 Levenberg-Marquardt within the bounds (forward-difference Jacobian, simulated in parallel)
 from the present values. The plot shows the measured points, the model before (dashed) and
-after the fit. **Copy model cards** copies the fitted `.model` cards; **Apply to schematic**
+after the fit, and each fitted value has its standard error (from the residuals and the
+Jacobian; about ±2 of them is a 95 % interval). **Copy model cards** copies the fitted `.model` cards; **Apply to schematic**
 writes fitted instance parameters.
 
 `silicon/` has an example: `nmos_iv.sp` (an NMOS with gate and drain sources) and

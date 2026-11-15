@@ -831,6 +831,18 @@ pub fn definitions() -> Vec<Value> {
             &[],
         ),
         tool(
+            "extract_corners",
+            "Corner models from silicon: fit model card parameters (the spec's [extraction] knobs) so that simulated test structures (each parameter's measure: netlist, analysis, expression) reproduce the WAT data's means (tt) and its corners (ff, ss, fs, sf: primary parameters at mean ± z sigma, the other measured parameters following their correlation with them). Uses the open project's technology models as the start (the generic 180 nm models without a project). Returns every corner's knob values, the simulated against target parameters, and the corner library (.lib sections of .model cards); lib_path writes it.",
+            json!({
+                "csv": {"type": "string", "description": "WAT CSV text."},
+                "path": {"type": "string", "description": "A WAT CSV file instead of the text."},
+                "spec": {"type": "string", "description": "Specification TOML text with measures and [extraction] (see process/generic180_wat.toml)."},
+                "spec_path": {"type": "string", "description": "A specification file instead of the text."},
+                "lib_path": {"type": "string", "description": "Write the corner library to this file."}
+            }),
+            &[],
+        ),
+        tool(
             "place_like",
             &format!(
                 "Layout by example: place a cell's devices like a finished reference cell with the same circuit topology. Devices and nets are matched by topology (names and sizes may differ); every MOS device goes where its counterpart is in the reference, sized from this cell's schematic, with the reference's wells, implants and taps. The cell's layout is replaced. Optionally route afterwards. {NOT_SAVED}"
@@ -1036,6 +1048,7 @@ impl State {
             "diff_layout" => self.diff_layout(a),
             "optimize" => self.optimize(a),
             "place_like" => self.place_like(a),
+            "extract_corners" => self.extract_corners(a),
             "process_data" => process_data(a),
             "process_cross_section" => self.process_cross_section(a),
             "correlate_silicon" => self.correlate_silicon(a),
@@ -1890,11 +1903,11 @@ impl State {
         };
         let start_values = cor.start_values();
         let iterations = a.0.get("iterations").and_then(Value::as_u64).unwrap_or(40) as usize;
-        let (start, best) = if a.0.get("fit").and_then(Value::as_bool).unwrap_or(false) {
+        let (start, best, std_errors) = if a.0.get("fit").and_then(Value::as_bool).unwrap_or(false) {
             let rep = cor.fit(iterations, &mut |_, _| true)?;
-            (rep.start, Some(rep.best))
+            (rep.start, Some(rep.best), rep.std_errors)
         } else {
-            (cor.evaluate(&start_values), None)
+            (cor.evaluate(&start_values), None, vec![])
         };
         let traces = |e: &ics_sim::silicon::Evaluation| -> Vec<Value> {
             e.traces
@@ -1910,7 +1923,10 @@ impl State {
             .params()
             .iter()
             .enumerate()
-            .map(|(i, q)| json!({"target": q.target, "start": sig(start_values[i]), "fitted": best.as_ref().map(|b| sig(b.values[i]))}))
+            .map(|(i, q)| {
+                json!({"target": q.target, "start": sig(start_values[i]), "fitted": best.as_ref().map(|b| sig(b.values[i])),
+                "std_error": std_errors.get(i).filter(|e| e.is_finite()).map(|e| sig(*e))})
+            })
             .collect();
         let cards = match &best {
             Some(b) => cor.fitted_cards(&b.values)?,
@@ -1973,6 +1989,42 @@ impl State {
             "materials": s.materials,
             "columns": columns,
         }))
+    }
+
+    fn extract_corners(&mut self, a: &Args) -> Result<Value, String> {
+        use ics_core::process_data::{GENERIC180_SPEC, ProcessSpec, WatData};
+        let read = |text: &str, path: &str| -> Result<Option<String>, String> {
+            match (a.0.get(text).and_then(Value::as_str), a.0.get(path).and_then(Value::as_str)) {
+                (Some(t), _) => Ok(Some(t.to_string())),
+                (None, Some(p)) => std::fs::read_to_string(p).map(Some).map_err(|e| format!("{p}: {e}")),
+                _ => Ok(None),
+            }
+        };
+        let d = WatData::parse(&read("csv", "path")?.ok_or("give the data as csv or path")?)?;
+        let spec = ProcessSpec::from_toml(&read("spec", "spec_path")?.unwrap_or_else(|| GENERIC180_SPEC.to_string()))?;
+        let generic;
+        let p = match self.project() {
+            Ok(p) => p,
+            Err(_) => {
+                generic = ics_core::examples::demo_project();
+                &generic
+            }
+        };
+        let ex = ics_sim::corners::Extraction::new(p, &spec, &d, &ics_sim::SimOptions::default())?;
+        let fits = ex.run(40, &mut |_| {});
+        let library = ex.library(&fits, &format!("{} corners", spec.name))?;
+        if let Some(path) = a.0.get("lib_path").and_then(Value::as_str) {
+            std::fs::write(path, &library).map_err(|e| format!("{path}: {e}"))?;
+        }
+        let corners: Vec<Value> = fits
+            .iter()
+            .map(|f| {
+                json!({"corner": f.name, "error_sigma": sig(f.error_sigma),
+                    "knobs": ex.knobs.iter().zip(&f.values).map(|(k, v)| json!({"target": k.target, "value": sig(*v)})).collect::<Vec<_>>(),
+                    "params": f.params.iter().map(|(n, t, g)| json!({"name": n, "target": sig(*t), "simulated": g.as_ref().ok().map(|v| sig(*v))})).collect::<Vec<_>>()})
+            })
+            .collect();
+        Ok(json!({"spec": spec.name, "corners": corners, "library": library}))
     }
 
     fn place_like(&mut self, a: &Args) -> Result<Value, String> {

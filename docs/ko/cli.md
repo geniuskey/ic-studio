@@ -53,6 +53,7 @@
 | `ics correlate <PROJECT> <CELL> [--data CSV] [--x COL] [--analysis A] [--trace COL=EXPR[@BIAS]]... [--param TARGET=MIN:MAX[:log]]... [--log] [--fit] [--write-models FILE] [--apply] [--save] [--json]` | 측정 곡선과 시뮬레이션 비교, 모델·인스턴스·설계 파라미터 피팅 |
 | `ics xsection <PROJECT> <CELL> [--flow FILE] [--cut x0,y0,x1,y1] [--steps N] [--at X]... [--svg FILE] [--json]` | 공정 에뮬레이션: 공정 흐름 후 컷을 따른 레이아웃 단면([공정 에뮬레이션](process.md) 참고) |
 | `ics process-data <CSV> [--spec FILE] [--json]` | WAT / PCM 데이터를 공정 사양과 비교: Cp / Cpk, 스펙 이탈, 관리도 경보, 코너 포함 여부([공정 데이터](process.md#공정-데이터) 참고). 스펙 이탈이나 경보가 있으면 1로 종료 |
+| `ics corners <CSV> [--spec FILE] [--project P] [--lib FILE] [--json]` | WAT 데이터로 코너 모델 생성: tt와 ff / ss / fs / sf 모델 카드를 피팅하고 코너 라이브러리 작성([코너 모델](process.md#실리콘에서-코너-모델-만들기) 참고) |
 | `ics optimize <PROJECT> <CELL> [--post-layout] [--apply] [--json]` | 셀의 스펙을 만족하도록 소자 사이징. 모든 스펙을 만족하는 포인트가 없으면 1로 종료 |
 | `ics place-like <PROJECT> <CELL> --from <CELL> [--route]` | 같은 회로를 가진 완성된 셀처럼 배치하고 저장 |
 | `ics skill <PROJECT> <FILE.il> [--no-save] [--json]` | 프로젝트에 Cadence SKILL 스크립트를 실행하고 저장. SKILL 오류가 나면 1로 종료 |

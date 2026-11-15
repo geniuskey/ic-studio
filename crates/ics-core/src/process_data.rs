@@ -27,6 +27,33 @@ pub struct ProcessSpec {
     pub baseline_wafers: usize,
     #[serde(rename = "param", default)]
     pub params: Vec<ParamSpec>,
+    /// Model extraction from the data: the model parameters to fit and the corners.
+    #[serde(default)]
+    pub extraction: Option<Extraction>,
+}
+
+/// How a parameter is simulated: a test-structure netlist (SPICE, with its analysis) and the
+/// waveform-calculator expression that gives the parameter.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct EtestMeasure {
+    /// SPICE netlist of the test structure; the technology's models are added.
+    pub netlist: String,
+    /// Analysis of the expression: `op`, `dc`, `ac` or `tran`.
+    pub analysis: String,
+    /// Expression with a scalar result, e.g. `cross(-i(vd), 5.6u)` or `-i(vd) * 1e5`.
+    pub expr: String,
+}
+
+/// Model extraction: the model parameters ("knobs") fitted to the data, and the corners as
+/// z-scores of primary parameters (the other measured parameters follow by regression).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct Extraction {
+    pub knobs: Vec<crate::silicon::FitParam>,
+    /// Corner name to {parameter: z-score}, e.g. `ff = { idsat_n = 3, idsat_p = 3 }`.
+    #[serde(default)]
+    pub corners: std::collections::BTreeMap<String, std::collections::BTreeMap<String, f64>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -47,6 +74,9 @@ pub struct ParamSpec {
     /// The parameter's value in each model corner.
     #[serde(default)]
     pub corners: std::collections::BTreeMap<String, f64>,
+    /// How to simulate the parameter (for model extraction).
+    #[serde(default)]
+    pub measure: Option<EtestMeasure>,
 }
 
 impl ProcessSpec {
@@ -311,6 +341,78 @@ pub fn correlation(data: &WatData, a: usize, b: usize) -> f64 {
         syy += (y - my).powi(2);
     }
     sxy / (sxx * syy).sqrt()
+}
+
+/// The target value of every simulated parameter in one corner.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CornerTargets {
+    /// `tt` for the nominal (the means), else the corner's name.
+    pub name: String,
+    /// (parameter, target value, z-score, standard deviation of the data).
+    pub targets: Vec<(String, f64, f64, f64)>,
+}
+
+/// The targets of the nominal and every corner of `spec`'s extraction: the parameters with a
+/// [`EtestMeasure`] at their mean (`tt`) or, in a corner, the primary parameters at mean + zσ and
+/// the others at their mean conditioned on the primaries (linear regression over the sites).
+pub fn corner_targets(data: &WatData, spec: &ProcessSpec) -> Result<Vec<CornerTargets>, String> {
+    let ex = spec.extraction.as_ref().ok_or("the spec has no [extraction]")?;
+    let names: Vec<String> = spec.params.iter().filter(|p| p.measure.is_some()).map(|p| p.name.clone()).collect();
+    if names.is_empty() {
+        return Err("no parameter of the spec has a measure".into());
+    }
+    let cols: Vec<usize> = names
+        .iter()
+        .map(|n| {
+            data.params.iter().position(|p| p.eq_ignore_ascii_case(n)).ok_or_else(|| format!("the data has no column '{n}'"))
+        })
+        .collect::<Result<_, _>>()?;
+    // Sites where every measured parameter is present.
+    let rows: Vec<usize> = (0..data.sites.len()).filter(|&s| cols.iter().all(|&c| data.values[c][s].is_finite())).collect();
+    if rows.len() < 3 {
+        return Err("fewer than 3 sites with every measured parameter".into());
+    }
+    let k = names.len();
+    let nf = rows.len() as f64;
+    let mean: Vec<f64> = cols.iter().map(|&c| rows.iter().map(|&s| data.values[c][s]).sum::<f64>() / nf).collect();
+    let mut cov = vec![0.0; k * k];
+    for a in 0..k {
+        for b in 0..k {
+            cov[a * k + b] =
+                rows.iter().map(|&s| (data.values[cols[a]][s] - mean[a]) * (data.values[cols[b]][s] - mean[b])).sum::<f64>()
+                    / (nf - 1.0);
+        }
+    }
+    let sd: Vec<f64> = (0..k).map(|a| cov[a * k + a].sqrt()).collect();
+    let mut out =
+        vec![CornerTargets { name: "tt".into(), targets: (0..k).map(|a| (names[a].clone(), mean[a], 0.0, sd[a])).collect() }];
+    for (corner, zs) in &ex.corners {
+        let prim: Vec<(usize, f64)> = zs
+            .iter()
+            .map(|(n, z)| {
+                names
+                    .iter()
+                    .position(|m| m.eq_ignore_ascii_case(n))
+                    .map(|i| (i, *z))
+                    .ok_or_else(|| format!("corner {corner}: '{n}' has no measure"))
+            })
+            .collect::<Result<_, _>>()?;
+        // Shift of the primaries, and the regression of the others on them: Σ_OP Σ_PP⁻¹ δ_P.
+        let np = prim.len();
+        let delta: Vec<f64> = prim.iter().map(|(i, z)| z * sd[*i]).collect();
+        let mut spp: Vec<f64> = (0..np * np).map(|q| cov[prim[q / np].0 * k + prim[q % np].0]).collect();
+        let w = crate::predict::solve_spd(&mut spp, &delta, np)
+            .ok_or_else(|| format!("corner {corner}: the primary parameters are degenerate"))?;
+        let targets = (0..k)
+            .map(|a| {
+                let shift: f64 = prim.iter().zip(&w).map(|((p, _), w)| cov[a * k + p] * w).sum();
+                let t = mean[a] + shift;
+                (names[a].clone(), t, if sd[a] > 0.0 { shift / sd[a] } else { 0.0 }, sd[a])
+            })
+            .collect();
+        out.push(CornerTargets { name: corner.clone(), targets });
+    }
+    Ok(out)
 }
 
 /// The WAT specification of the generic 180 nm technology.

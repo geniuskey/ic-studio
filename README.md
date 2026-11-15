@@ -176,8 +176,8 @@ Linux needs the usual windowing libraries:
   sampled 10⁵ times per condition, gives the predicted yield, Cpk and each varied
   parameter's share of the spread (`ics yield`, MCP `predict_yield`)
 - Silicon correlation: measured curves (CSV) against the simulation, with a
-  Levenberg-Marquardt fit of model card, instance or design parameters and the fitted
-  `.model` cards (`ics correlate`, MCP `correlate_silicon`)
+  Levenberg-Marquardt fit of model card, instance or design parameters with standard errors,
+  and the fitted `.model` cards (`ics correlate`, MCP `correlate_silicon`)
 - Results browser: keep earlier runs and overlay them, e.g. pre- versus post-layout
 - Layout generators: guard rings, via arrays, common-centroid / interdigitated matched
   placement with dummies; dummy metal fill to a density target
@@ -195,6 +195,9 @@ Linux needs the usual windowing libraries:
 - Process data: WAT / PCM results against the process spec with Cp / Cpk, control charts
   of the wafer means (Western Electric rules) and a check that the model corners cover the
   measured spread (`ics process-data`, MCP `process_data`)
+- Corner models from silicon: fit tt and ff / ss / fs / sf model cards to WAT data through
+  simulated test structures, with correlated parameters following by regression, and write a
+  corner library (`ics corners`, MCP `extract_corners`)
 
 **Technology**
 - `tech.json` with layers, GDS numbers, colours, fill patterns, width / spacing, vias,

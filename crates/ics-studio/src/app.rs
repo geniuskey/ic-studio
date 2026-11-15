@@ -1617,10 +1617,30 @@ impl IcStudio {
     fn process_data_window(&mut self, ctx: &egui::Context) {
         use crate::process_data_view::ProcessDataAction;
         let action = self.process_data.window(ctx);
+        match &action {
+            Some(ProcessDataAction::ExtractCorners) => {
+                let p = self.project.clone().unwrap_or_else(ics_core::examples::demo_project);
+                match self.process_data.start_corners(ctx, p) {
+                    Ok(()) => self.info("Corner models: fitting".into()),
+                    Err(e) => self.error(format!("Corner models: {e}")),
+                }
+                return;
+            }
+            Some(ProcessDataAction::SaveLibrary(text)) => {
+                if let Some(path) = rfd::FileDialog::new().set_title("Corner library").set_file_name("corners.lib").save_file() {
+                    match std::fs::write(&path, text) {
+                        Ok(()) => self.ok(format!("Corner models: wrote {}", path.display())),
+                        Err(e) => self.error(format!("{}: {e}", path.display())),
+                    }
+                }
+                return;
+            }
+            _ => {}
+        }
         let (title, filter, exts): (&str, &str, &[&str]) = match action {
             Some(ProcessDataAction::LoadData) => ("WAT / PCM data", "CSV", &["csv", "txt", "tsv"]),
             Some(ProcessDataAction::LoadSpec) => ("Process specification", "TOML", &["toml"]),
-            None => return,
+            _ => return,
         };
         let mut dialog = rfd::FileDialog::new().set_title(title).add_filter(filter, exts);
         if let Some(r) = self.project.as_ref().and_then(|p| p.root.clone()) {
@@ -4201,6 +4221,7 @@ impl IcStudio {
             || self.rule_designer.is_checking()
             || self.sweep.is_running()
             || self.silicon.is_running()
+            || self.process_data.is_running()
             || self.copilot.busy()
             || self.optimizer.is_running()
             || self.monte_carlo.is_running()
@@ -4749,6 +4770,9 @@ impl eframe::App for IcStudio {
             if ok { self.ok(m) } else { self.warn(m) }
         }
         if let Some((ok, m)) = self.silicon.poll() {
+            if ok { self.ok(m) } else { self.warn(m) }
+        }
+        if let Some((ok, m)) = self.process_data.poll() {
             if ok { self.ok(m) } else { self.warn(m) }
         }
         self.copilot.poll();

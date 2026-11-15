@@ -284,6 +284,27 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Corner models from silicon: fit model parameters so that the spec's simulated test
+    /// structures reproduce the WAT data's means (tt) and its corners (ff, ss, fs, sf: primary
+    /// parameters at ±zσ, the others following their correlation), and write a corner library.
+    Corners {
+        /// WAT / PCM data (CSV).
+        data: PathBuf,
+        /// Specification with `measure` per parameter and an `[extraction]` section (default:
+        /// the generic 180 nm WAT spec).
+        #[arg(long)]
+        spec: Option<PathBuf>,
+        /// Project whose technology models are the starting point (default: generic 180 nm).
+        #[arg(long)]
+        project: Option<PathBuf>,
+        /// Write the corner library (`.lib tt` ... sections) to this file.
+        #[arg(long)]
+        lib: Option<PathBuf>,
+        #[arg(long, default_value_t = 40)]
+        iterations: usize,
+        #[arg(long)]
+        json: bool,
+    },
     /// Size the cell's devices to meet its specs (`sim.sweep.specs`) with the variables of its
     /// optimizer setup (`sim.optimize`); `--apply` writes the best values into the schematic.
     Optimize {
@@ -1341,16 +1362,16 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             let cor = ics_sim::silicon::Correlation::new(&p, &r, &opts)?;
             let start_values = cor.start_values();
-            let (start, best, iters) = if fit {
+            let (start, best, iters, std_errors) = if fit {
                 let rep = cor.fit(iterations, &mut |k, e| {
                     if !json {
                         eprintln!("iteration {k}: error {:.3}%", e.error() * 100.0);
                     }
                     true
                 })?;
-                (rep.start, Some(rep.best), rep.iterations)
+                (rep.start, Some(rep.best), rep.iterations, rep.std_errors)
             } else {
-                (cor.evaluate(&start_values), None, 0)
+                (cor.evaluate(&start_values), None, 0, vec![])
             };
             let fitted = best.as_ref().map(|b| b.values.clone());
             let cards = match &fitted {
@@ -1373,7 +1394,10 @@ fn run(cli: Cli) -> Result<(), String> {
                     .params()
                     .iter()
                     .enumerate()
-                    .map(|(i, q)| serde_json::json!({"target": q.target, "start": start_values[i], "fitted": fitted.as_ref().map(|v| v[i])}))
+                    .map(|(i, q)| {
+                        serde_json::json!({"target": q.target, "start": start_values[i], "fitted": fitted.as_ref().map(|v| v[i]),
+                        "std_error": std_errors.get(i).filter(|e| e.is_finite())})
+                    })
                     .collect();
                 println!(
                     "{}",
@@ -1402,8 +1426,12 @@ fn run(cli: Cli) -> Result<(), String> {
                     Some(b) => {
                         println!("RMS error {} -> {} in {iters} iteration(s)", pct(start.error()), pct(b.error()));
                         for (i, q) in cor.params().iter().enumerate() {
+                            let se = std_errors
+                                .get(i)
+                                .filter(|e| e.is_finite())
+                                .map_or(String::new(), |e| format!(" ± {}", format_eng(*e, "")));
                             println!(
-                                "  {:<24} {:>10} -> {}",
+                                "  {:<24} {:>10} -> {}{se}",
                                 q.target,
                                 format_eng(start_values[i], ""),
                                 format_eng(b.values[i], "")
@@ -1593,6 +1621,90 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             if bad {
                 return Err("out-of-spec sites or control-rule violations".into());
+            }
+        }
+        Cmd::Corners { data, spec, project, lib, iterations, json } => {
+            use ics_core::process_data::{GENERIC180_SPEC, ProcessSpec, WatData};
+            let text = std::fs::read_to_string(&data).map_err(|e| format!("{}: {e}", data.display()))?;
+            let d = WatData::parse(&text).map_err(|e| format!("{}: {e}", data.display()))?;
+            let st = match &spec {
+                Some(f) => std::fs::read_to_string(f).map_err(|e| format!("{}: {e}", f.display()))?,
+                None => GENERIC180_SPEC.to_string(),
+            };
+            let sp = ProcessSpec::from_toml(&st).map_err(|e| format!("spec: {e}"))?;
+            let p = match &project {
+                Some(dir) => Project::open(dir).map_err(|e| e.to_string())?,
+                None => ics_core::examples::demo_project(),
+            };
+            let mut opts = SimOptions::default();
+            if let Some(exe) = &p.settings.ngspice_path {
+                opts.ngspice_exe = exe.clone();
+            }
+            let started = std::time::Instant::now();
+            let ex = ics_sim::corners::Extraction::new(&p, &sp, &d, &opts)?;
+            let fits = ex.run(iterations, &mut |f| {
+                if !json {
+                    eprintln!("{}: error {:.3}σ", f.name, f.error_sigma);
+                }
+            });
+            let library = ex.library(&fits, &format!("{} corners from {}", sp.name, data.display()))?;
+            if json {
+                let cj: Vec<serde_json::Value> = fits
+                    .iter()
+                    .map(|f| {
+                        serde_json::json!({"corner": f.name, "error_sigma": f.error_sigma,
+                            "knobs": ex.knobs.iter().zip(&f.values).zip(&f.std_errors).map(|((k, v), e)| serde_json::json!({"target": k.target, "value": v,
+                                "std_error": e.is_finite().then_some(*e)})).collect::<Vec<_>>(),
+                            "params": f.params.iter().map(|(n, t, g)| serde_json::json!({"name": n, "target": t, "simulated": g.as_ref().ok(),
+                                "error": g.as_ref().err()})).collect::<Vec<_>>()})
+                    })
+                    .collect();
+                println!("{}", serde_json::json!({"spec": sp.name, "corners": cj, "library": library}));
+            } else {
+                println!(
+                    "{}: {} sites, {} corner(s) in {:.1} s",
+                    data.display(),
+                    d.sites.len(),
+                    fits.len(),
+                    started.elapsed().as_secs_f64()
+                );
+                let mut head = format!("  {:<6}", "corner");
+                for k in &ex.knobs {
+                    head += &format!(" {:>18}", k.target.trim_start_matches("model:"));
+                }
+                println!("{head}   error");
+                for f in &fits {
+                    let mut line = format!("  {:<6}", f.name);
+                    for (v, e) in f.values.iter().zip(&f.std_errors) {
+                        let t = if e.is_finite() {
+                            format!("{} ±{}", format_eng(*v, ""), format_eng(*e, ""))
+                        } else {
+                            format_eng(*v, "")
+                        };
+                        line += &format!(" {t:>18}");
+                    }
+                    println!("{line}   {:.3}σ", f.error_sigma);
+                }
+                let mut head = format!("  {:<6}", "");
+                if let Some(f) = fits.first() {
+                    for (n, _, _) in &f.params {
+                        head += &format!(" {n:>20}");
+                    }
+                }
+                println!("{head}");
+                for f in &fits {
+                    let mut line = format!("  {:<6}", f.name);
+                    for (_, t, g) in &f.params {
+                        let got = g.as_ref().map_or("fail".to_string(), |v| format_eng(*v, ""));
+                        line += &format!(" {:>20}", format!("{got} ({})", format_eng(*t, "")));
+                    }
+                    println!("{line}");
+                }
+                println!("  (simulated, with the target in brackets)");
+            }
+            if let Some(path) = &lib {
+                std::fs::write(path, &library).map_err(|e| format!("{}: {e}", path.display()))?;
+                eprintln!("wrote {}", path.display());
             }
         }
         Cmd::Optimize { project, cell, post_layout, apply, json } => {

@@ -2164,4 +2164,16 @@ fn process_data() {
     pd.selected = 0;
     h.run_steps(3);
     shot(&mut h, "40_process_data");
+    // Corner models from the data.
+    let p = h.state().project().unwrap().clone();
+    let ctx = h.ctx.clone();
+    h.state_mut().process_data().start_corners(&ctx, p).unwrap();
+    h.run_steps(2);
+    settle(&mut h, "corners");
+    let c = h.state_mut().process_data().corners.clone().unwrap();
+    assert_eq!(c.fits.len(), 5);
+    assert!(c.fits.iter().all(|f| f.error_sigma < 0.2), "{:?}", c.fits);
+    assert!(c.library.contains(".lib ff"));
+    h.run_steps(2);
+    shot(&mut h, "41_corner_models");
 }
