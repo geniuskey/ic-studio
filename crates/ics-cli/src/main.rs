@@ -261,6 +261,14 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Write the example projects, one per topic, to DIR/<topic> (existing ones are kept unless
+    /// `--force`); without DIR, list the topics.
+    Examples {
+        dir: Option<PathBuf>,
+        /// Overwrite example projects that already exist.
+        #[arg(long)]
+        force: bool,
+    },
     /// Run an external sign-off DRC / LVS runset of the technology (KLayout, Calibre or netgen)
     /// on a cell; without a runset, list them. Non-zero exit on violations or a mismatch.
     Signoff {
@@ -497,6 +505,20 @@ fn run(cli: Cli) -> Result<(), String> {
             p.save_as(&dir).map_err(|e| e.to_string())?;
             println!("created {}", dir.display());
         }
+        Cmd::Examples { dir, force } => match dir {
+            None => {
+                for t in &ics_core::examples::TOPICS {
+                    println!("{:<18} {}", t.name, t.description);
+                }
+            }
+            Some(dir) => {
+                let written = ics_core::examples::write_topics(&dir, force).map_err(|e| e.to_string())?;
+                for t in &ics_core::examples::TOPICS {
+                    let state = if written.contains(&t.name) { "wrote" } else { "kept " };
+                    println!("{state} {}", dir.join(t.name).display());
+                }
+            }
+        },
         Cmd::Info { project } => {
             let p = Project::open(&project).map_err(|e| e.to_string())?;
             println!("{} — {}  (tech: {})", p.name, p.description, p.tech.name);

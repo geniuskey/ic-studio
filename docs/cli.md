@@ -16,6 +16,7 @@ it with `cargo build --release -p ics-cli` (binary `target/release/ics`) or run 
 |---|---|
 | `ics mcp` | Run the MCP server for AI agents on stdio (see [MCP server](mcp.md)) |
 | `ics new <DIR> [--template empty\|demo]` | Create a project (default template `demo`) |
+| `ics examples [DIR] [--force]` | Write the example projects, one per topic, to `DIR/<topic>` (existing ones are kept unless `--force`); without `DIR`, list the topics |
 | `ics info <PROJECT>` | List libraries, cells and views |
 | `ics netlist <PROJECT> <CELL>` | Print the cell's SPICE deck |
 | `ics schematic <PROJECT> <CELL> <NETLIST> [--overwrite]` | Create or replace a cell's schematic from a SPICE netlist file and save |

@@ -16,6 +16,7 @@ use crate::theme;
 fn action_card(ui: &mut egui::Ui, icon: Icon, title: &str, sub: &str, color: egui::Color32) -> bool {
     let pal = theme::palette(ui.ctx());
     let (r, p) = ui.allocate_painter(Vec2::new(230.0, 74.0), Sense::click());
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, title));
     let fill = if r.hovered() { pal.bg_hover } else { pal.bg_widget };
     p.rect_filled(r.rect, 10.0, fill);
     if r.hovered() {
@@ -56,6 +57,15 @@ pub fn welcome(ui: &mut egui::Ui, recent: &[PathBuf], q: &mut Vec<Command>) {
                     }
                     if action_card(ui, Icon::Home, "Open project…", "Browse for a project folder", pal.layout) {
                         q.push(Command::OpenProjectDialog);
+                    }
+                });
+                ui.add_space(24.0);
+                theme::section(ui, "Examples");
+                ui.horizontal_wrapped(|ui| {
+                    for t in &ics_core::examples::TOPICS {
+                        if action_card(ui, Icon::Library, t.title, t.summary, pal.simulation) {
+                            q.push(Command::OpenExample(t.name.into()));
+                        }
                     }
                 });
                 ui.add_space(24.0);

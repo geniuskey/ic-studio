@@ -32,6 +32,9 @@ The installer also:
 - registers the MCP server with Claude Code if `claude` is on the `PATH`
   (`claude mcp add --scope user ic-studio -- <folder>/ics mcp`); otherwise it prints that
   command and the JSON config for other clients (see [MCP server](mcp.md));
+- writes the [example projects](demos.md#example-projects), one folder per topic, to
+  `Documents\IC Studio\Examples` (Windows) or `~/Documents/IC Studio/Examples`
+  (macOS / Linux). Examples already there are kept, so your changes to them survive updates;
 - on macOS, removes the download quarantine attribute;
 - on macOS / Linux, prints the line to add to your shell profile if `~/.local/bin` is not
   on the `PATH`. On Windows, open a new terminal to pick up the `PATH` change.
@@ -46,7 +49,9 @@ Options are environment variables:
 |---|---|
 | `ICS_VERSION` | Install this release tag, e.g. `v0.2.0` (default: latest) |
 | `ICS_INSTALL_DIR` | Install into this folder |
-| `ICS_UNINSTALL=1` | Remove the folder, the `PATH` entry or links, the launcher and the MCP registration |
+| `ICS_EXAMPLES_DIR` | Write the example projects into this folder |
+| `ICS_EXAMPLES=0` | Do not write the example projects |
+| `ICS_UNINSTALL=1` | Remove the folder, the `PATH` entry or links, the launcher and the MCP registration (projects and example projects stay) |
 
 ```powershell
 $env:ICS_VERSION="v0.2.0"; irm https://github.com/geniuskey/ic-studio/releases/latest/download/install.ps1 | iex

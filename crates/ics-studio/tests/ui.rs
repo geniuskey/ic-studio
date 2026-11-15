@@ -75,6 +75,20 @@ fn welcome_screen() {
     scenario("01_welcome", false, None, "home", false);
 }
 
+/// The welcome screen's example cards open a topic's example project.
+#[test]
+fn open_example_from_welcome() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = app(LaunchArgs { project: None, demo: false, workspace: Some("home".into()), cell: None, run: false });
+    h.get_by_label("Analog").click();
+    h.run_steps(3);
+    let p = h.state().project().expect("example opened");
+    assert_eq!(p.name, "analog");
+    let cells: Vec<String> = p.all_cells().filter(|(r, _)| r.lib == "work").map(|(r, _)| r.cell).collect();
+    assert_eq!(cells, ["current_mirror", "ota2s", "ota5t"]);
+    assert!(p.root.is_none(), "opened unsaved");
+}
+
 #[test]
 fn project_home() {
     scenario("02_project_home", true, None, "home", false);

@@ -10,6 +10,9 @@
 # Options (environment variables):
 #   ICS_VERSION      release tag to install, e.g. v0.2.0 (default: latest)
 #   ICS_INSTALL_DIR  install folder (default: ~/.local/share/ic-studio)
+#   ICS_EXAMPLES_DIR where the example projects go (default: ~/Documents/IC Studio/Examples,
+#                    or ~/IC Studio/Examples without ~/Documents; examples already there are
+#                    kept); ICS_EXAMPLES=0 skips them
 #   ICS_UNINSTALL=1  remove what this script installed
 
 set -eu
@@ -55,7 +58,7 @@ uninstall() {
             echo "Removed the ic-studio MCP server from Claude Code"
         fi
     fi
-    echo "IC Studio is uninstalled. Projects and settings are kept."
+    echo "IC Studio is uninstalled. Projects, example projects and settings are kept."
 }
 
 main() {
@@ -129,6 +132,23 @@ EOF
     fi
 
     ics="$INSTALL_DIR/ics"
+    examples_status=""
+    if [ "${ICS_EXAMPLES:-1}" != "0" ]; then
+        if [ -n "${ICS_EXAMPLES_DIR:-}" ]; then
+            examples_dir="$ICS_EXAMPLES_DIR"
+        elif [ -d "$HOME/Documents" ]; then
+            examples_dir="$HOME/Documents/IC Studio/Examples"
+        else
+            examples_dir="$HOME/IC Studio/Examples"
+        fi
+        say "Writing the example projects to $examples_dir"
+        if "$ics" examples "$examples_dir" >/dev/null 2>&1; then
+            examples_status="$examples_dir (existing ones kept)"
+        else
+            examples_status="could not write to $examples_dir"
+        fi
+    fi
+
     mcp_status=""
     if has claude; then
         say "Registering the MCP server with Claude Code"
@@ -145,6 +165,9 @@ EOF
     echo "  Folder:   $INSTALL_DIR (linked into $BIN_DIR)"
     echo "  App:      ic-studio"
     echo "  CLI:      ics --help   (MCP server: ics mcp)"
+    if [ -n "$examples_status" ]; then
+        echo "  Examples: $examples_status"
+    fi
     if [ -n "$mcp_status" ]; then
         echo "  MCP:      $mcp_status"
     fi

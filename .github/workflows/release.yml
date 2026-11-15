@@ -38,15 +38,16 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev
       - name: Build
-        run: cargo build --release -p ics-studio -p ics-cli
+        run: cargo build --profile dist -p ics-studio -p ics-cli
       - name: Package
         shell: bash
         run: |
           mkdir -p dist pkg
           for b in ic-studio ics; do
-            cp "target/release/$b${{ matrix.ext }}" pkg/
-            cp "target/release/$b${{ matrix.ext }}" "dist/$b-${{ matrix.platform }}${{ matrix.ext }}"
+            cp "target/dist/$b${{ matrix.ext }}" pkg/
+            cp "target/dist/$b${{ matrix.ext }}" "dist/$b-${{ matrix.platform }}${{ matrix.ext }}"
           done
+          "target/dist/ics${{ matrix.ext }}" examples pkg/examples
           if [ "${{ runner.os }}" = "Windows" ]; then
             7z a "dist/ic-studio-${{ matrix.platform }}.zip" ./pkg/*
           else

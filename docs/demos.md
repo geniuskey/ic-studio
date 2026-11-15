@@ -10,6 +10,25 @@ or choose **Open demo project** on the welcome page. The demo uses the generic 1
 technology and lives in memory until you save it with `Ctrl+S`. To jump straight to a cell,
 add `--cell <name> --workspace <schematic|simulation|layout>`.
 
+## Example projects
+
+The same designs also come as smaller projects, one per topic. Open one with the
+**Examples** cards on the welcome page or **File > Open Example** (in memory, like the demo).
+The installer writes them as project folders to `Documents/IC Studio/Examples`; from the
+command line, `ics examples <DIR>` writes them (keeping existing ones unless `--force`) and
+`ics examples` lists them.
+
+| Topic | Cells |
+|---|---|
+| `getting_started` | `cmos_inverter`, `rc_lowpass`, `diode_clipper`, `devices` |
+| `analog` | `current_mirror`, `ota5t`, `ota2s` |
+| `digital` | `nand2`, `nor2`, `ring_osc5`, `full_adder` |
+| `memory_and_pixels` | `sram6t`, `sram_array`, `aps3t`, `pixel_array` |
+| `hierarchy` | `inv_chain`, `inv_array`, `inv_tiles` |
+
+Each topic also contains the cells its layouts place, e.g. `cmos_inverter` in `hierarchy`
+and the PCells in `pcells`.
+
 The second half of this page has [step-by-step demo scripts](#demo-scripts) for showing
 IC Studio to an audience.
 

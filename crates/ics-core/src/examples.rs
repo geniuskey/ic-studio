@@ -1107,8 +1107,132 @@ pub fn demo_project() -> Project {
     p
 }
 
+/// A themed example project: a subset of the demo cells (with the cells they place).
+#[derive(Debug, Clone, Copy)]
+pub struct Topic {
+    pub name: &'static str,
+    pub title: &'static str,
+    /// A few words for a card.
+    pub summary: &'static str,
+    pub description: &'static str,
+    pub cells: &'static [&'static str],
+}
+
+pub const TOPICS: [Topic; 5] = [
+    Topic {
+        name: "getting_started",
+        title: "Getting started",
+        summary: "Simulation, layout, PCells",
+        description: "Schematic entry and simulation (op, DC, AC, transient), a hand-drawn inverter layout, the parametric devices",
+        cells: &["cmos_inverter", "rc_lowpass", "diode_clipper", "devices"],
+    },
+    Topic {
+        name: "analog",
+        title: "Analog",
+        summary: "Current mirror and OTAs",
+        description: "Current mirror and OTAs: AC gain, matched placement with dummies, DRC, LVS and post-layout simulation",
+        cells: &["current_mirror", "ota5t", "ota2s"],
+    },
+    Topic {
+        name: "digital",
+        title: "Digital",
+        summary: "Gates, ring osc, auto P&R",
+        description: "Gates, a ring oscillator and a full adder placed and routed from its netlist",
+        cells: &["nand2", "nor2", "ring_osc5", "full_adder"],
+    },
+    Topic {
+        name: "memory_and_pixels",
+        title: "Memory and pixels",
+        summary: "SRAM and pixel arrays",
+        description: "6T SRAM and 3T pixel cells with 8 x 8 arrays (AREF), word / bit lines and supply straps",
+        cells: &["sram6t", "sram_array", "aps3t", "pixel_array"],
+    },
+    Topic {
+        name: "hierarchy",
+        title: "Hierarchy",
+        summary: "8192 inverters, 2 levels",
+        description: "Placed inverters up to 8192 instances in two levels of arrays, for hierarchy browsing and large-layout display",
+        cells: &["inv_chain", "inv_array", "inv_tiles"],
+    },
+];
+
+/// The example project of topic `name`: its cells of the demo project in library `work`, plus
+/// every cell their layouts place (from any library). Libraries left empty are dropped.
+pub fn topic_project(name: &str) -> Option<Project> {
+    let topic = TOPICS.iter().find(|t| t.name == name)?;
+    let mut p = demo_project();
+    p.name = topic.name.into();
+    p.description = format!("{}: {}", topic.title, topic.description);
+    let mut keep: HashSet<CellRef> = HashSet::new();
+    for c in topic.cells {
+        keep.extend(crate::hier::descendants(&p, &CellRef::new("work", *c)));
+    }
+    for lib in &mut p.libraries {
+        let name = lib.name.clone();
+        lib.cells.retain(|c| keep.contains(&CellRef::new(&name, &c.name)));
+    }
+    p.libraries.retain(|l| !l.cells.is_empty());
+    Some(p)
+}
+
+/// Writes every topic project to `dir/<topic>`; existing ones are skipped unless `overwrite`.
+/// Returns the topics written.
+pub fn write_topics(dir: &std::path::Path, overwrite: bool) -> crate::project::Result<Vec<&'static str>> {
+    let mut written = Vec::new();
+    for t in &TOPICS {
+        let root = dir.join(t.name);
+        if root.join(crate::project::MANIFEST).exists() && !overwrite {
+            continue;
+        }
+        let mut p = topic_project(t.name).expect("known topic");
+        p.save_as(&root)?;
+        written.push(t.name);
+    }
+    Ok(written)
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn topics_cover_the_demo_and_keep_dependencies() {
+        let demo = demo_project();
+        let work: HashSet<String> =
+            demo.libraries.iter().find(|l| l.name == "work").unwrap().cells.iter().map(|c| c.name.clone()).collect();
+        let listed: HashSet<String> = TOPICS.iter().flat_map(|t| t.cells.iter().map(|c| c.to_string())).collect();
+        assert_eq!(listed, work, "every demo cell is in exactly the topics");
+        let h = topic_project("hierarchy").unwrap();
+        assert!(h.cell(&CellRef::new("work", "cmos_inverter")).is_some(), "placed cells come along");
+        assert!(h.libraries.iter().all(|l| l.name != "pcells"));
+        let d = topic_project("digital").unwrap();
+        assert!(d.libraries.iter().any(|l| l.name == "pcells"));
+        assert!(d.cell(&CellRef::new("work", "sram6t")).is_none());
+        for t in &TOPICS {
+            let p = topic_project(t.name).unwrap();
+            for (r, c) in p.all_cells() {
+                for i in c.layout.iter().flat_map(|l| &l.instances) {
+                    assert!(p.cell(&i.cell).is_some(), "{}: {r} places missing {}", t.name, i.cell);
+                }
+            }
+        }
+        assert!(topic_project("nope").is_none());
+    }
+
+    #[test]
+    fn topics_round_trip_through_files() {
+        let dir = std::env::temp_dir().join(format!("ics-topics-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(write_topics(&dir, false).unwrap().len(), TOPICS.len());
+        assert!(write_topics(&dir, false).unwrap().is_empty(), "existing examples are kept");
+        let p = Project::open(&dir.join("analog")).unwrap();
+        assert!(p.cell(&CellRef::new("work", "ota2s")).and_then(|c| c.layout.as_ref()).is_some());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod flow_tests {
     use super::*;
     use crate::drc::run_tech_deck;
     use crate::extract::extract;

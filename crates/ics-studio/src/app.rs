@@ -76,6 +76,8 @@ impl Workspace {
 pub enum Command {
     NewProjectDialog,
     NewDemoProject,
+    /// Open the example project of a topic (`examples::TOPICS`), unsaved.
+    OpenExample(String),
     OpenProjectDialog,
     OpenProject(PathBuf),
     Save,
@@ -752,6 +754,19 @@ impl IcStudio {
                 self.set_project(p);
                 self.dirty = true;
                 self.info("Created demo project (unsaved) — use File ▸ Save to choose a folder".into());
+            }
+            Command::OpenExample(name) => {
+                if !self.guard_unsaved(Command::OpenExample(name.clone())) {
+                    return;
+                }
+                match examples::topic_project(&name) {
+                    Some(p) => {
+                        self.set_project(p);
+                        self.dirty = true;
+                        self.info(format!("Opened the {name} example (unsaved) — use File ▸ Save to choose a folder"));
+                    }
+                    None => self.warn(format!("No example named {name}")),
+                }
             }
             Command::OpenProjectDialog => {
                 if !self.guard_unsaved(Command::OpenProjectDialog) {
@@ -1814,6 +1829,13 @@ impl IcStudio {
                 if ui.button("New Demo Project").clicked() {
                     q.push(Command::NewDemoProject);
                 }
+                ui.menu_button("Open Example", |ui| {
+                    for t in &examples::TOPICS {
+                        if ui.button(t.title).on_hover_text(t.description).clicked() {
+                            q.push(Command::OpenExample(t.name.into()));
+                        }
+                    }
+                });
                 if ui.add(egui::Button::new("Open Project…").shortcut_text(theme::kbd("⌘O"))).clicked() {
                     q.push(Command::OpenProjectDialog);
                 }
@@ -2920,6 +2942,8 @@ impl IcStudio {
     }
 
     fn palette_commands(&self) -> Vec<(String, &'static str, Command)> {
+        let examples =
+            examples::TOPICS.iter().map(|t| (format!("Open example: {}", t.title), "", Command::OpenExample(t.name.into())));
         let mut v: Vec<(String, &'static str, Command)> = vec![
             ("Run simulation".into(), "F5", Command::RunSimulation),
             ("Save project".into(), "⌘S", Command::Save),
@@ -2982,6 +3006,7 @@ impl IcStudio {
             ("Add IC Studio MCP server to Claude Code".into(), "", Command::AddMcpToClaudeCode),
             ("Copy MCP server config".into(), "", Command::CopyMcpConfig),
         ];
+        v.extend(examples);
         if self.workspace == Workspace::Layout && self.active.is_some() {
             for (menu, items) in LayAction::MENUS {
                 for a in items.iter().flatten() {

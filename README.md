@@ -185,6 +185,7 @@ Linux needs the usual windowing libraries:
 
 ```sh
 ics new myproj --template demo
+ics examples ~/ics-examples                             # example projects, one per topic
 ics info myproj
 ics netlist myproj cmos_inverter
 ics sim myproj cmos_inverter --backend ngspice --json   # machine-readable results
@@ -212,7 +213,10 @@ All commands and options: [Command line](https://geniuskey.github.io/ic-studio/c
 ## Examples
 
 `--demo` (or `ics new myproj --template demo`) opens a project with these cells in the
-`work` library, all in the generic 180 nm technology:
+`work` library, all in the generic 180 nm technology. The same cells also come as smaller
+example projects by topic (getting started, analog, digital, memory and pixels, hierarchy):
+the **Examples** cards on the welcome page, `ics examples <DIR>`, and the installer, which
+writes them to `Documents/IC Studio/Examples`.
 
 | Cell | What it shows |
 |---|---|

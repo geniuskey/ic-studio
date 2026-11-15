@@ -9,6 +9,8 @@
 # Options (environment variables):
 #   ICS_VERSION      release tag to install, e.g. v0.2.0 (default: latest)
 #   ICS_INSTALL_DIR  install folder (default: %LOCALAPPDATA%\Programs\IC Studio)
+#   ICS_EXAMPLES_DIR where the example projects go (default: Documents\IC Studio\Examples;
+#                    examples already there are kept); ICS_EXAMPLES=0 skips them
 #   ICS_UNINSTALL=1  remove what this script installed
 
 & {
@@ -22,6 +24,9 @@
     $AppExe = Join-Path $Dir 'ic-studio.exe'
     $IcsExe = Join-Path $Dir 'ics.exe'
     $Shortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\IC Studio.lnk'
+    $ExamplesDir = if ($env:ICS_EXAMPLES_DIR) { $env:ICS_EXAMPLES_DIR } else {
+        Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'IC Studio\Examples'
+    }
 
     function Write-Step([string]$Message) { Write-Host "==> $Message" -ForegroundColor Cyan }
 
@@ -108,7 +113,7 @@ public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wP
                 Write-Host 'Removed the ic-studio MCP server from Claude Code'
             }
         }
-        Write-Host 'IC Studio is uninstalled. Projects and settings are kept.'
+        Write-Host 'IC Studio is uninstalled. Projects, example projects and settings are kept.'
         return
     }
 
@@ -196,6 +201,17 @@ public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wP
     $link.Description = 'IC Studio'
     $link.Save()
 
+    $examplesStatus = ''
+    if ($env:ICS_EXAMPLES -ne '0') {
+        Write-Step "Writing the example projects to $ExamplesDir"
+        $saved = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        & $IcsExe examples $ExamplesDir 2>&1 | Out-Null
+        $ok = ($LASTEXITCODE -eq 0)
+        $ErrorActionPreference = $saved
+        $examplesStatus = if ($ok) { "$ExamplesDir (existing ones kept)" } else { "could not write to $ExamplesDir" }
+    }
+
     $mcpStatus = ''
     if (Test-Claude) {
         Write-Step 'Registering the MCP server with Claude Code'
@@ -213,6 +229,9 @@ public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wP
     Write-Host "  Folder:   $Dir"
     Write-Host '  App:      ic-studio   (or Start Menu > IC Studio)'
     Write-Host '  CLI:      ics --help   (MCP server: ics mcp)'
+    if ($examplesStatus) {
+        Write-Host "  Examples: $examplesStatus"
+    }
     if ($mcpStatus) {
         Write-Host "  MCP:      $mcpStatus"
     }
