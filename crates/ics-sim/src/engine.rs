@@ -87,6 +87,9 @@ struct TranState {
     cap_c_end: Vec<f64>,
     ind_v: Vec<f64>,
     ind_i: Vec<f64>,
+    /// Terminal charges and currents of the charge-based devices.
+    qdev_q: Vec<[f64; 4]>,
+    qdev_i: Vec<[f64; 4]>,
 }
 
 #[derive(Clone, Copy)]
@@ -103,6 +106,8 @@ pub struct Engine {
     size: usize,
     caps: Vec<Cap>,
     inductors: Vec<usize>,
+    /// Charge-based MOS devices (BSIM4): element index and (d, g, s, b) nodes.
+    qdevs: Vec<(usize, [Node; 4])>,
     vt: f64,
     pub log: Vec<String>,
 }
@@ -202,6 +207,24 @@ fn mos_eval(m: &MosModel, w: f64, l: f64, mult: f64, vd: f64, vg: f64, vs: f64, 
     MosEval { id: sign * i, j, region, vth: sign * vth, gm, gds }
 }
 
+/// Terminal charges (d, g, s, b) of a BSIM4 MOS at terminal voltages `v` (d, g, s, b), times
+/// the multiplier `mult`, and their derivatives with respect to `v`; None for other models.
+fn mos_charges(model: &MosModel, mult: f64, v: [f64; 4]) -> Option<([f64; 4], [[f64; 4]; 4])> {
+    let inst = model.bsim4.as_ref()?.inst.as_deref()?;
+    let sign = if model.pmos { -1.0 } else { 1.0 };
+    let q = inst.charges(sign * (v[0] - v[2]), sign * (v[1] - v[2]), sign * (v[3] - v[2]));
+    let mut qs = [0.0; 4];
+    let mut c = [[0.0; 4]; 4];
+    for t in 0..4 {
+        qs[t] = sign * q[t].v * mult;
+        // d/d(vd, vg, vb) from (Vds, Vgs, Vbs); the source takes the rest. The polarity signs
+        // of charge and voltage cancel.
+        let [dd, dg, db] = q[t].d.map(|x| x * mult);
+        c[t] = [dd, dg, -(dd + dg + db), db];
+    }
+    Some((qs, c))
+}
+
 fn bsim4_eval(pmos: bool, inst: &crate::bsim4::Inst, mult: f64, vd: f64, vg: f64, vs: f64, vb: f64) -> MosEval {
     let sign = if pmos { -1.0 } else { 1.0 };
     let (mut d, g, mut s, b) = (sign * vd, sign * vg, sign * vs, sign * vb);
@@ -255,17 +278,12 @@ impl Engine {
         let temp = c.temp;
         for e in &mut c.elements {
             match e {
-                Element::M { name, model, w, l, .. } => {
+                Element::M { name, model, w, l, junctions: j, .. } => {
                     *model = model.at_temp(temp);
                     if let Some(b) = &mut model.bsim4 {
-                        let geo = crate::bsim4::Geometry { w: *w, l: *l, nf: b.nf };
+                        let geo = crate::bsim4::Geometry { w: *w, l: *l, nf: b.nf, ad: j.ad, as_: j.as_, pd: j.pd, ps: j.ps };
                         let inst =
                             crate::bsim4::Inst::new(&b.card, geo, temp).map_err(|e| SimError::Engine(format!("{name}: {e}")))?;
-                        // Overlap capacitances as the engine applies them: per drawn width and
-                        // per effective length.
-                        model.cgso = inst.cgso * inst.weff_cv * b.nf / *w;
-                        model.cgdo = inst.cgdo * inst.weff_cv * b.nf / *w;
-                        model.cgbo = inst.cgbo * inst.leff_cv / *l;
                         b.inst = Some(std::sync::Arc::new(inst));
                     }
                 }
@@ -278,6 +296,7 @@ impl Engine {
         let mut size = nn;
         let mut caps = vec![];
         let mut inductors = vec![];
+        let mut qdevs = vec![];
         for (i, e) in c.elements.iter().enumerate() {
             match e {
                 Element::V { .. } => {
@@ -300,6 +319,8 @@ impl Engine {
                         diode: (model.tt > 0.0).then(|| model.clone()),
                     },
                 }),
+                // BSIM4: gate, overlap and junction charges come from the model.
+                Element::M { d, g, s, b, model, .. } if model.bsim4.is_some() => qdevs.push((i, [*d, *g, *s, *b])),
                 Element::M { d, g, s, b, model, w, l, m, junctions: j, .. } => {
                     for (t, area, perim) in [(*d, j.ad, j.pd), (*s, j.as_, j.ps)] {
                         let terms = [(model.cj * area * m, model.mj), (model.cjsw * perim * m, model.mjsw)];
@@ -327,7 +348,7 @@ impl Engine {
             return Err(SimError::Engine("circuit has no nodes besides ground".into()));
         }
         let vt = BOLTZMANN * (c.temp + 273.15) / CHARGE;
-        Ok(Self { c, nn, branch, size, caps, inductors, vt, log: vec![] })
+        Ok(Self { c, nn, branch, size, caps, inductors, qdevs, vt, log: vec![] })
     }
 
     fn v(&self, x: &[f64], n: Node) -> f64 {
@@ -496,8 +517,47 @@ impl Engine {
                 cond(&mut m, cp.a, cp.b, geq);
                 cur(&mut rhs, cp.a, cp.b, i - geq * v);
             }
+            for (k, (_, nodes)) in self.qdevs.iter().enumerate() {
+                let (q, c) = self.qdev_qc(k, x);
+                let f = match method {
+                    Integ::Trapezoidal => 2.0 / h,
+                    Integ::BackwardEuler => 1.0 / h,
+                };
+                let vs = nodes.map(|n| self.v(x, n));
+                for t in 0..4 {
+                    let Some(r) = idx(nodes[t]) else { continue };
+                    let i = Self::charge_current(method, h, q[t], state.qdev_q[k][t], state.qdev_i[k][t]);
+                    let mut lin = i;
+                    for j in 0..4 {
+                        let g = f * c[t][j];
+                        lin -= g * vs[j];
+                        if let Some(col) = idx(nodes[j]) {
+                            m.add(r, col, g);
+                        }
+                    }
+                    rhs[r] -= lin;
+                }
+            }
         }
         (m, rhs)
+    }
+
+    /// Current into a terminal whose charge goes from `q0` (with current `i0`) to `q` over a step of `h`.
+    fn charge_current(method: Integ, h: f64, q: f64, q0: f64, i0: f64) -> f64 {
+        match method {
+            Integ::Trapezoidal => 2.0 / h * (q - q0) - i0,
+            Integ::BackwardEuler => (q - q0) / h,
+        }
+    }
+
+    /// Terminal charges (d, g, s, b) of charge-based device `k` at `x` and their derivatives with
+    /// respect to the terminal voltages (d, g, s, b).
+    fn qdev_qc(&self, k: usize, x: &[f64]) -> ([f64; 4], [[f64; 4]; 4]) {
+        let (ei, nodes) = self.qdevs[k];
+        match &self.c.elements[ei] {
+            Element::M { model, m, .. } => mos_charges(model, *m, nodes.map(|n| self.v(x, n))).unwrap_or_default(),
+            _ => Default::default(),
+        }
     }
 
     /// Current through a cap holding charge `q` (capacitance `c`) at the end of a step of `h`,
@@ -606,7 +666,14 @@ impl Engine {
                 Element::M { name, d, g, s, b, model, w, l, m, .. } => {
                     let v = |n| self.v(x, n);
                     let ev = mos_eval(model, *w, *l, *m, v(*d), v(*g), v(*s), v(*b));
-                    let [cgs, cgd, cgb] = meyer(model, *w, *l, *m, v(*d), v(*g), v(*s), v(*b));
+                    let [cgs, cgd, cgb] = match mos_charges(model, *m, [v(*d), v(*g), v(*s), v(*b)]) {
+                        // Gate capacitances: -dQg/dV of the other terminals (overlaps included).
+                        Some((_, c)) => [-c[1][2], -c[1][0], -c[1][3]],
+                        None => {
+                            let [cgs, cgd, cgb] = meyer(model, *w, *l, *m, v(*d), v(*g), v(*s), v(*b));
+                            [cgs + model.cgso * w * m, cgd + model.cgdo * w * m, cgb + model.cgbo * model.leff(*l) * m]
+                        }
+                    };
                     out.push(DeviceOp {
                         name: name.clone(),
                         region: Some(ev.region.to_string()),
@@ -617,9 +684,9 @@ impl Engine {
                             ("vth".into(), ev.vth),
                             ("gm".into(), ev.gm),
                             ("gds".into(), ev.gds),
-                            ("cgs".into(), cgs + model.cgso * w * m),
-                            ("cgd".into(), cgd + model.cgdo * w * m),
-                            ("cgb".into(), cgb + model.cgbo * model.leff(*l) * m),
+                            ("cgs".into(), cgs),
+                            ("cgd".into(), cgd),
+                            ("cgb".into(), cgb),
                         ],
                     });
                 }
@@ -771,6 +838,17 @@ impl Engine {
         }
         for (cp, c) in self.caps.iter().zip(caps_at_op) {
             y(&mut m, cp.a, cp.b, Complex64::new(0.0, w * c));
+        }
+        for (k, (_, nodes)) in self.qdevs.iter().enumerate() {
+            let (_, c) = self.qdev_qc(k, x0);
+            for t in 0..4 {
+                let Some(r) = idx(nodes[t]) else { continue };
+                for j in 0..4 {
+                    if let Some(col) = idx(nodes[j]) {
+                        m.add(r, col, Complex64::new(0.0, w * c[t][j]));
+                    }
+                }
+            }
         }
         (m, rhs)
     }
@@ -935,6 +1013,8 @@ impl Engine {
             cap_i: vec![0.0; self.caps.len()],
             ind_v: vec![0.0; self.inductors.len()],
             ind_i: self.inductors.iter().map(|&i| x[self.branch[i].unwrap()]).collect(),
+            qdev_q: (0..self.qdevs.len()).map(|k| self.qdev_qc(k, &x).0).collect(),
+            qdev_i: vec![[0.0; 4]; self.qdevs.len()],
         };
         let mut ds = self.new_dataset("tran", "Transient", Some(("time", VecKind::Time)));
         self.push_point(&mut ds, Some(0.0), &x);
@@ -1007,6 +1087,13 @@ impl Engine {
                 if let CapKind::Meyer { elem, part } = cp.kind {
                     state.cap_c[k] = self.meyer_at(elem, part, &xn);
                 }
+            }
+            for k in 0..self.qdevs.len() {
+                let (q, _) = self.qdev_qc(k, &xn);
+                for t in 0..4 {
+                    state.qdev_i[k][t] = Self::charge_current(method, hs, q[t], state.qdev_q[k][t], state.qdev_i[k][t]);
+                }
+                state.qdev_q[k] = q;
             }
             for (k, &ei) in self.inductors.iter().enumerate() {
                 if let Element::L { a, b, .. } = &self.c.elements[ei] {

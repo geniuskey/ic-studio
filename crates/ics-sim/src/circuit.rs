@@ -571,7 +571,6 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
             for w in card.warnings() {
                 c.warnings.push(format!("model {name}: BSIM4 {w} is not evaluated by the built-in engine"));
             }
-            c.warnings.push(format!("model {name}: BSIM4 gate charges are approximated by Meyer capacitances"));
             let pmos = ty == "pmos";
             let m = MosModel {
                 pmos,

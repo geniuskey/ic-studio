@@ -201,6 +201,47 @@ pub struct Geometry {
     pub l: f64,
     /// Number of fingers.
     pub nf: f64,
+    /// Drain / source junction area (m²) and perimeter (m); 0 when not given (BSIM4 then
+    /// derives them from the finger layout).
+    pub ad: f64,
+    pub as_: f64,
+    pub pd: f64,
+    pub ps: f64,
+}
+
+impl Geometry {
+    pub fn new(w: f64, l: f64, nf: f64) -> Geometry {
+        Geometry { w, l, nf, ad: 0.0, as_: 0.0, pd: 0.0, ps: 0.0 }
+    }
+}
+
+/// Zero-bias capacitances (F) and grading of one source / drain junction: bottom, sidewall
+/// and gate-edge sidewall.
+#[derive(Debug, Clone, PartialEq, Default)]
+struct Junction {
+    cz: [f64; 3],
+    mj: [f64; 3],
+    pb: [f64; 3],
+}
+
+impl Junction {
+    /// Depletion charge at junction voltage `v` (bulk minus source / drain).
+    fn charge(&self, v: D) -> D {
+        if v.v < 0.0 {
+            let mut q = D::c(0.0);
+            for k in 0..3 {
+                if self.cz[k] > 0.0 {
+                    let arg = 1.0 - v / self.pb[k];
+                    q = q + self.pb[k] * self.cz[k] * (1.0 - arg.powf(1.0 - self.mj[k])) / (1.0 - self.mj[k]);
+                }
+            }
+            q
+        } else {
+            let t0: f64 = self.cz.iter().sum();
+            let t1 = v * (0..3).map(|k| self.cz[k] * self.mj[k] / self.pb[k]).sum::<f64>();
+            v * (t0 + 0.5 * t1)
+        }
+    }
 }
 
 /// A BSIM4 device at one size and temperature: the size- and temperature-dependent parameters,
@@ -303,11 +344,44 @@ pub struct Inst {
     vtl: Option<f64>,
     tfactor: f64,
     vbsc: f64,
-    /// Overlap capacitances per width (F/m, gate-source and gate-drain including the fringe)
-    /// and gate-bulk per length (F/m).
-    pub cgso: f64,
-    pub cgdo: f64,
-    pub cgbo: f64,
+    /// Overlap capacitances (F): gate-source and gate-drain per finger including the fringe,
+    /// gate-bulk for all fingers; with the bias-dependent overlap parameters.
+    cgso: f64,
+    cgdo: f64,
+    cgbo: f64,
+    cgsl: f64,
+    cgdl: f64,
+    ckappas: f64,
+    ckappad: f64,
+    // C-V model.
+    xpart: f64,
+    cvchargemod: i32,
+    noff: f64,
+    voffcv: f64,
+    voffcbncv: f64,
+    mstarcv: f64,
+    acde: f64,
+    moin: f64,
+    ldeb: f64,
+    abulk_cv_factor: f64,
+    ketac: f64,
+    vfbzb: f64,
+    jct_s: Junction,
+    jct_d: Junction,
+}
+
+/// Bias-dependent quantities shared by the current and charge models.
+struct Front {
+    vbseff: D,
+    sqrt_phis: D,
+    xdep: D,
+    lpe_vb: f64,
+    vth_narrow_w: f64,
+    n: D,
+    vth: D,
+    vgs_eff: D,
+    vgst: D,
+    vgsteff: D,
 }
 
 /// Drain current of a BSIM4 device at one bias, in the device's own frame (NMOS polarity,
@@ -539,17 +613,87 @@ impl Inst {
             vbsc = vbm;
         }
 
-        let cgdl = c.g("cgdl", 0.0);
-        let cgsl = c.g("cgsl", 0.0);
         let dlc_model = c.g("dlc", lint);
         let ov = |given: &str, cgxl: f64| match c.p.get(given) {
             Some(v) => *v,
             None if c.given("dlc") && dlc_model > 0.0 => dlc_model * coxe - cgxl,
             None => 0.6 * c.g("xj", 0.15e-6) * coxe,
         };
-        let cgso = ov("cgso", cgsl) + cf;
-        let cgdo = ov("cgdo", cgdl) + cf;
-        let cgbo = c.g("cgbo", 2.0 * dwc_model * coxe) * nf;
+        let cgso = (ov("cgso", c.g("cgsl", 0.0)) + cf) * weff_cv;
+        let cgdo = (ov("cgdo", c.g("cgdl", 0.0)) + cf) * weff_cv;
+        let cgbo = c.g("cgbo", 2.0 * dwc_model * coxe) * leff_cv * nf;
+
+        // C-V: flat-band voltage at zero bias, charge centroid, Vdsat for C-V.
+        let tmp2 = factor1 * xdep0.sqrt();
+        let t8 = b("dvt0w", 0.0) * theta(b("dvt1w", 5.3e6) * weff * leff / tmp2) * (vbi - phi);
+        let t9 = b("dvt0", 2.2) * theta(b("dvt1", 0.53) * leff / tmp2) * (vbi - phi);
+        let t4 = toxe * phi / (weff + b("w0", 2.5e-6));
+        let t3 = if tempmod < 2 {
+            (b("kt1", -0.11) + b("kt1l", 0.0) / leff) * (tratio - 1.0)
+        } else {
+            -b("kt1", -0.11) * (tratio - 1.0)
+        };
+        let t5 = k1ox * ((1.0 + b("lpe0", 1.74e-7) / leff).sqrt() - 1.0) * sqrt_phi + t3;
+        let vfbzb = -t8 - t9 + b("k3", 80.0) * t4 + t5 - phi - k1 * sqrt_phi + ty * vth0;
+        let voffcv = b("voffcv", 0.0) * (1.0 + b("tvoffcv", 0.0) * del_temp);
+
+        // Source / drain junctions: geometry from the instance or the finger layout.
+        let weff_cj_nf = weff_cj * nf;
+        let (dmcg, dmci, dmdg) = {
+            let dmcg = c.g("dmcg", 0.0);
+            let dmcgt = c.g("dmcgt", 0.0);
+            (dmcg - dmcgt, c.g("dmci", dmcg), c.g("dmdg", 0.0) - dmcgt)
+        };
+        let _ = dmdg;
+        let (end_d, int_d, end_s, int_s) = {
+            let nfi = nf as i64;
+            if nfi % 2 != 0 {
+                let i = 2.0 * ((nf - 1.0) / 2.0).max(0.0);
+                (1.0, i, 1.0, i)
+            } else if c.g("min", 0.0) == 1.0 {
+                (2.0, 2.0 * (nf / 2.0 - 1.0).max(0.0), 0.0, nf)
+            } else {
+                (0.0, nf, 2.0, 2.0 * (nf / 2.0 - 1.0).max(0.0))
+            }
+        };
+        let p_iso = 2.0 * (dmcg + dmci) + weff_cj;
+        let p_sha = 2.0 * dmcg;
+        let a_iso = (dmcg + dmci) * weff_cj;
+        let a_sha = dmcg * weff_cj;
+        let permod = c.g("permod", 1.0);
+        let perim = |given: f64, end: f64, int: f64| {
+            if given > 0.0 {
+                if permod == 0.0 { given } else { (given - weff_cj_nf).max(0.0) }
+            } else {
+                end * p_iso + int * p_sha
+            }
+        };
+        let area = |given: f64, end: f64, int: f64| if given > 0.0 { given } else { end * a_iso + int * a_sha };
+        let (as_eff, ps_eff) = (area(geo.as_, end_s, int_s), perim(geo.ps, end_s, int_s));
+        let (ad_eff, pd_eff) = (area(geo.ad, end_d, int_d), perim(geo.pd, end_d, int_d));
+        let cap_t = |cj: f64, tc: &str| cj * (1.0 + c.g(tc, 0.0) * del_temp).max(0.0);
+        let pb_t = |pb: f64, tp: &str| (pb - c.g(tp, 0.0) * del_temp).max(0.01);
+        let cjs = c.g("cjs", 5.0e-4);
+        let cjsws = c.g("cjsws", 5.0e-10);
+        let cjswgs = c.g("cjswgs", cjsws);
+        let (mjs, mjsws) = (c.g("mjs", 0.5), c.g("mjsws", 0.33));
+        let mjswgs = c.g("mjswgs", mjsws);
+        let (pbs, pbsws) = (c.g("pbs", 1.0), c.g("pbsws", 1.0));
+        let pbswgs = c.g("pbswgs", pbsws);
+        let jct_s = Junction {
+            cz: [cap_t(cjs, "tcj") * as_eff, cap_t(cjsws, "tcjsw") * ps_eff, cap_t(cjswgs, "tcjswg") * weff_cj_nf],
+            mj: [mjs, mjsws, mjswgs],
+            pb: [pb_t(pbs, "tpb"), pb_t(pbsws, "tpbsw"), pb_t(pbswgs, "tpbswg")],
+        };
+        let jct_d = Junction {
+            cz: [
+                cap_t(c.g("cjd", cjs), "tcj") * ad_eff,
+                cap_t(c.g("cjswd", cjsws), "tcjsw") * pd_eff,
+                cap_t(c.g("cjswgd", cjswgs), "tcjswg") * weff_cj_nf,
+            ],
+            mj: [c.g("mjd", mjs), c.g("mjswd", mjsws), c.g("mjswgd", mjswgs)],
+            pb: [pb_t(c.g("pbd", pbs), "tpb"), pb_t(c.g("pbswd", pbsws), "tpbsw"), pb_t(c.g("pbswgd", pbswgs), "tpbswg")],
+        };
 
         Ok(Inst {
             ty,
@@ -651,6 +795,24 @@ impl Inst {
             cgso,
             cgdo,
             cgbo,
+            cgsl: b("cgsl", 0.0),
+            cgdl: b("cgdl", 0.0),
+            ckappas: b("ckappas", 0.6),
+            ckappad: b("ckappad", c.g("ckappas", 0.6)),
+            xpart: c.g("xpart", 0.0),
+            cvchargemod: c.g("cvchargemod", 0.0) as i32,
+            noff: b("noff", 1.0),
+            voffcv,
+            voffcbncv: voffcv + c.g("voffcvl", 0.0) / leff,
+            mstarcv: 0.5 + b("minvcv", 0.0).atan() / PI,
+            acde: b("acde", 1.0) * (ndep / 2.0e16).powf(-0.25),
+            moin: b("moin", 15.0),
+            ldeb: (epssub * vtm0 / (Q * ndep * 1.0e6)).sqrt() / 3.0,
+            abulk_cv_factor: 1.0 + (b("clc", 0.1e-6) / leff_cv).powf(b("cle", 0.6)),
+            ketac: b("ketac", c.g("keta", -0.047)),
+            vfbzb,
+            jct_s,
+            jct_d,
         })
     }
 
@@ -669,7 +831,8 @@ impl Inst {
         Eval { ids: ids * self.nf, vth, vdsat, vgsteff }
     }
 
-    fn ids(&self, vds: D, vgs: D, vbs: D) -> (D, f64, f64, f64) {
+    /// Body bias, threshold voltage and effective gate drive, shared by current and charge.
+    fn front(&self, vds: D, vgs: D, vbs: D) -> Front {
         let p = self;
         let epssub = EPSSI;
         let toxe = p.toxe;
@@ -737,9 +900,16 @@ impl Inst {
         let vgs_eff = poly_depletion(p.vfb + p.phi, p.ngate, EPSSI, p.coxe, vgs);
         let vgst = vgs_eff - vth;
 
-        // Vgsteff.
+        let vgsteff = p.vgsteff(vgst, n, p.mstar, p.voffcbn);
+        Front { vbseff, sqrt_phis, xdep, lpe_vb, vth_narrow_w, n, vth, vgs_eff, vgst, vgsteff }
+    }
+
+    /// The smooth effective gate drive from `vgst` (`mstar` / `voffcbn`: the DC or C-V set).
+    fn vgsteff(&self, vgst: D, n: D, mstar: f64, voffcbn: f64) -> D {
+        let p = self;
+        let vtm = p.vtm;
         let t0 = n * vtm;
-        let t1 = p.mstar * vgst;
+        let t1 = mstar * vgst;
         let t2 = t1 / t0;
         let t10 = if t2.v > EXP_THRESHOLD {
             t1
@@ -748,16 +918,182 @@ impl Inst {
         } else {
             n * (vtm * (1.0 + t2.exp()).ln())
         };
-        let t1 = p.voffcbn - (1.0 - p.mstar) * vgst;
+        let t1 = voffcbn - (1.0 - mstar) * vgst;
         let t2 = t1 / t0;
         let t9 = if t2.v < -EXP_THRESHOLD {
-            p.mstar + n * (p.coxe * MIN_EXP / p.cdep0)
+            mstar + n * (p.coxe * MIN_EXP / p.cdep0)
         } else if t2.v > EXP_THRESHOLD {
-            p.mstar + n * (p.coxe * MAX_EXP / p.cdep0)
+            mstar + n * (p.coxe * MAX_EXP / p.cdep0)
         } else {
-            p.mstar + n * (p.coxe / p.cdep0 * t2.exp())
+            mstar + n * (p.coxe / p.cdep0 * t2.exp())
         };
-        let vgsteff = t10 / t9;
+        t10 / t9
+    }
+
+    /// Bulk charge factor at zero gate drive (before its lower clamp), with the terms the
+    /// gate-drive correction reuses: (Abulk0, T1, T5).
+    fn abulk0(&self, sqrt_phis: D, xdep: D, lpe_vb: f64, vth_narrow_w: f64) -> (D, D, D) {
+        let p = self;
+        let t9 = 0.5 * p.k1ox * lpe_vb / sqrt_phis;
+        let t1 = t9 + p.k2ox - p.k3b * vth_narrow_w;
+        let t9 = (p.xj * xdep).sqrt();
+        let t5 = p.leff / (p.leff + 2.0 * t9);
+        let t2 = p.a0 * t5 + p.b0 / (p.weff + p.b1);
+        (1.0 + t1 * t2, t1, t5)
+    }
+
+    /// Terminal charges (C) at `vds`, `vgs`, `vbs` in the device's polarity (voltages already
+    /// multiplied by the type, `vds` of either sign): drain, gate, source, bulk, with their
+    /// derivatives with respect to (Vds, Vgs, Vbs). Intrinsic charge from the charge-thickness
+    /// model (`capmod=2`), bias-dependent overlap charges and the junction depletion charges.
+    pub fn charges(&self, vds: f64, vgs: f64, vbs: f64) -> [D; 4] {
+        let (vds, vgs, vbs) = (D::var(vds, 0), D::var(vgs, 1), D::var(vbs, 2));
+        let reverse = vds.v < 0.0;
+        let (qg_i, qb_i, qd_i) = if self.xpart < 0.0 {
+            (D::c(0.0), D::c(0.0), D::c(0.0))
+        } else if reverse {
+            self.intrinsic(-vds, vgs - vds, vbs - vds)
+        } else {
+            self.intrinsic(vds, vgs, vbs)
+        };
+        let qgdo = overlap(vgs - vds, self.cgdo, self.weff_cv * self.cgdl, self.ckappad) * self.nf;
+        let qgso = overlap(vgs, self.cgso, self.weff_cv * self.cgsl, self.ckappas) * self.nf;
+        let qgb = self.cgbo * (vgs - vbs);
+        let qgate = qg_i + qgdo + qgso + qgb;
+        let qbulk = qb_i - qgb;
+        let (qdrn, qsrc) = if reverse {
+            let qs = qd_i - qgso;
+            (-(qgate + qbulk + qs), qs)
+        } else {
+            let qd = qd_i - qgdo;
+            (qd, -(qgate + qbulk + qd))
+        };
+        let qbs = self.jct_s.charge(vbs);
+        let qbd = self.jct_d.charge(vbs - vds);
+        [qdrn - qbd, qgate, qsrc - qbs, qbulk + qbd + qbs]
+    }
+
+    /// Intrinsic (gate, bulk, drain) charges of `capmod=2` in the forward frame (`vds >= 0`).
+    fn intrinsic(&self, vds: D, vgs: D, vbs: D) -> (D, D, D) {
+        const DELTA_3: f64 = 0.02;
+        const DELTA_4: f64 = 0.02;
+        let p = self;
+        let epssub = EPSSI;
+        let vtm = p.vtm;
+        let f = p.front(vds, vgs, vbs);
+        let vbseff_cv = f.vbseff;
+        let vgs_eff = f.vgs_eff;
+        let cox_wl = p.coxe * p.weff_cv * p.leff_cv * p.nf;
+        let vgsteff = if p.cvchargemod == 0 {
+            let t0 = vtm * (f.n * p.noff);
+            let x = (f.vgst - p.voffcv) / t0;
+            if x.v > EXP_THRESHOLD {
+                f.vgst - p.voffcv
+            } else if x.v < -EXP_THRESHOLD {
+                t0 * (1.0 + MIN_EXP).ln()
+            } else {
+                t0 * (1.0 + x.exp()).ln()
+            }
+        } else {
+            p.vgsteff(f.vgst, f.n, p.mstarcv, p.voffcbncv)
+        };
+
+        // Accumulation and depletion charges.
+        let v3 = p.vfbzb - vgs_eff + vbseff_cv - DELTA_3;
+        let t0 =
+            if p.vfbzb <= 0.0 { (v3 * v3 - 4.0 * DELTA_3 * p.vfbzb).sqrt() } else { (v3 * v3 + 4.0 * DELTA_3 * p.vfbzb).sqrt() };
+        let vfbeff = p.vfbzb - 0.5 * (v3 + t0);
+        let cox = p.coxp;
+        let tox = 1.0e8 * p.toxp;
+        let tmp = (vgs_eff - vbseff_cv - p.vfbzb) / tox * p.acde;
+        let tcen = if tmp.v > -EXP_THRESHOLD && tmp.v < EXP_THRESHOLD {
+            p.ldeb * tmp.exp()
+        } else if tmp.v <= -EXP_THRESHOLD {
+            D::c(p.ldeb * MIN_EXP)
+        } else {
+            D::c(p.ldeb * MAX_EXP)
+        };
+        let link = 1.0e-3 * p.toxp;
+        let v3 = p.ldeb - tcen - link;
+        let v4 = (v3 * v3 + 4.0 * link * p.ldeb).sqrt();
+        let tcen = p.ldeb - 0.5 * (v3 + v4);
+        let ccen = epssub / tcen;
+        let coxeff = cox * ccen / (cox + ccen);
+        let cox_wl_cen = cox_wl * coxeff / p.coxe;
+        let qac0 = cox_wl_cen * (vfbeff - p.vfbzb);
+        let t0 = 0.5 * p.k1ox;
+        let t3 = vgs_eff - vfbeff - vbseff_cv - vgsteff;
+        let t1 = if p.k1ox == 0.0 {
+            D::c(0.0)
+        } else if t3.v < 0.0 {
+            t0 + t3 / p.k1ox
+        } else {
+            (t0 * t0 + t3).sqrt()
+        };
+        let qsub0 = cox_wl_cen * p.k1ox * (t1 - t0);
+
+        // Gate-bias dependent surface potential.
+        let (denomi, t0) = if p.k1ox <= 0.0 {
+            (0.25 * p.moin * vtm, 0.5 * p.sqrt_phi)
+        } else {
+            (p.moin * vtm * p.k1ox * p.k1ox, p.k1ox * p.sqrt_phi)
+        };
+        let t1 = 2.0 * t0 + vgsteff;
+        let delta_phi = vtm * (1.0 + t1 * vgsteff / denomi).ln();
+        let t0 = vgsteff - delta_phi - 0.001;
+        let t1 = (t0 * t0 + vgsteff * 0.004).sqrt();
+        let vgdp = 0.5 * (t0 + t1);
+
+        // Inversion charge with the charge centroid at this gate drive.
+        let t0 = (vgsteff + p.vtfbphi2) / (2.0 * tox);
+        let tmp = (p.bdos * 0.7 * t0.ln()).exp();
+        let tcen = p.ados * 1.9e-9 / (1.0 + tmp);
+        let ccen = epssub / tcen;
+        let coxeff = cox * ccen / (cox + ccen);
+        let cox_wl_cen = cox_wl * coxeff / p.coxe;
+        let (abulk0, _, _) = p.abulk0(f.sqrt_phis, f.xdep, f.lpe_vb, f.vth_narrow_w);
+        let abulk0 = if abulk0.v < 0.1 { (0.2 - abulk0) / (3.0 - 20.0 * abulk0) } else { abulk0 };
+        let t2 = p.ketac * f.vbseff;
+        let kf = if t2.v >= -0.9 { 1.0 / (1.0 + t2) } else { (17.0 + 20.0 * t2) / (0.8 + t2) };
+        let abulk_cv = abulk0 * kf * p.abulk_cv_factor;
+        let vdsat_cv = vgdp / abulk_cv;
+        let t0 = vdsat_cv - vds - DELTA_4;
+        let t1 = (t0 * t0 + 4.0 * DELTA_4 * vdsat_cv).sqrt();
+        let mut vdseff_cv = if t0.v >= 0.0 { vdsat_cv - 0.5 * (t0 + t1) } else { vdsat_cv * (1.0 - 2.0 * DELTA_4 / (t1 - t0)) };
+        if vds.v == 0.0 {
+            vdseff_cv = D { v: 0.0, d: [vdseff_cv.d[0], 0.0, 0.0] };
+        }
+        let t0 = abulk_cv * vdseff_cv;
+        let t1 = vgdp;
+        let t2 = 12.0 * (t1 - 0.5 * t0 + 1.0e-20);
+        let t3 = t0 / t2;
+        let mut qgate = cox_wl_cen * (t1 - t0 * (0.5 - t3));
+        let mut qbulk = cox_wl_cen * (1.0 - abulk_cv) * (0.5 * vdseff_cv - t0 * vdseff_cv / t2);
+        let qsrc = if p.xpart > 0.5 {
+            -cox_wl_cen * (t1 / 2.0 + t0 / 4.0 - 0.5 * t0 * t0 / t2)
+        } else if p.xpart < 0.5 {
+            let t2 = t2 / 12.0;
+            let t3 = 0.5 * cox_wl_cen / (t2 * t2);
+            let t4 = t1 * (2.0 * t0 * t0 / 3.0 + t1 * (t1 - 4.0 * t0 / 3.0)) - 2.0 * t0 * t0 * t0 / 15.0;
+            -(t3 * t4)
+        } else {
+            -0.5 * qgate
+        };
+        qgate = qgate + qac0 + qsub0 - qbulk;
+        qbulk = qbulk - (qac0 + qsub0);
+        let qdrn = -(qgate + qbulk + qsrc);
+        (qgate, qbulk, qdrn)
+    }
+
+    fn ids(&self, vds: D, vgs: D, vbs: D) -> (D, f64, f64, f64) {
+        let p = self;
+        let epssub = EPSSI;
+        let toxe = p.toxe;
+        let vtm = p.vtm;
+        let leff = p.leff;
+
+        let Front { vbseff, sqrt_phis, xdep, lpe_vb, vth_narrow_w, n: _, vth, vgs_eff: _, vgst: _, vgsteff } =
+            self.front(vds, vgs, vbs);
 
         // Effective width and source/drain resistance.
         let t9 = sqrt_phis - p.sqrt_phi;
@@ -774,13 +1110,8 @@ impl Inst {
         };
 
         // Bulk charge factor.
-        let t9 = 0.5 * p.k1ox * lpe_vb / sqrt_phis;
-        let t1 = t9 + p.k2ox - p.k3b * vth_narrow_w;
-        let t9 = (p.xj * xdep).sqrt();
-        let t5 = leff / (leff + 2.0 * t9);
-        let t2 = p.a0 * t5 + p.b0 / (p.weff + p.b1);
+        let (abulk0, t1, t5) = self.abulk0(sqrt_phis, xdep, lpe_vb, vth_narrow_w);
         let t7 = t5 * t5 * t5;
-        let abulk0 = 1.0 + t1 * t2;
         let dabulk_dvg = -t1 * (p.ags * p.a0 * t7);
         let mut abulk = abulk0 + dabulk_dvg * vgsteff;
         if abulk.v < 0.1 {
@@ -952,6 +1283,17 @@ impl Inst {
     }
 }
 
+/// Bias-dependent overlap charge at gate voltage `v` over the source / drain (`capmod` 1, 2):
+/// `cgo` the constant part, `cgxl` the bias-dependent part (both F, per finger).
+fn overlap(v: D, cgo: f64, cgxl: f64, ckappa: f64) -> D {
+    const DELTA_1: f64 = 0.02;
+    let t0 = v + DELTA_1;
+    let t1 = (t0 * t0 + 4.0 * DELTA_1).sqrt();
+    let t2 = 0.5 * (t0 - t1);
+    let t4 = (1.0 - 4.0 * t2 / ckappa).sqrt();
+    (cgo + cgxl) * v - cgxl * (t2 + 0.5 * ckappa * (t4 - 1.0))
+}
+
 /// `exp` limited as by the BSIM4 `DEXP` macro.
 fn dexp(x: D) -> D {
     if x.v > EXP_THRESHOLD {
@@ -1003,7 +1345,7 @@ mod tests {
 
     #[test]
     fn derivatives_match_finite_differences() {
-        let inst = Inst::new(&nmos(), Geometry { w: 1e-6, l: 0.1e-6, nf: 1.0 }, 27.0).unwrap();
+        let inst = Inst::new(&nmos(), Geometry::new(1e-6, 0.1e-6, 1.0), 27.0).unwrap();
         let h = 1e-6;
         for (vds, vgs, vbs) in [(0.05, 0.8, 0.0), (1.0, 1.0, -0.3), (0.6, 0.2, 0.0), (1.2, 0.6, -0.5), (0.0, 1.0, 0.0)] {
             let e = inst.eval(vds, vgs, vbs);
@@ -1022,7 +1364,7 @@ mod tests {
 
     #[test]
     fn current_behaves_like_a_transistor() {
-        let inst = Inst::new(&nmos(), Geometry { w: 1e-6, l: 0.1e-6, nf: 1.0 }, 27.0).unwrap();
+        let inst = Inst::new(&nmos(), Geometry::new(1e-6, 0.1e-6, 1.0), 27.0).unwrap();
         let id = |vds, vgs| inst.eval(vds, vgs, 0.0).ids.v;
         // Off, subthreshold slope, on; saturation flattens; body bias raises Vth.
         assert!(id(1.0, 0.0) < 1e-8 && id(1.0, 1.0) > 1e-4, "{} {}", id(1.0, 0.0), id(1.0, 1.0));
@@ -1032,11 +1374,11 @@ mod tests {
         assert!(gds(1.0) < gds(0.05) / 3.0, "saturation: gds {} vs linear {}", gds(1.0), gds(0.05));
         assert!(inst.eval(1.0, 1.0, -0.5).vth > inst.eval(1.0, 1.0, 0.0).vth);
         // Two fingers carry twice the current of one finger of half the width.
-        let one = Inst::new(&nmos(), Geometry { w: 0.5e-6, l: 0.1e-6, nf: 1.0 }, 27.0).unwrap();
-        let two = Inst::new(&nmos(), Geometry { w: 1e-6, l: 0.1e-6, nf: 2.0 }, 27.0).unwrap();
+        let one = Inst::new(&nmos(), Geometry::new(0.5e-6, 0.1e-6, 1.0), 27.0).unwrap();
+        let two = Inst::new(&nmos(), Geometry::new(1e-6, 0.1e-6, 2.0), 27.0).unwrap();
         assert!((two.eval(1.0, 1.0, 0.0).ids.v / one.eval(1.0, 1.0, 0.0).ids.v - 2.0).abs() < 1e-12);
         // Hotter: lower mobility, less on-current.
-        let hot = Inst::new(&nmos(), Geometry { w: 1e-6, l: 0.1e-6, nf: 1.0 }, 125.0).unwrap();
+        let hot = Inst::new(&nmos(), Geometry::new(1e-6, 0.1e-6, 1.0), 125.0).unwrap();
         assert!(hot.eval(1.0, 1.0, 0.0).ids.v < id(1.0, 1.0));
     }
 
@@ -1044,11 +1386,11 @@ mod tests {
     fn binning_and_errors() {
         let mut c = nmos();
         c.p.insert("lvth0".into(), 0.01);
-        let a = Inst::new(&c, Geometry { w: 1e-6, l: 1e-6, nf: 1.0 }, 27.0).unwrap();
-        let b = Inst::new(&c, Geometry { w: 1e-6, l: 0.1e-6, nf: 1.0 }, 27.0).unwrap();
+        let a = Inst::new(&c, Geometry::new(1e-6, 1e-6, 1.0), 27.0).unwrap();
+        let b = Inst::new(&c, Geometry::new(1e-6, 0.1e-6, 1.0), 27.0).unwrap();
         assert!((a.vth0 - 0.41).abs() < 1e-12 && (b.vth0 - 0.5).abs() < 1e-12, "{} {}", a.vth0, b.vth0);
         c.p.insert("lint".into(), 0.1e-6);
-        assert!(Inst::new(&c, Geometry { w: 1e-6, l: 0.1e-6, nf: 1.0 }, 27.0).unwrap_err().contains("length"));
+        assert!(Inst::new(&c, Geometry::new(1e-6, 0.1e-6, 1.0), 27.0).unwrap_err().contains("length"));
         let w = card(false, &[("igcmod", 1.0), ("mobmod", 3.0), ("version", 4.5)]).warnings();
         assert_eq!(w.len(), 3, "{w:?}");
     }

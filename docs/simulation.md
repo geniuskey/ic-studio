@@ -206,11 +206,13 @@ A modified nodal analysis engine written in Rust. It supports:
   with short-channel, DIBL, narrow-width, body, pocket-implant and DITS terms, poly
   depletion, mobility models 0 to 2, velocity saturation and overshoot, source-end velocity
   limit, internal source / drain resistance, CLM / DIBL / DITS / SCBE output conductance,
-  temperature models 0 to 3, `l` / `w` / `p` size dependence and `nf` fingers). Gate charges
-  use Meyer capacitances with the card's overlap capacitances, so transient and AC results
-  are approximate and the automatic backend prefers ngspice for these decks. Gate tunnelling,
-  GIDL, substrate current, `rdsmod=1`, gate / body resistance networks and stress effects
-  are not evaluated and are reported as warnings.
+  temperature models 0 to 3, `l` / `w` / `p` size dependence and `nf` fingers). Charges
+  follow the charge-thickness model (`capmod=2`, `xpart` partitions), bias-dependent overlap
+  capacitances and the bottom / sidewall / gate-edge junction capacitances, with junction
+  areas and perimeters from `ad as pd ps` or the finger layout; transient and AC results
+  match ngspice as well. Noise uses the level-1 expressions. Gate tunnelling, GIDL,
+  substrate current, `rdsmod=1`, gate / body resistance networks, non-quasi-static models
+  and stress effects are not evaluated and are reported as warnings.
 
 The BSIM4 model is developed by the BSIM Research Group of the University of California,
 Berkeley (Copyright (c) University of California; Educational Community License 2.0).

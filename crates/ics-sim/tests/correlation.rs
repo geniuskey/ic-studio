@@ -44,6 +44,21 @@ fn suite() -> Vec<(&'static str, String, f64)> {
             1e-3,
         ),
         (
+            "bsim4_cs_ac",
+            format!(
+                "* bsim4 cs\nVDD vdd 0 1.8\nVIN in 0 DC 1.1 AC 1\nRD vdd out 2k\nM1 out in 0 0 n45 w=2u l=0.1u nf=2 ad=0.2p as=0.2p pd=2.4u ps=2.4u\n\
+                 CL out 0 5f\n{b4}.op\n.ac dec 10 1meg 1t\n.end\n"
+            ),
+            0.01,
+        ),
+        (
+            "bsim4_ring_osc",
+            format!(
+                "* bsim4 ring, kicked\nV1 vdd 0 1.8\nI1 0 n0 PULSE(0 200u 0 10p 10p 20p 10)\nM0p n1 n0 vdd vdd p45 w=2u l=45n\nM0n n1 n0 0 0 n45 w=0.5u l=45n\nM1p n2 n1 vdd vdd p45 w=2u l=45n\nM1n n2 n1 0 0 n45 w=0.5u l=45n\nM2p n3 n2 vdd vdd p45 w=2u l=45n\nM2n n3 n2 0 0 n45 w=0.5u l=45n\nM3p n4 n3 vdd vdd p45 w=2u l=45n\nM3n n4 n3 0 0 n45 w=0.5u l=45n\nM4p n0 n4 vdd vdd p45 w=2u l=45n\nM4n n0 n4 0 0 n45 w=0.5u l=45n\n{b4}.tran 1p 3n\n.end\n"
+            ),
+            0.06,
+        ),
+        (
             "bsim4_inverter_dc",
             format!(
                 "* bsim4 inv\nV1 vdd 0 1.8\nV2 in 0 0\nM1 out in vdd vdd p45 w=2u l=45n\nM2 out in 0 0 n45 w=0.5u l=45n\n{b4}\

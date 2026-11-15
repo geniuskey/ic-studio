@@ -148,6 +148,10 @@ pub fn simulate(deck: &str, analyses: &[Analysis], opts: &SimOptions) -> Result<
     match (backend, circuit) {
         (Backend::Builtin, Some(circuit)) => {
             res.backend = "built-in".into();
+            let bsim4 = circuit.elements.iter().any(|e| matches!(e, circuit::Element::M { model, .. } if model.bsim4.is_some()));
+            if bsim4 && analyses.iter().any(|a| matches!(a, Analysis::Noise { .. })) {
+                res.warnings.push("BSIM4 noise uses the level-1 expressions (8/3 kT gm and kf), not tnoimod / fnoimod".into());
+            }
             res.warnings.extend(circuit.warnings.iter().cloned());
             let mut log: Vec<String> = res.warnings.iter().map(|w| format!("warning: {w}")).collect();
             log.push(format!("ics-sim: {} nodes, {} elements", circuit.node_count(), circuit.elements.len()));
@@ -199,9 +203,14 @@ mod tests {
         let id = m2.values.iter().find(|(k, _)| k == "id").unwrap().1;
         assert!(id > 1e-9 && id < 1e-3, "{id}");
         let w = r.warnings.join("\n");
-        assert!(w.contains("Meyer") && w.contains("m2: instance parameters not evaluated: sa"), "{w}");
-        // Auto prefers ngspice while the charges are approximated.
+        assert!(w == "m2: instance parameters not evaluated: sa", "{w}");
+        // Auto stays on the built-in engine when it evaluates the whole deck.
         assert!(builtin_shortfall(deck).is_some());
+        assert_eq!(builtin_shortfall(&deck.replace(" sa=1u", "")), None);
+        let tran = deck.replace(".op", ".tran 10p 1n").replace("V2 in 0 0.6", "V2 in 0 PULSE(0 1.2 0.1n 20p 20p 0.3n 1n)");
+        let r = simulate(&tran, &[], &SimOptions::default()).unwrap();
+        let out = &r.datasets[0].get("v(out)").unwrap().re;
+        assert!(out.iter().cloned().fold(0.0, f64::max) > 1.0 && out.iter().cloned().fold(2.0, f64::min) < 0.2, "{out:?}");
         let e = simulate(&deck.replace("nmos level=54", "nmos level=54 lint=0.06u"), &[], &SimOptions::default()).unwrap_err();
         assert!(e.to_string().contains("m2: BSIM4: effective channel"), "{e}");
     }
