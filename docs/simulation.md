@@ -213,7 +213,9 @@ A modified nodal analysis engine written in Rust. It supports:
   follow the charge-thickness model (`capmod=2`, `xpart` partitions), bias-dependent overlap
   capacitances and the bottom / sidewall / gate-edge junction capacitances, with junction
   areas and perimeters from `ad as pd ps` or the finger layout; transient and AC results
-  match ngspice as well. Noise uses the level-1 expressions. Gate tunnelling, GIDL,
+  match ngspice as well. Junction currents follow `diomod=1` (area, sidewall and gate-edge
+  saturation currents with their temperature dependence, linear above `ijthsfwd`); noise
+  follows `tnoimod=0` and `fnoimod` 0 / 1. Gate tunnelling, GIDL,
   substrate current, `rdsmod=1`, gate / body resistance networks, non-quasi-static models
   and stress effects are not evaluated and are reported as warnings.
 

@@ -356,6 +356,37 @@ impl Engine {
         Ok(Self { c, nn, branch, size, caps, inductors, qdevs, vt, log: vec![] })
     }
 
+    /// Bulk junction diodes of a MOS at `x`: (anode, cathode, current, conductance).
+    fn mos_junctions(
+        &self,
+        model: &MosModel,
+        d: Node,
+        s: Node,
+        b: Node,
+        mult: f64,
+        j: &crate::circuit::Junctions,
+        x: &[f64],
+    ) -> Vec<(Node, Node, f64, f64)> {
+        if let Some(inst) = model.bsim4.as_ref().and_then(|b4| b4.inst.as_deref()) {
+            // BSIM4: currents from bulk into source and drain in the device polarity.
+            let sign = if model.pmos { -1.0 } else { 1.0 };
+            let (vs, vd, vb) = (self.v(x, s), self.v(x, d), self.v(x, b));
+            let ((ibs, gbs), (ibd, gbd)) = inst.junction_currents(sign * (vb - vs), sign * (vb - vd));
+            return [(s, ibs, gbs), (d, ibd, gbd)]
+                .into_iter()
+                .filter(|&(t, _, _)| t != b)
+                .map(|(t, i, g)| (b, t, sign * i * mult, g * mult))
+                .collect();
+        }
+        bulk_diodes(model, d, s, b, mult, j)
+            .into_iter()
+            .map(|(an, ca, is)| {
+                let (id, gd) = exp_iv(is, self.vt, self.v(x, an) - self.v(x, ca));
+                (an, ca, id, gd)
+            })
+            .collect()
+    }
+
     fn v(&self, x: &[f64], n: Node) -> f64 {
         if n == 0 { 0.0 } else { x[n - 1] }
     }
@@ -495,9 +526,8 @@ impl Engine {
                     cur(&mut rhs, *a, *k, id - gd * vd);
                 }
                 Element::M { d, g, s, b, model, w, l, m: mult, junctions, .. } => {
-                    for (an, ca, is) in bulk_diodes(model, *d, *s, *b, *mult, junctions) {
+                    for (an, ca, id, gd) in self.mos_junctions(model, *d, *s, *b, *mult, junctions, x) {
                         let vd = self.v(x, an) - self.v(x, ca);
-                        let (id, gd) = exp_iv(is, self.vt, vd);
                         cond(&mut m, an, ca, gd);
                         cur(&mut rhs, an, ca, id - gd * vd);
                     }
@@ -845,8 +875,7 @@ impl Engine {
                     y(&mut m, *a, *k, Complex64::new(gd, 0.0));
                 }
                 Element::M { d, g, s, b, model, w: wd, l, m: mult, junctions, .. } => {
-                    for (an, ca, is) in bulk_diodes(model, *d, *s, *b, *mult, junctions) {
-                        let (_, gd) = exp_iv(is, self.vt, self.v(x0, an) - self.v(x0, ca));
+                    for (an, ca, _, gd) in self.mos_junctions(model, *d, *s, *b, *mult, junctions, x0) {
                         y(&mut m, an, ca, Complex64::new(gd, 0.0));
                     }
                     let nodes = [*d, *g, *s, *b];
@@ -922,6 +951,17 @@ impl Engine {
                     let (id, _) = diode_eval(model, self.v(x0, *a) - self.v(x0, *k), self.vt);
                     let flicker = model.kf * id.abs().powf(model.af) / f;
                     out.push((*a, *k, 2.0 * CHARGE * id.abs() + flicker));
+                }
+                Element::M { d, g, s, b, model, m, .. } if model.bsim4.as_ref().is_some_and(|b4| b4.inst.is_some()) => {
+                    let inst = model.bsim4.as_ref().and_then(|b4| b4.inst.as_deref()).unwrap();
+                    let sign = if model.pmos { -1.0 } else { 1.0 };
+                    let v = |n| sign * self.v(x0, n);
+                    let (mut vd, mut vs) = (v(*d), v(*s));
+                    if vd < vs {
+                        std::mem::swap(&mut vd, &mut vs);
+                    }
+                    let (thermal, flicker) = inst.noise(vd - vs, v(*g) - vs, v(*b) - vs, f);
+                    out.push((*d, *s, (thermal + flicker) * m));
                 }
                 Element::M { d, g, s, b, model, w, l, m, .. } => {
                     let v = |n| self.v(x0, n);

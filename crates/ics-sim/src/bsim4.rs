@@ -23,6 +23,9 @@ const EPSSI: f64 = 1.03594e-10;
 const Q: f64 = 1.60219e-19;
 const CHARGE: f64 = 1.6021766208e-19;
 const KBOQ: f64 = 8.617087e-5;
+/// Boltzmann constant as in ngspice's noise code.
+const BOLTZ: f64 = 1.38064852e-23;
+const N_MINLOG: f64 = 1.0e-38;
 const MAX_EXP: f64 = 5.834617425e14;
 const MIN_EXP: f64 = 1.713908431e-15;
 const EXP_THRESHOLD: f64 = 34.0;
@@ -178,6 +181,18 @@ impl Card {
                 && *v != *ok
             {
                 w.push(format!("{what} ({k}={v})"));
+            }
+        }
+        for (k, ok, what) in [("tnoimod", 0.0, "thermal noise model"), ("diomod", 1.0, "junction diode model")] {
+            if let Some(v) = self.p.get(k)
+                && *v != ok
+            {
+                w.push(format!("{what} {k}={v} (evaluated as {k}={ok})"));
+            }
+        }
+        for k in ["jtss", "jtsd", "jtssws", "jtsswd", "jtsswgs", "jtsswgd"] {
+            if self.p.get(k).is_some_and(|v| *v != 0.0) {
+                w.push(format!("trap-assisted junction tunnelling ({k})"));
             }
         }
         let mobmod = self.g("mobmod", 0.0);
@@ -368,6 +383,76 @@ pub struct Inst {
     vfbzb: f64,
     jct_s: Junction,
     jct_d: Junction,
+    dio_s: JunctionDc,
+    dio_d: JunctionDc,
+    // Noise.
+    temp_k: f64,
+    tnoimod: i32,
+    fnoimod: i32,
+    ntnoi: f64,
+    noia: f64,
+    noib: f64,
+    noic: f64,
+    em: f64,
+    ef: f64,
+    lintnoi: f64,
+    kf: f64,
+    af: f64,
+}
+
+/// Values of the current model the noise model reads.
+struct Internals {
+    vth: f64,
+    vdsat: f64,
+    vgsteff: f64,
+    vds: f64,
+    vdseff: f64,
+    ueff: f64,
+    coxeff: f64,
+    /// Bulk charge factor before the `keta` body-bias scaling.
+    abulk: f64,
+    abov_vgst2vtm: f64,
+    abulk0_q: f64,
+    rds: f64,
+    xdep: f64,
+}
+
+/// DC model of one source / drain junction diode (`diomod=1`).
+#[derive(Debug, Clone, PartialEq, Default)]
+struct JunctionDc {
+    /// Saturation current (A) and emission voltage n·Vt.
+    isat: f64,
+    nvtm: f64,
+    /// Above this forward voltage the current continues linearly (`ijth`).
+    vjm: f64,
+    ivjm: f64,
+}
+
+impl JunctionDc {
+    fn new(isat: f64, nvtm: f64, ijth: f64) -> JunctionDc {
+        if isat <= 0.0 {
+            return JunctionDc::default();
+        }
+        let vjm = nvtm * (1.0 + ijth / isat).ln();
+        JunctionDc { isat, nvtm, vjm, ivjm: isat * (vjm / nvtm).exp() }
+    }
+
+    /// Current from bulk into the source / drain at junction voltage `v`, and its conductance.
+    fn current(&self, v: f64) -> (f64, f64) {
+        if self.isat <= 0.0 {
+            return (0.0, 0.0);
+        }
+        let t2 = v / self.nvtm;
+        if t2 < -EXP_THRESHOLD {
+            (self.isat * (MIN_EXP - 1.0), 0.0)
+        } else if v <= self.vjm {
+            let e = t2.exp();
+            (self.isat * (e - 1.0), self.isat * e / self.nvtm)
+        } else {
+            let g = self.ivjm / self.nvtm;
+            (self.ivjm - self.isat + g * (v - self.vjm), g)
+        }
+    }
 }
 
 /// Bias-dependent quantities shared by the current and charge models.
@@ -695,6 +780,21 @@ impl Inst {
             pb: [pb_t(c.g("pbd", pbs), "tpb"), pb_t(c.g("pbswd", pbsws), "tpbsw"), pb_t(c.g("pbswgd", pbswgs), "tpbswg")],
         };
 
+        // Junction saturation currents with their temperature dependence.
+        let eg = 1.16 - 7.02e-4 * t * t / (t + 1108.0);
+        let sat_t =
+            |xti: f64, nj: f64| if t != tnom { ((eg0 / vtm0 - eg / vtm + xti * (t / tnom).ln()) / nj).exp() } else { 1.0 };
+        let (jss, jsws, jswgs) = (c.g("jss", 1.0e-4), c.g("jsws", 0.0), c.g("jswgs", 0.0));
+        let (njs, xtis) = (c.g("njs", 1.0), c.g("xtis", 3.0));
+        let (njd, xtid) = (c.g("njd", njs), c.g("xtid", xtis));
+        let ks = sat_t(xtis, njs);
+        let kd = sat_t(xtid, njd);
+        let isat_s = (jss * as_eff + jsws * ps_eff + jswgs * weff_cj_nf) * ks;
+        let isat_d = (c.g("jsd", jss) * ad_eff + c.g("jswd", jsws) * pd_eff + c.g("jswgd", jswgs) * weff_cj_nf) * kd;
+        let ijths = c.g("ijthsfwd", 0.1);
+        let dio_s = JunctionDc::new(isat_s.max(0.0), vtm * njs, ijths);
+        let dio_d = JunctionDc::new(isat_d.max(0.0), vtm * njd, c.g("ijthdfwd", ijths));
+
         Ok(Inst {
             ty,
             mobmod,
@@ -813,6 +913,20 @@ impl Inst {
             vfbzb,
             jct_s,
             jct_d,
+            dio_s,
+            dio_d,
+            temp_k: t,
+            tnoimod: c.g("tnoimod", 0.0) as i32,
+            fnoimod: c.g("fnoimod", 1.0) as i32,
+            ntnoi: c.g("ntnoi", 1.0),
+            noia: c.g("noia", if c.pmos { 6.188e40 } else { 6.25e41 }),
+            noib: c.g("noib", if c.pmos { 1.5e25 } else { 3.125e26 }),
+            noic: c.g("noic", 8.75e9),
+            em: c.g("em", 4.1e7),
+            ef: c.g("ef", 1.0),
+            lintnoi: c.g("lintnoi", 0.0),
+            kf: c.g("kf", 0.0),
+            af: c.g("af", 1.0),
         })
     }
 
@@ -827,8 +941,8 @@ impl Inst {
         let vds_d = D::var(vds, 0);
         let vgs_d = D::var(vgs, 1);
         let vbs_d = D::var(vbs, 2);
-        let (ids, vth, vdsat, vgsteff) = self.ids(vds_d, vgs_d, vbs_d);
-        Eval { ids: ids * self.nf, vth, vdsat, vgsteff }
+        let (ids, i) = self.ids(vds_d, vgs_d, vbs_d);
+        Eval { ids: ids * self.nf, vth: i.vth, vdsat: i.vdsat, vgsteff: i.vgsteff }
     }
 
     /// Body bias, threshold voltage and effective gate drive, shared by current and charge.
@@ -940,6 +1054,73 @@ impl Inst {
         let t5 = p.leff / (p.leff + 2.0 * t9);
         let t2 = p.a0 * t5 + p.b0 / (p.weff + p.b1);
         (1.0 + t1 * t2, t1, t5)
+    }
+
+    /// Bulk-source and bulk-drain junction currents at `vbs`, `vbd` (device polarity), with
+    /// their conductances: ((ibs, gbs), (ibd, gbd)).
+    pub fn junction_currents(&self, vbs: f64, vbd: f64) -> ((f64, f64), (f64, f64)) {
+        (self.dio_s.current(vbs), self.dio_d.current(vbd))
+    }
+
+    /// Drain-source noise current spectral densities (A²/Hz) at `vds >= 0`, `vgs`, `vbs` (device
+    /// polarity, forward frame) and frequency `freq`: (thermal, flicker), for all fingers.
+    /// Thermal noise follows `tnoimod=0` (charge based, with the internal Rds), flicker noise
+    /// `fnoimod` 1 (unified oxide-trap model) or 0 (`kf`).
+    pub fn noise(&self, vds: f64, vgs: f64, vbs: f64, freq: f64) -> (f64, f64) {
+        const DELTA_4: f64 = 0.02;
+        let p = self;
+        let (id, i) = p.ids(D::c(vds), D::c(vgs), D::c(vbs));
+        let cd = (id.v * p.nf).abs();
+        let temp = p.temp_k;
+
+        // Thermal: 4kT ueff |Qinv| / (Leff² + ueff |Qinv| Rds).
+        let abulk = i.abulk0_q * p.abulk_cv_factor;
+        let vdsat = i.vgsteff / abulk;
+        let t0 = vdsat - vds - DELTA_4;
+        let t1 = (t0 * t0 + 4.0 * DELTA_4 * vdsat).sqrt();
+        let mut vdseff = if t0 >= 0.0 { vdsat - 0.5 * (t0 + t1) } else { vdsat * (1.0 - 2.0 * DELTA_4 / (t1 - t0)) };
+        if vds == 0.0 {
+            vdseff = 0.0;
+        }
+        let t0 = abulk * vdseff;
+        let t1 = 12.0 * (i.vgsteff - 0.5 * t0 + 1.0e-20);
+        let t3 = t0 * vdseff / t1;
+        let qinv = i.coxeff * p.weff_cv * p.nf * p.leff_cv * (i.vgsteff - 0.5 * t0 + abulk * t3);
+        let rds_per = if i.rds > 0.0 { i.rds / p.nf } else { 0.0 };
+        let uq = i.ueff * qinv.abs();
+        let thermal = 4.0 * BOLTZ * temp * uq / (uq * rds_per + p.leff * p.leff) * p.ntnoi;
+
+        // Flicker.
+        let ef = freq.powf(p.ef);
+        let flicker = if p.fnoimod == 0 {
+            p.kf * cd.max(N_MINLOG).powf(p.af) / (ef * p.leff * p.leff * p.coxe)
+        } else {
+            let nstar = p.vtm / Q * (p.coxe + EPSSI / i.xdep + p.cit);
+            let leff = p.leff - 2.0 * p.lintnoi;
+            let leffsq = leff * leff;
+            let esat = 2.0 * p.vsattemp / i.ueff;
+            let del_clm = if p.em <= 0.0 {
+                0.0
+            } else {
+                let t0 = ((i.vds - i.vdseff) / p.litl + p.em) / esat;
+                (p.litl * t0.max(N_MINLOG).ln()).max(0.0)
+            };
+            let t1 = CHARGE * CHARGE * BOLTZ * cd * temp * i.ueff;
+            let t2 = 1.0e10 * ef * i.abulk * p.coxe * leffsq;
+            let n0 = p.coxe * i.vgsteff / CHARGE;
+            let nl = p.coxe * i.vgsteff * (1.0 - i.abov_vgst2vtm * i.vdseff) / CHARGE;
+            let t3 = p.noia * ((n0 + nstar) / (nl + nstar)).max(N_MINLOG).ln();
+            let t4 = p.noib * (n0 - nl);
+            let t5 = p.noic * 0.5 * (n0 * n0 - nl * nl);
+            let t6 = BOLTZ * temp * cd * cd;
+            let t7 = 1.0e10 * ef * leffsq * p.weff * p.nf;
+            let t8 = p.noia + p.noib * nl + p.noic * nl * nl;
+            let t9 = (nl + nstar) * (nl + nstar);
+            let ssi = t1 / t2 * (t3 + t4 + t5) + t6 / t7 * del_clm * t8 / t9;
+            let swi = p.noia * BOLTZ * temp / (p.weff * p.nf * p.leff * ef * 1.0e10 * nstar * nstar) * cd * cd;
+            if ssi + swi > 0.0 { ssi * swi / (ssi + swi) } else { 0.0 }
+        };
+        (thermal, flicker)
     }
 
     /// Terminal charges (C) at `vds`, `vgs`, `vbs` in the device's polarity (voltages already
@@ -1085,7 +1266,7 @@ impl Inst {
         (qgate, qbulk, qdrn)
     }
 
-    fn ids(&self, vds: D, vgs: D, vbs: D) -> (D, f64, f64, f64) {
+    fn ids(&self, vds: D, vgs: D, vbs: D) -> (D, Internals) {
         let p = self;
         let epssub = EPSSI;
         let toxe = p.toxe;
@@ -1117,9 +1298,15 @@ impl Inst {
         if abulk.v < 0.1 {
             abulk = (0.2 - abulk) / (3.0 - 20.0 * abulk);
         }
+        let abulk_stored = abulk.v;
         let t2 = p.keta * vbseff;
         let t0 = if t2.v >= -0.9 { 1.0 / (1.0 + t2) } else { (17.0 + 20.0 * t2) / (0.8 + t2) };
         abulk = abulk * t0;
+        let abulk0_q = {
+            let a = if abulk0.v < 0.1 { (0.2 - abulk0.v) / (3.0 - 20.0 * abulk0.v) } else { abulk0.v };
+            let t2 = p.ketac * vbseff.v;
+            a * if t2 >= -0.9 { 1.0 / (1.0 + t2) } else { (17.0 + 20.0 * t2) / (0.8 + t2) }
+        };
 
         // Mobility.
         let t12 = (vth * vth + 0.0001).sqrt();
@@ -1279,7 +1466,21 @@ impl Inst {
                 cdrain = cdrain * fsevl;
             }
         }
-        (cdrain, vth.v, vdsat.v, vgsteff.v)
+        let internals = Internals {
+            vth: vth.v,
+            vdsat: vdsat.v,
+            vgsteff: vgsteff.v,
+            vds: vds.v,
+            vdseff: vdseff.v,
+            ueff: ueff.v,
+            coxeff: coxeff.v,
+            abulk: abulk_stored,
+            abov_vgst2vtm: (abulk / vgst2vtm).v,
+            abulk0_q,
+            rds: rds.v,
+            xdep: xdep.v,
+        };
+        (cdrain, internals)
     }
 }
 

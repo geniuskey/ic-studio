@@ -58,6 +58,22 @@ fn suite() -> Vec<(&'static str, String, f64)> {
             0.01,
         ),
         (
+            "bsim4_noise",
+            format!(
+                "* bsim4 noise\nVDD vdd 0 1.8\nVIN in 0 DC 1.0 AC 1\nRD vdd out 5k\nM1 out in 0 0 n45 w=2u l=0.1u nf=2\nCL out 0 5f\n{b4}\
+                 .noise v(out) VIN dec 5 1 10g\n.end\n"
+            ),
+            1e-3,
+        ),
+        (
+            "bsim4_junctions_hot",
+            format!(
+                "* bsim4 junctions\n.temp 120\nVD d 0 0\nVG g 0 0\nM1 d g 0 0 n45 w=1u l=45n ad=0.2p as=0.2p pd=2.4u ps=2.4u nf=3\n{b4}\
+                 .dc VD -1.0 0.5 0.02\n.end\n"
+            ),
+            1e-3,
+        ),
+        (
             "bsim4_cs_ac",
             format!(
                 "* bsim4 cs\nVDD vdd 0 1.8\nVIN in 0 DC 1.1 AC 1\nRD vdd out 2k\nM1 out in 0 0 n45 w=2u l=0.1u nf=2 ad=0.2p as=0.2p pd=2.4u ps=2.4u\n\

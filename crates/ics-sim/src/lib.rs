@@ -148,10 +148,7 @@ pub fn simulate(deck: &str, analyses: &[Analysis], opts: &SimOptions) -> Result<
     match (backend, circuit) {
         (Backend::Builtin, Some(circuit)) => {
             res.backend = "built-in".into();
-            let bsim4 = circuit.elements.iter().any(|e| matches!(e, circuit::Element::M { model, .. } if model.bsim4.is_some()));
-            if bsim4 && analyses.iter().any(|a| matches!(a, Analysis::Noise { .. })) {
-                res.warnings.push("BSIM4 noise uses the level-1 expressions (8/3 kT gm and kf), not tnoimod / fnoimod".into());
-            }
+
             res.warnings.extend(circuit.warnings.iter().cloned());
             let mut log: Vec<String> = res.warnings.iter().map(|w| format!("warning: {w}")).collect();
             log.push(format!("ics-sim: {} nodes, {} elements", circuit.node_count(), circuit.elements.len()));
