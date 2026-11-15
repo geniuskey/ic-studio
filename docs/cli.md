@@ -51,6 +51,8 @@ it with `cargo build --release -p ics-cli` (binary `target/release/ics`) or run 
 | `ics diff <PROJECT> <CELL> [--rev REV \| --against DIR]` | Compare the layout with a git revision (default `HEAD`) or another project; exit 1 if they differ |
 | `ics yield <PROJECT> <CELL> [--runs N] [--samples N] [--target Y] [--json]` | Run the cell's Monte Carlo sweep setup and predict the yield of every condition with each spec's sensitivities; exit 1 below `--target` |
 | `ics correlate <PROJECT> <CELL> [--data CSV] [--x COL] [--analysis A] [--trace COL=EXPR[@BIAS]]... [--param TARGET=MIN:MAX[:log]]... [--log] [--fit] [--write-models FILE] [--apply] [--save] [--json]` | Compare measured curves with the simulation and fit model, instance or design parameters to them |
+| `ics xsection <PROJECT> <CELL> [--flow FILE] [--cut x0,y0,x1,y1] [--steps N] [--at X]... [--svg FILE] [--json]` | Process emulation: the layout's cross-section along a cut after a process flow (see [Process emulation](process.md)) |
+| `ics process-data <CSV> [--spec FILE] [--json]` | WAT / PCM data against the process spec: Cp / Cpk, out-of-spec sites, control-chart alarms, corner coverage (see [Process data](process.md#process-data)); exit 1 on out-of-spec sites or alarms |
 | `ics optimize <PROJECT> <CELL> [--post-layout] [--apply] [--json]` | Size devices to meet the cell's specs; exit 1 if no point meets every spec |
 | `ics place-like <PROJECT> <CELL> --from <CELL> [--route]` | Place the cell like a finished cell with the same circuit and save |
 | `ics skill <PROJECT> <FILE.il> [--no-save] [--json]` | Run a Cadence SKILL script on the project and save; exit 1 on a SKILL error |

@@ -78,6 +78,8 @@ The server has 40 tools:
 | `compact` | Slide top-level items toward each direction until the rules stop them; constraints hold |
 | `predict_yield` | Monte Carlo yield prediction: simulated and predicted yield per condition, per spec Cpk, model Q² and sensitivities |
 | `correlate_silicon` | Compare measured curves (CSV) with the simulation; fit model, instance or design parameters |
+| `process_cross_section` | Process emulation: material stacks along a cut through the layout after a process flow; optional SVG |
+| `process_data` | WAT / PCM data against the process spec: capability, control alarms, corner coverage, correlated parameters |
 | `optimize` | Size device parameters to meet specs (optionally after layout); `apply` writes the best values |
 | `place_like` | Layout by example: place a cell like a finished cell with the same circuit topology, optionally route |
 | `diff_layout` | XOR a cell's layout per layer against a git revision (default `HEAD`) or the saved files |

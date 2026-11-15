@@ -1,0 +1,74 @@
+# WAT (wafer acceptance test) specification of the generic 180 nm technology: spec limits for
+# process control and the value of each parameter in the model corners. Used by
+# `ics process-data` and Tools > Process Data.
+name = "generic180 WAT"
+# Wafers at the start of the data that set the control limits.
+baseline_wafers = 12
+
+[[param]]
+name = "vtn"
+unit = "V"
+description = "NMOS threshold voltage, W/L = 10/0.18 µm"
+target = 0.45
+lsl = 0.38
+usl = 0.52
+corners = { ff = 0.40, tt = 0.45, ss = 0.50 }
+
+[[param]]
+name = "vtp"
+unit = "V"
+description = "PMOS threshold voltage, W/L = 10/0.18 µm"
+target = -0.45
+lsl = -0.52
+usl = -0.38
+corners = { ff = -0.40, tt = -0.45, ss = -0.50 }
+
+[[param]]
+name = "idsat_n"
+unit = "µA/µm"
+description = "NMOS saturation current at Vgs = Vds = 1.8 V"
+target = 600
+lsl = 520
+usl = 680
+corners = { ff = 660, tt = 600, ss = 540 }
+
+[[param]]
+name = "idsat_p"
+unit = "µA/µm"
+description = "PMOS saturation current at Vgs = Vds = -1.8 V"
+target = 260
+lsl = 220
+usl = 300
+corners = { ff = 275, tt = 260, ss = 245 }
+
+[[param]]
+name = "tox"
+unit = "nm"
+description = "Gate oxide thickness (C-V)"
+target = 4.0
+lsl = 3.8
+usl = 4.2
+
+[[param]]
+name = "rs_poly"
+unit = "Ω/sq"
+description = "Poly sheet resistance (silicided)"
+target = 7.5
+lsl = 6.5
+usl = 8.5
+
+[[param]]
+name = "rs_nplus"
+unit = "Ω/sq"
+description = "n+ diffusion sheet resistance (silicided)"
+target = 6.0
+lsl = 5.0
+usl = 7.0
+
+[[param]]
+name = "rs_m1"
+unit = "mΩ/sq"
+description = "Metal 1 sheet resistance"
+target = 70
+lsl = 60
+usl = 80

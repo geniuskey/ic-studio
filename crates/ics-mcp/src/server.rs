@@ -229,6 +229,8 @@ mod tests {
             "optimize",
             "predict_yield",
             "correlate_silicon",
+            "process_cross_section",
+            "process_data",
             "place_like",
             "diff_layout",
             "extract",
@@ -315,6 +317,21 @@ mod tests {
         assert!(cor["error_start"].as_f64().unwrap() > 0.1 && cor["error_fitted"].as_f64().unwrap() < 0.05, "{cor}");
         assert!((cor["params"][0]["fitted"].as_f64().unwrap() - 0.52).abs() < 0.02, "{cor}");
         assert!(cor["model_cards"].as_str().unwrap().starts_with(".model nmos"), "{cor}");
+
+        let xs = call(&mut s, "process_cross_section", json!({"cell": "cmos_inverter", "at": [1.7]})).unwrap();
+        let stack = xs["columns"][0]["stack"].to_string();
+        assert!(stack.contains("poly") && stack.contains("gox"), "{xs}");
+        assert_eq!(xs["steps_run"], 33, "{xs}");
+
+        let wat = call(
+            &mut s,
+            "process_data",
+            json!({"path": concat!(env!("CARGO_MANIFEST_DIR"), "/../../process/generic180_wat.csv")}),
+        )
+        .unwrap();
+        let vtn = wat["params"].as_array().unwrap().iter().find(|p| p["name"] == "vtn").unwrap();
+        assert_eq!(vtn["alarms"][0]["lot"], "L004", "{wat}");
+        assert!(wat["correlations"].as_array().unwrap().iter().any(|c| c["a"] == "vtn" && c["b"] == "idsat_n"), "{wat}");
 
         let drc = call(&mut s, "run_drc", json!({"cell": "cmos_inverter"})).unwrap();
         assert!(drc["rules_run"].as_u64().unwrap() > 0, "{drc}");

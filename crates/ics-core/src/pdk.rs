@@ -533,7 +533,7 @@ fn expand(s: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<String, Strin
     Ok(out)
 }
 
-fn parse_color(s: &str) -> Option<[u8; 4]> {
+pub(crate) fn parse_color(s: &str) -> Option<[u8; 4]> {
     let h = s.strip_prefix('#')?;
     let b = |i: usize| u8::from_str_radix(h.get(i..i + 2)?, 16).ok();
     match h.len() {

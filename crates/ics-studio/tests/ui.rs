@@ -2122,3 +2122,46 @@ fn silicon_correlation() {
     h.run_steps(3);
     shot(&mut h, "38_silicon_correlation");
 }
+
+/// Process emulation: the inverter's cross-section with the generic flow, and after the gate etch.
+#[test]
+fn process_emulation() {
+    let mut h = app(demo_args("cmos_inverter", "layout", false));
+    h.state_mut().command(Command::ProcessEmulation);
+    h.run_steps(3);
+    let pe = h.state_mut().process_emulation();
+    let s = pe.section.as_ref().unwrap_or_else(|| panic!("{:?}", pe.error));
+    for m in ["si", "nwell", "p+", "poly", "w", "al"] {
+        assert!(s.materials.iter().any(|x| x == m), "{m}: {:?}", s.materials);
+    }
+    h.run_steps(2);
+    shot(&mut h, "39_process_emulation");
+    let pe = h.state_mut().process_emulation();
+    let gate = pe.flow.as_ref().unwrap().steps.iter().position(|s| s.label().starts_with("gate etch")).unwrap();
+    pe.steps = gate + 1;
+    pe.set_text(pe.text.clone());
+    pe.steps = gate + 1;
+    h.run_steps(3);
+    let s = h.state_mut().process_emulation().section.clone().unwrap();
+    assert!(!s.materials.iter().any(|m| m == "al"), "{:?}", s.materials);
+}
+
+/// Process data: the example WAT data against the built-in spec, with the shifted lot caught.
+#[test]
+fn process_data() {
+    let mut h = app(demo_args("rc_lowpass", "simulation", false));
+    h.state_mut().command(Command::ProcessData);
+    h.run_steps(2);
+    let csv = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../process/generic180_wat.csv")).unwrap();
+    h.state_mut().process_data().set_data_text(&csv, "generic180_wat.csv");
+    h.run_steps(3);
+    let pd = h.state_mut().process_data();
+    assert_eq!(pd.summary.len(), 8);
+    let vtn = pd.summary.iter().find(|s| s.name == "vtn").unwrap();
+    assert!(!vtn.violations.is_empty() && vtn.cpk.unwrap() > 1.33, "{vtn:?}");
+    let idn = pd.summary.iter().position(|s| s.name == "idsat_n").unwrap();
+    assert_eq!(pd.summary[idn].corners_cover, Some(false));
+    pd.selected = 0;
+    h.run_steps(3);
+    shot(&mut h, "40_process_data");
+}

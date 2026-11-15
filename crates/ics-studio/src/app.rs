@@ -116,6 +116,10 @@ pub enum Command {
     MonteCarlo,
     /// Run the Monte Carlo window's setup on its cell.
     RunMonteCarlo,
+    /// Open the Process Data window (WAT / PCM results, SPC, corners).
+    ProcessData,
+    /// Open the Process Emulation window for the active cell's layout.
+    ProcessEmulation,
     /// Open the Silicon Correlation window for the active cell.
     SiliconCorrelation,
     /// Compare the measured curves with the simulation.
@@ -542,6 +546,8 @@ pub struct IcStudio {
     sweep: SweepManager,
     monte_carlo: crate::mc_view::MonteCarlo,
     silicon: crate::silicon_view::SiliconView,
+    process: crate::process_view::ProcessView,
+    process_data: crate::process_data_view::ProcessDataView,
     results_open: bool,
     checks: Vec<ics_core::sch_check::Finding>,
     nets: NetBrowser,
@@ -606,6 +612,8 @@ impl IcStudio {
             sweep: SweepManager::default(),
             monte_carlo: Default::default(),
             silicon: Default::default(),
+            process: Default::default(),
+            process_data: Default::default(),
             results_open: false,
             checks: vec![],
             nets: NetBrowser::default(),
@@ -944,6 +952,11 @@ impl IcStudio {
                 }
                 _ => self.warn("Open a cell with a schematic to correlate with measurements".into()),
             },
+            Command::ProcessEmulation => match (self.active.clone(), self.active_cell(), self.project.as_ref()) {
+                (Some(r), Some(c), Some(p)) if c.layout.is_some() => self.process.show(p, &r),
+                _ => self.warn("Open a cell with a layout for process emulation".into()),
+            },
+            Command::ProcessData => self.process_data.show(),
             Command::CompareSilicon => self.run_silicon(ctx, false),
             Command::FitSilicon => self.run_silicon(ctx, true),
             Command::StopMonteCarlo => {
@@ -1582,6 +1595,46 @@ impl IcStudio {
         }
     }
 
+    pub fn process_emulation(&mut self) -> &mut crate::process_view::ProcessView {
+        &mut self.process
+    }
+
+    fn process_window(&mut self, ctx: &egui::Context) {
+        if let Some(crate::process_view::ProcessAction::Load) = self.process.window(ctx, self.project.as_ref())
+            && let Some(path) = rfd::FileDialog::new().set_title("Process flow").add_filter("Process flow", &["toml"]).pick_file()
+        {
+            match std::fs::read_to_string(&path) {
+                Ok(t) => self.process.set_text(t),
+                Err(e) => self.error(format!("{}: {e}", path.display())),
+            }
+        }
+    }
+
+    pub fn process_data(&mut self) -> &mut crate::process_data_view::ProcessDataView {
+        &mut self.process_data
+    }
+
+    fn process_data_window(&mut self, ctx: &egui::Context) {
+        use crate::process_data_view::ProcessDataAction;
+        let action = self.process_data.window(ctx);
+        let (title, filter, exts): (&str, &str, &[&str]) = match action {
+            Some(ProcessDataAction::LoadData) => ("WAT / PCM data", "CSV", &["csv", "txt", "tsv"]),
+            Some(ProcessDataAction::LoadSpec) => ("Process specification", "TOML", &["toml"]),
+            None => return,
+        };
+        let mut dialog = rfd::FileDialog::new().set_title(title).add_filter(filter, exts);
+        if let Some(r) = self.project.as_ref().and_then(|p| p.root.clone()) {
+            dialog = dialog.set_directory(r);
+        }
+        let Some(path) = dialog.pick_file() else { return };
+        let name = path.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
+        match std::fs::read_to_string(&path) {
+            Ok(t) if matches!(action, Some(ProcessDataAction::LoadData)) => self.process_data.set_data_text(&t, &name),
+            Ok(t) => self.process_data.set_spec_text(&t, &name),
+            Err(e) => self.error(format!("{}: {e}", path.display())),
+        }
+    }
+
     fn silicon_window(&mut self, ctx: &egui::Context) {
         use crate::silicon_view::SiliconAction;
         match self.silicon.window(ctx) {
@@ -2207,6 +2260,12 @@ impl IcStudio {
                 if ui.button("Silicon Correlation…").clicked() {
                     q.push(Command::SiliconCorrelation);
                 }
+                if ui.button("Process Emulation…").clicked() {
+                    q.push(Command::ProcessEmulation);
+                }
+                if ui.button("Process Data…").clicked() {
+                    q.push(Command::ProcessData);
+                }
             });
             ui.menu_button("Verify", |ui| {
                 if ui.button("Run DRC").clicked() {
@@ -2256,6 +2315,12 @@ impl IcStudio {
                 }
                 if ui.button("Silicon Correlation…").clicked() {
                     q.push(Command::SiliconCorrelation);
+                }
+                if ui.button("Process Emulation…").clicked() {
+                    q.push(Command::ProcessEmulation);
+                }
+                if ui.button("Process Data…").clicked() {
+                    q.push(Command::ProcessData);
                 }
                 if ui.button("Results Browser…").clicked() {
                     q.push(Command::ResultsBrowser);
@@ -3204,6 +3269,8 @@ impl IcStudio {
             ("Monte Carlo (process and mismatch of device models)".into(), "", Command::MonteCarlo),
             ("Run Monte Carlo".into(), "", Command::RunMonteCarlo),
             ("Silicon correlation (measured curves, model fitting)".into(), "", Command::SiliconCorrelation),
+            ("Process emulation (cross-section of the layout)".into(), "", Command::ProcessEmulation),
+            ("Process data (WAT / PCM, SPC, corners)".into(), "", Command::ProcessData),
             ("Fit the correlation parameters to the measurements".into(), "", Command::FitSilicon),
             ("Stop Monte Carlo".into(), "", Command::StopMonteCarlo),
             ("Optimizer (size devices to meet specs)".into(), "", Command::Optimizer),
@@ -4791,6 +4858,8 @@ impl eframe::App for IcStudio {
         self.sweep_window(&ctx);
         self.monte_carlo_window(&ctx);
         self.silicon_window(&ctx);
+        self.process_window(&ctx);
+        self.process_data_window(&ctx);
         self.results_window(&ctx);
         self.net_window(&ctx);
         self.hier_window(&ctx);

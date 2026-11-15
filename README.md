@@ -187,6 +187,15 @@ Linux needs the usual windowing libraries:
 - Hierarchy and net browsers; a visual DRC rule designer that self-tests every rule; a
   stream layer map (Virtuoso layer map files) for GDSII / OASIS import and export
 
+**Process** ([guide](https://pages.euiyun.com/ic-studio/process.html))
+- Process emulation: the cross-section of a layout along a cut line after a process flow
+  (deposit, conformal deposit, anisotropic / isotropic etch, implant, CMP, strip) with a
+  generic 180 nm flow; step through the flow, probe material stacks, export SVG
+  (`ics xsection`, MCP `process_cross_section`)
+- Process data: WAT / PCM results against the process spec with Cp / Cpk, control charts
+  of the wafer means (Western Electric rules) and a check that the model corners cover the
+  measured spread (`ics process-data`, MCP `process_data`)
+
 **Technology**
 - `tech.json` with layers, GDS numbers, colours, fill patterns, width / spacing, vias,
   capacitance coefficients, sheet / via resistance and the DRC deck. A generic 180 nm-class demo technology is
@@ -372,8 +381,9 @@ fit for production use, including the optics of image sensors.
    the pixel's layout; carrier diffusion with electrical crosstalk and deep trench isolation; stacks generated
    from the PDK's back-end cross section and the layout.
 4. **Prediction and process**: Done: yield prediction from Monte Carlo with surrogate models
-   and sensitivities; silicon-to-simulation correlation with model fitting. Next: process
-   emulation (3-D cross-sections from layout and process steps) and process data management.
+   and sensitivities; silicon-to-simulation correlation with model fitting; process
+   emulation (cross-sections from layout and process steps); process data (WAT / PCM, SPC,
+   corner coverage).
 
 Also: Python API (PyO3), non-Manhattan DRC and extraction, resistor / capacitor definitions
 in the bundled PDKs.

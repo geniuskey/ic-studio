@@ -806,6 +806,31 @@ pub fn definitions() -> Vec<Value> {
             &["cell"],
         ),
         tool(
+            "process_cross_section",
+            "Process emulation: the cross-section of a cell's layout along a cut line, built by running a process flow (deposit, etch, implant, planarize, strip on a 2-D grid; masks are layout layers or derived-layer expressions). Without a flow, the generic 180 nm flow (STI, wells, gate, spacers, S/D, contacts, three metals). Returns the materials and the material stack (bottom up, µm) at points along the cut; svg_path writes the picture.",
+            json!({
+                "cell": cell(),
+                "flow": {"type": "string", "description": "Process flow TOML text (see process/generic180.toml)."},
+                "flow_path": {"type": "string", "description": "Process flow file instead of the text."},
+                "cut": {"type": "array", "items": {"type": "number"}, "description": "[x0, y0, x1, y1] in µm (default: horizontal across the largest diffusion area)."},
+                "steps": {"type": "integer", "minimum": 0, "description": "Stop after this many steps."},
+                "at": {"type": "array", "items": {"type": "number"}, "description": "Positions along the cut (µm) for the stacks (default: 5 points)."},
+                "svg_path": {"type": "string", "description": "Write the cross-section as SVG to this file."}
+            }),
+            &["cell"],
+        ),
+        tool(
+            "process_data",
+            "Process data: WAT / PCM results (CSV text or file with lot, wafer, site and one column per parameter) against the process specification (TOML; default the generic 180 nm WAT spec). Returns per parameter mean, sigma, Cp, Cpk, out-of-spec sites, the control chart of wafer means (centre, limits from a baseline) with Western Electric rule alarms, the z-score of each model corner and whether the corners cover the measured ±3σ, and the strongly correlated parameter pairs.",
+            json!({
+                "csv": {"type": "string", "description": "The CSV text."},
+                "path": {"type": "string", "description": "A CSV file instead of the text."},
+                "spec": {"type": "string", "description": "Specification TOML text (see process/generic180_wat.toml)."},
+                "spec_path": {"type": "string", "description": "A specification file instead of the text."}
+            }),
+            &[],
+        ),
+        tool(
             "place_like",
             &format!(
                 "Layout by example: place a cell's devices like a finished reference cell with the same circuit topology. Devices and nets are matched by topology (names and sizes may differ); every MOS device goes where its counterpart is in the reference, sized from this cell's schematic, with the reference's wells, implants and taps. The cell's layout is replaced. Optionally route afterwards. {NOT_SAVED}"
@@ -1011,6 +1036,8 @@ impl State {
             "diff_layout" => self.diff_layout(a),
             "optimize" => self.optimize(a),
             "place_like" => self.place_like(a),
+            "process_data" => process_data(a),
+            "process_cross_section" => self.process_cross_section(a),
             "correlate_silicon" => self.correlate_silicon(a),
             "predict_yield" => self.predict_yield(a),
             "extract" => self.extract(a),
@@ -1900,6 +1927,54 @@ impl State {
         }))
     }
 
+    fn process_cross_section(&mut self, a: &Args) -> Result<Value, String> {
+        use ics_core::process::{Cut, GENERIC180, ProcessFlow, default_cut, emulate_cell};
+        let (p, r) = self.cell_arg(a)?;
+        let text = match (a.0.get("flow").and_then(Value::as_str), a.0.get("flow_path").and_then(Value::as_str)) {
+            (Some(t), _) => t.to_string(),
+            (None, Some(path)) => std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?,
+            _ => GENERIC180.to_string(),
+        };
+        let flow = ProcessFlow::from_toml(&text).map_err(|e| format!("process flow: {e}"))?;
+        let cut = match a.0.get("cut").and_then(Value::as_array) {
+            Some(v) => {
+                let n: Vec<f64> = v.iter().filter_map(Value::as_f64).collect();
+                let [x0, y0, x1, y1] = n[..] else { return Err("cut: give [x0, y0, x1, y1] in µm".into()) };
+                Cut { x0, y0, x1, y1 }
+            }
+            None => default_cut(p, &r)?,
+        };
+        let steps = a.0.get("steps").and_then(Value::as_u64).map(|n| n as usize);
+        let s = emulate_cell(p, &r, &flow, &cut, steps)?;
+        let len = cut.length();
+        let at: Vec<f64> = match a.0.get("at").and_then(Value::as_array) {
+            Some(v) => v.iter().filter_map(Value::as_f64).collect(),
+            None => (1..=5).map(|k| len * k as f64 / 6.0).collect(),
+        };
+        if let Some(path) = a.0.get("svg_path").and_then(Value::as_str) {
+            std::fs::write(path, s.svg(&flow, (1200.0 / len).clamp(50.0, 2000.0), &format!("{r} {}", flow.name)))
+                .map_err(|e| format!("{path}: {e}"))?;
+        }
+        let n = steps.unwrap_or(flow.steps.len()).min(flow.steps.len());
+        let columns: Vec<Value> = at
+            .iter()
+            .map(|x| {
+                json!({"x": sig(*x), "surface": sig(s.surface_at(*x)),
+                    "stack": s.stack_at(*x).iter().map(|(m, t)| json!({"material": m, "thickness": sig(*t)})).collect::<Vec<_>>()})
+            })
+            .collect();
+        Ok(json!({
+            "cell": r.to_string(),
+            "flow": flow.name,
+            "cut": [cut.x0, cut.y0, cut.x1, cut.y1],
+            "length": sig(len),
+            "steps_run": n,
+            "last_step": if n > 0 { flow.steps[n - 1].label() } else { "substrate".into() },
+            "materials": s.materials,
+            "columns": columns,
+        }))
+    }
+
     fn place_like(&mut self, a: &Args) -> Result<Value, String> {
         let (p, target) = self.cell_arg(a)?;
         let reference = resolve(p, a.str("reference")?)?;
@@ -2271,6 +2346,42 @@ impl State {
             }
         }
     }
+}
+
+fn process_data(a: &Args) -> Result<Value, String> {
+    use ics_core::process_data::{GENERIC180_SPEC, ProcessSpec, WatData, correlation, summarize};
+    let read = |text: &str, path: &str| -> Result<Option<String>, String> {
+        match (a.0.get(text).and_then(Value::as_str), a.0.get(path).and_then(Value::as_str)) {
+            (Some(t), _) => Ok(Some(t.to_string())),
+            (None, Some(p)) => std::fs::read_to_string(p).map(Some).map_err(|e| format!("{p}: {e}")),
+            _ => Ok(None),
+        }
+    };
+    let csv = read("csv", "path")?.ok_or("give the data as csv or path")?;
+    let d = WatData::parse(&csv)?;
+    let spec = ProcessSpec::from_toml(&read("spec", "spec_path")?.unwrap_or_else(|| GENERIC180_SPEC.to_string()))?;
+    let wafers = d.wafers();
+    let params: Vec<Value> = summarize(&d, &spec)
+        .iter()
+        .map(|s| {
+            json!({"name": s.name, "n": s.n, "mean": sig(s.mean), "sigma": sig(s.std), "cp": s.cp.map(sig), "cpk": s.cpk.map(sig),
+                "out_of_spec": s.out_of_spec, "control": {"center": sig(s.center), "ucl": sig(s.ucl), "lcl": sig(s.lcl)},
+                "alarms": s.violations.iter().map(|v| json!({"rule": v.rule, "lot": wafers[v.wafer].0, "wafer": wafers[v.wafer].1,
+                    "message": v.message})).collect::<Vec<_>>(),
+                "corners": s.corners.iter().map(|c| json!({"corner": c.0, "value": c.1, "z": sig(c.2)})).collect::<Vec<_>>(),
+                "corners_cover_3sigma": s.corners_cover})
+        })
+        .collect();
+    let mut cors = vec![];
+    for i in 0..d.params.len() {
+        for j in i + 1..d.params.len() {
+            let r = correlation(&d, i, j);
+            if r.abs() >= 0.7 {
+                cors.push(json!({"a": d.params[i], "b": d.params[j], "r": sig(r)}));
+            }
+        }
+    }
+    Ok(json!({"spec": spec.name, "sites": d.sites.len(), "wafers": wafers.len(), "params": params, "correlations": cors}))
 }
 
 #[cfg(test)]

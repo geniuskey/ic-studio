@@ -248,6 +248,42 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Process emulation: the cross-section of a cell's layout along a cut line, built by
+    /// running a process flow (TOML; default: the generic 180 nm flow) step by step. Prints the
+    /// material stack at points along the cut; `--svg` writes the picture.
+    Xsection {
+        project: PathBuf,
+        cell: String,
+        /// Process flow file (see `process/generic180.toml`).
+        #[arg(long)]
+        flow: Option<PathBuf>,
+        /// Cut line `x0,y0,x1,y1` in µm (default: horizontal through the middle of the layout).
+        #[arg(long)]
+        cut: Option<String>,
+        /// Stop after this many steps.
+        #[arg(long)]
+        steps: Option<usize>,
+        /// Positions along the cut (µm) to print the stack at (repeatable; default: 5 points).
+        #[arg(long = "at")]
+        at: Vec<f64>,
+        /// Write the cross-section as SVG.
+        #[arg(long)]
+        svg: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Process data: WAT / PCM results (CSV with lot, wafer, site and parameter columns)
+    /// against the process specification: capability (Cp, Cpk), out-of-spec sites, control
+    /// chart rules on the wafer means, and whether the model corners cover the measured
+    /// spread. Non-zero exit on out-of-spec sites or control-rule violations.
+    ProcessData {
+        data: PathBuf,
+        /// Specification (TOML; default: the generic 180 nm WAT spec).
+        #[arg(long)]
+        spec: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Size the cell's devices to meet its specs (`sim.sweep.specs`) with the variables of its
     /// optimizer setup (`sim.optimize`); `--apply` writes the best values into the schematic.
     Optimize {
@@ -1403,6 +1439,160 @@ fn run(cli: Cli) -> Result<(), String> {
                     }
                 }
                 p.save().map_err(|e| e.to_string())?;
+            }
+        }
+        Cmd::Xsection { project, cell, flow, cut, steps, at, svg, json } => {
+            use ics_core::process::{Cut, GENERIC180, ProcessFlow, default_cut, emulate_cell};
+            let p = Project::open(&project).map_err(|e| e.to_string())?;
+            let r = resolve(&p, &cell)?;
+            let text = match &flow {
+                Some(f) => std::fs::read_to_string(f).map_err(|e| format!("{}: {e}", f.display()))?,
+                None => GENERIC180.to_string(),
+            };
+            let fl = ProcessFlow::from_toml(&text).map_err(|e| format!("process flow: {e}"))?;
+            let cut = match &cut {
+                Some(c) => Cut::parse(c)?,
+                None => default_cut(&p, &r)?,
+            };
+            let started = std::time::Instant::now();
+            let s = emulate_cell(&p, &r, &fl, &cut, steps)?;
+            let len = cut.length();
+            let at = if at.is_empty() { (1..=5).map(|k| len * k as f64 / 6.0).collect() } else { at };
+            if json {
+                let st: Vec<serde_json::Value> = at
+                    .iter()
+                    .map(|x| {
+                        serde_json::json!({"x": x, "surface": s.surface_at(*x),
+                            "stack": s.stack_at(*x).iter().map(|(m, t)| serde_json::json!({"material": m, "thickness": t})).collect::<Vec<_>>()})
+                    })
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::json!({"cell": r.to_string(), "flow": fl.name, "cut": [cut.x0, cut.y0, cut.x1, cut.y1], "length": len,
+                        "steps": steps.unwrap_or(fl.steps.len()).min(fl.steps.len()), "materials": s.materials, "columns": st})
+                );
+            } else {
+                let n = steps.unwrap_or(fl.steps.len()).min(fl.steps.len());
+                println!(
+                    "{r}: {} along ({:.3}, {:.3}) - ({:.3}, {:.3}), {len:.3} µm, {n} of {} steps, {} x {} cells in {:.2} s",
+                    fl.name,
+                    cut.x0,
+                    cut.y0,
+                    cut.x1,
+                    cut.y1,
+                    fl.steps.len(),
+                    s.nx,
+                    s.nz,
+                    started.elapsed().as_secs_f64()
+                );
+                if let Some(last) = fl.steps[..n].last() {
+                    println!("after: {}", last.label());
+                }
+                for x in &at {
+                    let stack: Vec<String> = s.stack_at(*x).iter().map(|(m, t)| format!("{m} {t:.3}")).collect();
+                    println!("  x = {x:>7.3}  surface {:>6.3}  {}", s.surface_at(*x), stack.join(" | "));
+                }
+            }
+            if let Some(path) = &svg {
+                let px_per_um = (1200.0 / len).clamp(50.0, 2000.0);
+                std::fs::write(path, s.svg(&fl, px_per_um, &format!("{r} {}", fl.name)))
+                    .map_err(|e| format!("{}: {e}", path.display()))?;
+                eprintln!("wrote {}", path.display());
+            }
+        }
+        Cmd::ProcessData { data, spec, json } => {
+            use ics_core::process_data::{GENERIC180_SPEC, ProcessSpec, WatData, correlation, summarize};
+            let text = std::fs::read_to_string(&data).map_err(|e| format!("{}: {e}", data.display()))?;
+            let d = WatData::parse(&text).map_err(|e| format!("{}: {e}", data.display()))?;
+            let st = match &spec {
+                Some(f) => std::fs::read_to_string(f).map_err(|e| format!("{}: {e}", f.display()))?,
+                None => GENERIC180_SPEC.to_string(),
+            };
+            let sp = ProcessSpec::from_toml(&st).map_err(|e| format!("spec: {e}"))?;
+            let sum = summarize(&d, &sp);
+            let wafers = d.wafers();
+            // The strongest correlations between parameters.
+            let mut cors = vec![];
+            for a in 0..d.params.len() {
+                for b in a + 1..d.params.len() {
+                    let r = correlation(&d, a, b);
+                    if r.abs() >= 0.7 {
+                        cors.push((d.params[a].clone(), d.params[b].clone(), r));
+                    }
+                }
+            }
+            cors.sort_by(|x, y| y.2.abs().total_cmp(&x.2.abs()));
+            let bad = sum.iter().any(|s| s.out_of_spec > 0 || !s.violations.is_empty());
+            if json {
+                let ps: Vec<serde_json::Value> = sum
+                    .iter()
+                    .map(|s| {
+                        serde_json::json!({"name": s.name, "unit": sp.param(&s.name).map(|p| p.unit.clone()), "n": s.n, "mean": s.mean,
+                            "sigma": s.std, "min": s.min, "max": s.max, "cp": s.cp, "cpk": s.cpk, "out_of_spec": s.out_of_spec,
+                            "control": {"center": s.center, "ucl": s.ucl, "lcl": s.lcl},
+                            "violations": s.violations.iter().map(|v| serde_json::json!({"rule": v.rule,
+                                "lot": wafers[v.wafer].0, "wafer": wafers[v.wafer].1, "message": v.message})).collect::<Vec<_>>(),
+                            "corners": s.corners.iter().map(|c| serde_json::json!({"corner": c.0, "value": c.1, "z": c.2})).collect::<Vec<_>>(),
+                            "corners_cover_3sigma": s.corners_cover})
+                    })
+                    .collect();
+                let cj: Vec<serde_json::Value> = cors.iter().map(|c| serde_json::json!({"a": c.0, "b": c.1, "r": c.2})).collect();
+                println!(
+                    "{}",
+                    serde_json::json!({"spec": sp.name, "sites": d.sites.len(), "wafers": wafers.len(), "params": ps, "correlations": cj})
+                );
+            } else {
+                println!("{}: {} sites on {} wafers against {}", data.display(), d.sites.len(), wafers.len(), sp.name);
+                println!(
+                    "  {:<10} {:>6} {:>11} {:>10} {:>6} {:>6} {:>5}  corners",
+                    "param", "unit", "mean", "sigma", "Cp", "Cpk", "OOS"
+                );
+                let f2 = |v: Option<f64>| v.map_or("—".to_string(), |x| format!("{x:.2}"));
+                for s in &sum {
+                    let unit = sp.param(&s.name).map_or(String::new(), |p| p.unit.clone());
+                    let corners = match s.corners_cover {
+                        Some(true) => "cover ±3σ".to_string(),
+                        Some(false) => {
+                            let z: Vec<String> = s.corners.iter().map(|c| format!("{} {:+.1}σ", c.0, c.2)).collect();
+                            format!("NARROWER than ±3σ ({})", z.join(", "))
+                        }
+                        None => String::new(),
+                    };
+                    println!(
+                        "  {:<10} {:>6} {:>11} {:>10} {:>6} {:>6} {:>5}  {corners}",
+                        s.name,
+                        unit,
+                        format_eng(s.mean, ""),
+                        format_eng(s.std, ""),
+                        f2(s.cp),
+                        f2(s.cpk),
+                        s.out_of_spec
+                    );
+                }
+                for s in &sum {
+                    let Some(first) = s.violations.first() else { continue };
+                    let (lot, wafer, _) = &wafers[first.wafer];
+                    let mut rules: Vec<u8> = s.violations.iter().map(|v| v.rule).collect();
+                    rules.sort_unstable();
+                    rules.dedup();
+                    let n_wafers = {
+                        let mut w: Vec<usize> = s.violations.iter().map(|v| v.wafer).collect();
+                        w.dedup();
+                        w.len()
+                    };
+                    println!(
+                        "  SPC {}: out of control from lot {lot} wafer {wafer} ({}), {n_wafers} wafer(s) flagged, rules {}",
+                        s.name,
+                        first.message,
+                        rules.iter().map(u8::to_string).collect::<Vec<_>>().join(", ")
+                    );
+                }
+                for (a, b, r) in cors.iter().take(6) {
+                    println!("  correlated: {a} / {b}  r = {r:+.2}");
+                }
+            }
+            if bad {
+                return Err("out-of-spec sites or control-rule violations".into());
             }
         }
         Cmd::Optimize { project, cell, post_layout, apply, json } => {
