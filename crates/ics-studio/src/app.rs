@@ -76,6 +76,8 @@ impl Workspace {
 pub enum Command {
     NewProjectDialog,
     NewDemoProject,
+    /// Write the example projects, one per topic, to a folder chosen by the user.
+    SaveExamples,
     /// Open the example project of a topic (`examples::TOPICS`), unsaved.
     OpenExample(String),
     OpenProjectDialog,
@@ -215,6 +217,8 @@ struct Settings {
     interaction: Profile,
     check_updates: bool,
     llm: crate::llm::LlmSettings,
+    /// App version that last wrote the example projects to the documents folder.
+    examples_version: String,
 }
 
 impl Default for Settings {
@@ -228,6 +232,7 @@ impl Default for Settings {
             interaction: Profile::Virtuoso,
             check_updates: true,
             llm: Default::default(),
+            examples_version: String::new(),
         }
     }
 }
@@ -526,6 +531,12 @@ pub struct IcStudio {
 
 const SETTINGS_KEY: &str = "ic-studio-settings";
 
+/// Where the installer and the app put the example projects: `Documents/IC Studio/Examples`
+/// (or `~/IC Studio/Examples` without a documents folder).
+fn examples_dir() -> Option<PathBuf> {
+    dirs::document_dir().or_else(dirs::home_dir).map(|d| d.join("IC Studio").join("Examples"))
+}
+
 impl IcStudio {
     pub fn new(cc: &eframe::CreationContext<'_>, args: crate::LaunchArgs) -> Self {
         let settings: Settings =
@@ -754,6 +765,15 @@ impl IcStudio {
                 self.set_project(p);
                 self.dirty = true;
                 self.info("Created demo project (unsaved) — use File ▸ Save to choose a folder".into());
+            }
+            Command::SaveExamples => {
+                let mut dialog = rfd::FileDialog::new().set_title("Save the example projects into a folder");
+                if let Some(d) = examples_dir().filter(|d| d.exists()).or_else(dirs::document_dir) {
+                    dialog = dialog.set_directory(d);
+                }
+                if let Some(dir) = dialog.pick_folder() {
+                    self.write_examples(&dir);
+                }
             }
             Command::OpenExample(name) => {
                 if !self.guard_unsaved(Command::OpenExample(name.clone())) {
@@ -1836,6 +1856,13 @@ impl IcStudio {
                         }
                     }
                 });
+                if ui
+                    .button("Save Examples to Folder…")
+                    .on_hover_text("Write the example projects, one folder per topic")
+                    .clicked()
+                {
+                    q.push(Command::SaveExamples);
+                }
                 if ui.add(egui::Button::new("Open Project…").shortcut_text(theme::kbd("⌘O"))).clicked() {
                     q.push(Command::OpenProjectDialog);
                 }
@@ -2951,6 +2978,7 @@ impl IcStudio {
             ("Open project…".into(), "⌘O", Command::OpenProjectDialog),
             ("New project…".into(), "", Command::NewProjectDialog),
             ("New demo project".into(), "", Command::NewDemoProject),
+            ("Save example projects to a folder…".into(), "", Command::SaveExamples),
             ("New cell…".into(), "⌘N", Command::NewCellDialog),
             ("Run DRC".into(), "", Command::RunDrc),
             ("Extract nets".into(), "", Command::ExtractNets),
@@ -3585,6 +3613,39 @@ impl IcStudio {
     pub fn announce_update(&mut self, r: update::Release) {
         self.update_toast = Some(r.version.clone());
         self.updater.state = update::State::Available(r);
+    }
+
+    /// Writes the example projects that are missing from `dir` (existing ones are kept) and
+    /// reports it. Returns whether it succeeded.
+    pub fn write_examples(&mut self, dir: &Path) -> bool {
+        match examples::write_topics(dir, false) {
+            Ok(written) if written.is_empty() => {
+                self.info(format!("The example projects are already in {}", dir.display()));
+                true
+            }
+            Ok(written) => {
+                self.ok(format!("Wrote example project(s) {} to {}", written.join(", "), dir.display()));
+                true
+            }
+            Err(e) => {
+                self.error(format!("Could not write the example projects to {}: {e}", dir.display()));
+                false
+            }
+        }
+    }
+
+    /// After an install or update (a version that has not written them yet), adds the example
+    /// projects missing from `Documents/IC Studio/Examples`, as the installer does. Examples
+    /// already there are kept. Skipped in debug builds.
+    pub fn sync_examples_on_start(&mut self) {
+        let version = env!("CARGO_PKG_VERSION");
+        if cfg!(debug_assertions) || self.settings.examples_version == version {
+            return;
+        }
+        let Some(dir) = examples_dir() else { return };
+        if self.write_examples(&dir) {
+            self.settings.examples_version = version.into();
+        }
     }
 
     pub fn check_updates_on_start(&mut self, ctx: &egui::Context) {

@@ -1159,8 +1159,12 @@ pub const TOPICS: [Topic; 5] = [
 /// The example project of topic `name`: its cells of the demo project in library `work`, plus
 /// every cell their layouts place (from any library). Libraries left empty are dropped.
 pub fn topic_project(name: &str) -> Option<Project> {
+    topic_from(&demo_project(), name)
+}
+
+fn topic_from(demo: &Project, name: &str) -> Option<Project> {
     let topic = TOPICS.iter().find(|t| t.name == name)?;
-    let mut p = demo_project();
+    let mut p = demo.clone();
     p.name = topic.name.into();
     p.description = format!("{}: {}", topic.title, topic.description);
     let mut keep: HashSet<CellRef> = HashSet::new();
@@ -1179,12 +1183,14 @@ pub fn topic_project(name: &str) -> Option<Project> {
 /// Returns the topics written.
 pub fn write_topics(dir: &std::path::Path, overwrite: bool) -> crate::project::Result<Vec<&'static str>> {
     let mut written = Vec::new();
+    let mut demo = None;
     for t in &TOPICS {
         let root = dir.join(t.name);
         if root.join(crate::project::MANIFEST).exists() && !overwrite {
             continue;
         }
-        let mut p = topic_project(t.name).expect("known topic");
+        let demo = demo.get_or_insert_with(demo_project);
+        let mut p = topic_from(demo, t.name).expect("known topic");
         p.save_as(&root)?;
         written.push(t.name);
     }

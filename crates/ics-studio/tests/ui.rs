@@ -89,6 +89,23 @@ fn open_example_from_welcome() {
     assert!(p.root.is_none(), "opened unsaved");
 }
 
+/// Save Examples to Folder: writes the missing example projects and keeps existing ones.
+#[test]
+fn save_examples_to_folder() {
+    let dir = std::env::temp_dir().join(format!("ics-ui-examples-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut h = app(LaunchArgs { project: None, demo: false, workspace: Some("home".into()), cell: None, run: false });
+    assert!(h.state_mut().write_examples(&dir));
+    assert!(dir.join("analog").join("ic-studio.json").exists());
+    assert!(h.state().console_lines().any(|l| l.starts_with("Wrote example project(s) getting_started, analog")));
+    std::fs::remove_dir_all(dir.join("digital")).unwrap();
+    assert!(h.state_mut().write_examples(&dir));
+    assert!(h.state().console_lines().any(|l| l.starts_with("Wrote example project(s) digital to")), "only the missing one");
+    assert!(h.state_mut().write_examples(&dir));
+    assert!(h.state().console_lines().any(|l| l.starts_with("The example projects are already in")));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[test]
 fn project_home() {
     scenario("02_project_home", true, None, "home", false);

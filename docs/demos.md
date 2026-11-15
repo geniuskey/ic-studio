@@ -14,9 +14,11 @@ add `--cell <name> --workspace <schematic|simulation|layout>`.
 
 The same designs also come as smaller projects, one per topic. Open one with the
 **Examples** cards on the welcome page or **File > Open Example** (in memory, like the demo).
-The installer writes them as project folders to `Documents/IC Studio/Examples`; from the
-command line, `ics examples <DIR>` writes them (keeping existing ones unless `--force`) and
-`ics examples` lists them.
+As project folders, they are in `Documents/IC Studio/Examples`: the installer writes them, and
+so does the app on its first start after an install or update. Examples already there are
+kept, so your changes survive updates. **File > Save Examples to Folder…** writes them
+anywhere else; from the command line, `ics examples <DIR>` writes them (keeping existing ones
+unless `--force`) and `ics examples` lists them.
 
 | Topic | Cells |
 |---|---|

@@ -41,7 +41,8 @@ The installer also:
 
 To update, run the installer again; this works while the app or an agent is running
 (restart them afterwards). The app's own updater (**Help > Check for Updates...**) also
-replaces `ics` together with the app.
+replaces `ics` together with the app, and on its first start the new version adds any
+example projects missing from `Documents/IC Studio/Examples`.
 
 Options are environment variables:
 
