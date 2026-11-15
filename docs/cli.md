@@ -40,6 +40,7 @@ it with `cargo build --release -p ics-cli` (binary `target/release/ics`) or run 
 | `ics drc <PROJECT> <CELL> [--deck FILE] [--fix]` | Run DRC (the deck may be SVRF); exit 1 on violations |
 | `ics extract <PROJECT> <CELL>` | Print the extracted netlist as SPICE |
 | `ics lvs <PROJECT> <CELL>` | Compare layout and schematic; exit 1 on differences |
+| `ics pixel --project P --cell CELL [--emit-stack]` | Pixel optics of a cell with the stack built from the technology's cross section (see [Pixel optics](pixel-optics.md#from-the-pdk-cross-section)); `--emit-stack` prints the stack and stops |
 | `ics pixel <STACK> [--project P] [--method ray\|rcwa [--harmonics N]] [--cra DEG] [--lux L --cct K --ir-cut NM] [--set PROJECT CELL INST --color C] [--json]` | Image sensor pixel optics: QE, crosstalk, photocurrent (see [Pixel optics](pixel-optics.md)) |
 | `ics results <PROJECT> <CELL> <FILE>` | Show sign-off results made elsewhere (Calibre, KLayout, netgen); exit 1 on violations or a mismatch |
 | `ics emir <PROJECT> <CELL> --net NET [--currents FILE] [--json]` | IR drop and electromigration of a net from its labelled pins; currents per layout device (JSON) or from the schematic's operating point; exit 1 on EM violations |

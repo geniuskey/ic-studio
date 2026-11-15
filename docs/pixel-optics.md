@@ -61,6 +61,21 @@ lens raises the green QE at 530 nm from 0.106 to 0.176.
 
 ![Pixel Optics with the demo pixel's layout](screenshots/tool_pixel_optics_layout.png)
 
+## From the PDK cross section
+
+A technology can describe its back-end cross section (`cross_section` in a
+[PDK file](technology.md#pixel-cross-section); generic180 has one). The stack of a pixel cell
+then follows from the PDK and the layout alone: the dielectric levels, the metals of each
+level from their layout layers, the photodiode area, the colour filter, planarisation and
+microlens, and the carrier diffusion in the silicon.
+
+- CLI: `ics pixel --project <project> --cell aps3t --lux 100`, or `--emit-stack` to print the
+  generated stack and edit it.
+- GUI: **From PDK** in the Pixel Optics window (or **Pixel stack of the open cell from the PDK
+  cross section** in the command palette) writes the open cell's stack into the editor.
+
+![Pixel Optics with the stack from the PDK](screenshots/tool_pixel_optics_pdk.png)
+
 ## Two solvers
 
 - **Ray** (default): geometric rays with thin-film optics on the silicon. Fast (under a
@@ -81,6 +96,32 @@ The solvers agree exactly without patterned layers (both reduce to thin-film opt
 diffraction and interference at that pitch.
 
 ![Pixel Optics with RCWA](screenshots/tool_pixel_optics_rcwa.png)
+
+## Carrier collection and electrical crosstalk
+
+Without a `[silicon]` section, carriers count when they are generated inside the photodiode's
+box (its area and depth range). With one, they diffuse:
+
+```toml
+[silicon]
+diffusion_length = 20     # µm, minority carriers in the neutral silicon
+epi = 4.0                 # epitaxial layer: carriers reaching its bottom are lost
+surface = "reflecting"    # or "recombining"
+dti = { depth = 2.0, width = 0.1 }   # deep trench isolation on the pixel boundaries
+# grid = 0.08             # voxel size (µm); default about pitch / 16
+```
+
+Each photodiode's collection probability P(r) solves the diffusion equation ∇²P − P/L² = 0
+over the 2 × 2 cell (P = 1 in its depletion region, 0 in the other photodiodes', 0 at the
+epi bottom, no flux through the trenches), and its signal is the optical generation G(r)
+weighted by P, by reciprocity. Both solvers deliver G on the voxel grid. QE then includes the
+carriers that diffuse in from beside and below the photodiode, and the **electrical
+crosstalk** is reported per colour: of the carriers generated under a pixel and collected,
+the fraction a neighbour collects. It grows with wavelength, as red and near-infrared light
+is absorbed deep where carriers spread; trenches cut it.
+
+With a very short diffusion length the model gives the box result again (checked in the
+tests for both solvers).
 
 ## The ray model
 

@@ -16,6 +16,7 @@
 use num_complex::Complex64;
 use serde::Deserialize;
 
+use crate::carriers::{Collection, Grid as SiGrid, Silicon};
 use crate::material::{MaterialSpec, Materials};
 use crate::tmm;
 
@@ -181,6 +182,10 @@ pub struct PixelStack {
     #[serde(default)]
     pub arc: Vec<Film>,
     pub photodiode: Photodiode,
+    /// Carrier diffusion in the silicon: with it, QE counts the carriers each photodiode
+    /// collects (also from outside its depletion region) and electrical crosstalk is reported.
+    #[serde(default)]
+    pub silicon: Option<Silicon>,
     #[serde(default)]
     pub color_filters: ColorFilters,
     /// Extra materials by name.
@@ -351,6 +356,9 @@ pub struct PixelResult {
     /// Optical crosstalk per wavelength and colour: of the light entering through a pixel's
     /// microlens that is collected, the fraction collected by another pixel.
     pub crosstalk: [Vec<f64>; 4],
+    /// Electrical crosstalk per wavelength and colour (with a `[silicon]` model): of the
+    /// carriers generated under a pixel that are collected, the fraction another pixel collects.
+    pub crosstalk_electrical: [Vec<f64>; 4],
     pub budget: Vec<Budget>,
     /// Rays per Bayer cell (ray model).
     pub rays: usize,
@@ -458,8 +466,13 @@ pub fn simulate(stack: &PixelStack, settings: &Settings) -> Result<PixelResult, 
     let (cra, az) = (settings.cra.to_radians(), settings.azimuth.to_radians());
     let d0: V3 = [cra.sin() * az.cos(), cra.sin() * az.sin(), -cra.cos()];
 
+    let coll = match &stack.silicon {
+        Some(si) => Some(Collection::solve(si, p, &stack.photodiode.rects, (stack.photodiode.top, stack.photodiode.bottom))?),
+        None => None,
+    };
     let mut qe: [Vec<f64>; 4] = Default::default();
     let mut xt: [Vec<f64>; 4] = Default::default();
+    let mut xte: [Vec<f64>; 4] = Default::default();
     let mut budget = vec![];
     for &lambda in &settings.wavelengths {
         let idx = |name: &str| mats.get(name).map(|m| m.index(lambda));
@@ -497,16 +510,34 @@ pub fn simulate(stack: &PixelStack, settings: &Settings) -> Result<PixelResult, 
         let mut entered = [[0.0; 2]; 4];
         let mut b = Budget::default();
         let w = 1.0 / ((2 * n_side) * (2 * n_side)) as f64;
+        let mut genv = coll.as_ref().map(|c| (c.grid.clone(), vec![0.0; c.grid.len()]));
         for iy in 0..2 * n_side {
             for ix in 0..2 * n_side {
                 let x0 = (ix as f64 + 0.5) / n_side as f64 * p;
                 let y0 = (iy as f64 + 0.5) / n_side as f64 * p;
-                trace(stack, &optics, lambda, [x0, y0], d0, lens_base, arc_top, w, &mut collected, &mut entered, &mut b);
+                let g = genv.as_mut().map(|(g, v)| (&*g, v.as_mut_slice()));
+                trace(stack, &optics, lambda, [x0, y0], d0, lens_base, arc_top, w, &mut collected, &mut entered, &mut b, g);
             }
         }
         // QE per pixel: the cell holds one pixel of each colour, illuminated with 4 pixels' light.
+        match (&coll, &genv) {
+            (Some(c), Some((_, g))) => {
+                let (q, x, got, total) = collect(c, g);
+                b.collected = got;
+                b.silicon_outside = total - got;
+                for k in 0..4 {
+                    qe[k].push(q[k]);
+                    xte[k].push(x[k]);
+                }
+            }
+            _ => {
+                for k in 0..4 {
+                    qe[k].push(collected[k] * 4.0);
+                    xte[k].push(0.0);
+                }
+            }
+        }
         for c in 0..4 {
-            qe[c].push(collected[c] * 4.0);
             xt[c].push(if entered[c][0] > 0.0 { entered[c][1] / entered[c][0] } else { 0.0 });
         }
         budget.push(b);
@@ -518,11 +549,15 @@ pub fn simulate(stack: &PixelStack, settings: &Settings) -> Result<PixelResult, 
         wavelengths: settings.wavelengths.clone(),
         qe,
         crosstalk: xt,
+        crosstalk_electrical: xte,
         budget,
         rays: (2 * n_side) * (2 * n_side),
         method: "ray".into(),
     })
 }
+
+/// QE per colour, light budget and electrical crosstalk per colour at one wavelength.
+type WavelengthResult = ([f64; 4], Budget, [f64; 4]);
 
 /// Steps of the staircased microlens in the RCWA model.
 const LENS_SLICES: usize = 8;
@@ -634,11 +669,31 @@ fn simulate_rcwa(stack: &PixelStack, settings: &Settings, harmonics: usize) -> R
     };
 
     let pd = &stack.photodiode;
-    let one = |lambda: f64| -> ([f64; 4], Budget) {
+    let coll = match &stack.silicon {
+        Some(si) => Some(Collection::solve(si, p, &pd.rects, (pd.top, pd.bottom))?),
+        None => None,
+    };
+    let one = |lambda: f64| -> ([f64; 4], Budget, [f64; 4]) {
         let sols = problem(lambda).solve();
         let mut qe = [0.0; 4];
         let mut b = Budget::default();
         let w = 1.0 / sols.len() as f64;
+        if let Some(c) = &coll {
+            let mut genv = vec![0.0; c.grid.len()];
+            let whole = (0.0, cell);
+            let depth = c.grid.nz as f64 * c.grid.dz;
+            for s in &sols {
+                s.add_generation(&c.grid, &mut genv, w);
+                b.reflected += s.r * w;
+                b.silicon_deep += s.absorbed(whole, whole, (depth, f64::INFINITY)) * w;
+                let total = s.absorbed(whole, whole, (0.0, f64::INFINITY));
+                b.other_layers += (1.0 - s.r - total).max(0.0) * w;
+            }
+            let (q, x, got, total) = collect(c, &genv);
+            b.collected = got;
+            b.silicon_outside = (total - got).max(0.0);
+            return (q, b, x);
+        }
         for s in &sols {
             let whole_pixel = [[0.0, 0.0, p, p]];
             let area: &[[f64; 4]] = if pd.rects.is_empty() { &whole_pixel } else { &pd.rects };
@@ -661,14 +716,14 @@ fn simulate_rcwa(stack: &PixelStack, settings: &Settings, harmonics: usize) -> R
             b.silicon_deep += s.absorbed(whole, whole, (pd.bottom, f64::INFINITY)) * w;
             b.other_layers += (1.0 - s.r - total).max(0.0) * w;
         }
-        (qe, b)
+        (qe, b, [0.0; 4])
     };
 
     // Wavelengths in parallel; the linear algebra itself stays sequential.
     faer::set_global_parallelism(faer::Par::Seq);
     let wl = &settings.wavelengths;
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(wl.len().max(1));
-    let mut out: Vec<Option<([f64; 4], Budget)>> = vec![None; wl.len()];
+    let mut out: Vec<Option<WavelengthResult>> = vec![None; wl.len()];
     std::thread::scope(|sc| {
         let chunks: Vec<_> = out.chunks_mut(wl.len().div_ceil(threads).max(1)).enumerate().collect();
         let size = wl.len().div_ceil(threads).max(1);
@@ -682,10 +737,12 @@ fn simulate_rcwa(stack: &PixelStack, settings: &Settings, harmonics: usize) -> R
         }
     });
     let mut qe: [Vec<f64>; 4] = Default::default();
+    let mut xte: [Vec<f64>; 4] = Default::default();
     let mut budget = vec![];
-    for (q, b) in out.into_iter().map(Option::unwrap) {
+    for (q, b, x) in out.into_iter().map(Option::unwrap) {
         for c in 0..4 {
             qe[c].push(q[c]);
+            xte[c].push(x[c]);
         }
         budget.push(b);
     }
@@ -696,10 +753,42 @@ fn simulate_rcwa(stack: &PixelStack, settings: &Settings, harmonics: usize) -> R
         wavelengths: wl.clone(),
         qe,
         crosstalk: std::array::from_fn(|_| vec![0.0; wl.len()]),
+        crosstalk_electrical: xte,
         budget,
         rays: 0,
         method: "rcwa".into(),
     })
+}
+
+/// QE per colour, electrical crosstalk per colour, carriers collected and generated in the grid,
+/// from generation `genv` (fractions of the light incident on the cell per voxel).
+fn collect(c: &Collection, genv: &[f64]) -> ([f64; 4], [f64; 4], f64, f64) {
+    let g = &c.grid;
+    let half = g.nx / 2;
+    let mut qe = [0.0; 4];
+    // Per source pixel (column): carriers collected by it and by the others.
+    let mut col = [[0.0; 2]; 4];
+    let mut total = 0.0;
+    for (v, &gv) in genv.iter().enumerate() {
+        if gv == 0.0 {
+            continue;
+        }
+        total += gv;
+        let (i, j) = (v % g.nx, (v / g.nx) % g.ny);
+        let src = PixelStack::color((i / half) as i64, (j / half) as i64);
+        for (pi, pj) in [(0usize, 0usize), (1, 0), (0, 1), (1, 1)] {
+            let got = gv * c.prob(pi, pj, v);
+            let dst = PixelStack::color(pi as i64, pj as i64);
+            qe[dst] += got;
+            col[src][0] += got;
+            if dst != src {
+                col[src][1] += got;
+            }
+        }
+    }
+    let collected: f64 = qe.iter().sum();
+    let xt = std::array::from_fn(|k| if col[k][0] > 0.0 { col[k][1] / col[k][0] } else { 0.0 });
+    (qe.map(|q| 4.0 * q), xt, collected, total)
 }
 
 fn pixel_of(x: f64, y: f64, p: f64) -> (i64, i64) {
@@ -728,6 +817,7 @@ fn trace(
     collected: &mut [f64; 4],
     entered: &mut [[f64; 2]; 4],
     b: &mut Budget,
+    genv: Option<(&SiGrid, &mut [f64])>,
 ) {
     let p = stack.pitch;
     let absorb = |n: Complex64, len: f64| (-4.0 * std::f64::consts::PI * n.im * len / lambda).exp();
@@ -881,6 +971,21 @@ fn trace(
     let pd = &stack.photodiode;
     let path_per_depth = 1.0 / -dsi[2];
     let generated = |z0: f64, z1: f64| (-alpha * z0 * path_per_depth).exp() - (-alpha * z1 * path_per_depth).exp();
+    if let Some((g, cells)) = genv {
+        // Carrier model: deposit the generation in the voxels it falls in, to the epi bottom;
+        // collection is computed afterwards.
+        let depth = g.nz as f64 * g.dz;
+        for k in 0..g.nz {
+            let (za, zb) = (k as f64 * g.dz, (k + 1) as f64 * g.dz);
+            let zm = 0.5 * (za + zb);
+            let (x, y) = (pos[0] + dsi[0] * zm * path_per_depth, pos[1] + dsi[1] * zm * path_per_depth);
+            if let Some(v) = g.voxel(x, y, zm) {
+                cells[v] += power * generated(za, zb);
+            }
+        }
+        b.silicon_deep += power * (-alpha * depth * path_per_depth).exp();
+        return;
+    }
     b.silicon_shallow += power * generated(0.0, pd.top);
     b.silicon_deep += power * (-alpha * pd.bottom * path_per_depth).exp();
     const STEPS: usize = 48;
@@ -1130,6 +1235,61 @@ bottom = 3.0
         assert!(simulate(&s, &Settings { wavelengths: vec![0.55], rays_per_side: 8, ..Settings::default() }).is_ok());
         let mut t = PixelStack::from_toml(text).unwrap();
         assert!(t.fill_from_layout((4.0, 3.0), |_| Ok(vec![])).unwrap_err().contains("square"));
+    }
+
+    #[test]
+    fn carrier_collection() {
+        // A small photodiode in a BSI-like stack.
+        let base = PixelStack::from_toml(&BSI.replace(
+            "[photodiode]\ntop = 0.05\nbottom = 3.0",
+            "[photodiode]\ntop = 0.1\nbottom = 1.5\nrects = [[0.2, 0.2, 1.2, 1.2]]",
+        ))
+        .unwrap();
+        let wl = vec![0.45, 0.55, 0.65, 0.85];
+        let run = |st: &PixelStack, m| {
+            simulate(st, &Settings { wavelengths: wl.clone(), rays_per_side: 20, method: m, ..Settings::default() }).unwrap()
+        };
+        let with = |l: f64, dti: bool| {
+            let mut st = base.clone();
+            st.silicon = Some(Silicon {
+                diffusion_length: l,
+                epi: Some(4.0),
+                // On the photodiode's edges, so that the voxels match the box model's volume.
+                grid: Some(0.1),
+                dti: dti.then_some(crate::carriers::Dti { depth: 4.0, width: 0.1 }),
+                ..Silicon::default()
+            });
+            st
+        };
+        for m in [Method::Ray, Method::Rcwa { harmonics: 7 }] {
+            let boxed = run(&base, m);
+            // A very short diffusion length collects only the depletion region: the box model.
+            let short = run(&with(0.01, false), m);
+            for c in 0..4 {
+                for i in 0..wl.len() {
+                    let (a, b) = (short.qe[c][i], boxed.qe[c][i]);
+                    assert!((a - b).abs() < 0.03 * b.max(0.05), "{m:?} c{c} {}: {a} vs {b}", wl[i]);
+                }
+            }
+            // Diffusion adds carriers from outside the depletion region, and spills them into
+            // neighbours at long wavelengths; trenches keep them home.
+            let long = run(&with(30.0, false), m);
+            let trench = run(&with(30.0, true), m);
+            assert!(long.qe[1][1] > short.qe[1][1] * 1.05, "{m:?}: {} vs {}", long.qe[1][1], short.qe[1][1]);
+            assert!(long.crosstalk_electrical[1][3] > 0.05, "{m:?}: {:?}", long.crosstalk_electrical[1]);
+            assert!(trench.crosstalk_electrical[1][3] < 0.5 * long.crosstalk_electrical[1][3], "{m:?}");
+            for b in &long.budget {
+                let sum = b.reflected
+                    + b.color_filter
+                    + b.metal
+                    + b.other_layers
+                    + b.silicon_shallow
+                    + b.collected
+                    + b.silicon_outside
+                    + b.silicon_deep;
+                assert!((sum - 1.0).abs() < 2e-3, "{m:?} {b:?}");
+            }
+        }
     }
 
     #[test]

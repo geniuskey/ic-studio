@@ -229,6 +229,7 @@ The main sections:
 | `[models]` | `path`, `extra` (more model files loaded at the same corner), `corners`, `default`, `length_unit` (`m` or `um`), `osdi` (compiled Verilog-A models, OpenVAF `.osdi`, that ngspice loads first), `lde` (`true` when the models take the layout-dependent parameters `nf sa sb sd`; post-layout decks then [back-annotate them](simulation.md#post-layout-simulation)) |
 | `drc_deck` | Optional DRC deck file |
 | `[[signoff]]` | External DRC / LVS runsets: `name`, `tool` (`klayout`, `calibre`, `netgen`, `builtin`), `check` (`drc`, `lvs`), `deck`, `vars`, `klayout`, `skip`, `ground` (see [Verification](verification.md#sign-off-with-external-tools)) |
+| `[cross_section]` | Back-end cross section for image sensor pixels (see [below](#pixel-cross-section)) |
 | `[[cap]]` | Parasitic coefficients, as in `tech.json`, with optional `resistance` (Ω per square) and `em` (A per µm of width) |
 
 What changes with a PDK:
@@ -264,6 +265,33 @@ enc = 0.1
 
 The contact to gate spacing grows when needed so that neighbouring source / drain contacts
 keep the first metal's spacing at short gate lengths.
+
+## Pixel cross section
+
+`[cross_section]` describes the back end over the silicon for the
+[pixel optics model](pixel-optics.md#from-the-pdk-cross-section). Lengths are in µm.
+
+```toml
+[cross_section]
+levels = [                                # from the silicon surface up
+  { name = "arc", material = "si3n4", thickness = 0.06, film = true },
+  { name = "pmd", material = "sio2", thickness = 0.8 },
+  { name = "metal 1", material = "sio2", thickness = 0.5, layer = "metal1", metal = "al" },
+  { name = "imd 1", material = "sio2", thickness = 0.8 },
+  { name = "metal 2", material = "sio2", thickness = 0.5, layer = "metal2", metal = "al" },
+  { name = "passivation", material = "si3n4", thickness = 0.5 },
+]
+photodiode = { layer = "active not interact poly", top = 0.1, bottom = 3.0 }
+pixel = { color_filter = 0.9, planarisation = 0.4, microlens_height = 2.5, center_on_photodiode = true }
+silicon = { diffusion_length = 20.0, epi = 5.0 }
+```
+
+| Key | Content |
+|---|---|
+| `levels` | `name`, `material` (the dielectric), `thickness`, optional `layer` (layout layer or derived-layer expression) and `metal` (its material within the level), `film` (a thin film treated coherently) |
+| `photodiode` | `layer` (layer or expression of the collecting area), `top` and `bottom` depth below the silicon surface |
+| `pixel` | Colour filter and planarisation thickness, microlens height, `center_on_photodiode` |
+| `silicon` | Minority carrier diffusion length and epitaxial layer thickness, for carrier collection |
 
 ## Importing a real PDK layer set
 

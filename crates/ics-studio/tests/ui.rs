@@ -525,6 +525,16 @@ fn pixel_optics() {
     let g = r.qe[1][r.wavelengths.iter().position(|&l| (l - 0.53).abs() < 1e-9).unwrap()];
     assert!((0.1..0.4).contains(&g), "{g}");
     shot(&mut h, "36_pixel_optics_layout");
+    // The open cell's stack from the technology's cross section, with carrier diffusion.
+    h.state_mut().command(Command::PixelStackFromPdk);
+    h.state_mut().command(Command::RunPixelOptics);
+    h.run_steps(3);
+    let px = h.state().pixel_optics();
+    assert!(px.text.contains("cell = \"work/aps3t\""), "{}", px.text);
+    let r = px.result.as_ref().unwrap().as_ref().unwrap();
+    assert!(px.stack.as_ref().unwrap().silicon.is_some());
+    assert!(r.crosstalk_electrical[1].iter().any(|&x| x > 0.0));
+    shot(&mut h, "37_pixel_optics_pdk");
 }
 
 /// Corner / Sweep Manager: sweep R1 and check the bandwidth spec on every point.

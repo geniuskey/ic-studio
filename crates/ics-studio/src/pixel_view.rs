@@ -71,6 +71,8 @@ pub enum PixelAction {
     },
     Load,
     Run,
+    /// Build the stack of the active cell from the technology's cross section.
+    FromPdk,
 }
 
 impl PixelOptics {
@@ -216,6 +218,10 @@ impl PixelOptics {
                         self.text = LAYOUT_EXAMPLE.to_string();
                         self.path = None;
                     }
+                    if ui.button("From PDK").on_hover_text("The open cell's stack from the technology's cross section").clicked()
+                    {
+                        action = Some(PixelAction::FromPdk);
+                    }
                 });
                 if let Some(p) = &self.path {
                     ui.label(RichText::new(p.display().to_string()).small().color(pal.text_weak));
@@ -284,6 +290,11 @@ impl PixelOptics {
                                 let pts: PlotPoints =
                                     r.wavelengths.iter().zip(&r.crosstalk[1]).map(|(&l, &x)| [l * 1000.0, x]).collect();
                                 pu.line(Line::new("crosstalk G", pts).color(pal.text_weak).style(egui_plot::LineStyle::dashed_loose()));
+                            }
+                            if r.crosstalk_electrical[1].iter().any(|&x| x > 0.0) {
+                                let pts: PlotPoints =
+                                    r.wavelengths.iter().zip(&r.crosstalk_electrical[1]).map(|(&l, &x)| [l * 1000.0, x]).collect();
+                                pu.line(Line::new("electrical crosstalk G", pts).color(pal.warning).style(egui_plot::LineStyle::dotted_dense()));
                             }
                         });
                         if let Some(st) = &stack {

@@ -434,6 +434,37 @@ fn span(beta: C, a: f64, b: f64) -> C {
 }
 
 impl Solution {
+    /// Add `weight` times the power absorbed in each voxel of the substrate grid (fractions of
+    /// the incident power; the grid spans the period, depth from the substrate surface).
+    pub fn add_generation(&self, g: &crate::carriers::Grid, out: &mut [f64], weight: f64) {
+        let n = self.t.len();
+        let i = C::new(0.0, 1.0);
+        let phase_x: Vec<Vec<C>> =
+            (0..n).map(|m| (0..g.nx).map(|a| (-i * self.kx[m] * (a as f64 + 0.5) * g.dx).exp()).collect()).collect();
+        let phase_y: Vec<Vec<C>> =
+            (0..n).map(|m| (0..g.ny).map(|a| (-i * self.ky[m] * (a as f64 + 0.5) * g.dx).exp()).collect()).collect();
+        let phase_z: Vec<Vec<C>> =
+            (0..n).map(|m| (0..g.nz).map(|a| (-i * self.kz[m] * (a as f64 + 0.5) * g.dz).exp()).collect()).collect();
+        let vol = g.dx * g.dx * g.dz;
+        let scale = weight * self.k0 * self.eps_sub_loss * vol / (self.incident_flux * self.area);
+        let mut e = [C::new(0.0, 0.0); 3];
+        for k in 0..g.nz {
+            for b in 0..g.ny {
+                for a in 0..g.nx {
+                    e = [C::new(0.0, 0.0); 3];
+                    for m in 0..n {
+                        let f = phase_x[m][a] * phase_y[m][b] * phase_z[m][k];
+                        for c in 0..3 {
+                            e[c] += self.t[m][c] * f;
+                        }
+                    }
+                    out[g.index(a, b, k)] += scale * (e[0].norm_sqr() + e[1].norm_sqr() + e[2].norm_sqr());
+                }
+            }
+        }
+        let _ = e;
+    }
+
     /// Fraction of the incident power absorbed in the substrate box x ∈ [x0, x1], y ∈ [y0, y1],
     /// depth ∈ [d0, d1] (µm, depth from the substrate surface; `d1` may be infinite).
     pub fn absorbed(&self, x: (f64, f64), y: (f64, f64), d: (f64, f64)) -> f64 {

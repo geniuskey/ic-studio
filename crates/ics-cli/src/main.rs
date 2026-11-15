@@ -332,7 +332,15 @@ enum Cmd {
     /// (TOML, see `pixels/`), and with `--lux` the photocurrent, optionally written into a
     /// current source of a pixel circuit (`--set PROJECT CELL INSTANCE`).
     Pixel {
-        stack: PathBuf,
+        /// Stack file; without one, the stack of `--cell` follows from the technology's cross
+        /// section (`--project` and `--cell`).
+        stack: Option<PathBuf>,
+        /// Pixel cell for a stack built from the technology's cross section.
+        #[arg(long)]
+        cell: Option<String>,
+        /// Print the stack built from the cross section (TOML) and stop.
+        #[arg(long)]
+        emit_stack: bool,
         /// Chief ray angle (degrees) and its azimuth from +x (degrees).
         #[arg(long, default_value_t = 0.0)]
         cra: f64,
@@ -820,14 +828,46 @@ fn run(cli: Cli) -> Result<(), String> {
                 return Err("DRC failed".into());
             }
         }
-        Cmd::Pixel { stack, cra, azimuth, range, rays, project, method, harmonics, lux, cct, ir_cut, set, color, json } => {
+        Cmd::Pixel {
+            stack,
+            cell,
+            emit_stack,
+            cra,
+            azimuth,
+            range,
+            rays,
+            project,
+            method,
+            harmonics,
+            lux,
+            cct,
+            ir_cut,
+            set,
+            color,
+            json,
+        } => {
             use ics_optics::pixel::{COLORS, Method, Settings};
             let method = match method.to_ascii_lowercase().as_str() {
                 "ray" => Method::Ray,
                 "rcwa" => Method::Rcwa { harmonics },
                 other => return Err(format!("unknown --method '{other}' (ray, rcwa)")),
             };
-            let text = std::fs::read_to_string(&stack).map_err(|e| format!("{}: {e}", stack.display()))?;
+            let (text, stack) = match (&stack, &cell) {
+                (Some(f), None) => (std::fs::read_to_string(f).map_err(|e| format!("{}: {e}", f.display()))?, f.clone()),
+                (None, Some(c)) => {
+                    let pdir = project.as_ref().ok_or("--cell needs --project")?;
+                    let p = Project::open(pdir).map_err(|e| e.to_string())?;
+                    let xs = p.tech.cross_section.as_ref().ok_or(format!("technology {} has no cross section", p.tech.name))?;
+                    let boundary = p.tech.layer_index("boundary").map(|_| "boundary");
+                    let t = xs.pixel_stack_toml(&p.tech.name, c, boundary)?;
+                    if emit_stack {
+                        print!("{t}");
+                        return Ok(());
+                    }
+                    (t, PathBuf::from(format!("{c} (cross section)")))
+                }
+                _ => return Err("give a stack file, or --project and --cell for one from the technology's cross section".into()),
+            };
             let mut st = ics_optics::PixelStack::from_toml(&text).map_err(|e| format!("{}: {e}", stack.display()))?;
             if let Some(src) = st.layout.clone() {
                 let pdir =
@@ -880,17 +920,27 @@ fn run(cli: Cli) -> Result<(), String> {
                         )
                     }
                 }
-                println!("{:>6} {:>7} {:>7} {:>7} {:>7}   crosstalk (Gr)", "nm", "QE R", "QE Gr", "QE Gb", "QE B");
+                let elec = st.silicon.is_some();
+                println!(
+                    "{:>6} {:>7} {:>7} {:>7} {:>7}   crosstalk (Gr){}",
+                    "nm",
+                    "QE R",
+                    "QE Gr",
+                    "QE Gb",
+                    "QE B",
+                    if elec { "  electrical crosstalk (Gr)" } else { "" }
+                );
                 let every = ((20.0 / step).round() as usize).max(1);
                 for (i, l) in wavelengths.iter().enumerate().step_by(every) {
                     println!(
-                        "{:>6.0} {:>7.3} {:>7.3} {:>7.3} {:>7.3}   {:.3}",
+                        "{:>6.0} {:>7.3} {:>7.3} {:>7.3} {:>7.3}   {:.3}{}",
                         l * 1000.0,
                         res.qe[0][i],
                         res.qe[1][i],
                         res.qe[2][i],
                         res.qe[3][i],
-                        res.crosstalk[1][i]
+                        res.crosstalk[1][i],
+                        if elec { format!("          {:.3}", res.crosstalk_electrical[1][i]) } else { String::new() }
                     );
                 }
                 for (c, name) in COLORS.iter().enumerate() {

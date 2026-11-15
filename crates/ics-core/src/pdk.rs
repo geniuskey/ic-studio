@@ -157,6 +157,8 @@ struct PdkFile {
     drc_extra: Vec<String>,
     #[serde(default)]
     pin_label: Vec<PinLabel>,
+    /// Vertical structure for pixel optics.
+    cross_section: Option<crate::tech::CrossSection>,
 }
 
 fn default_dbu() -> i64 {
@@ -369,6 +371,7 @@ pub fn parse(text: &str, base: &Path, env: &dyn Fn(&str) -> Option<String>) -> R
         .collect();
     tech.drc_extra = f.drc_extra;
     tech.pin_labels = f.pin_label;
+    tech.cross_section = f.cross_section;
     tech.caps = f.cap;
     let deck_path = f.drc_deck.as_deref().map(|p| resolve(p, base, env)).transpose()?;
     tech.drc_deck = match &deck_path {
@@ -588,6 +591,33 @@ mod tests {
         assert_eq!(parse_color("#102030"), Some([16, 32, 48, crate::tech_import::ALPHA]));
         assert_eq!(parse_color("#10203040"), Some([16, 32, 48, 64]));
         assert_eq!(parse_color("102030"), None);
+    }
+
+    #[test]
+    fn cross_section_table() {
+        let env = |_: &str| None;
+        let text = r#"
+name = "t"
+grid = 0.005
+[[layer]]
+name = "metal1"
+gds = 34
+
+[cross_section]
+levels = [
+  { name = "arc", material = "si3n4", thickness = 0.06, film = true },
+  { name = "metal 1", material = "sio2", thickness = 0.5, layer = "metal1", metal = "al" },
+]
+photodiode = { layer = "active not interact poly", top = 0.1, bottom = 3.0 }
+pixel = { color_filter = 0.9, planarisation = 0.4, microlens_height = 2.5, center_on_photodiode = true }
+silicon = { diffusion_length = 20.0, epi = 5.0 }
+"#;
+        let p = parse(text, Path::new("."), &env).unwrap();
+        let xs = p.tech.cross_section.unwrap();
+        assert_eq!(xs.levels.len(), 2);
+        assert!(xs.levels[0].film && xs.levels[1].metal.as_deref() == Some("al"));
+        assert!(xs.pixel.unwrap().center_on_photodiode);
+        assert_eq!(xs.silicon.unwrap().epi, 5.0);
     }
 
     #[test]

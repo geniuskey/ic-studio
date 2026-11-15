@@ -9,6 +9,7 @@
 // Index-based loops read more naturally in the numerical kernels.
 #![allow(clippy::needless_range_loop)]
 
+pub mod carriers;
 pub mod light;
 pub mod material;
 // Measured values that happen to be close to mathematical constants.

@@ -217,6 +217,7 @@ length_unit = "um"   # 모델이 W / L을 µm로 받음
 | `[models]` | `path`, `extra`(같은 코너로 함께 불러올 모델 파일), `corners`, `default`, `length_unit`(`m` 또는 `um`), `osdi`(ngspice가 먼저 불러오는 컴파일된 Verilog-A 모델, OpenVAF `.osdi`), `lde`(모델이 레이아웃 의존 파라미터 `nf sa sb sd`를 받으면 `true`. 이 경우 레이아웃 후 덱이 [이를 백어노테이션](simulation.md#포스트-레이아웃-시뮬레이션)) |
 | `drc_deck` | DRC 덱 파일(선택) |
 | `[[signoff]]` | 외부 DRC / LVS 런셋: `name`, `tool`(`klayout`, `calibre`, `netgen`, `builtin`), `check`(`drc`, `lvs`), `deck`, `vars`, `klayout`, `skip`, `ground`([검증](verification.md#외부-도구로-사인오프) 참고) |
+| `[cross_section]` | 이미지센서 픽셀용 백엔드 단면([아래](#픽셀-단면) 참고) |
 | `[[cap]]` | 기생 계수. `tech.json`과 같으며 선택적으로 `resistance`(스퀘어당 Ω)와 `em`(폭 µm당 A) |
 
 PDK를 쓰면 달라지는 점:
@@ -251,6 +252,33 @@ enc = 0.1
 
 짧은 게이트 길이에서도 이웃한 소스 / 드레인 콘택이 첫 번째 메탈의 간격을 유지하도록, 필요하면
 콘택과 게이트 사이 간격이 커집니다.
+
+## 픽셀 단면
+
+`[cross_section]`은 [픽셀 광학 모델](pixel-optics.md#pdk-단면에서-가져오기)을 위해 실리콘 위 백엔드를 기술합니다.
+길이는 µm입니다.
+
+```toml
+[cross_section]
+levels = [                                # 실리콘 표면부터 위로
+  { name = "arc", material = "si3n4", thickness = 0.06, film = true },
+  { name = "pmd", material = "sio2", thickness = 0.8 },
+  { name = "metal 1", material = "sio2", thickness = 0.5, layer = "metal1", metal = "al" },
+  { name = "imd 1", material = "sio2", thickness = 0.8 },
+  { name = "metal 2", material = "sio2", thickness = 0.5, layer = "metal2", metal = "al" },
+  { name = "passivation", material = "si3n4", thickness = 0.5 },
+]
+photodiode = { layer = "active not interact poly", top = 0.1, bottom = 3.0 }
+pixel = { color_filter = 0.9, planarisation = 0.4, microlens_height = 2.5, center_on_photodiode = true }
+silicon = { diffusion_length = 20.0, epi = 5.0 }
+```
+
+| 키 | 내용 |
+|---|---|
+| `levels` | `name`, `material`(유전체), `thickness`, 선택적으로 `layer`(레이아웃 레이어 또는 파생 레이어 식)와 `metal`(그 층 안의 금속 재료), `film`(코히어런트로 다루는 박막) |
+| `photodiode` | `layer`(수집 영역의 레이어나 식), 실리콘 표면 아래 `top`, `bottom` 깊이 |
+| `pixel` | 컬러 필터와 평탄화층 두께, 마이크로렌즈 높이, `center_on_photodiode` |
+| `silicon` | 캐리어 수집용 소수 캐리어 확산 길이와 에피층 두께 |
 
 ## 실제 PDK 레이어 세트 가져오기
 

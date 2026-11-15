@@ -36,6 +36,19 @@ IC Studio는 이미지센서 픽셀의 스택(마이크로렌즈, 컬러 필터,
 
 ![레이아웃을 읽은 Pixel Optics](../screenshots/tool_pixel_optics_layout.png)
 
+## PDK 단면에서 가져오기
+
+테크놀로지는 백엔드 단면을 기술할 수 있습니다([PDK 파일](technology.md#픽셀-단면)의 `cross_section`,
+generic180에는 기본으로 있음). 그러면 픽셀 셀의 스택이 PDK와 레이아웃만으로 정해집니다: 유전체 층, 레이아웃
+레이어에서 온 각 층의 금속, 포토다이오드 면적, 컬러 필터, 평탄화층, 마이크로렌즈, 실리콘의 캐리어 확산.
+
+- CLI: `ics pixel --project <project> --cell aps3t --lux 100`. `--emit-stack`은 만든 스택을 출력하므로 고쳐서 쓸 수
+  있습니다.
+- GUI: Pixel Optics 창의 **From PDK**(또는 명령 팔레트의 **Pixel stack of the open cell from the PDK cross
+  section**)가 열린 셀의 스택을 편집기에 씁니다.
+
+![PDK에서 만든 스택의 Pixel Optics](../screenshots/tool_pixel_optics_pdk.png)
+
 ## 두 가지 솔버
 
 - **Ray**(기본): 실리콘 위 박막 광학을 결합한 기하 광선 추적. 1초 이내로 빠르며, 렌즈별 광학
@@ -52,6 +65,21 @@ IC Studio는 이미지센서 픽셀의 스택(마이크로렌즈, 컬러 필터,
 피크는 Ray 0.71, RCWA 0.61이며, 차이는 이 피치에서의 회절과 간섭 때문입니다.
 
 ![RCWA를 쓴 Pixel Optics](../screenshots/tool_pixel_optics_rcwa.png)
+
+## 캐리어 수집과 전기적 크로스토크
+
+`[silicon]` 섹션이 없으면 포토다이오드 상자(면적과 깊이 범위) 안에서 생성된 캐리어만 셉니다. 있으면 캐리어가
+확산합니다. 설정 항목은 `diffusion_length`(중성 실리콘의 소수 캐리어 확산 길이, µm), `epi`(에피층 두께,
+바닥에 닿은 캐리어는 손실), `surface`(`reflecting` 또는 `recombining`), `dti = { depth, width }`(픽셀 경계의
+deep trench isolation), `grid`(복셀 크기, 기본 피치/16 정도)입니다.
+
+각 포토다이오드의 수집 확률 P(r)는 2 × 2 셀에서 확산 방정식 ∇²P − P/L² = 0을 풀어 구합니다(자기 공핍
+영역 P = 1, 다른 포토다이오드 0, 에피 바닥 0, 트렌치는 무유속). 상반성에 따라 신호는 광학 생성률 G(r)에 P를
+가중한 적분이며, 두 솔버 모두 G를 복셀 격자로 넘깁니다. 그러면 QE에 포토다이오드 옆과 아래에서 확산해 오는
+캐리어가 포함되고, 색별 **전기적 크로스토크**(픽셀 아래에서 생성되어 수집된 캐리어 중 이웃이 수집한 비율)가
+보고됩니다. 빨강과 근적외선은 깊이 흡수되어 캐리어가 퍼지므로 파장이 길수록 커지며, 트렌치가 이를 줄입니다.
+
+확산 길이를 아주 짧게 하면 상자 모델 결과로 돌아갑니다(두 솔버 모두 테스트로 확인).
 
 ## Ray 모델
 

@@ -39,3 +39,9 @@ thickness = 0.01
 [photodiode]
 top = 0.05               # µm below the silicon surface
 bottom = 3.0
+rects = [[0.15, 0.15, 1.25, 1.25]]   # lateral extent, µm from the pixel corner
+
+[silicon]                # carrier diffusion: collection beside the photodiode, electrical crosstalk
+diffusion_length = 20    # µm
+epi = 4.0                # carriers reaching the substrate are lost
+dti = { depth = 2.0, width = 0.1 }   # deep trench isolation on the pixel boundaries

@@ -40,6 +40,7 @@
 | `ics drc <PROJECT> <CELL> [--deck FILE] [--fix]` | DRC 실행(덱은 SVRF도 가능). 위반이 있으면 1로 종료 |
 | `ics extract <PROJECT> <CELL>` | 추출된 넷리스트를 SPICE로 출력 |
 | `ics lvs <PROJECT> <CELL>` | 레이아웃과 회로도 비교. 차이가 있으면 1로 종료 |
+| `ics pixel --project P --cell CELL [--emit-stack]` | 테크놀로지의 단면으로 만든 스택으로 셀의 픽셀 광학 계산([픽셀 광학](pixel-optics.md#pdk-단면에서-가져오기) 참고). `--emit-stack`은 스택만 출력하고 끝냄 |
 | `ics pixel <STACK> [--project P] [--method ray\|rcwa [--harmonics N]] [--cra DEG] [--lux L --cct K --ir-cut NM] [--set PROJECT CELL INST --color C] [--json]` | 이미지센서 픽셀 광학: QE, 크로스토크, 광전류([픽셀 광학](pixel-optics.md) 참고) |
 | `ics results <PROJECT> <CELL> <FILE>` | 다른 곳에서 실행한 사인오프 결과 표시(Calibre, KLayout, netgen). 위반이나 불일치가 있으면 1로 종료 |
 | `ics emir <PROJECT> <CELL> --net NET [--currents FILE] [--json]` | 라벨이 붙은 핀 기준으로 넷의 IR 드롭과 일렉트로마이그레이션 분석. 전류는 레이아웃 소자별(JSON) 또는 회로도의 동작점에서 가져옴. EM 위반이 있으면 1로 종료 |

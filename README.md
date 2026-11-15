@@ -161,6 +161,10 @@ Linux needs the usual windowing libraries:
   and the light budget; the photocurrent for an illuminance goes into the pixel circuit
   (`ics pixel`, **Pixel Optics** window); a fast ray model and an RCWA solver that includes
   diffraction for small pitches. Material data from refractiveindex.info
+- Carrier diffusion in the silicon: collection probability, electrical crosstalk, deep
+  trench isolation
+- Pixel stacks from the PDK cross section and the pixel cell's layout (`ics pixel --cell`,
+  **From PDK**)
 
 **Tools** ([guide](https://pages.euiyun.com/ic-studio/tools.html))
 - Waveform calculator: `bandwidth`, `ugf`, `phasemargin`, `risetime`, `cross`, `delay`,
@@ -359,7 +363,8 @@ fit for production use, including the optics of image sensors.
    grid, anti-reflection films, silicon) with ray and thin-film optics giving QE, crosstalk
    at a chief ray angle and the photocurrent of the pixel circuit (`ics pixel`, **Pixel
    Optics**); an RCWA solver for small pitches; metal patterns, photodiode and pitch read from
-   the pixel's layout. Next: electrical crosstalk.
+   the pixel's layout; carrier diffusion with electrical crosstalk and deep trench isolation; stacks generated
+   from the PDK's back-end cross section and the layout.
 4. **Prediction and process**: surrogate models for yield and specs, silicon-to-simulation
    correlation, process emulation (3-D cross-sections from layout and process steps) and
    process data management.

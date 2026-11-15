@@ -396,6 +396,149 @@ pub struct Tech {
     /// Stream (GDSII / OASIS) layer map used by File > Import / Export (see `stream_map`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stream_map: Vec<StreamMapEntry>,
+    /// Vertical structure over the silicon, for image sensor pixel optics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cross_section: Option<CrossSection>,
+}
+
+/// The process cross-section over the silicon, from which a pixel's optical stack follows
+/// (see [`CrossSection::pixel_stack_toml`]). Lengths in µm.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CrossSection {
+    /// Levels from the silicon surface up. Thin films directly on the silicon are `film`
+    /// (treated coherently); metal levels name the layout layer (or derived-layer expression)
+    /// whose shapes are `metal` within the level.
+    pub levels: Vec<Level>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub photodiode: Option<PhotodiodeDef>,
+    /// Colour filter, planarisation and microlens over the top level.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pixel: Option<PixelOptics>,
+    /// Carrier diffusion in the silicon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub silicon: Option<SiliconDef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Level {
+    pub name: String,
+    pub material: String,
+    pub thickness: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metal: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub film: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PhotodiodeDef {
+    /// Layer or derived-layer expression of the photodiode's area.
+    pub layer: String,
+    /// Collection depth range below the silicon surface.
+    pub top: f64,
+    pub bottom: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PixelOptics {
+    pub color_filter: f64,
+    pub planarisation: f64,
+    pub microlens_height: f64,
+    /// Centre the microlens over the photodiode.
+    #[serde(default)]
+    pub center_on_photodiode: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SiliconDef {
+    pub diffusion_length: f64,
+    pub epi: f64,
+}
+
+impl CrossSection {
+    /// The pixel stack (TOML for the pixel optics model) of `cell`, read from its layout through
+    /// `boundary` (the pixel frame).
+    pub fn pixel_stack_toml(&self, tech_name: &str, cell: &str, boundary: Option<&str>) -> Result<String, String> {
+        let films = self.levels.iter().take_while(|l| l.film).count();
+        if self.levels.iter().skip(films).any(|l| l.film) {
+            return Err("cross section: thin films must sit directly on the silicon".into());
+        }
+        for l in &self.levels {
+            if l.thickness.is_nan() || l.thickness <= 0.0 || l.layer.is_some() != l.metal.is_some() {
+                return Err(format!("cross section level '{}': needs a positive thickness, and layer with metal", l.name));
+            }
+        }
+        let q = |s: &str| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""));
+        let mut t = format!(
+            "# Pixel stack of {cell} from the {tech_name} cross section.\nname = {}\n\n[layout]\ncell = {}\n",
+            q(&format!("{cell} ({tech_name})")),
+            q(cell)
+        );
+        if let Some(b) = boundary {
+            t += &format!("boundary = {}\n", q(b));
+        }
+        if let Some(px) = &self.pixel {
+            t += &format!("\n[microlens]\nheight = {}\n", px.microlens_height);
+            if px.center_on_photodiode && self.photodiode.is_some() {
+                t += "center = \"photodiode\"\n";
+            }
+            t += &format!("\n[[layers]]\nname = \"planarisation\"\nmaterial = \"resin\"\nthickness = {}\n", px.planarisation);
+            t += &format!("\n[[layers]]\nname = \"colour filter\"\nkind = \"color_filter\"\nthickness = {}\n", px.color_filter);
+        }
+        for l in self.levels.iter().skip(films).rev() {
+            t += &format!("\n[[layers]]\nname = {}\nmaterial = {}\nthickness = {}\n", q(&l.name), q(&l.material), l.thickness);
+            if let (Some(layer), Some(metal)) = (&l.layer, &l.metal) {
+                t += &format!("pattern = {{ material = {}, layout = {} }}\n", q(metal), q(layer));
+            }
+        }
+        for l in self.levels.iter().take(films).rev() {
+            t += &format!("\n[[arc]]\nmaterial = {}\nthickness = {}\n", q(&l.material), l.thickness);
+        }
+        let pd = self.photodiode.as_ref().ok_or("cross section: no photodiode definition")?;
+        t += &format!("\n[photodiode]\ntop = {}\nbottom = {}\nlayout = {}\n", pd.top, pd.bottom, q(&pd.layer));
+        if let Some(si) = &self.silicon {
+            t += &format!("\n[silicon]\ndiffusion_length = {}\nepi = {}\n", si.diffusion_length, si.epi);
+        }
+        Ok(t)
+    }
+
+    /// A generic 180 nm-class back end over a pinned photodiode, for the demo technology.
+    pub fn generic180() -> CrossSection {
+        let lv = |name: &str, material: &str, thickness: f64, metal: Option<(&str, &str)>, film: bool| Level {
+            name: name.into(),
+            material: material.into(),
+            thickness,
+            layer: metal.map(|m| m.0.into()),
+            metal: metal.map(|m| m.1.into()),
+            film,
+        };
+        CrossSection {
+            levels: vec![
+                lv("anti-reflection nitride", "si3n4", 0.06, None, true),
+                lv("PMD", "sio2", 0.8, None, false),
+                lv("metal 1", "sio2", 0.5, Some(("metal1", "al")), false),
+                lv("IMD 1", "sio2", 0.8, None, false),
+                lv("metal 2", "sio2", 0.5, Some(("metal2", "al")), false),
+                lv("IMD 2", "sio2", 0.8, None, false),
+                lv("metal 3", "sio2", 0.6, Some(("metal3", "al")), false),
+                lv("passivation", "si3n4", 0.5, None, false),
+            ],
+            photodiode: Some(PhotodiodeDef { layer: "active not interact poly".into(), top: 0.1, bottom: 3.0 }),
+            pixel: Some(PixelOptics { color_filter: 0.9, planarisation: 0.4, microlens_height: 2.5, center_on_photodiode: true }),
+            silicon: Some(SiliconDef { diffusion_length: 20.0, epi: 5.0 }),
+        }
+    }
 }
 
 /// A row of the stream layer map: shapes on stream `(stream_layer, datatype)` are read onto
@@ -591,6 +734,7 @@ impl Tech {
             drc_extra: vec![],
             pin_labels: vec![],
             stream_map: vec![],
+            cross_section: Some(CrossSection::generic180()),
         }
     }
 }
@@ -603,6 +747,27 @@ impl Default for Tech {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn cross_section_gives_a_pixel_stack() {
+        let t = Tech::generic().cross_section.unwrap().pixel_stack_toml("generic180", "aps3t", Some("boundary")).unwrap();
+        let v: toml::Value = toml::from_str(&t).unwrap();
+        assert_eq!(v["layout"]["cell"].as_str(), Some("aps3t"));
+        let layers = v["layers"].as_array().unwrap();
+        // Planarisation and colour filter first, then the back end from the top down.
+        let names: Vec<&str> = layers.iter().map(|l| l["name"].as_str().unwrap()).collect();
+        assert_eq!(names[..3], ["planarisation", "colour filter", "passivation"]);
+        assert_eq!(*names.last().unwrap(), "PMD");
+        assert_eq!(layers.iter().filter(|l| l.get("pattern").is_some()).count(), 3);
+        assert_eq!(v["arc"].as_array().unwrap().len(), 1);
+        assert_eq!(v["photodiode"]["layout"].as_str(), Some("active not interact poly"));
+        assert_eq!(v["microlens"]["center"].as_str(), Some("photodiode"));
+        // Films above other levels are rejected.
+        let mut bad = CrossSection::generic180();
+        bad.levels[2].film = true;
+        assert!(bad.pixel_stack_toml("x", "c", None).is_err());
+    }
+
     use super::*;
 
     #[test]

@@ -100,6 +100,9 @@ pub enum Command {
     PixelOptics,
     /// Run the pixel model of the Pixel Optics window.
     RunPixelOptics,
+    /// Fill the Pixel Optics window with the active cell's stack from the technology's cross
+    /// section.
+    PixelStackFromPdk,
     /// Write the photocurrent of a Bayer colour (0 R, 1 Gr, 2 Gb, 3 B) into a current source of
     /// the active cell's schematic.
     ApplyPhotocurrent(String, usize),
@@ -904,6 +907,7 @@ impl IcStudio {
                     None => {}
                 }
             }
+            Command::PixelStackFromPdk => self.pixel_stack_from_pdk(),
             Command::ApplyPhotocurrent(source, color) => match self.pixel.currents {
                 Some(cur) if color < 4 => self.set_photocurrent(&source, cur[color]),
                 _ => self.warn("Run the pixel optics model first".into()),
@@ -1306,6 +1310,26 @@ impl IcStudio {
         }
         self.workspace = Workspace::Layout;
         self.info(msg);
+    }
+
+    fn pixel_stack_from_pdk(&mut self) {
+        let (Some(r), Some(p)) = (self.active.clone(), self.project.as_ref()) else {
+            self.warn("Open the pixel cell first".into());
+            return;
+        };
+        let Some(xs) = &p.tech.cross_section else {
+            self.warn(format!("Technology {} has no cross section", p.tech.name));
+            return;
+        };
+        let boundary = p.tech.layer_index("boundary").map(|_| "boundary");
+        match xs.pixel_stack_toml(&p.tech.name, &r.to_string(), boundary) {
+            Ok(t) => {
+                self.pixel.text = t;
+                self.pixel.path = None;
+                self.pixel.show();
+            }
+            Err(e) => self.warn(e),
+        }
     }
 
     /// Set current source `source` of the active cell's schematic to `amps` (undoable).
@@ -3077,6 +3101,7 @@ impl IcStudio {
             ("Waveform calculator".into(), "", Command::Calculator),
             ("Pixel optics (QE, crosstalk, photocurrent)".into(), "", Command::PixelOptics),
             ("Run pixel optics model".into(), "", Command::RunPixelOptics),
+            ("Pixel stack of the open cell from the PDK cross section".into(), "", Command::PixelStackFromPdk),
             ("Corner / sweep manager".into(), "", Command::SweepManager),
             ("Monte Carlo (process and mismatch of device models)".into(), "", Command::MonteCarlo),
             ("Run Monte Carlo".into(), "", Command::RunMonteCarlo),
@@ -4650,6 +4675,7 @@ impl eframe::App for IcStudio {
                 }
             }
             Some(PixelAction::Run) => self.pixel.run(Some(&ctx), self.project.as_ref()),
+            Some(PixelAction::FromPdk) => self.pixel_stack_from_pdk(),
             Some(PixelAction::SetSource { source, amps }) => self.set_photocurrent(&source, amps),
             None => {}
         }
