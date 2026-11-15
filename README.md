@@ -9,7 +9,7 @@ on Windows, Linux and macOS. Unlike a standalone layout viewer, the schematic, t
 simulator and the layout share one design database: layouts are generated from
 schematics, checked against them (LVS) and their parasitics flow back into simulation.
 
-**[User guide](https://geniuskey.github.io/ic-studio/)** · [Quick tour](https://geniuskey.github.io/ic-studio/quick-tour.html) · [Demo gallery and scripts](https://geniuskey.github.io/ic-studio/demos.html) · [한국어 가이드](https://geniuskey.github.io/ic-studio/ko/)
+**[User guide](https://pages.euiyun.com/ic-studio/)** · [Quick tour](https://pages.euiyun.com/ic-studio/quick-tour.html) · [Demo gallery and scripts](https://pages.euiyun.com/ic-studio/demos.html) · [한국어 가이드](https://pages.euiyun.com/ic-studio/ko/)
 
 ![Auto place and route of a 28-transistor full adder](docs/screenshots/demo_pnr_routed.webp)
 
@@ -40,7 +40,7 @@ curl -fsSL https://github.com/geniuskey/ic-studio/releases/latest/download/insta
 The installer puts the app `ic-studio` and the command line tool `ics` (CLI and MCP
 server) in one folder on the `PATH`, adds a launcher (Start Menu on Windows, desktop entry
 on Linux) and registers the MCP server with Claude Code if `claude` is installed. Options,
-uninstall and manual downloads: [Installation](https://geniuskey.github.io/ic-studio/install.html).
+uninstall and manual downloads: [Installation](https://pages.euiyun.com/ic-studio/install.html).
 
 ## Build from source
 
@@ -152,7 +152,7 @@ Linux needs the usual windowing libraries:
   ripping up and rerouting nets that block each other
 - Cross-probing: selecting a device in one view selects it in the other
 
-**Tools** ([guide](https://geniuskey.github.io/ic-studio/tools.html))
+**Tools** ([guide](https://pages.euiyun.com/ic-studio/tools.html))
 - Waveform calculator: `bandwidth`, `ugf`, `phasemargin`, `risetime`, `cross`, `delay`,
   `rms`, `deriv`, ... on simulation results, with derived waveforms plotted
 - Corner / sweep manager: model corners × temperatures × parameters and Monte Carlo
@@ -208,7 +208,7 @@ ics opc myproj cmos_inverter --layer poly --apply       # optical proximity corr
 ics mcp                                                 # MCP server for AI agents (stdio)
 ```
 
-All commands and options: [Command line](https://geniuskey.github.io/ic-studio/cli.html).
+All commands and options: [Command line](https://pages.euiyun.com/ic-studio/cli.html).
 
 ## Examples
 
@@ -269,7 +269,7 @@ and simulation, layout editing (rects, paths, labels, instances, PCells, schemat
 placement, flylines, routing), DRC with quick fixes, compaction, layout compare, the
 optimizer, layout by example, extraction, LVS, sign-off runsets, parasitics, GDSII / OASIS
 import and export, and SKILL scripts. Coordinates are in µm; edits stay in memory until
-`save_project`. Tool list: [MCP server](https://geniuskey.github.io/ic-studio/mcp.html).
+`save_project`. Tool list: [MCP server](https://pages.euiyun.com/ic-studio/mcp.html).
 
 The release installer registers it with Claude Code, as does **Add to Claude Code** in
 **File > Settings... > AI agents (MCP)**; **Copy MCP config** there copies the JSON for

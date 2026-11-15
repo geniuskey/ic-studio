@@ -13,7 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-BASE = "https://geniuskey.github.io/ic-studio/"
+BASE = "https://pages.euiyun.com/ic-studio/"
 SITE = "IC Studio"
 OG_IMAGE = BASE + "images/og-image.jpg"
 THEME_COLOR = "#161923"

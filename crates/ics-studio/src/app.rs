@@ -346,7 +346,7 @@ fn mcp_summary(tool: &str, res: &ToolResult) -> String {
     }
 }
 
-const GUIDE_URL: &str = "https://geniuskey.github.io/ic-studio/";
+const GUIDE_URL: &str = "https://pages.euiyun.com/ic-studio/";
 
 const MOD: &str = if cfg!(target_os = "macos") { "⌘" } else { "Ctrl+" };
 
