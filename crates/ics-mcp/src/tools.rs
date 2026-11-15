@@ -757,6 +757,30 @@ pub fn definitions() -> Vec<Value> {
             &["cell"],
         ),
         tool(
+            "predict_yield",
+            &format!(
+                "Monte Carlo yield prediction: simulate the cell's sweep setup (corners, temperatures, Monte Carlo runs with random parameter variation), fit a response-surface model of every spec over the random inputs and sample it 10^5 times per condition. Returns per condition the simulated yield with its 95% confidence interval, the predicted yield, and per spec mean, sigma, Cpk, the model's leave-one-out Q2 (trust it above about 0.9) and each varied parameter's share of the spec's variance. Given specs / vars / runs / temps replace the cell's saved ones. {NOT_SAVED}"
+            ),
+            json!({
+                "cell": cell(),
+                "vars": {"type": "array", "items": {"type": "object", "properties": {
+                    "target": {"type": "string", "description": "INST.param with * / ? wildcards (M*.w, R1.r) or a design variable"},
+                    "sigma": {"type": "string", "description": "5% of the nominal or an absolute value"},
+                    "dist": {"type": "string", "enum": ["gauss", "uniform"]},
+                    "mismatch": {"type": "boolean", "description": "Draw every matching instance independently (default false: one shared draw)"},
+                    "nominal": {"type": "string", "description": "Nominal value of a design variable"}
+                }, "required": ["target", "sigma"]}},
+                "specs": {"type": "array", "items": {"type": "object", "properties": {
+                    "name": {"type": "string"}, "analysis": {"type": "string", "enum": ["op", "dc", "ac", "tran", "noise"]},
+                    "expr": {"type": "string"}, "min": {"type": "string"}, "max": {"type": "string"}
+                }, "required": ["name", "analysis", "expr"]}},
+                "runs": {"type": "integer", "minimum": 4, "description": "Monte Carlo runs per condition."},
+                "temps": {"type": "string", "description": "Temperatures, e.g. \"-40 27 125\"."},
+                "samples": {"type": "integer", "minimum": 1000, "description": "Model samples per condition (default 100000)."}
+            }),
+            &["cell"],
+        ),
+        tool(
             "place_like",
             &format!(
                 "Layout by example: place a cell's devices like a finished reference cell with the same circuit topology. Devices and nets are matched by topology (names and sizes may differ); every MOS device goes where its counterpart is in the reference, sized from this cell's schematic, with the reference's wells, implants and taps. The cell's layout is replaced. Optionally route afterwards. {NOT_SAVED}"
@@ -962,6 +986,7 @@ impl State {
             "diff_layout" => self.diff_layout(a),
             "optimize" => self.optimize(a),
             "place_like" => self.place_like(a),
+            "predict_yield" => self.predict_yield(a),
             "extract" => self.extract(a),
             "run_lvs" => self.run_lvs(a),
             "run_signoff" => self.run_signoff(a),
@@ -1686,6 +1711,89 @@ impl State {
             "note": best.note,
             "applied": apply,
         }))
+    }
+
+    fn predict_yield(&mut self, a: &Args) -> Result<Value, String> {
+        use ics_core::sweep::{Dist, McVar, Spec};
+        let (_, r) = self.cell_arg(a)?;
+        let get = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
+        let p = self.project_mut()?;
+        let c = p.cell_mut(&r).expect("resolved");
+        let sw = &mut c.sim.sweep;
+        if let Some(vs) = a.0.get("vars").and_then(Value::as_array) {
+            sw.monte_carlo.vars = vs
+                .iter()
+                .map(|v| McVar {
+                    target: get(v, "target"),
+                    nominal: get(v, "nominal"),
+                    sigma: get(v, "sigma"),
+                    dist: if get(v, "dist") == "uniform" { Dist::Uniform } else { Dist::Gauss },
+                    mismatch: v.get("mismatch").and_then(Value::as_bool).unwrap_or(false),
+                })
+                .collect();
+        }
+        if let Some(ss) = a.0.get("specs").and_then(Value::as_array) {
+            sw.specs = ss
+                .iter()
+                .map(|s| Spec {
+                    name: get(s, "name"),
+                    analysis: get(s, "analysis"),
+                    expr: get(s, "expr"),
+                    min: get(s, "min"),
+                    max: get(s, "max"),
+                })
+                .collect();
+        }
+        if let Some(n) = a.0.get("runs").and_then(Value::as_u64) {
+            sw.monte_carlo.runs = n as u32;
+        }
+        if let Some(t) = a.0.get("temps").and_then(Value::as_str) {
+            sw.temps = t.to_string();
+        }
+        if sw.monte_carlo.runs == 0 {
+            sw.monte_carlo.runs = 100;
+        }
+        if sw.monte_carlo.vars.is_empty() || sw.specs.is_empty() {
+            return Err("give the varied parameters (vars) and the specs, or save them in the cell's sweep setup".into());
+        }
+        let specs = sw.specs.clone();
+        self.dirty = true;
+        let samples = a.0.get("samples").and_then(Value::as_u64).unwrap_or(100_000) as usize;
+        let p = self.project()?;
+        let mut opts = ics_sim::SimOptions::default();
+        if let Some(exe) = &p.settings.ngspice_path {
+            opts.ngspice_exe = exe.clone();
+        }
+        let run = ics_sim::sweep::run(p, &r, &opts, &|_, _| {})?;
+        let plan = run.plan.clone().ok_or("no Monte Carlo runs")?;
+        let conds: Vec<Value> = run
+            .predict(&specs, samples, 1)
+            .iter()
+            .map(|c| {
+                let (lo, hi) = ics_core::predict::wilson(c.passed, c.runs);
+                let sj: Vec<Value> = specs
+                    .iter()
+                    .zip(&c.prediction.specs)
+                    .map(|(s, sp)| match sp {
+                        Ok(sp) => {
+                            let mut sens: Vec<(usize, f64)> = sp.sensitivity.iter().copied().enumerate().collect();
+                            sens.sort_by(|a, b| b.1.total_cmp(&a.1));
+                            let sens: Vec<Value> = sens
+                                .iter()
+                                .take(8)
+                                .map(|(i, v)| json!({"input": plan.inputs[*i], "share": sig(*v), "slope_per_sigma": sig(sp.model.slope(*i))}))
+                                .collect();
+                            json!({"name": s.name, "mean": sig(sp.mean), "sigma": sig(sp.std), "yield": sp.yield_.map(sig),
+                                "cpk": sp.cpk.map(sig), "q2": sig(sp.model.q2), "model_error": sig(sp.model.rmse), "sensitivity": sens})
+                        }
+                        Err(e) => json!({"name": s.name, "error": e}),
+                    })
+                    .collect();
+                json!({"condition": c.condition, "runs": c.runs, "passed": c.passed, "simulated_ci95": [sig(lo), sig(hi)],
+                    "predicted_yield": c.prediction.joint.map(sig), "specs": sj})
+            })
+            .collect();
+        Ok(json!({"cell": r.to_string(), "points": run.points.len(), "notes": run.notes, "conditions": conds}))
     }
 
     fn place_like(&mut self, a: &Args) -> Result<Value, String> {

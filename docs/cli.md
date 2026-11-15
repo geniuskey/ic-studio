@@ -49,6 +49,7 @@ it with `cargo build --release -p ics-cli` (binary `target/release/ics`) or run 
 | `ics route <PROJECT> <CELL> [--place]` | Route flylines and save; exit 1 if nets stay unrouted |
 | `ics compact <PROJECT> <CELL> [--dir left,down] [--no-infer]` | Compact the layout toward the given directions and save |
 | `ics diff <PROJECT> <CELL> [--rev REV \| --against DIR]` | Compare the layout with a git revision (default `HEAD`) or another project; exit 1 if they differ |
+| `ics yield <PROJECT> <CELL> [--runs N] [--samples N] [--target Y] [--json]` | Run the cell's Monte Carlo sweep setup and predict the yield of every condition with each spec's sensitivities; exit 1 below `--target` |
 | `ics optimize <PROJECT> <CELL> [--post-layout] [--apply] [--json]` | Size devices to meet the cell's specs; exit 1 if no point meets every spec |
 | `ics place-like <PROJECT> <CELL> --from <CELL> [--route]` | Place the cell like a finished cell with the same circuit and save |
 | `ics skill <PROJECT> <FILE.il> [--no-save] [--json]` | Run a Cadence SKILL script on the project and save; exit 1 on a SKILL error |
@@ -158,6 +159,24 @@ ics mc demo ota5t --runs 200 --measure "op:v(out)" --measure "ac:bandwidth(v(out
 the best values and spec results on stdout (`--json`: one object with `passed`,
 `evaluations`, `vars` and `specs`). `--post-layout` places, routes and extracts every
 candidate first; `--apply` writes the best values into the schematic and saves.
+
+### Yield prediction
+
+`ics yield` runs the cell's corner / sweep / Monte Carlo setup (`sim.sweep`, set up in
+**Tools > Corner / Sweep Manager**), fits a model of every spec over the random inputs and
+samples it (see [Yield prediction](tools.md#yield-prediction)):
+
+```text
+$ ics yield myproj current_mirror
+work/current_mirror: 300 point(s) in 0.1 s, 100000 surrogate samples per condition
+
+-40°C: simulated 85/100 (85.00%, 95% CI 76.72% to 90.69%), predicted 83.56%
+  iout         mean     20.27µ  sigma     669.2n  yield   83.56%  cpk   0.36  Q2 1.000  [M2.w 37%, M1.w 36%, M2.l 9%]
+```
+
+The brackets list the inputs with the largest share of the spec's variance. `--runs`
+overrides the number of runs, `--target 0.99` exits 1 when a condition's predicted yield is
+lower, and `--json` gives every condition with its specs and sensitivities.
 
 ### SKILL scripts
 

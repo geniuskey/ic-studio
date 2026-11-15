@@ -1464,6 +1464,11 @@ impl IcStudio {
                 }
                 let n = decks.len();
                 let opts = self.sim_options(backend);
+                let mc = &self.sweep.setup.monte_carlo;
+                self.sweep.plan = match (mc.runs > 0, self.active_cell().and_then(|c| c.schematic.as_ref())) {
+                    (true, Some(sch)) => ics_core::sweep::mc_plan(mc, sch).ok(),
+                    _ => None,
+                };
                 self.sweep.start(ctx, decks, analyses, opts);
                 self.info(format!("Sweep {r}: {n} point(s) with {}", backend.label()));
             }

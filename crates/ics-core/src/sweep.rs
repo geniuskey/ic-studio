@@ -118,6 +118,11 @@ pub struct SweepPoint {
 }
 
 impl SweepPoint {
+    /// The label without the Monte Carlo run: corner, temperature and swept values.
+    pub fn condition(&self) -> String {
+        SweepPoint { run: None, ..self.clone() }.label()
+    }
+
     pub fn label(&self) -> String {
         let mut parts = vec![];
         if !self.corner.is_empty() {
@@ -240,17 +245,37 @@ impl SweepSetup {
     }
 }
 
-/// The sampled assignments of every Monte Carlo run (the same for every sweep point, so corners
-/// compare on equal samples).
-pub fn mc_samples(mc: &MonteCarlo, sch: &Schematic) -> Result<Vec<Vec<(String, String)>>, String> {
-    struct Target {
-        name: String,
-        nominal: f64,
-        sigma: f64,
-        group: usize,
+/// The random inputs of a Monte Carlo setup and the draws of every run: each input is one
+/// independent draw (a shared process variation, or one instance's mismatch), standardised
+/// (Gauss: N(0, 1); Uniform: U(-1, 1)).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct McPlan {
+    /// Name of each input: the target (`M*.w`, `vb`), or `INST.param` of a mismatch draw.
+    pub inputs: Vec<String>,
+    pub dists: Vec<Dist>,
+    /// Draws of every run (`runs` × `inputs`).
+    pub draws: Vec<Vec<f64>>,
+    targets: Vec<McTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct McTarget {
+    name: String,
+    nominal: f64,
+    sigma: f64,
+    input: usize,
+}
+
+impl McPlan {
+    /// The parameter values of the draws `x` (one per input).
+    pub fn assign(&self, x: &[f64]) -> Vec<(String, String)> {
+        self.targets.iter().map(|t| (t.name.clone(), format!("{:.6e}", t.nominal + t.sigma * x[t.input]))).collect()
     }
-    let mut targets: Vec<Target> = vec![];
-    let mut groups: Vec<Dist> = vec![];
+}
+
+/// The inputs and draws of a Monte Carlo setup on `sch`.
+pub fn mc_plan(mc: &MonteCarlo, sch: &Schematic) -> Result<McPlan, String> {
+    let mut plan = McPlan::default();
     for v in mc.vars.iter().filter(|v| !v.target.trim().is_empty()) {
         let t = v.target.trim();
         let sigma_of = |nominal: f64| -> Result<f64, String> {
@@ -261,8 +286,9 @@ pub fn mc_samples(mc: &MonteCarlo, sch: &Schematic) -> Result<Vec<Vec<(String, S
             }
             .ok_or_else(|| format!("{t}: invalid sigma '{s}'"))
         };
-        groups.push(v.dist);
-        let shared = groups.len() - 1;
+        plan.inputs.push(t.to_string());
+        plan.dists.push(v.dist);
+        let shared = plan.inputs.len() - 1;
         match t.split_once('.') {
             Some((pat, param)) => {
                 let param = param.to_ascii_lowercase();
@@ -271,13 +297,18 @@ pub fn mc_samples(mc: &MonteCarlo, sch: &Schematic) -> Result<Vec<Vec<(String, S
                     let raw = inst.param(&param);
                     let nominal =
                         parse_spice(raw).ok_or_else(|| format!("{t}: {}.{param} = '{raw}' is not a number", inst.name))?;
-                    let group = if v.mismatch && hit {
-                        groups.push(v.dist);
-                        groups.len() - 1
+                    let name = format!("{}.{param}", inst.name);
+                    let input = if v.mismatch && hit {
+                        plan.inputs.push(name.clone());
+                        plan.dists.push(v.dist);
+                        plan.inputs.len() - 1
                     } else {
+                        if v.mismatch {
+                            plan.inputs[shared] = name.clone();
+                        }
                         shared
                     };
-                    targets.push(Target { name: format!("{}.{param}", inst.name), nominal, sigma: sigma_of(nominal)?, group });
+                    plan.targets.push(McTarget { name, nominal, sigma: sigma_of(nominal)?, input });
                     hit = true;
                 }
                 if !hit {
@@ -286,23 +317,20 @@ pub fn mc_samples(mc: &MonteCarlo, sch: &Schematic) -> Result<Vec<Vec<(String, S
             }
             None => {
                 let nominal = parse_spice(&v.nominal).ok_or_else(|| format!("{t}: invalid nominal '{}'", v.nominal))?;
-                targets.push(Target { name: t.to_string(), nominal, sigma: sigma_of(nominal)?, group: shared });
+                plan.targets.push(McTarget { name: t.to_string(), nominal, sigma: sigma_of(nominal)?, input: shared });
             }
         }
     }
     let mut rng = Rng(mc.seed ^ 0x9e37_79b9_7f4a_7c15);
-    let mut out = Vec::with_capacity(mc.runs as usize);
-    for _ in 0..mc.runs {
-        let draws: Vec<f64> = groups
-            .iter()
-            .map(|d| match d {
-                Dist::Gauss => rng.gauss(),
-                Dist::Uniform => rng.uniform() * 2.0 - 1.0,
-            })
-            .collect();
-        out.push(targets.iter().map(|t| (t.name.clone(), format!("{:.6e}", t.nominal + t.sigma * draws[t.group]))).collect());
-    }
-    Ok(out)
+    plan.draws = (0..mc.runs).map(|_| plan.dists.iter().map(|d| rng.draw(*d)).collect()).collect();
+    Ok(plan)
+}
+
+/// The sampled assignments of every Monte Carlo run (the same for every sweep point, so corners
+/// compare on equal samples).
+pub fn mc_samples(mc: &MonteCarlo, sch: &Schematic) -> Result<Vec<Vec<(String, String)>>, String> {
+    let plan = mc_plan(mc, sch)?;
+    Ok(plan.draws.iter().map(|x| plan.assign(x)).collect())
 }
 
 /// `*` and `?` wildcard match, case-insensitive.
@@ -330,7 +358,7 @@ fn glob(pat: &str, s: &str) -> bool {
 }
 
 /// SplitMix64 with Box-Muller normals; deterministic for a seed.
-struct Rng(u64);
+pub(crate) struct Rng(pub(crate) u64);
 
 impl Rng {
     fn next(&mut self) -> u64 {
@@ -342,13 +370,21 @@ impl Rng {
     }
 
     /// Uniform in (0, 1).
-    fn uniform(&mut self) -> f64 {
+    pub(crate) fn uniform(&mut self) -> f64 {
         ((self.next() >> 11) as f64 + 0.5) / (1u64 << 53) as f64
     }
 
     fn gauss(&mut self) -> f64 {
         let (u, v) = (self.uniform(), self.uniform());
         (-2.0 * u.ln()).sqrt() * (2.0 * std::f64::consts::PI * v).cos()
+    }
+
+    /// A standardised draw: N(0, 1) or U(-1, 1).
+    pub(crate) fn draw(&mut self, d: Dist) -> f64 {
+        match d {
+            Dist::Gauss => self.gauss(),
+            Dist::Uniform => self.uniform() * 2.0 - 1.0,
+        }
     }
 }
 

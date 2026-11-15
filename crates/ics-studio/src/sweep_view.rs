@@ -8,7 +8,8 @@ use std::time::Instant;
 
 use eframe::egui::{self, Color32, RichText};
 use egui_plot::{Bar, BarChart, Legend, Line, Plot, PlotPoints, VLine};
-use ics_core::sweep::{Dist, McVar, Spec, SweepPoint, SweepSetup, SweepVar, stats};
+use ics_core::predict::{ConditionYield, predict_sweep, wilson};
+use ics_core::sweep::{Dist, McPlan, McVar, Spec, SweepPoint, SweepSetup, SweepVar, stats};
 use ics_core::units::format_eng;
 use ics_core::{Analysis, CellRef, Project};
 use ics_sim::calc::{self, CalcValue};
@@ -54,6 +55,10 @@ pub struct SweepManager {
     selected: Option<usize>,
     /// Spec shown in the Monte Carlo histogram.
     hist_spec: usize,
+    /// Monte Carlo inputs and draws of the run (set by the caller when it starts the run).
+    pub plan: Option<McPlan>,
+    /// Predicted yield of every condition of the last Monte Carlo run.
+    pub prediction: Vec<ConditionYield>,
 }
 
 impl SweepManager {
@@ -111,6 +116,7 @@ impl SweepManager {
             });
         }
         self.results = (0..total).map(|_| None).collect();
+        self.prediction.clear();
         self.run_specs = self.setup.specs.clone();
         self.selected = None;
         self.status = Some((true, format!("Running {total} point(s) on {workers} thread(s)…")));
@@ -145,8 +151,25 @@ impl SweepManager {
         if cancelled {
             msg += " (stopped)";
         }
+        self.predict();
+        if let Some(y) = self.prediction.iter().filter_map(|c| c.prediction.joint).reduce(f64::min) {
+            msg += &format!(", predicted yield {:.1}%", y * 100.0);
+        }
         self.status = Some((failed == 0, msg.clone()));
         Some(msg)
+    }
+
+    /// Fit the surrogates of the finished Monte Carlo points and sample them.
+    pub fn predict(&mut self) {
+        self.prediction.clear();
+        let Some(plan) = &self.plan else { return };
+        let pts: Vec<(&SweepPoint, Vec<Option<f64>>)> = self
+            .results
+            .iter()
+            .flatten()
+            .map(|r| (&r.point, r.specs.iter().map(|v| v.as_ref().ok().copied()).collect()))
+            .collect();
+        self.prediction = predict_sweep(plan, &self.run_specs, &pts, 100_000, 1);
     }
 
     /// (points meeting every spec, points with specs checked).
@@ -268,7 +291,10 @@ impl SweepManager {
             }
             egui::Panel::bottom("sw_plot").resizable(true).default_size(300.0).show(ui, |ui| self.overlay(ui, &pal));
             if self.is_monte_carlo() && !self.run_specs.is_empty() {
-                egui::Panel::top("sw_stats").resizable(true).default_size(230.0).show(ui, |ui| self.statistics(ui, &pal));
+                egui::Panel::top("sw_stats")
+                    .resizable(true)
+                    .default_size(if self.prediction.is_empty() { 230.0 } else { 340.0 })
+                    .show(ui, |ui| self.statistics(ui, &pal));
             }
             egui::CentralPanel::default().show(ui, |ui| self.table(ui, &pal));
         });
@@ -511,6 +537,10 @@ impl SweepManager {
                     ui.end_row();
                 }
             });
+            if !self.prediction.is_empty() {
+                ui.add_space(6.0);
+                self.prediction_ui(ui, pal);
+            }
             let ui = &mut cols[1];
             let k = self.hist_spec.min(self.run_specs.len() - 1);
             let spec = &self.run_specs[k];
@@ -546,6 +576,84 @@ impl SweepManager {
         });
     }
 
+    /// Predicted yield per condition and the sensitivity of the selected spec.
+    fn prediction_ui(&self, ui: &mut egui::Ui, pal: &Palette) {
+        theme::section(ui, "Predicted yield");
+        egui::Grid::new("sw_pred_grid").striped(true).num_columns(3).spacing([14.0, 4.0]).show(ui, |ui| {
+            for h in ["CONDITION", "SIMULATED (95% CI)", "PREDICTED"] {
+                ui.label(RichText::new(h).small().strong().color(pal.text_weak));
+            }
+            ui.end_row();
+            for c in &self.prediction {
+                ui.label(&c.condition);
+                let (lo, hi) = wilson(c.passed, c.runs);
+                ui.label(
+                    RichText::new(format!(
+                        "{:.1}% ({:.0} to {:.0}%)",
+                        c.passed as f64 / c.runs.max(1) as f64 * 100.0,
+                        lo * 100.0,
+                        hi * 100.0
+                    ))
+                    .monospace(),
+                );
+                match c.prediction.joint {
+                    Some(y) => ui.label(RichText::new(format!("{:.2}%", y * 100.0)).strong().color(if y >= 0.997 {
+                        pal.ok
+                    } else {
+                        pal.warning
+                    })),
+                    None => ui.label("—"),
+                };
+                ui.end_row();
+            }
+        });
+        let k = self.hist_spec.min(self.run_specs.len().saturating_sub(1));
+        let (Some(spec), Some(plan)) = (self.run_specs.get(k), &self.plan) else { return };
+        // The condition with the lowest predicted yield of this spec.
+        let worst = self
+            .prediction
+            .iter()
+            .filter_map(|c| Some((c, c.prediction.specs.get(k)?.as_ref().ok()?)))
+            .min_by(|a, b| a.1.yield_.unwrap_or(1.0).total_cmp(&b.1.yield_.unwrap_or(1.0)));
+        ui.add_space(6.0);
+        match worst {
+            Some((c, sp)) => {
+                theme::section(ui, &format!("Sensitivity · {} · {}", spec.name, c.condition));
+                let mut order: Vec<usize> = (0..sp.sensitivity.len()).collect();
+                order.sort_by(|a, b| sp.sensitivity[*b].total_cmp(&sp.sensitivity[*a]));
+                for i in order.into_iter().take(8) {
+                    let v = sp.sensitivity[i] as f32;
+                    let dir = if sp.model.slope(i) >= 0.0 { "rises" } else { "falls" };
+                    ui.horizontal(|ui| {
+                        let l =
+                            ui.add_sized([90.0, 16.0], egui::Label::new(RichText::new(&plan.inputs[i]).monospace()).truncate());
+                        ui.add(egui::ProgressBar::new(v).desired_width(140.0).text(format!(
+                            "{:.0}% · {} {dir}",
+                            v * 100.0,
+                            spec.name
+                        )))
+                        .labelled_by(l.id);
+                    });
+                }
+                let fit = if sp.model.quadratic { "quadratic" } else { "linear" };
+                let col = if sp.model.q2 >= 0.9 { pal.text_weak } else { pal.warning };
+                ui.label(
+                    RichText::new(format!(
+                        "{fit} model of {} runs, Q² {:.3}, error {}",
+                        sp.model.samples,
+                        sp.model.q2,
+                        format_eng(sp.model.rmse, "")
+                    ))
+                    .small()
+                    .color(col),
+                );
+            }
+            None => {
+                ui.label(RichText::new(format!("No model of {}", spec.name)).color(pal.text_weak));
+            }
+        }
+    }
+
     /// An HTML datasheet of the last run: setup, spec summary and every point.
     pub fn datasheet(&self) -> String {
         let esc = |t: &str| t.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
@@ -577,6 +685,23 @@ impl SweepManager {
                 e(st.max),
                 e(st.std)
             );
+        }
+        if !self.prediction.is_empty() {
+            h += "</table><h2>Predicted yield</h2><p>Response-surface model of every spec over the Monte Carlo inputs, \
+                  sampled 100 000 times per condition with its leave-one-out error.</p><table><tr><th class=l>Condition</th>\
+                  <th>Runs</th><th>Simulated</th><th>95% CI</th><th>Predicted</th></tr>";
+            for c in &self.prediction {
+                let (lo, hi) = wilson(c.passed, c.runs);
+                h += &format!(
+                    "<tr><td class=l>{}</td><td>{}</td><td>{:.1}%</td><td>{:.1}% to {:.1}%</td><td>{}</td></tr>",
+                    esc(&c.condition),
+                    c.runs,
+                    c.passed as f64 / c.runs.max(1) as f64 * 100.0,
+                    lo * 100.0,
+                    hi * 100.0,
+                    c.prediction.joint.map_or("—".into(), |y| format!("{:.2}%", y * 100.0))
+                );
+            }
         }
         h += "</table><h2>Points</h2><table><tr><th>#</th><th class=l>Point</th><th class=l>Status</th>";
         for s in &self.run_specs {

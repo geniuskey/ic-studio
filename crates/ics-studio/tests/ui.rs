@@ -700,8 +700,15 @@ fn monte_carlo_sweep() {
     assert!((st.mean - 159e3).abs() < 15e3 && st.std > 5e3, "{st:?}");
     let (pass, n) = sw.spec_yield(0);
     assert!(n == 40 && pass > 5 && pass < 40, "{pass}/{n}");
+    // The surrogate's predicted yield agrees with the simulated one; R1 sets the bandwidth.
+    let c = &sw.prediction[0];
+    let (lo, hi) = ics_core::predict::wilson(pass, n);
+    let y = c.prediction.joint.unwrap();
+    assert!(y > lo - 0.05 && y < hi + 0.05, "{y} vs {pass}/{n}");
+    let sp = c.prediction.specs[0].as_ref().unwrap();
+    assert!(sp.model.q2 > 0.99 && sp.sensitivity[0] > 0.95, "{sp:?}");
     let html = sw.datasheet();
-    assert!(html.contains("<h2>Specs</h2>") && html.contains("mc#40"), "{html}");
+    assert!(html.contains("<h2>Specs</h2>") && html.contains("mc#40") && html.contains("Predicted yield"), "{html}");
     h.run_steps(4);
     shot(&mut h, "36_monte_carlo");
 }

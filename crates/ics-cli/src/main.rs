@@ -189,6 +189,24 @@ enum Cmd {
         #[arg(long)]
         against: Option<PathBuf>,
     },
+    /// Run the cell's corner / Monte Carlo setup (`sim.sweep`) and predict the yield of each
+    /// condition from a surrogate model of every spec, with the sensitivity of each spec to the
+    /// varied parameters. Non-zero exit when a predicted yield is below `--target`.
+    Yield {
+        project: PathBuf,
+        cell: String,
+        /// Monte Carlo runs (overrides the setup's).
+        #[arg(long)]
+        runs: Option<u32>,
+        /// Surrogate samples per condition.
+        #[arg(long, default_value_t = 100_000)]
+        samples: usize,
+        /// Yield (0 to 1) every condition must reach.
+        #[arg(long)]
+        target: Option<f64>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Size the cell's devices to meet its specs (`sim.sweep.specs`) with the variables of its
     /// optimizer setup (`sim.optimize`); `--apply` writes the best values into the schematic.
     Optimize {
@@ -1063,6 +1081,117 @@ fn run(cli: Cli) -> Result<(), String> {
                 return Err(format!("{r} differs from {what}"));
             }
             println!("{r}: no layout differences against {what}");
+        }
+        Cmd::Yield { project, cell, runs, samples, target, json } => {
+            let mut p = Project::open(&project).map_err(|e| e.to_string())?;
+            let r = resolve(&p, &cell)?;
+            let c = p.cell_mut(&r).unwrap();
+            if let Some(n) = runs {
+                c.sim.sweep.monte_carlo.runs = n;
+            }
+            let mc = &c.sim.sweep.monte_carlo;
+            if mc.runs == 0 || mc.vars.iter().all(|v| v.target.trim().is_empty()) {
+                return Err(format!("{r}: the sweep setup has no Monte Carlo (varied parameters and runs)"));
+            }
+            let specs = c.sim.sweep.specs.clone();
+            if specs.is_empty() {
+                return Err(format!("{r}: the sweep setup has no specs"));
+            }
+            let mut opts = SimOptions::default();
+            if let Some(exe) = &p.settings.ngspice_path {
+                opts.ngspice_exe = exe.clone();
+            }
+            let started = std::time::Instant::now();
+            let progress = |done: usize, total: usize| {
+                if !json && (done.is_multiple_of(50) || done == total) {
+                    eprintln!("{done}/{total} point(s)");
+                }
+            };
+            let run = ics_sim::sweep::run(&p, &r, &opts, &progress)?;
+            for n in &run.notes {
+                eprintln!("{n}");
+            }
+            let conds = run.predict(&specs, samples, 1);
+            let plan = run.plan.as_ref().unwrap();
+            let pct = |v: f64| format!("{:.2}%", v * 100.0);
+            let below = conds.iter().any(|c| target.is_some_and(|t| c.prediction.joint.is_none_or(|y| y < t)));
+            if json {
+                let cj: Vec<serde_json::Value> = conds
+                    .iter()
+                    .map(|c| {
+                        let (lo, hi) = ics_core::predict::wilson(c.passed, c.runs);
+                        let sj: Vec<serde_json::Value> = specs
+                            .iter()
+                            .zip(&c.prediction.specs)
+                            .map(|(s, sp)| match sp {
+                                Ok(sp) => serde_json::json!({"name": s.name, "mean": sp.mean, "sigma": sp.std, "yield": sp.yield_,
+                                    "cpk": sp.cpk, "q2": sp.model.q2, "rmse": sp.model.rmse, "quadratic": sp.model.quadratic,
+                                    "sensitivity": plan.inputs.iter().zip(&sp.sensitivity).enumerate()
+                                        .map(|(i, (n, v))| serde_json::json!({"input": n, "share": v, "slope": sp.model.slope(i)}))
+                                        .collect::<Vec<_>>()}),
+                                Err(e) => serde_json::json!({"name": s.name, "error": e}),
+                            })
+                            .collect();
+                        serde_json::json!({"condition": c.condition, "runs": c.runs, "passed": c.passed,
+                            "simulated_yield": c.passed as f64 / c.runs.max(1) as f64, "simulated_ci95": [lo, hi],
+                            "predicted_yield": c.prediction.joint, "specs": sj})
+                    })
+                    .collect();
+                println!("{}", serde_json::json!({"cell": r.to_string(), "samples": samples, "conditions": cj}));
+            } else {
+                println!(
+                    "{r}: {} point(s) in {:.1} s, {samples} surrogate samples per condition",
+                    run.points.len(),
+                    started.elapsed().as_secs_f64()
+                );
+                for c in &conds {
+                    let (lo, hi) = ics_core::predict::wilson(c.passed, c.runs);
+                    println!(
+                        "\n{}: simulated {}/{} ({}, 95% CI {} to {}), predicted {}",
+                        c.condition,
+                        c.passed,
+                        c.runs,
+                        pct(c.passed as f64 / c.runs.max(1) as f64),
+                        pct(lo),
+                        pct(hi),
+                        c.prediction.joint.map_or("—".into(), pct)
+                    );
+                    for (s, sp) in specs.iter().zip(&c.prediction.specs) {
+                        match sp {
+                            Ok(sp) => {
+                                let mut top: Vec<(usize, f64)> = sp.sensitivity.iter().copied().enumerate().collect();
+                                top.sort_by(|a, b| b.1.total_cmp(&a.1));
+                                let top: Vec<String> = top
+                                    .iter()
+                                    .take(3)
+                                    .filter(|t| t.1 >= 0.01)
+                                    .map(|(i, v)| format!("{} {:.0}%", plan.inputs[*i], v * 100.0))
+                                    .collect();
+                                println!(
+                                    "  {:<12} mean {:>10}  sigma {:>10}  yield {:>8}  cpk {:>6}  Q2 {:.3}  [{}]",
+                                    s.name,
+                                    format_eng(sp.mean, ""),
+                                    format_eng(sp.std, ""),
+                                    sp.yield_.map_or("—".into(), pct),
+                                    sp.cpk.map_or("—".into(), |v| format!("{v:.2}")),
+                                    sp.model.q2,
+                                    top.join(", ")
+                                );
+                                if sp.model.q2 < 0.9 {
+                                    println!(
+                                        "  {:<12} the model explains little of the spread (Q2 < 0.9): run more samples or check the spec",
+                                        ""
+                                    );
+                                }
+                            }
+                            Err(e) => println!("  {:<12} no model: {e}", s.name),
+                        }
+                    }
+                }
+            }
+            if below {
+                return Err(format!("a condition's predicted yield is below {}", pct(target.unwrap())));
+            }
         }
         Cmd::Optimize { project, cell, post_layout, apply, json } => {
             let mut p = Project::open(&project).map_err(|e| e.to_string())?;

@@ -19,6 +19,7 @@ pub mod montecarlo;
 pub mod ngspice;
 pub mod optimize;
 pub mod results;
+pub mod sweep;
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;

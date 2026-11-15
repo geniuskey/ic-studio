@@ -49,6 +49,7 @@
 | `ics route <PROJECT> <CELL> [--place]` | 플라이라인을 배선하고 저장. 배선되지 않은 넷이 남으면 1로 종료 |
 | `ics compact <PROJECT> <CELL> [--dir left,down] [--no-infer]` | 지정한 방향으로 레이아웃을 압축하고 저장 |
 | `ics diff <PROJECT> <CELL> [--rev REV \| --against DIR]` | 레이아웃을 git 리비전(기본 `HEAD`) 또는 다른 프로젝트와 비교. 다르면 1로 종료 |
+| `ics yield <PROJECT> <CELL> [--runs N] [--samples N] [--target Y] [--json]` | 셀의 몬테카를로 스윕 설정을 실행하고 조건별 수율과 스펙별 민감도를 예측. `--target` 미만이면 1로 종료 |
 | `ics optimize <PROJECT> <CELL> [--post-layout] [--apply] [--json]` | 셀의 스펙을 만족하도록 소자 사이징. 모든 스펙을 만족하는 포인트가 없으면 1로 종료 |
 | `ics place-like <PROJECT> <CELL> --from <CELL> [--route]` | 같은 회로를 가진 완성된 셀처럼 배치하고 저장 |
 | `ics skill <PROJECT> <FILE.il> [--no-save] [--json]` | 프로젝트에 Cadence SKILL 스크립트를 실행하고 저장. SKILL 오류가 나면 1로 종료 |
@@ -148,6 +149,13 @@ ics mc demo ota5t --runs 200 --measure "op:v(out)" --measure "ac:bandwidth(v(out
 변수(`sim.optimize`)를 사용합니다. 각 평가는 stderr에, 최적 값과 스펙 결과는 stdout에 출력합니다
 (`--json`: `passed`, `evaluations`, `vars`, `specs`를 가진 객체 하나). `--post-layout`은 모든 후보를
 먼저 배치, 배선, 추출합니다. `--apply`는 최적 값을 회로도에 쓰고 저장합니다.
+
+### 수율 예측
+
+`ics yield`는 셀의 코너 / 스윕 / 몬테카를로 설정(`sim.sweep`, **Tools > Corner / Sweep Manager**에서 설정)을 실행하고,
+랜덤 입력에 대한 각 스펙의 모델을 맞춰 샘플링합니다([수율 예측](tools.md#수율-예측) 참고). 대괄호 안은 스펙
+분산에서 비율이 가장 큰 입력입니다. `--runs`는 실행 수를 바꾸고, `--target 0.99`는 어떤 조건의 예측 수율이 그보다
+낮으면 1로 종료하며, `--json`은 모든 조건을 스펙과 민감도와 함께 출력합니다.
 
 ### SKILL 스크립트
 

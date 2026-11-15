@@ -227,6 +227,7 @@ mod tests {
             "fix_drc",
             "compact",
             "optimize",
+            "predict_yield",
             "place_like",
             "diff_layout",
             "extract",
@@ -284,6 +285,20 @@ mod tests {
         assert!(!sim["datasets"].as_array().unwrap().is_empty(), "{sim}");
         let spice = call(&mut s, "run_spice", json!({"deck": "* rc\nV1 a 0 1\nR1 a b 1k\nR2 b 0 1k\n.op\n.end\n"})).unwrap();
         assert_eq!(spice["datasets"][0]["values"]["v(b)"], 0.5, "{spice}");
+
+        let y = call(
+            &mut s,
+            "predict_yield",
+            json!({"cell": "current_mirror", "runs": 40, "samples": 20000,
+                "vars": [{"target": "M*.w", "sigma": "2%", "mismatch": true}],
+                "specs": [{"name": "iout", "analysis": "op", "expr": "-i(v1)", "min": "19u", "max": "21u"}]}),
+        )
+        .unwrap();
+        let c = &y["conditions"][0];
+        assert_eq!(c["runs"], 40, "{y}");
+        assert!(c["predicted_yield"].as_f64().unwrap() > 0.3, "{y}");
+        assert!(c["specs"][0]["q2"].as_f64().unwrap() > 0.95, "{y}");
+        assert!(c["specs"][0]["sensitivity"][0]["input"].as_str().unwrap().starts_with('M'), "{y}");
 
         let drc = call(&mut s, "run_drc", json!({"cell": "cmos_inverter"})).unwrap();
         assert!(drc["rules_run"].as_u64().unwrap() > 0, "{drc}");

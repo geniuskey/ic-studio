@@ -106,10 +106,35 @@ Each **varied parameter** has:
 With Monte Carlo results, **Statistics** lists mean, σ, min, max, count and yield of every
 spec, and a histogram of the selected spec marks the bins outside its limits in red.
 
+### Yield prediction
+
+A few hundred simulated runs pin a yield down only roughly: 40 passing runs out of 40 still
+allow a yield of 91 %. After a Monte Carlo run, **Predicted yield** fits a response-surface
+model of every spec over the random inputs (one per varied parameter, and one per instance
+for mismatch): quadratic when there are at least twice as many runs as terms, linear
+otherwise. It then samples the model 100 000 times per condition (corner, temperature and
+swept values), adding the model's leave-one-out error as noise so the prediction claims no
+more than the model knows.
+
+- **Simulated (95% CI)**: the share of simulated runs meeting every spec, with its Wilson
+  interval.
+- **Predicted**: the share of model samples meeting every spec.
+- **Sensitivity**: for the selected spec at its worst condition, each input's share of the
+  spec's variance and whether the spec rises or falls with it. Below the bars: the model
+  kind, its leave-one-out Q² (trust the prediction above about 0.9) and its error.
+
+A low Q² means the spec does not follow the inputs smoothly (an amplifier driven to the
+rails, a failed measurement). Simulate more runs or check the spec expression.
+
+![Predicted yield and sensitivity of the RC filter's bandwidth](screenshots/tool_yield_prediction.png)
+
+The same runs headless: `ics yield <project> <cell> [--runs N] [--target 0.99]` (see
+[CLI](cli.md#yield-prediction)) and the MCP tool `predict_yield`.
+
 ### Datasheet
 
 **Export datasheet...** writes an HTML page of the last run: the spec summary (limits,
-min / mean / max / σ and yield) and the table of every point with pass / fail colours.
+min / mean / max / σ and yield), the predicted yield of each condition and the table of every point with pass / fail colours.
 
 ## Optimizer
 

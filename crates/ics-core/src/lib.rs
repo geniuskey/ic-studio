@@ -31,6 +31,7 @@ pub mod pdk;
 pub mod pex;
 pub mod pixel_layout;
 pub mod polybool;
+pub mod predict;
 pub mod project;
 pub mod region;
 pub mod route;
