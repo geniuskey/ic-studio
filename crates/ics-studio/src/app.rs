@@ -895,10 +895,12 @@ impl IcStudio {
             Command::PixelOptics => self.pixel.show(),
             Command::RunPixelOptics => {
                 self.pixel.show();
-                self.pixel.run();
+                self.pixel.run(None);
+                // Automation waits for an RCWA run to finish.
+                self.pixel.wait();
                 match &self.pixel.result {
                     Some(Err(e)) => self.warn(format!("Pixel optics: {e}")),
-                    Some(Ok(r)) => self.info(format!("Pixel optics: {} at CRA {} deg", r.name, r.cra)),
+                    Some(Ok(r)) => self.info(format!("Pixel optics ({}): {} at CRA {} deg", r.method, r.name, r.cra)),
                     None => {}
                 }
             }
@@ -4359,6 +4361,10 @@ impl IcStudio {
 
     pub fn pixel_optics(&self) -> &PixelOptics {
         &self.pixel
+    }
+
+    pub fn pixel_optics_mut(&mut self) -> &mut PixelOptics {
+        &mut self.pixel
     }
 
     pub fn calculator(&self) -> &Calculator {

@@ -15,12 +15,32 @@ straight into the pixel circuit's simulation.
   colour into a current source of the open cell (undoable).
 - CLI: `ics pixel pixels/bsi_1p4um.toml --cra 20 --lux 100 --cct 5000`, with `--json` for
   the full result and `--set PROJECT CELL I1 --color Gr` to write the photocurrent into a
-  current source.
+  current source. `--method rcwa [--harmonics 11]` selects the rigorous solver.
 
 Example stacks ship in `pixels/`: a back-side illuminated 1.4 µm pixel and a front-side
 illuminated 2.8 µm pixel with three metal levels.
 
-## The model
+## Two solvers
+
+- **Ray** (default): geometric rays with thin-film optics on the silicon. Fast (under a
+  second), gives per-lens optical crosstalk and a detailed light budget. Accurate while the
+  pitch is well above the wavelength.
+- **RCWA** (rigorous coupled-wave analysis): solves Maxwell's equations over the 2 × 2 Bayer
+  cell, so it includes diffraction, interference in every layer and the near field of the
+  grid; use it for pixels around 1.5 µm and below. The microlens is staircased in 8 slices.
+  Accuracy grows with the harmonics per direction (`--harmonics`, the **Harmonics** field):
+  for the 1.4 µm example the green peak moves 0.576 → 0.585 → 0.586 → 0.591 for 9, 11, 15, 19
+  harmonics. 11 harmonics over 63 wavelengths take about 8 s on 10 cores. Metal grids converge
+  more slowly (permittivities use Laurent's rule). RCWA reports no per-lens crosstalk, and
+  absorption above the silicon is one figure.
+
+The solvers agree exactly without patterned layers (both reduce to thin-film optics); on the
+1.4 µm example the ray model gives a green peak of 0.71 and RCWA 0.61, the difference being
+diffraction and interference at that pitch.
+
+![Pixel Optics with RCWA](screenshots/tool_pixel_optics_rcwa.png)
+
+## The ray model
 
 Rays start uniformly over one 2 × 2 Bayer cell of an infinite array, as a plane wave at the
 chief ray angle. Each ray
@@ -40,10 +60,9 @@ light entering through a pixel's microlens that another pixel collects. The budg
 light into reflected, absorbed in the colour filter, metal, other layers, silicon above the
 photodiode, collected, and silicon below it (or transmitted).
 
-Limits: this is geometric optics. Diffraction matters once the pitch nears the wavelength
-(sub-micron pixels), and is not modelled; nor are electrical crosstalk (carrier diffusion),
-reflections back up from the grid or the silicon, or thin-film interference inside the thick
-layers. Treat the result as a first-order design aid; an RCWA / FDTD solver is planned.
+Limits of the ray model: geometric optics, so no diffraction (use RCWA for small pitches),
+no reflections back up from the grid or the silicon, no interference inside the thick layers.
+Neither solver models electrical crosstalk (carrier diffusion between photodiodes).
 
 ## Stack file
 

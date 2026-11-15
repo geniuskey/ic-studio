@@ -229,8 +229,21 @@ pub struct PixelResult {
     /// microlens that is collected, the fraction collected by another pixel.
     pub crosstalk: [Vec<f64>; 4],
     pub budget: Vec<Budget>,
-    /// Rays per Bayer cell.
+    /// Rays per Bayer cell (ray model).
     pub rays: usize,
+    /// `ray` or `rcwa`. RCWA gives no per-lens crosstalk (zeros) and lumps the absorption above
+    /// the silicon into `other_layers`.
+    pub method: String,
+}
+
+/// Solver of the pixel model.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Method {
+    /// Geometric rays with thin-film optics on the silicon (fast, no diffraction).
+    Ray,
+    /// Rigorous coupled-wave analysis over the Bayer cell with this many harmonics per
+    /// direction (odd); the microlens is staircased.
+    Rcwa { harmonics: usize },
 }
 
 /// Simulation settings.
@@ -242,11 +255,18 @@ pub struct Settings {
     pub azimuth: f64,
     /// Rays per pixel side (rays per cell = (2 n)²).
     pub rays_per_side: usize,
+    pub method: Method,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { wavelengths: (0..=62).map(|i| 0.38 + i as f64 * 0.01).collect(), cra: 0.0, azimuth: 0.0, rays_per_side: 40 }
+        Settings {
+            wavelengths: (0..=62).map(|i| 0.38 + i as f64 * 0.01).collect(),
+            cra: 0.0,
+            azimuth: 0.0,
+            rays_per_side: 40,
+            method: Method::Ray,
+        }
     }
 }
 
@@ -303,6 +323,9 @@ fn lens_sphere(stack: &PixelStack, ml: &Microlens, top: f64, i: i64, j: i64) -> 
 /// Run the pixel model.
 pub fn simulate(stack: &PixelStack, settings: &Settings) -> Result<PixelResult, String> {
     stack.check()?;
+    if let Method::Rcwa { harmonics } = settings.method {
+        return simulate_rcwa(stack, settings, harmonics);
+    }
     let mats = stack.materials()?;
     let p = stack.pitch;
     let n_side = settings.rays_per_side.max(2);
@@ -370,6 +393,168 @@ pub fn simulate(stack: &PixelStack, settings: &Settings) -> Result<PixelResult, 
         crosstalk: xt,
         budget,
         rays: (2 * n_side) * (2 * n_side),
+        method: "ray".into(),
+    })
+}
+
+/// Steps of the staircased microlens in the RCWA model.
+const LENS_SLICES: usize = 8;
+/// Permittivity samples per pixel side in the RCWA model.
+const SAMPLES_PER_PIXEL: usize = 32;
+
+/// The RCWA model: the Bayer cell as one period.
+fn simulate_rcwa(stack: &PixelStack, settings: &Settings, harmonics: usize) -> Result<PixelResult, String> {
+    use crate::rcwa::{Eps, Layer, Problem};
+    let mats = stack.materials()?;
+    let p = stack.pitch;
+    let h = harmonics.max(1) | 1;
+    let ns = 2 * SAMPLES_PER_PIXEL;
+    let cell = 2.0 * p;
+    let xy = |i: usize, j: usize| ((i as f64 + 0.5) * cell / ns as f64, (j as f64 + 0.5) * cell / ns as f64);
+    // Check every material once up front, so the per-wavelength work cannot fail.
+    for name in [stack.ambient.as_str(), "si", &stack.color_filters.red, &stack.color_filters.green, &stack.color_filters.blue] {
+        mats.get(name)?;
+    }
+    for l in &stack.layers {
+        if l.kind == LayerKind::Uniform {
+            mats.get(&l.material)?;
+        }
+        if let Some(g) = &l.grid {
+            mats.get(&g.material)?;
+        }
+    }
+    for f in &stack.arc {
+        mats.get(&f.material)?;
+    }
+    if let Some(m) = &stack.microlens {
+        mats.get(&m.material)?;
+    }
+
+    let problem = |lambda: f64| -> Problem {
+        let idx = |name: &str| mats.get(name).map(|m| m.index(lambda)).unwrap();
+        let eps = |n: Complex64| n * n;
+        let ambient = idx(&stack.ambient);
+        let cf = [idx(&stack.color_filters.red), idx(&stack.color_filters.green), idx(&stack.color_filters.blue)];
+        let mut layers = vec![];
+        if let Some(ml) = &stack.microlens {
+            let n_lens = idx(&ml.material);
+            let a = ml.radius.unwrap_or(p / std::f64::consts::SQRT_2);
+            let rc = (a * a + ml.height * ml.height) / (2.0 * ml.height);
+            for k in 0..LENS_SLICES {
+                // Height of the slice's middle above the lens base.
+                let zm = ml.height * (1.0 - (k as f64 + 0.5) / LENS_SLICES as f64);
+                let r = (rc * rc - (zm - (ml.height - rc)).powi(2)).max(0.0).sqrt();
+                let samples = (0..ns * ns)
+                    .map(|s| {
+                        let (x, y) = xy(s % ns, s / ns);
+                        let (cx, cy) = (((x / p).floor() + 0.5) * p, ((y / p).floor() + 0.5) * p);
+                        eps(if (x - cx).hypot(y - cy) <= r { n_lens } else { ambient })
+                    })
+                    .collect();
+                layers.push(Layer { thickness: ml.height / LENS_SLICES as f64, eps: Eps::Grid { nx: ns, ny: ns, samples } });
+            }
+        }
+        for l in &stack.layers {
+            let base = match l.kind {
+                LayerKind::ColorFilter => None,
+                LayerKind::Uniform => Some(idx(&l.material)),
+            };
+            let grid = l.grid.as_ref().map(|g| (idx(&g.material), g.width));
+            let e = match (base, grid) {
+                (Some(n), None) => Eps::Uniform(eps(n)),
+                _ => Eps::Grid {
+                    nx: ns,
+                    ny: ns,
+                    samples: (0..ns * ns)
+                        .map(|s| {
+                            let (x, y) = xy(s % ns, s / ns);
+                            if let Some((nm, w)) = grid
+                                && on_grid(x, y, p, w)
+                            {
+                                return eps(nm);
+                            }
+                            let (i, j) = pixel_of(x, y, p);
+                            eps(base.unwrap_or_else(|| cf[[0, 1, 1, 2][PixelStack::color(i, j)]]))
+                        })
+                        .collect(),
+                },
+            };
+            layers.push(Layer { thickness: l.thickness, eps: e });
+        }
+        for f in &stack.arc {
+            layers.push(Layer { thickness: f.thickness, eps: Eps::Uniform(eps(idx(&f.material))) });
+        }
+        Problem {
+            period: (cell, cell),
+            harmonics: (h, h),
+            n_in: ambient,
+            layers,
+            n_sub: idx("si"),
+            wavelength: lambda,
+            theta: settings.cra.to_radians(),
+            phi: settings.azimuth.to_radians(),
+        }
+    };
+
+    let pd = &stack.photodiode;
+    let one = |lambda: f64| -> ([f64; 4], Budget) {
+        let sols = problem(lambda).solve();
+        let mut qe = [0.0; 4];
+        let mut b = Budget::default();
+        let w = 1.0 / sols.len() as f64;
+        for s in &sols {
+            for (i, j) in [(0usize, 0usize), (1, 0), (0, 1), (1, 1)] {
+                let x = (i as f64 * p, (i + 1) as f64 * p);
+                let y = (j as f64 * p, (j + 1) as f64 * p);
+                let a = s.absorbed(x, y, (pd.top, pd.bottom));
+                qe[PixelStack::color(i as i64, j as i64)] += 4.0 * a * w;
+                b.collected += a * w;
+            }
+            let whole = (0.0, cell);
+            let total = s.absorbed(whole, whole, (0.0, f64::INFINITY));
+            b.reflected += s.r * w;
+            b.silicon_shallow += s.absorbed(whole, whole, (0.0, pd.top)) * w;
+            b.silicon_deep += s.absorbed(whole, whole, (pd.bottom, f64::INFINITY)) * w;
+            b.other_layers += (1.0 - s.r - total).max(0.0) * w;
+        }
+        (qe, b)
+    };
+
+    // Wavelengths in parallel; the linear algebra itself stays sequential.
+    faer::set_global_parallelism(faer::Par::Seq);
+    let wl = &settings.wavelengths;
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(wl.len().max(1));
+    let mut out: Vec<Option<([f64; 4], Budget)>> = vec![None; wl.len()];
+    std::thread::scope(|sc| {
+        let chunks: Vec<_> = out.chunks_mut(wl.len().div_ceil(threads).max(1)).enumerate().collect();
+        let size = wl.len().div_ceil(threads).max(1);
+        for (c, chunk) in chunks {
+            let one = &one;
+            sc.spawn(move || {
+                for (k, slot) in chunk.iter_mut().enumerate() {
+                    *slot = Some(one(wl[c * size + k]));
+                }
+            });
+        }
+    });
+    let mut qe: [Vec<f64>; 4] = Default::default();
+    let mut budget = vec![];
+    for (q, b) in out.into_iter().map(Option::unwrap) {
+        for c in 0..4 {
+            qe[c].push(q[c]);
+        }
+        budget.push(b);
+    }
+    Ok(PixelResult {
+        name: stack.name.clone(),
+        cra: settings.cra,
+        azimuth: settings.azimuth,
+        wavelengths: wl.clone(),
+        qe,
+        crosstalk: std::array::from_fn(|_| vec![0.0; wl.len()]),
+        budget,
+        rays: 0,
+        method: "rcwa".into(),
     })
 }
 
@@ -666,6 +851,51 @@ bottom = 3.0
         flat.microlens = None;
         let rf = run(&flat, 0.0);
         assert!(rf.budget[i].metal > r0.budget[i].metal);
+    }
+
+    #[test]
+    fn rcwa_agrees_with_thin_film_optics_without_patterns() {
+        // Only anti-reflection films on silicon: both solvers reduce to thin-film optics.
+        let s = PixelStack::from_toml(
+            "pitch = 1.0\n[[arc]]\nmaterial = \"ta2o5\"\nthickness = 0.055\n[[arc]]\nmaterial = \"hfo2\"\nthickness = 0.01\n\
+             [photodiode]\ntop = 0.05\nbottom = 2.0\n",
+        )
+        .unwrap();
+        for cra in [0.0, 20.0] {
+            let wl = vec![0.45, 0.55, 0.65];
+            let ray = simulate(&s, &Settings { wavelengths: wl.clone(), cra, rays_per_side: 4, ..Settings::default() }).unwrap();
+            let rc =
+                simulate(&s, &Settings { wavelengths: wl, cra, method: Method::Rcwa { harmonics: 3 }, ..Settings::default() })
+                    .unwrap();
+            for c in 0..4 {
+                for i in 0..3 {
+                    assert!((ray.qe[c][i] - rc.qe[c][i]).abs() < 1e-6, "CRA {cra}: {} vs {}", ray.qe[c][i], rc.qe[c][i]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rcwa_bsi_pixel_converges_and_balances() {
+        let s = PixelStack::from_toml(BSI).unwrap();
+        let wl = vec![0.45, 0.55, 0.63];
+        let r = |h| {
+            simulate(&s, &Settings { wavelengths: wl.clone(), method: Method::Rcwa { harmonics: h }, ..Settings::default() })
+                .unwrap()
+        };
+        let (r9, r13) = (r(9), r(13));
+        assert_eq!(r13.method, "rcwa");
+        // Colours where they belong, close between harmonics, energy balanced.
+        assert!(r13.qe[3][0] > 0.4 && r13.qe[1][1] > 0.4 && r13.qe[0][2] > 0.3, "{:?}", r13.qe);
+        for c in 0..4 {
+            for i in 0..3 {
+                assert!((r9.qe[c][i] - r13.qe[c][i]).abs() < 0.05, "{c} {i}: {} vs {}", r9.qe[c][i], r13.qe[c][i]);
+            }
+        }
+        for b in &r13.budget {
+            let sum = b.reflected + b.other_layers + b.silicon_shallow + b.collected + b.silicon_deep;
+            assert!((sum - 1.0).abs() < 1e-3, "{b:?}");
+        }
     }
 
     #[test]

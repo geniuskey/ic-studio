@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use eframe::egui::{self, Color32, RichText};
 use egui_plot::{Legend, Line, Plot, PlotPoints};
 use ics_optics::light::Spectrum;
-use ics_optics::pixel::{COLORS, PixelResult, Settings};
+use ics_optics::pixel::{COLORS, Method, PixelResult, Settings};
 
 use crate::theme;
 
@@ -28,7 +28,13 @@ pub struct PixelOptics {
     pub color: usize,
     pub result: Option<Result<PixelResult, String>>,
     pub currents: Option<[f64; 4]>,
+    /// RCWA instead of the ray model, with this many harmonics.
+    pub rcwa: bool,
+    pub harmonics: usize,
+    job: Option<std::sync::mpsc::Receiver<Outcome>>,
 }
+
+type Outcome = (Result<PixelResult, String>, Option<[f64; 4]>);
 
 impl Default for PixelOptics {
     fn default() -> Self {
@@ -44,6 +50,9 @@ impl Default for PixelOptics {
             color: 1,
             result: None,
             currents: None,
+            rcwa: false,
+            harmonics: 11,
+            job: None,
         }
     }
 }
@@ -63,30 +72,77 @@ impl PixelOptics {
         self.open = true;
     }
 
-    /// Run the model on the current stack text.
-    pub fn run(&mut self) {
-        let wavelengths: Vec<f64> = (0..=62).map(|i| 0.38 + i as f64 * 0.01).collect();
-        let res = ics_optics::PixelStack::from_toml(&self.text).and_then(|st| {
-            let r = ics_optics::simulate(
-                &st,
-                &Settings { wavelengths: wavelengths.clone(), cra: self.cra, azimuth: 0.0, rays_per_side: 32 },
-            )?;
-            let cut = (self.ir_cut > 0.0).then_some(self.ir_cut / 1000.0);
-            let sp = Spectrum::blackbody(&wavelengths, self.cct, self.lux, cut);
-            let area = st.pitch * st.pitch;
-            self.currents = Some(std::array::from_fn(|c| sp.photocurrent(&r.qe[c], area)));
-            Ok(r)
-        });
-        if res.is_err() {
-            self.currents = None;
+    /// Run the model on the current stack text: at once for the ray model, on a worker thread
+    /// for RCWA (see [`Self::is_running`]).
+    pub fn run(&mut self, ctx: Option<&egui::Context>) {
+        let text = self.text.clone();
+        let (cra, lux, cct, ir_cut) = (self.cra, self.lux, self.cct, self.ir_cut);
+        let method = if self.rcwa { Method::Rcwa { harmonics: self.harmonics } } else { Method::Ray };
+        let work = move || -> Outcome {
+            let wavelengths: Vec<f64> = (0..=62).map(|i| 0.38 + i as f64 * 0.01).collect();
+            let res = ics_optics::PixelStack::from_toml(&text).and_then(|st| {
+                let r = ics_optics::simulate(
+                    &st,
+                    &Settings { wavelengths: wavelengths.clone(), cra, azimuth: 0.0, rays_per_side: 32, method },
+                )?;
+                Ok((r, st.pitch))
+            });
+            match res {
+                Ok((r, pitch)) => {
+                    let cut = (ir_cut > 0.0).then_some(ir_cut / 1000.0);
+                    let sp = Spectrum::blackbody(&wavelengths, cct, lux, cut);
+                    let cur = std::array::from_fn(|c| sp.photocurrent(&r.qe[c], pitch * pitch));
+                    (Ok(r), Some(cur))
+                }
+                Err(e) => (Err(e), None),
+            }
+        };
+        if method == Method::Ray {
+            (self.result, self.currents) = {
+                let (r, c) = work();
+                (Some(r), c)
+            };
+            return;
         }
-        self.result = Some(res);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = ctx.cloned();
+        std::thread::spawn(move || {
+            let _ = tx.send(work());
+            if let Some(c) = ctx {
+                c.request_repaint();
+            }
+        });
+        self.job = Some(rx);
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.job.is_some()
+    }
+
+    /// Wait for a running RCWA job (automation and tests).
+    pub fn wait(&mut self) {
+        if let Some(rx) = self.job.take()
+            && let Ok((r, c)) = rx.recv()
+        {
+            self.result = Some(r);
+            self.currents = c;
+        }
+    }
+
+    fn poll(&mut self) {
+        if let Some(rx) = &self.job
+            && let Ok((r, c)) = rx.try_recv()
+        {
+            self.result = Some(r);
+            self.currents = c;
+            self.job = None;
+        }
     }
 
     pub fn load(&mut self, path: PathBuf) -> Result<(), String> {
         self.text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         self.path = Some(path);
-        self.run();
+        self.run(None);
         Ok(())
     }
 
@@ -94,6 +150,7 @@ impl PixelOptics {
         if !self.open {
             return None;
         }
+        self.poll();
         let mut open = true;
         let mut action = None;
         crate::float::tool_window(ctx, "pixel_optics", "Pixel Optics", [1000.0, 640.0], &mut open, |ui| {
@@ -140,8 +197,20 @@ impl PixelOptics {
                 ui.add(egui::DragValue::new(&mut self.cct).range(1000.0..=20000.0).speed(50.0)).labelled_by(l.id);
                 let l = ui.label("IR cut (nm, 0 = none)");
                 ui.add(egui::DragValue::new(&mut self.ir_cut).range(0.0..=1100.0).speed(5.0)).labelled_by(l.id);
-                if ui.button("Run").clicked() {
-                    self.run();
+                ui.checkbox(&mut self.rcwa, "RCWA").on_hover_text("Rigorous coupled-wave analysis: includes diffraction, slower");
+                if self.rcwa {
+                    let l = ui.label("Harmonics");
+                    ui.add(egui::DragValue::new(&mut self.harmonics).range(3..=25).speed(0.1)).labelled_by(l.id);
+                    if self.harmonics.is_multiple_of(2) {
+                        self.harmonics += 1;
+                    }
+                }
+                let ctx = ui.ctx().clone();
+                if self.is_running() {
+                    ui.add(egui::Spinner::new());
+                    ui.label("Running…");
+                } else if ui.button("Run").clicked() {
+                    self.run(Some(&ctx));
                 }
             });
             ui.separator();
@@ -168,9 +237,11 @@ impl PixelOptics {
                                     r.wavelengths.iter().zip(&r.qe[c]).map(|(&l, &q)| [l * 1000.0, q]).collect();
                                 pu.line(Line::new(format!("QE {}", COLORS[c]), pts).color(colors[c]).width(2.0));
                             }
-                            let pts: PlotPoints =
-                                r.wavelengths.iter().zip(&r.crosstalk[1]).map(|(&l, &x)| [l * 1000.0, x]).collect();
-                            pu.line(Line::new("crosstalk G", pts).color(pal.text_weak).style(egui_plot::LineStyle::dashed_loose()));
+                            if r.method == "ray" {
+                                let pts: PlotPoints =
+                                    r.wavelengths.iter().zip(&r.crosstalk[1]).map(|(&l, &x)| [l * 1000.0, x]).collect();
+                                pu.line(Line::new("crosstalk G", pts).color(pal.text_weak).style(egui_plot::LineStyle::dashed_loose()));
+                            }
                         });
                     ui.horizontal_wrapped(|ui| {
                         for (c, name) in COLORS.iter().enumerate() {
@@ -182,11 +253,11 @@ impl PixelOptics {
                         let b = r.budget[i];
                         ui.label(
                             RichText::new(format!(
-                                "At 530 nm: collected {:.0} %, reflected {:.0} %, colour filter {:.0} %, metal {:.0} %, silicon beyond the photodiode {:.0} %",
+                                "At 530 nm ({}): collected {:.0} %, reflected {:.0} %, absorbed above the silicon {:.0} %, silicon beyond the photodiode {:.0} %",
+                                r.method,
                                 b.collected * 100.0,
                                 b.reflected * 100.0,
-                                b.color_filter * 100.0,
-                                b.metal * 100.0,
+                                (b.color_filter + b.metal + b.other_layers) * 100.0,
                                 (b.silicon_shallow + b.silicon_deep) * 100.0
                             ))
                             .color(pal.text_weak),

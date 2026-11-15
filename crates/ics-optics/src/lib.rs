@@ -15,6 +15,7 @@ pub mod material;
 #[allow(clippy::approx_constant)]
 mod nk_data;
 pub mod pixel;
+pub mod rcwa;
 pub mod tmm;
 
 pub use material::{Material, Materials};

@@ -159,7 +159,8 @@ Linux needs the usual windowing libraries:
 - Pixel optics: microlens, colour filters, metal grid and anti-reflection films over the
   silicon photodiode give the QE of each Bayer colour, optical crosstalk at a chief ray angle
   and the light budget; the photocurrent for an illuminance goes into the pixel circuit
-  (`ics pixel`, **Pixel Optics** window). Material data from refractiveindex.info
+  (`ics pixel`, **Pixel Optics** window); a fast ray model and an RCWA solver that includes
+  diffraction for small pitches. Material data from refractiveindex.info
 
 **Tools** ([guide](https://pages.euiyun.com/ic-studio/tools.html))
 - Waveform calculator: `bandwidth`, `ugf`, `phasemargin`, `risetime`, `cross`, `delay`,
@@ -357,7 +358,8 @@ fit for production use, including the optics of image sensors.
 3. **Image sensor pixels**: Done: a pixel stack (microlens, colour filter, dielectrics, metal
    grid, anti-reflection films, silicon) with ray and thin-film optics giving QE, crosstalk
    at a chief ray angle and the photocurrent of the pixel circuit (`ics pixel`, **Pixel
-   Optics**). Next: RCWA / FDTD for sub-micron pitches, metal layers from the layout.
+   Optics**); an RCWA solver for small pitches. Next: metal layers from the layout, electrical
+   crosstalk.
 4. **Prediction and process**: surrogate models for yield and specs, silicon-to-simulation
    correlation, process emulation (3-D cross-sections from layout and process steps) and
    process data management.

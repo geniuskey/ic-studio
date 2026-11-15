@@ -496,6 +496,20 @@ fn pixel_optics() {
     let dc = ics_core::units::parse_spice(i1.param("dc")).unwrap();
     assert!((dc / green - 1.0).abs() < 1e-3, "{dc} vs {green}");
     shot(&mut h, "34_pixel_optics");
+    // The RCWA solver through the same command.
+    h.state_mut().pixel_optics_mut().rcwa = true;
+    h.state_mut().pixel_optics_mut().harmonics = 3;
+    h.state_mut().command(Command::RunPixelOptics);
+    h.run_steps(3);
+    let r = h.state().pixel_optics().result.as_ref().unwrap().as_ref().unwrap();
+    assert_eq!(r.method, "rcwa");
+    assert!(r.qe.iter().all(|q| q.iter().all(|v| v.is_finite() && *v >= 0.0)));
+    if std::env::var("ICS_SHOT_DIR").is_ok() {
+        h.state_mut().pixel_optics_mut().harmonics = 11;
+        h.state_mut().command(Command::RunPixelOptics);
+        h.run_steps(3);
+        shot(&mut h, "35_pixel_optics_rcwa");
+    }
 }
 
 /// Corner / Sweep Manager: sweep R1 and check the bandwidth spec on every point.

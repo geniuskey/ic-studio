@@ -341,9 +341,16 @@ enum Cmd {
         /// Wavelength range and step (nm).
         #[arg(long, default_value = "380:1000:10")]
         range: String,
-        /// Rays per pixel side.
+        /// Rays per pixel side (ray model).
         #[arg(long, default_value_t = 40)]
         rays: usize,
+        /// Solver: `ray` (geometric rays, fast) or `rcwa` (rigorous coupled-wave analysis,
+        /// includes diffraction; slower).
+        #[arg(long, default_value = "ray")]
+        method: String,
+        /// Harmonics per direction for RCWA (odd; more is more accurate and slower).
+        #[arg(long, default_value_t = 11)]
+        harmonics: usize,
         /// Illuminance at the pixel (lux) for the photocurrent.
         #[arg(long)]
         lux: Option<f64>,
@@ -810,8 +817,13 @@ fn run(cli: Cli) -> Result<(), String> {
                 return Err("DRC failed".into());
             }
         }
-        Cmd::Pixel { stack, cra, azimuth, range, rays, lux, cct, ir_cut, set, color, json } => {
-            use ics_optics::pixel::{COLORS, Settings};
+        Cmd::Pixel { stack, cra, azimuth, range, rays, method, harmonics, lux, cct, ir_cut, set, color, json } => {
+            use ics_optics::pixel::{COLORS, Method, Settings};
+            let method = match method.to_ascii_lowercase().as_str() {
+                "ray" => Method::Ray,
+                "rcwa" => Method::Rcwa { harmonics },
+                other => return Err(format!("unknown --method '{other}' (ray, rcwa)")),
+            };
             let text = std::fs::read_to_string(&stack).map_err(|e| format!("{}: {e}", stack.display()))?;
             let st = ics_optics::PixelStack::from_toml(&text).map_err(|e| format!("{}: {e}", stack.display()))?;
             let r: Vec<f64> = range
@@ -824,8 +836,10 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             let n = ((b - a) / step + 1e-9).floor() as usize;
             let wavelengths: Vec<f64> = (0..=n).map(|i| (a + i as f64 * step) / 1000.0).collect();
-            let res =
-                ics_optics::simulate(&st, &Settings { wavelengths: wavelengths.clone(), cra, azimuth, rays_per_side: rays })?;
+            let res = ics_optics::simulate(
+                &st,
+                &Settings { wavelengths: wavelengths.clone(), cra, azimuth, rays_per_side: rays, method },
+            )?;
             let currents: Option<Vec<f64>> = lux.map(|lux| {
                 let cut = (ir_cut > 0.0).then_some(ir_cut / 1000.0);
                 let sp = ics_optics::light::Spectrum::blackbody(&wavelengths, cct, lux, cut);
@@ -838,7 +852,17 @@ fn run(cli: Cli) -> Result<(), String> {
                 }
                 println!("{v}");
             } else {
-                println!("{}: pitch {} um, CRA {cra} deg, {} rays per Bayer cell", st.name, st.pitch, res.rays);
+                match method {
+                    Method::Ray => {
+                        println!("{}: pitch {} um, CRA {cra} deg, ray model, {} rays per Bayer cell", st.name, st.pitch, res.rays)
+                    }
+                    Method::Rcwa { harmonics } => {
+                        println!(
+                            "{}: pitch {} um, CRA {cra} deg, RCWA with {harmonics} x {harmonics} harmonics",
+                            st.name, st.pitch
+                        )
+                    }
+                }
                 println!("{:>6} {:>7} {:>7} {:>7} {:>7}   crosstalk (Gr)", "nm", "QE R", "QE Gr", "QE Gb", "QE B");
                 let every = ((20.0 / step).round() as usize).max(1);
                 for (i, l) in wavelengths.iter().enumerate().step_by(every) {

@@ -40,7 +40,7 @@
 | `ics drc <PROJECT> <CELL> [--deck FILE] [--fix]` | DRC 실행(덱은 SVRF도 가능). 위반이 있으면 1로 종료 |
 | `ics extract <PROJECT> <CELL>` | 추출된 넷리스트를 SPICE로 출력 |
 | `ics lvs <PROJECT> <CELL>` | 레이아웃과 회로도 비교. 차이가 있으면 1로 종료 |
-| `ics pixel <STACK> [--cra DEG] [--lux L --cct K --ir-cut NM] [--set PROJECT CELL INST --color C] [--json]` | 이미지센서 픽셀 광학: QE, 크로스토크, 광전류([픽셀 광학](pixel-optics.md) 참고) |
+| `ics pixel <STACK> [--method ray\|rcwa [--harmonics N]] [--cra DEG] [--lux L --cct K --ir-cut NM] [--set PROJECT CELL INST --color C] [--json]` | 이미지센서 픽셀 광학: QE, 크로스토크, 광전류([픽셀 광학](pixel-optics.md) 참고) |
 | `ics results <PROJECT> <CELL> <FILE>` | 다른 곳에서 실행한 사인오프 결과 표시(Calibre, KLayout, netgen). 위반이나 불일치가 있으면 1로 종료 |
 | `ics emir <PROJECT> <CELL> --net NET [--currents FILE] [--json]` | 라벨이 붙은 핀 기준으로 넷의 IR 드롭과 일렉트로마이그레이션 분석. 전류는 레이아웃 소자별(JSON) 또는 회로도의 동작점에서 가져옴. EM 위반이 있으면 1로 종료 |
 | `ics opc <PROJECT> <CELL> --layer LAYER [--apply] [--sigma UM] [--threshold T] [--fragment UM] [--max-out UM] [--max-in UM] [--iterations N] [--gain G] [--json]` | 레이어의 광근접 보정. 보정 전후 EPE 출력. `--apply`는 마스크를 `<LAYER>_opc`에 쓰고(이전 마스크 교체, 그린 레이어는 바뀌지 않음) 저장 |
