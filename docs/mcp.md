@@ -61,7 +61,7 @@ The server has 40 tools:
 | Tool | Purpose |
 |---|---|
 | `open_project`, `new_project`, `save_project`, `project_info` | Project management; `project_info` lists the technology layers, vias and all cells |
-| `get_netlist` | SPICE deck of a cell |
+| `get_netlist` | Netlist of a cell: SPICE deck, Spectre or CDL (`format`) |
 | `write_schematic` | Create or replace a cell's schematic from a SPICE netlist; its analysis lines set the simulation setup |
 | `set_simulation` | Change a cell's analyses (`op`, `dc`, `ac`, `tran`, `noise`), backend, temperature, extra lines, parasitics or corner |
 | `simulate` | Run the cell's saved analyses (optional `backend`: `builtin`, `ngspice` or `auto`; `parasitics`); returns a compact summary with the warnings of what the built-in engine approximates |

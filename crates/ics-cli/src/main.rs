@@ -47,8 +47,14 @@ enum Cmd {
     },
     /// List libraries, cells and views of a project.
     Info { project: PathBuf },
-    /// Print the SPICE deck of a cell (`lib/cell` or just `cell`).
-    Netlist { project: PathBuf, cell: String },
+    /// Print the netlist of a cell (`lib/cell` or just `cell`): a SPICE deck, the same deck in
+    /// Spectre, or CDL for LVS.
+    Netlist {
+        project: PathBuf,
+        cell: String,
+        #[arg(long, default_value = "spice")]
+        format: ics_core::netlist::Format,
+    },
     /// Create or replace a cell's schematic from a SPICE netlist file; its analysis lines set the
     /// cell's simulation setup. Saves the project.
     Schematic {
@@ -107,7 +113,7 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Simulate a raw SPICE file using its own dot analyses.
+    /// Simulate a SPICE or Spectre (`.scs`, `simulator lang=spectre`) file using its own analyses.
     Spice {
         file: PathBuf,
         #[arg(long, value_enum, default_value = "builtin")]
@@ -538,16 +544,16 @@ fn run(cli: Cli) -> Result<(), String> {
                 }
             }
         }
-        Cmd::Netlist { project, cell } => {
+        Cmd::Netlist { project, cell, format } => {
             let p = Project::open(&project).map_err(|e| e.to_string())?;
             let r = resolve(&p, &cell)?;
             let c = p.cell(&r).unwrap();
             let sch = c.schematic.as_ref().ok_or("cell has no schematic")?;
-            let nl = ics_core::netlist::netlist_for(sch, &p.tech, &c.sim.corner);
-            for w in &nl.warnings {
+            let (text, warnings) = ics_core::netlist::write(sch, &p.tech, &c.sim, &r.to_string(), format);
+            for w in &warnings {
                 eprintln!("warning: {w}");
             }
-            print!("{}", nl.deck(&r.to_string(), &c.sim));
+            print!("{text}");
         }
         Cmd::Schematic { project, cell, netlist, overwrite } => {
             let mut p = Project::open(&project).map_err(|e| e.to_string())?;
@@ -664,7 +670,13 @@ fn run(cli: Cli) -> Result<(), String> {
             print_results(&res, json);
         }
         Cmd::Spice { file, backend: b, json, compare, tol } => {
-            let deck = std::fs::read_to_string(&file).map_err(|e| e.to_string())?;
+            let mut deck = std::fs::read_to_string(&file).map_err(|e| e.to_string())?;
+            if ics_core::spectre::starts_in_spectre(Some(std::path::Path::new(&file)))
+                && !ics_core::spectre::is_spectre(&deck, None)
+            {
+                // A `.scs` deck is Spectre from its first line.
+                deck = format!("* {}\nsimulator lang=spectre\n{deck}", std::path::Path::new(&file).display());
+            }
             let deck_dir = std::path::Path::new(&file).parent().map(|d| d.to_path_buf());
             let opts = SimOptions { backend: backend(b), deck_dir, ..Default::default() };
             if compare {

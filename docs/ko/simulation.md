@@ -193,6 +193,13 @@ Rust로 작성한 수정 절점 해석(MNA) 엔진입니다. 다음을 지원합
     `x1.net`). `.global` 노드는 전역으로 유지됩니다.
   - 서브서킷 안의 `.model` 카드는 인스턴스마다 그 파라미터로 평가되고, `lmin lmax wmin wmax`가
     있는 `name.N` 카드는 인스턴스의 `l`과 `w`(`nf`가 있으면 finger당)로 bin이 선택됩니다.
+  - 덱과 모델 라이브러리의 Spectre 문법(`.scs` 파일, 또는 `simulator lang=spectre` 이후, `simulator
+    lang=spice`로 복귀): `section=`이 있는 `include`, `library` / `section`, `parameters`, `subckt` /
+    `inline subckt` / `ends`, `model`(`bsim4`, `bsim3v3`, `mos1`..`mos3`, `diode`, `bjt`), 인스턴스
+    `name (nodes) master params`, `resistor` / `capacitor` / `inductor`, `vsource` / `isource`(`dc`,
+    `mag`, `pulse`, `sine`, `pwl`), `global`, `ic` / `nodeset`, `options`, `dc`·`ac`·`tran`·`noise` 해석.
+    Spectre 배율 접미사(`M` = mega)를 그대로 해석합니다. ngspice에서는 평탄화한 SPICE 덱으로 실행됩니다.
+  - HSPICE `.protect` / `.unprotect` 표시는 건너뜁니다.
   - 오류와 경고에는 원본 파일과 줄 번호가 표시됩니다.
 - 다이오드 모델: `is n cjo vj m fc tt rs bv ibv kf af eg xti tnom`,
 - MOS level 1: `vto kp u0 lambda gamma phi tox ld cgso cgdo cgbo cj cjsw mj mjsw pb fc is

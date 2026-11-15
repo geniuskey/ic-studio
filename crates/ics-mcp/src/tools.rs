@@ -550,8 +550,8 @@ pub fn definitions() -> Vec<Value> {
         ),
         tool(
             "get_netlist",
-            "SPICE deck generated from a cell's schematic, including the analyses of its saved simulation setup.",
-            json!({"cell": cell()}),
+            "Netlist generated from a cell's schematic: a SPICE deck including the analyses of its saved simulation setup (default), the same deck in Spectre, or CDL for LVS.",
+            json!({"cell": cell(), "format": {"type": "string", "enum": ["spice", "spectre", "cdl"], "description": "Netlist language (default spice)."}}),
             &["cell"],
         ),
         tool(
@@ -1146,8 +1146,9 @@ impl State {
         let (p, r) = self.cell_arg(a)?;
         let c = p.cell(&r).expect("resolved");
         let sch = c.schematic.as_ref().ok_or("cell has no schematic view")?;
-        let nl = ics_core::netlist::netlist_for(sch, &p.tech, &c.sim.corner);
-        Ok(json!({"cell": r.to_string(), "deck": nl.deck(&r.to_string(), &c.sim), "warnings": nl.warnings}))
+        let format: ics_core::netlist::Format = a.opt_str("format")?.unwrap_or("spice").parse()?;
+        let (deck, warnings) = ics_core::netlist::write(sch, &p.tech, &c.sim, &r.to_string(), format);
+        Ok(json!({"cell": r.to_string(), "deck": deck, "warnings": warnings}))
     }
 
     fn write_schematic(&mut self, a: &Args) -> Result<Value, String> {

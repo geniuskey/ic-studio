@@ -58,7 +58,7 @@ npx skills add geniuskey/ic-studio
 | 도구 | 용도 |
 |---|---|
 | `open_project`, `new_project`, `save_project`, `project_info` | 프로젝트 관리. `project_info`는 테크놀로지 레이어, 비아, 모든 셀을 나열 |
-| `get_netlist` | 셀의 SPICE 덱 |
+| `get_netlist` | 셀의 넷리스트: SPICE 덱, Spectre, CDL(`format`) |
 | `write_schematic` | SPICE 넷리스트로 셀의 회로도를 만들거나 교체. 해석 줄은 시뮬레이션 설정이 됨 |
 | `set_simulation` | 셀의 해석(`op`, `dc`, `ac`, `tran`, `noise`), 백엔드, 온도, 추가 줄, 기생 성분, 코너 변경 |
 | `simulate` | 셀에 저장된 해석 실행(선택: `backend`는 `builtin`, `ngspice`, `auto`; `parasitics`). 내장 엔진이 근사하는 부분에 대한 경고와 함께 간결한 요약을 반환 |

@@ -200,6 +200,15 @@ A modified nodal analysis engine written in Rust. It supports:
   - `.model` cards inside subcircuits, evaluated with each instance's parameters, and model
     binning: cards `name.N` with `lmin lmax wmin wmax` are selected by an instance's `l` and
     `w` (per finger with `nf`),
+  - the Spectre language, in decks and in model libraries (`.scs` files, or after
+    `simulator lang=spectre`, switching back with `simulator lang=spice`): `include` with
+    `section=`, `library` / `section`, `parameters`, `subckt` / `inline subckt` / `ends`,
+    `model` (`bsim4`, `bsim3v3`, `mos1`..`mos3`, `diode`, `bjt`), instances
+    `name (nodes) master params`, `resistor` / `capacitor` / `inductor`, `vsource` /
+    `isource` (`dc`, `mag`, `pulse`, `sine`, `pwl`), `global`, `ic` / `nodeset`, `options` and
+    the `dc`, `ac`, `tran` and `noise` analyses; Spectre scale factors (`M` = mega) are read
+    as such. With ngspice, Spectre decks run as the flattened SPICE deck,
+  - HSPICE `.protect` / `.unprotect` markers are skipped,
   - errors and warnings name the file and line they come from,
 - diode model: `is n cjo vj m fc tt rs bv ibv kf af eg xti tnom`,
 - MOS level 1: `vto kp u0 lambda gamma phi tox ld cgso cgdo cgbo cj cjsw mj mjsw pb fc is

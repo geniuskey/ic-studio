@@ -342,8 +342,8 @@ The goal is one environment for design, analysis, simulation, prediction and pro
 fit for production use, including the optics of image sensors.
 
 1. **Trust**: PDK-grade simulation. Done: a SPICE front-end for libraries, parameters,
-   subcircuits and model binning; BSIM4 currents, charges, junctions, noise and leakage. Next:
-   Spectre / HSPICE / CDL netlists.
+   subcircuits and model binning; BSIM4 currents, charges, junctions, noise and leakage;
+   Spectre decks and model libraries; Spectre and CDL netlist output.
 2. **Fit into existing flows**: Calibre results (RVE / SVDB), OpenAccess / Virtuoso data.
 3. **Image sensor pixels**: a pixel stack (microlens, colour filter, dielectrics, metal,
    silicon) with thin-film and ray optics, later RCWA / FDTD; QE, crosstalk and chief-ray

@@ -22,10 +22,10 @@
 | `ics new <DIR> [--template empty\|demo]` | 프로젝트 생성(기본 템플릿 `demo`) |
 | `ics examples [DIR] [--force]` | 주제별 예제 프로젝트를 `DIR/<topic>`에 씀(`--force`가 없으면 기존 것은 유지). `DIR`이 없으면 주제 목록 출력 |
 | `ics info <PROJECT>` | 라이브러리, 셀, 뷰 목록 |
-| `ics netlist <PROJECT> <CELL>` | 셀의 SPICE 덱 출력 |
+| `ics netlist <PROJECT> <CELL> [--format spice\|spectre\|cdl]` | 셀의 넷리스트 출력: SPICE 덱(기본), 같은 덱의 Spectre 형식, LVS용 CDL(`*.PININFO`가 있는 `.SUBCKT`, 소스 제외) |
 | `ics schematic <PROJECT> <CELL> <NETLIST> [--overwrite]` | SPICE 넷리스트 파일로 셀의 회로도를 만들거나 교체하고 저장 |
 | `ics sim <PROJECT> <CELL> [--backend builtin\|ngspice\|auto] [--json] [--parasitics] [--compare [--tol T]]` | 셀에 저장된 설정으로 시뮬레이션. `--compare`는 내장 엔진을 ngspice와 대조 |
-| `ics spice <FILE> [--backend builtin\|ngspice\|auto] [--json] [--compare [--tol T]]` | SPICE 파일을 파일 자체의 해석으로 시뮬레이션 |
+| `ics spice <FILE> [--backend builtin\|ngspice\|auto] [--json] [--compare [--tol T]]` | SPICE 또는 Spectre 파일(`.scs`, `simulator lang=spectre`)을 파일 자체의 해석으로 시뮬레이션 |
 | `ics mc <PROJECT> <CELL> --measure ANALYSIS:EXPR... [--runs N] [--seed S] [--avt V] [--abeta V] [--vto-sigma V] [--kp-sigma V] [--parasitics] [--json]` | 공정 변동과 Pelgrom 미스매치를 적용한 내장 엔진 몬테카를로 |
 | `ics gds <PROJECT> <CELL> -o <FILE>` | 셀과 그 셀이 배치하는 모든 셀을 GDSII로 내보냄. `FILE`이 `.oas` / `.oasis`로 끝나면 OASIS |
 | `ics gds-info <FILE>` | GDSII 또는 OASIS 파일의 계층 통계와 소요 시간 출력 |

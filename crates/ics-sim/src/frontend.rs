@@ -102,6 +102,8 @@ struct Subckt {
 #[derive(Debug, Clone)]
 struct ModelRef {
     emit: String,
+    /// Element letter of the devices that use it (`m`, `d`, `q`, `j`).
+    kind: char,
     /// (lmin, lmax, wmin, wmax) for a binned card.
     bin: Option<[f64; 4]>,
 }
@@ -128,6 +130,23 @@ fn unquote(s: &str) -> &str {
 }
 
 /// Logical lines of `text`: continuations joined, comments dropped.
+/// Logical lines of `text`, translated from the Spectre language where it uses it.
+fn logical_any(text: &str, file: Option<&Path>, warnings: &mut Vec<String>) -> Vec<Line> {
+    if !ics_core::spectre::is_spectre(text, file) {
+        return logical(text, file);
+    }
+    let t = ics_core::spectre::to_spice(text, ics_core::spectre::starts_in_spectre(file));
+    let at = |w: String| match file {
+        Some(f) => format!("{}: {w}", f.display()),
+        None => w,
+    };
+    warnings.extend(t.warnings.into_iter().map(at));
+    t.lines
+        .into_iter()
+        .map(|l| Line { origin: Origin { file: file.map(Path::to_path_buf), line: l.line }, text: l.text })
+        .collect()
+}
+
 fn logical(text: &str, file: Option<&Path>) -> Vec<Line> {
     let mut out: Vec<Line> = vec![];
     for (n, raw) in text.lines().enumerate() {
@@ -196,7 +215,7 @@ fn lib_section(lines: Vec<Line>, section: &str) -> Option<Vec<Line>> {
 
 /// Inline `.include` and `.lib file section` statements; drop `.lib section` definitions that
 /// are not selected.
-fn load(lines: Vec<Line>, dir: Option<&Path>, depth: usize, out: &mut Vec<Line>) -> Result<(), SimError> {
+fn load(lines: Vec<Line>, dir: Option<&Path>, depth: usize, out: &mut Vec<Line>, warn: &mut Vec<String>) -> Result<(), SimError> {
     let mut skip = 0usize;
     for l in lines {
         let c = cmd(&l.text);
@@ -221,19 +240,21 @@ fn load(lines: Vec<Line>, dir: Option<&Path>, depth: usize, out: &mut Vec<Line>)
                 }
                 let path = resolve_path(arg, dir);
                 let text = read_file(&path, &l.origin)?;
-                load(logical(&text, Some(&path)), file_dir(&path).as_deref(), depth + 1, out)?;
+                let lines = logical_any(&text, Some(&path), warn);
+                load(lines, file_dir(&path).as_deref(), depth + 1, out, warn)?;
             }
             ".lib" if args.len() >= 3 => {
                 let path = resolve_path(args[1], dir);
                 let text = read_file(&path, &l.origin)?;
                 let section = unquote(args[2]);
-                let lines = lib_section(logical(&text, Some(&path)), section)
+                let lines = lib_section(logical_any(&text, Some(&path), warn), section)
                     .ok_or_else(|| err_at(&l.origin, format!("library '{}' has no section '{section}'", path.display())))?;
-                load(lines, file_dir(&path).as_deref(), depth + 1, out)?;
+                load(lines, file_dir(&path).as_deref(), depth + 1, out, warn)?;
             }
             // A section definition in the deck itself: only used when selected.
             ".lib" if args.len() == 2 => skip = 1,
-            ".endl" => {}
+            // HSPICE encryption markers around library text.
+            ".endl" | ".protect" | ".unprotect" | ".prot" | ".unprot" => {}
             _ => out.push(l),
         }
     }
@@ -575,7 +596,13 @@ fn expand_body(body: &[Line], scope: &mut Scope, ctx: &mut Ctx, depth: usize) ->
             Some((base, b)) => (base, Some(b)),
             None => (name, None),
         };
-        scope.models.entry(key).or_default().push(ModelRef { emit, bin });
+        let kind = match ty.as_str() {
+            "d" => 'd',
+            "npn" | "pnp" => 'q',
+            "njf" | "pjf" => 'j',
+            _ => 'm',
+        };
+        scope.models.entry(key).or_default().push(ModelRef { emit, kind, bin });
     }
 
     let mut in_control = false;
@@ -607,7 +634,36 @@ fn expand_body(body: &[Line], scope: &mut Scope, ctx: &mut Ctx, depth: usize) ->
     Ok(())
 }
 
+/// The element line of a Spectre instance (`@name nodes master params`): an `X` line for a
+/// subcircuit master, otherwise the element letter of the master model.
+fn resolve_generic(l: &Line, scope: &Scope, ctx: &Ctx) -> Result<String, SimError> {
+    let toks = split_tokens(&tight_equals(&l.text[1..]));
+    let master = toks.iter().take_while(|t| !t.contains('=')).last().cloned().unwrap_or_default();
+    let key = master.to_ascii_lowercase();
+    let letter = if ctx.subckts.contains_key(&key) {
+        'x'
+    } else if let Some(m) = scope.model(&key).and_then(|v| v.first()) {
+        m.kind
+    } else {
+        return Err(err_at(&l.origin, format!("'{}': unknown model or subcircuit '{master}'", toks[0])));
+    };
+    let name = &toks[0];
+    let name = if name.chars().next().is_some_and(|c| c.eq_ignore_ascii_case(&letter)) {
+        name.clone()
+    } else {
+        format!("{letter}{name}")
+    };
+    Ok(format!("{name} {}", toks[1..].join(" ")))
+}
+
 fn expand_element(l: &Line, scope: &mut Scope, ctx: &mut Ctx, depth: usize) -> Result<(), SimError> {
+    let resolved;
+    let l = if l.text.starts_with('@') {
+        resolved = Line { origin: l.origin.clone(), text: resolve_generic(l, scope, ctx)? };
+        &resolved
+    } else {
+        l
+    };
     let text = subst_groups(&tight_equals(&l.text), &scope.params, &l.origin)?;
     let first = text.chars().next().unwrap_or(' ').to_ascii_lowercase();
     let text = if matches!(first, 'v' | 'i') { text.replace('(', " ( ").replace(')', " ) ").replace(',', " ") } else { text };
@@ -734,14 +790,15 @@ fn top_params<'a>(s: &'a Scope<'a>) -> &'a Params {
 
 /// Whether `deck` uses anything the front-end resolves (so that a plain deck can skip it).
 pub fn needs_expansion(deck: &str) -> bool {
-    deck.lines().skip(1).any(|l| {
-        let t = l.trim_start().to_ascii_lowercase();
-        let c = t.split_whitespace().next().unwrap_or("");
-        matches!(c, ".param" | ".subckt" | ".macro" | ".include" | ".inc" | ".lib" | ".global")
-            || t.contains('{')
-            || (!t.starts_with('*') && t.contains('\''))
-            || c.starts_with('x')
-    })
+    ics_core::spectre::is_spectre(deck, None)
+        || deck.lines().skip(1).any(|l| {
+            let t = l.trim_start().to_ascii_lowercase();
+            let c = t.split_whitespace().next().unwrap_or("");
+            matches!(c, ".param" | ".subckt" | ".macro" | ".include" | ".inc" | ".lib" | ".global")
+                || t.contains('{')
+                || (!t.starts_with('*') && t.contains('\''))
+                || c.starts_with('x')
+        })
 }
 
 /// Flatten `deck`. Relative `.include` and `.lib` paths are taken from `dir` (the deck's
@@ -751,8 +808,10 @@ pub fn expand(deck: &str, dir: Option<&Path>) -> Result<Expanded, SimError> {
     // statement, as the built-in engine always did.
     let title = deck.lines().next().unwrap_or("");
     let mut loaded = vec![];
-    load(logical(deck, None), dir, 0, &mut loaded)?;
-    let mut ctx = Ctx::default();
+    let mut warnings = vec![];
+    let lines = logical_any(deck, None, &mut warnings);
+    load(lines, dir, 0, &mut loaded, &mut warnings)?;
+    let mut ctx = Ctx { warnings, ..Ctx::default() };
     let top = collect(loaded, &mut ctx)?;
     let mut scope =
         Scope { prefix: String::new(), ports: HashMap::new(), params: Params::new(), models: HashMap::new(), parent: None };
@@ -892,6 +951,33 @@ mod tests {
         std::fs::write(dir.join("bad.spi"), "* bad\nR1 a 0 {nope}\n").unwrap();
         let err = expand("* t\n.inc bad.spi\n.end\n", Some(&dir)).unwrap_err().to_string();
         assert!(err.contains("bad.spi:2"), "{err}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn spectre_decks_and_libraries() {
+        let dir = std::env::temp_dir().join(format!("ics-spectre-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("lib.scs"),
+            "// corners\nsimulator lang=spectre\nlibrary l\nsection tt\nparameters dvt=0\ninclude \"dev.scs\"\nendsection tt\n\
+             section ff\nparameters dvt=-0.1\ninclude \"dev.scs\"\nendsection ff\nendlibrary l\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("dev.scs"), "model nch mos1 type=n vto=0.5+dvt kp=200u\nmodel dd diode is=1e-14\n").unwrap();
+        let deck = "// t\nsimulator lang=spectre\ninclude \"lib.scs\" section=ff\n\
+            subckt cell (a b)\nparameters w=1u\nM1 (a a b b) nch w=w l=1u\nD1 (b a) dd\nends cell\n\
+            V1 (x 0) vsource dc=1.2\nX1 (x 0) cell w=2u\nop1 dc\n";
+        let e = expand(deck, Some(&dir)).unwrap();
+        let l = lines(&e);
+        assert!(l.contains(&".model nch nmos level=1 vto=0.4 kp=200u"), "{l:#?}");
+        assert!(l.contains(&"m.x1.m1 x x 0 0 nch w=2e-6 l=1u"), "{l:#?}");
+        assert!(l.contains(&"d.x1.d1 0 x dd"), "{l:#?}");
+        assert!(l.contains(&".op"), "{l:#?}");
+        let c = parse_deck(&e.deck).unwrap();
+        assert_eq!(c.elements.len(), 3);
+        let err = expand(&deck.replace("cell w=2u", "nosuch w=2u"), Some(&dir)).unwrap_err().to_string();
+        assert!(err.contains("unknown model or subcircuit 'nosuch'"), "{err}");
         std::fs::remove_dir_all(&dir).ok();
     }
 

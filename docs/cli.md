@@ -22,10 +22,10 @@ it with `cargo build --release -p ics-cli` (binary `target/release/ics`) or run 
 | `ics new <DIR> [--template empty\|demo]` | Create a project (default template `demo`) |
 | `ics examples [DIR] [--force]` | Write the example projects, one per topic, to `DIR/<topic>` (existing ones are kept unless `--force`); without `DIR`, list the topics |
 | `ics info <PROJECT>` | List libraries, cells and views |
-| `ics netlist <PROJECT> <CELL>` | Print the cell's SPICE deck |
+| `ics netlist <PROJECT> <CELL> [--format spice\|spectre\|cdl]` | Print the cell's netlist: SPICE deck (default), the same deck in Spectre, or CDL for LVS (`.SUBCKT` with `*.PININFO`, no sources) |
 | `ics schematic <PROJECT> <CELL> <NETLIST> [--overwrite]` | Create or replace a cell's schematic from a SPICE netlist file and save |
 | `ics sim <PROJECT> <CELL> [--backend builtin\|ngspice\|auto] [--json] [--parasitics] [--compare [--tol T]]` | Simulate with the cell's saved setup; `--compare` correlates the built-in engine against ngspice |
-| `ics spice <FILE> [--backend builtin\|ngspice\|auto] [--json] [--compare [--tol T]]` | Simulate a SPICE file with its own analyses |
+| `ics spice <FILE> [--backend builtin\|ngspice\|auto] [--json] [--compare [--tol T]]` | Simulate a SPICE or Spectre file (`.scs`, or `simulator lang=spectre`) with its own analyses |
 | `ics mc <PROJECT> <CELL> --measure ANALYSIS:EXPR... [--runs N] [--seed S] [--avt V] [--abeta V] [--vto-sigma V] [--kp-sigma V] [--parasitics] [--json]` | Monte Carlo on the built-in engine with process variation and Pelgrom mismatch |
 | `ics gds <PROJECT> <CELL> -o <FILE>` | Export the cell and every cell it places to GDSII, or to OASIS when `FILE` ends in `.oas` / `.oasis` |
 | `ics gds-info <FILE>` | Print hierarchy statistics and timings of a GDSII or OASIS file |

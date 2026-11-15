@@ -119,6 +119,16 @@ pub fn resolve_backend(deck: &str, opts: &SimOptions) -> (Backend, Option<String
 
 /// Run `analyses` on `deck`. If `analyses` is empty the deck's own dot-analyses are used.
 pub fn simulate(deck: &str, analyses: &[Analysis], opts: &SimOptions) -> Result<SimResults, SimError> {
+    // ngspice does not read the Spectre language: it gets the flattened SPICE deck.
+    if opts.backend != Backend::Builtin && ics_core::spectre::is_spectre(deck, None) {
+        let (backend, _) = resolve_backend(deck, opts);
+        if backend == Backend::Ngspice {
+            let flat = frontend::expand(deck, opts.deck_dir.as_deref())?;
+            let mut r = simulate(&flat.deck, analyses, &SimOptions { backend: Backend::Ngspice, ..opts.clone() })?;
+            r.warnings.splice(0..0, flat.warnings);
+            return Ok(r);
+        }
+    }
     let start = Instant::now();
     let (backend, why) = resolve_backend(deck, opts);
     if backend == Backend::Builtin

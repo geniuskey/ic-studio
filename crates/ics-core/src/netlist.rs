@@ -39,6 +39,44 @@ impl Netlist {
     }
 }
 
+/// Netlist languages a cell can be written in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    /// SPICE deck with models and analyses (ngspice, HSPICE).
+    Spice,
+    /// The same deck in the Spectre language.
+    Spectre,
+    /// CDL for LVS: a `.SUBCKT` of the devices without sources, models and analyses.
+    Cdl,
+}
+
+impl std::str::FromStr for Format {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s.to_ascii_lowercase().as_str() {
+            "spice" | "hspice" | "sp" | "cir" => Ok(Format::Spice),
+            "spectre" | "scs" => Ok(Format::Spectre),
+            "cdl" => Ok(Format::Cdl),
+            other => Err(format!("unknown netlist format '{other}' (spice, spectre, cdl)")),
+        }
+    }
+}
+
+/// `sch` as a netlist in `format`, titled `title` (the subcircuit name for CDL), with the
+/// netlister's warnings.
+pub fn write(sch: &Schematic, tech: &Tech, setup: &SimSetup, title: &str, format: Format) -> (String, Vec<String>) {
+    let nl = netlist_for(sch, tech, &setup.corner);
+    let text = match format {
+        Format::Spice => nl.deck(title, setup),
+        Format::Spectre => crate::spectre::from_spice(&nl.deck(title, setup)),
+        Format::Cdl => {
+            let top: String = title.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect();
+            crate::signoff::cdl(sch, tech, &top)
+        }
+    };
+    (text, nl.warnings)
+}
+
 pub(crate) fn spice_name(inst: &Instance) -> String {
     let prefix = inst.kind.spice_prefix().unwrap_or('X');
     let name = inst.name.trim().replace(' ', "_");
@@ -202,5 +240,21 @@ mod tests {
         let deck = nl.deck("t", &SimSetup::default());
         assert!(deck.contains(".op"));
         assert!(deck.trim_end().ends_with(".end"));
+    }
+
+    #[test]
+    fn formats() {
+        let p = crate::examples::demo_project();
+        let c = p.cell(&crate::project::CellRef::new("work", "cmos_inverter")).unwrap();
+        let sch = c.schematic.as_ref().unwrap();
+        let (spice, _) = write(sch, &p.tech, &c.sim, "work/cmos_inverter", Format::Spice);
+        assert!(spice.contains(".end"));
+        let (scs, _) = write(sch, &p.tech, &c.sim, "work/cmos_inverter", Format::Spectre);
+        assert!(scs.contains("simulator lang=spectre") && scs.contains(") vsource"), "{scs}");
+        let (cdl, _) = write(sch, &p.tech, &c.sim, "work/cmos_inverter", Format::Cdl);
+        assert!(cdl.contains(".subckt work_cmos_inverter ") && cdl.contains("*.PININFO ") && cdl.contains(":B"), "{cdl}");
+        assert!(!cdl.lines().any(|l| l.starts_with('V')), "{cdl}");
+        assert_eq!("CDL".parse::<Format>(), Ok(Format::Cdl));
+        assert!("verilog".parse::<Format>().is_err());
     }
 }

@@ -40,6 +40,7 @@ pub mod sdl;
 pub mod signoff;
 pub mod sim_setup;
 pub mod skill;
+pub mod spectre;
 pub mod spice_import;
 pub mod stream_map;
 pub mod svrf;
