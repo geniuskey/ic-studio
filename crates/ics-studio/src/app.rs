@@ -4121,21 +4121,27 @@ impl IcStudio {
             }
         };
         let layer = self.opc.params.as_ref().map_or(0, |o| o.layer);
-        let out = self.opc.output.unwrap_or(layer);
         let summary = ics_core::opc::summary(&rep, p.tech.dbu_per_um);
-        let Some(top) = p.cell(&r).and_then(|c| c.layout.as_ref()) else { return };
-        if let Err(e) = ics_core::opc::check_output(top, p, &p.tech, layer, out) {
-            self.error(format!("OPC: {e}"));
-            return;
-        }
+        let (out, added) = match ics_core::opc::mask_layer(&mut p.tech, layer) {
+            Ok(v) => v,
+            Err(e) => {
+                self.error(format!("OPC: {e}"));
+                return;
+            }
+        };
+        let name = p.tech.layers[out].name.clone();
         let Some(lay) = p.cell_mut(&r).and_then(|c| c.layout.as_mut()) else { return };
         let ed = self.lay_eds.entry(r.clone()).or_default();
         ed.history.push(lay);
-        ics_core::opc::write_mask(lay, &rep.mask, layer, out);
+        ics_core::opc::write_mask(lay, &rep.mask, out);
         ed.layout_changed();
-        self.hier.invalidate(&r);
+        if added {
+            self.hier.clear();
+        } else {
+            self.hier.invalidate(&r);
+        }
         self.mark_dirty();
-        self.ok(format!("OPC on {r}: {summary}"));
+        self.ok(format!("OPC on {r} → {name}: {summary}"));
     }
 
     pub fn opc_tool(&mut self) -> &mut OpcTool {

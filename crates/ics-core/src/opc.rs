@@ -18,7 +18,7 @@ use crate::geom::IRect;
 use crate::hier::{LayoutSource, flatten};
 use crate::layout::{Geometry, Layout};
 use crate::region::{BoolOp, Region};
-use crate::tech::Tech;
+use crate::tech::{FillStyle, LayerDef, Tech};
 
 const MAX_DEPTH: u32 = 64;
 const MAX_FRAGMENTS: usize = 1 << 20;
@@ -141,32 +141,45 @@ pub fn correct(top: &Layout, src: &dyn LayoutSource, tech: &Tech, p: &OpcParams)
     run(&target, bbox, g, p)
 }
 
-/// Checks that the mask of `layer` can be written to layer `out` of `top`: writing it back onto
-/// `layer` replaces the cell's own shapes, so no placed cell may hold shapes on it.
-pub fn check_output(top: &Layout, src: &dyn LayoutSource, tech: &Tech, layer: usize, out: usize) -> Result<(), String> {
-    let def = tech.layer(out).ok_or_else(|| format!("output layer #{out} does not exist"))?;
-    if out == layer && flatten(top, src, MAX_DEPTH).iter().any(|f| f.layer == layer && f.id.is_none()) {
-        return Err(format!("placed cells hold {} shapes; write the mask to another layer", def.name));
-    }
-    Ok(())
+/// Name of the layer that holds the OPC mask of a layer named `name`.
+pub fn mask_layer_name(name: &str) -> String {
+    format!("{name}_opc")
 }
 
-/// Adds `mask` to `lay` on layer `out`, first removing the non-label shapes on `out` when it is
-/// the corrected `layer`. Returns the number of shapes added. Check with [`check_output`] first.
-pub fn write_mask(lay: &mut Layout, mask: &Region, layer: usize, out: usize) -> usize {
-    if out == layer {
-        let old: Vec<u64> =
-            lay.shapes.iter().filter(|s| s.layer == layer && !matches!(s.geom, Geometry::Label { .. })).map(|s| s.id).collect();
-        for id in old {
-            lay.remove(id);
-        }
+/// The layer that holds the OPC mask of `layer`: `<name>_opc`, added to the technology when
+/// missing (same GDS layer, the first free datatype from 1, the same colour, outlined). Returns
+/// its index and whether it was added. The drawn layer itself is never the mask layer, so the
+/// correction always starts again from the drawn shapes.
+pub fn mask_layer(tech: &mut Tech, layer: usize) -> Result<(usize, bool), String> {
+    let def = tech.layer(layer).ok_or_else(|| format!("OPC layer #{layer} does not exist"))?.clone();
+    let name = mask_layer_name(&def.name);
+    if let Some(k) = tech.layer_index(&name) {
+        return Ok((k, false));
+    }
+    let used = |dt: u16| tech.layers.iter().any(|l| l.gds_layer == def.gds_layer && l.gds_datatype == dt);
+    let dt = (1..=u16::MAX).find(|&d| !used(d)).ok_or("no free GDS datatype for the OPC layer")?;
+    let mut l = LayerDef::generated(def.gds_layer, dt, tech.layers.len());
+    l.name = name;
+    l.color = def.color;
+    l.fill = FillStyle::Outline;
+    tech.layers.push(l);
+    Ok((tech.layers.len() - 1, true))
+}
+
+/// Replaces the shapes of the cell's own mask layer `out` (labels stay) with `mask`. Returns
+/// the number of shapes removed and added.
+pub fn write_mask(lay: &mut Layout, mask: &Region, out: usize) -> (usize, usize) {
+    let old: Vec<u64> =
+        lay.shapes.iter().filter(|s| s.layer == out && !matches!(s.geom, Geometry::Label { .. })).map(|s| s.id).collect();
+    for &id in &old {
+        lay.remove(id);
     }
     let geoms = mask.to_geometry();
     let n = geoms.len();
     for g in geoms {
         lay.add(out, g);
     }
-    n
+    (old.len(), n)
 }
 
 /// One line: fragments, iterations and the EPE before → after correction in nm.
@@ -584,6 +597,27 @@ mod tests {
             gain: 0.6,
             tolerance: 3,
         }
+    }
+
+    #[test]
+    fn mask_layer_is_added_once_and_rewritten() {
+        let mut tech = Tech::generic();
+        let poly = tech.layer_index("poly").unwrap();
+        let n = tech.layers.len();
+        let (k, added) = mask_layer(&mut tech, poly).unwrap();
+        assert!(added && k == n);
+        let (l, d) = (&tech.layers[k], &tech.layers[poly]);
+        assert_eq!((l.name.as_str(), l.gds_layer), ("poly_opc", d.gds_layer));
+        assert_ne!(l.gds_datatype, d.gds_datatype);
+        assert_eq!(mask_layer(&mut tech, poly).unwrap(), (k, false));
+
+        let mut lay = Layout::default();
+        lay.add_rect(poly, 0, 0, 180, 1000);
+        let mask = Region::from_rects([IRect::new(-10, -10, 190, 1010)]);
+        assert_eq!(write_mask(&mut lay, &mask, k), (0, 1));
+        assert_eq!(write_mask(&mut lay, &mask, k), (1, 1));
+        assert_eq!(lay.shapes.iter().filter(|s| s.layer == k).count(), 1);
+        assert_eq!(lay.shapes.iter().filter(|s| s.layer == poly).count(), 1);
     }
 
     #[test]

@@ -812,13 +812,12 @@ pub fn definitions() -> Vec<Value> {
         tool(
             "opc",
             &format!(
-                "Optical proximity correction of one layer of a cell layout (hierarchy flattened, Manhattan shapes). The litho model is a Gaussian blur of the mask followed by a resist threshold; every edge is cut into fragments that are moved along their normal, over several iterations, against the edge placement error (EPE: printed minus drawn edge position, positive = outward) at their middle. Defaults come from the layer's min width and spacing. Returns the EPE statistics without and with correction, the mask area and the worst fragments. With apply=true the mask is written to output_layer (default: the corrected layer, whose top-level shapes it then replaces). {NOT_SAVED}"
+                "Optical proximity correction of one layer of a cell layout (hierarchy flattened, Manhattan shapes). The litho model is a Gaussian blur of the mask followed by a resist threshold; every edge is cut into fragments that are moved along their normal, over several iterations, against the edge placement error (EPE: printed minus drawn edge position, positive = outward) at their middle. Defaults come from the layer's min width and spacing. Returns the EPE statistics without and with correction, the mask area and the worst fragments. The drawn layer is never changed, so the correction always starts from the drawn shapes. With apply=true the mask is written to the layer <layer>_opc (added to the technology on first use, same GDS layer, next free datatype), replacing the cell's previous mask there. {NOT_SAVED}"
             ),
             json!({
                 "cell": cell(),
                 "layer": {"type": "string", "description": "Layer to correct, e.g. poly."},
-                "output_layer": {"type": "string", "description": "Layer the mask is written to with apply (default: the corrected layer)."},
-                "apply": {"type": "boolean", "description": "Write the mask into the cell (default false: report only)."},
+                "apply": {"type": "boolean", "description": "Write the mask to <layer>_opc in the cell (default false: report only)."},
                 "sigma": {"type": "number", "description": "Blur sigma in µm (default 0.45 x min width)."},
                 "threshold": {"type": "number", "description": "Resist threshold, 0..1 of the open-frame intensity (default 0.5)."},
                 "fragment": {"type": "number", "description": "Longest fragment in µm (default 2 x min width)."},
@@ -1873,7 +1872,6 @@ impl State {
         let (p, r) = self.cell_arg(a)?;
         let tech = &p.tech;
         let layer = layer_index(tech, a.str("layer")?)?;
-        let out = a.opt_str("output_layer")?.map(|n| layer_index(tech, n)).transpose()?.unwrap_or(layer);
         let o = OpcOverrides {
             sigma: a.opt_num("sigma")?,
             threshold: a.opt_num("threshold")?,
@@ -1887,19 +1885,17 @@ impl State {
         let top = layout_of(p, &r)?;
         let rep = ics_core::opc::correct(top, p, tech, &params)?;
         let apply = a.opt_bool("apply")?.unwrap_or(false);
-        if apply {
-            ics_core::opc::check_output(top, p, tech, layer, out)?;
-        }
         let max = a.opt_num("max_items")?.map_or(20, |v| v.max(0.0) as usize);
         let mut res = opc_json(&rep, &params, tech, max);
         res["cell"] = json!(r.to_string());
         if apply {
-            let name = layer_name(tech, out);
             let p = self.project_mut()?;
+            let (out, added) = ics_core::opc::mask_layer(&mut p.tech, layer)?;
+            let name = layer_name(&p.tech, out);
             let lay = p.cell_mut(&r).and_then(|c| c.layout.as_mut()).ok_or("cell has no layout view")?;
-            let shapes = ics_core::opc::write_mask(lay, &rep.mask, layer, out);
+            let (removed, shapes) = ics_core::opc::write_mask(lay, &rep.mask, out);
             self.dirty = true;
-            res["applied"] = json!({"layer": name, "shapes": shapes, "replaced": out == layer});
+            res["applied"] = json!({"layer": name, "layer_added": added, "shapes": shapes, "replaced_shapes": removed});
         }
         Ok(res)
     }

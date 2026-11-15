@@ -227,18 +227,16 @@ enum Cmd {
     },
     /// Optical proximity correction of one layer of a cell layout: a Gaussian-blur / threshold
     /// litho model and iterative edge-fragment correction. Prints the edge placement error
-    /// without and with correction; `--apply` writes the mask into the cell and saves the project.
+    /// without and with correction; `--apply` writes the mask to `<layer>_opc` (added to the
+    /// technology on first use), replacing the previous mask, and saves the project. The drawn
+    /// layer is never changed.
     Opc {
         project: PathBuf,
         cell: String,
         /// Layer to correct, e.g. poly.
         #[arg(long)]
         layer: String,
-        /// Layer the mask is written to with `--apply` (default: replace the corrected layer's
-        /// top-level shapes).
-        #[arg(long)]
-        output: Option<String>,
-        /// Write the mask into the cell and save the project.
+        /// Write the mask to `<layer>_opc` and save the project.
         #[arg(long)]
         apply: bool,
         /// Blur sigma in µm (default 0.45 x min width).
@@ -909,32 +907,28 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             println!("LVS: layout matches schematic");
         }
-        Cmd::Opc { project, cell, layer, output, apply, sigma, threshold, fragment, max_out, max_in, iterations, gain, json } => {
+        Cmd::Opc { project, cell, layer, apply, sigma, threshold, fragment, max_out, max_in, iterations, gain, json } => {
             let mut p = Project::open(&project).map_err(|e| e.to_string())?;
             let r = resolve(&p, &cell)?;
-            let index = |name: &str| p.tech.layer_index(name).ok_or_else(|| format!("unknown layer '{name}'"));
-            let l = index(&layer)?;
-            let out = output.as_deref().map(index).transpose()?.unwrap_or(l);
+            let l = p.tech.layer_index(&layer).ok_or_else(|| format!("unknown layer '{layer}'"))?;
             let o = ics_mcp::tools::OpcOverrides { sigma, threshold, fragment, max_out, max_in, iterations, gain };
             let params = ics_mcp::tools::opc_params(&p.tech, l, &o);
             let top = p.cell(&r).unwrap().layout.as_ref().ok_or("cell has no layout")?;
             let rep = ics_core::opc::correct(top, &p, &p.tech, &params)?;
-            if apply {
-                ics_core::opc::check_output(top, &p, &p.tech, l, out)?;
-            }
             if json {
                 println!("{}", ics_mcp::tools::opc_json(&rep, &params, &p.tech, 50));
             } else {
                 println!("{} {layer}: {}", r, ics_core::opc::summary(&rep, p.tech.dbu_per_um));
             }
             if apply {
-                let mask = rep.mask;
+                let (out, added) = ics_core::opc::mask_layer(&mut p.tech, l)?;
                 let lay = p.cell_mut(&r).and_then(|c| c.layout.as_mut()).ok_or("cell has no layout")?;
-                let n = ics_core::opc::write_mask(lay, &mask, l, out);
+                let (removed, n) = ics_core::opc::write_mask(lay, &rep.mask, out);
                 p.save().map_err(|e| e.to_string())?;
                 if !json {
                     let name = &p.tech.layers[out].name;
-                    println!("wrote {n} mask shape(s) to {name} and saved the project");
+                    let what = if added { "new layer" } else { "layer" };
+                    println!("wrote {n} mask shape(s) to {what} {name} (replaced {removed}) and saved the project");
                 }
             }
         }

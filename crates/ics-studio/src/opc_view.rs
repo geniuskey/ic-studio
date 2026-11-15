@@ -15,8 +15,6 @@ const MAX_DRAWN: usize = 4000;
 pub struct OpcTool {
     pub open: bool,
     pub params: Option<OpcParams>,
-    /// Layer the mask is written to; the corrected layer itself replaces its shapes.
-    pub output: Option<usize>,
     preview: Option<(CellRef, Result<OpcReport, String>)>,
     show: [bool; 4],
     zoom: f32,
@@ -25,7 +23,7 @@ pub struct OpcTool {
 
 impl Default for OpcTool {
     fn default() -> Self {
-        OpcTool { open: false, params: None, output: None, preview: None, show: [true; 4], zoom: 1.0, pan: Vec2::ZERO }
+        OpcTool { open: false, params: None, preview: None, show: [true; 4], zoom: 1.0, pan: Vec2::ZERO }
     }
 }
 
@@ -34,7 +32,6 @@ impl OpcTool {
         if self.params.as_ref().is_none_or(|p| tech.layer(p.layer).is_none()) {
             let layer = tech.poly().or_else(|| tech.metal1()).unwrap_or(0);
             self.params = Some(OpcParams::for_layer(tech, layer));
-            self.output = None;
         }
         self.open = true;
     }
@@ -87,7 +84,7 @@ impl OpcTool {
         );
         ui.separator();
         let Some(p) = self.params.as_mut() else { return false };
-        let before = (p.clone(), self.output);
+        let before = p.clone();
         theme::section(ui, "Layers");
         egui::Grid::new("opc_layers").num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| {
             let l = ui.label("Correct");
@@ -97,15 +94,15 @@ impl OpcTool {
                 *p = OpcParams::for_layer(tech, layer);
             }
             ui.end_row();
-            let l = ui.label("Write mask to");
-            let mut out = self.output.unwrap_or(p.layer);
-            layer_combo(ui, "opc_output", tech, &mut out, l.id);
-            self.output = (out != p.layer).then_some(out);
-            ui.end_row();
         });
-        if self.output.is_none() {
-            ui.label(RichText::new("The mask replaces the layer's shapes in this cell").small().color(pal.text_weak));
-        }
+        let mask = tech.layer(p.layer).map_or_else(String::new, |d| opc::mask_layer_name(&d.name));
+        ui.label(
+            RichText::new(format!(
+                "The mask goes to {mask}; the drawn shapes stay as they are, and applying again replaces the previous mask"
+            ))
+            .small()
+            .color(pal.text_weak),
+        );
         theme::section(ui, "Optical model");
         egui::Grid::new("opc_model").num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| {
             dbu_field(ui, "Blur sigma", &mut p.sigma, tech);
@@ -130,7 +127,7 @@ impl OpcTool {
             *p = OpcParams::for_layer(tech, p.layer);
         }
         let layer = p.layer;
-        if (p.clone(), self.output) != before {
+        if *p != before {
             self.preview = None;
         }
         ui.add_space(10.0);
@@ -285,7 +282,7 @@ fn layer_combo(ui: &mut egui::Ui, id: &str, tech: &Tech, layer: &mut usize, labe
     egui::ComboBox::from_id_salt(id)
         .selected_text(name)
         .show_ui(ui, |ui| {
-            for (k, d) in tech.layers.iter().enumerate() {
+            for (k, d) in tech.layers.iter().enumerate().filter(|(_, d)| !d.name.ends_with("_opc")) {
                 ui.selectable_value(layer, k, d.name.as_str());
             }
         })

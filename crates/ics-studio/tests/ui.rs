@@ -553,7 +553,14 @@ fn opc() {
     h.run_steps(3);
     let lines: Vec<String> = h.state().console_lines().map(String::from).collect();
     assert!(lines.iter().any(|l| l.starts_with("OPC on")), "{lines:?}");
-    assert_ne!(shape_count(&h, "cmos_inverter"), before);
+    let once = shape_count(&h, "cmos_inverter");
+    assert!(once > before);
+    assert!(h.state().project().unwrap().tech.layer_index("poly_opc").is_some());
+    h.state_mut().command(Command::ApplyOpc);
+    h.run_steps(3);
+    assert_eq!(shape_count(&h, "cmos_inverter"), once, "applying again replaces the mask");
+    h.state_mut().command(Command::Undo);
+    h.run_steps(2);
     h.state_mut().command(Command::Undo);
     h.run_steps(2);
     assert_eq!(shape_count(&h, "cmos_inverter"), before);

@@ -347,8 +347,9 @@ snapped to the grid. Where both edges of a corner move out (or in), a square is 
 2. **Preview** shows the EPE without and with correction (rms, max and the fragments within
    the **EPE tolerance**) and a view of the drawn shapes, the mask and the printed contours
    without (red) and with (green) correction. Scroll to zoom, drag to pan.
-3. **Apply OPC** writes the mask to **Write mask to** (undoable). On the corrected layer
-   itself it replaces the cell's own shapes, so placed cells must not hold shapes on it;
-   pick another layer otherwise.
+3. **Apply OPC** writes the mask to the layer `<layer>_opc` (undoable). It is added to the
+   technology the first time, on the same GDS layer with the next free datatype. The drawn
+   shapes are never changed, so every run starts from them: to try other settings, change
+   them and apply again, which replaces the cell's previous mask.
 
 The same correction runs from the command line (`ics opc`) and over MCP (`opc`).

@@ -311,11 +311,14 @@ mod tests {
         assert!(rms(&opc, "epe_after") < rms(&opc, "epe_before") / 2.0, "{opc}");
         assert_eq!(opc["worst_fragments"].as_array().unwrap().len(), 3);
         assert!(opc.get("applied").is_none());
-        let held = call(&mut s, "opc", json!({"cell": "nand2", "layer": "poly", "apply": true}));
-        assert!(held.unwrap_err().contains("placed cells hold poly"));
-        let opc = call(&mut s, "opc", json!({"cell": "nand2", "layer": "poly", "output_layer": "text", "apply": true})).unwrap();
-        assert_eq!(opc["applied"]["replaced"], false, "{opc}");
-        assert!(opc["applied"]["shapes"].as_u64().unwrap() > 0, "{opc}");
+        let first = call(&mut s, "opc", json!({"cell": "nand2", "layer": "poly", "apply": true})).unwrap();
+        assert_eq!(first["applied"]["layer"], "poly_opc", "{first}");
+        assert_eq!(first["applied"]["layer_added"], true, "{first}");
+        assert!(first["applied"]["shapes"].as_u64().unwrap() > 0, "{first}");
+        let again = call(&mut s, "opc", json!({"cell": "nand2", "layer": "poly", "apply": true})).unwrap();
+        assert_eq!(again["applied"]["layer_added"], false, "{again}");
+        assert_eq!(again["applied"]["replaced_shapes"], first["applied"]["shapes"], "{again}");
+        assert_eq!(again["epe_before"], first["epe_before"], "re-running starts from the drawn shapes");
         assert!(call(&mut s, "opc", json!({"cell": "nand2", "layer": "nope"})).is_err());
 
         let m1 = call(
