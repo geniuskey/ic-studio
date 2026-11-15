@@ -7,6 +7,8 @@ the panel notes that results are out of date.
 
 ## Design rule check (DRC)
 
+![A spacing violation is marked, the shape is moved and the check comes back clean](images/drc-check.svg)
+
 ![DRC](screenshots/11_layout_drc.png)
 
 1. Open the cell's layout.
@@ -45,7 +47,21 @@ of new violations it causes; it turns live DRC on when it is off. **Fix All Viol
 (command palette) applies fixes until none helps any more, as one undoable step. Geometry
 inside placed cells is not changed.
 
+Live DRC is incremental and hierarchical, so it stays fast on large layouts:
+
+- It keeps the result of the last check and, after an edit, re-checks only the area within
+  the deck's reach of the changed region.
+- Each placed cell is checked once and its result reused for every placement. In a parent
+  cell, only the interaction zones are checked again on the flattened geometry: where
+  placements overlap or come near each other or the parent's own shapes. Rules on whole
+  pieces (`area`, `separation`, `enclosure`) widen the zone until every piece in it is
+  complete, so the violations equal those of a flat check.
+- Global rules (`antenna`, `density`) are left to **Run DRC**, which checks the whole
+  flattened cell.
+
 ## Connectivity extraction
+
+![Layout wires turn into an RC network of parasitics, and the resimulated waveform is slower](images/pex-backannotate.svg)
 
 1. Press **Extract** in the **Connectivity** section (or **Verify > Extract Nets**).
 2. The summary shows the number of nets and NMOS / PMOS transistors.
@@ -68,12 +84,21 @@ How the extractor works:
   [Device shapes](pcells.md#device-shapes-extraction-understands)).
 - Any-angle shapes are approximated by a fine staircase for connectivity; gate W / L use
   the exact geometry.
+- **Resistors** are the technology's `[[resistor]]` bodies: a conducting layer under its
+  marker layers, between two terminal pieces. R = sheet resistance × squares (L / W, bent
+  bodies measured like bent gates).
+- **Capacitors** are the `[[capacitor]]` overlaps of a bottom and a top plate under the
+  marker layers. C = area × area capacitance (+ perimeter × perimeter capacitance). See
+  [Technology](technology.md#pdk-files) and the `poly_res` / `mom_cap`
+  [PCells](pcells.md).
 - Net names come from labels in the top cell on conducting layers. Unnamed nets are called
   `netN`.
 - Warnings report labels not on conducting geometry, two labels shorted together, and a
   label on several unconnected pieces.
 
 ## Layout versus schematic (LVS)
+
+![The layout and schematic netlists side by side, devices matched one by one](images/lvs-compare.svg)
 
 ![LVS](screenshots/12_layout_lvs.png)
 
@@ -84,23 +109,63 @@ How the extractor works:
 3. The result is **Layout matches schematic** or a list of differences, each tagged:
    - `[missing]`: a schematic device not found in the layout,
    - `[extra]`: a layout device not in the schematic,
-   - `[param]`: W or L differ by more than 1 %,
+   - `[param]`: W or L, a resistance or capacitance, or the device model differ (sizes
+     and values by more than 1 %),
    - `[net]`: a net whose connections differ.
 
    Click a difference with a location to zoom to it.
 
 Comparison rules:
 
-- Only MOS transistors are compared. Voltage and current sources are ignored; other
-  schematic devices (R, C, diodes) are reported as not extracted.
-- Parallel devices with the same terminals and L are merged and their widths summed, so
-  multi-finger layouts match single schematic devices; the schematic `m` multiplies W.
+- MOS transistors, resistors and capacitors are compared. Voltage and current sources are
+  ignored; other schematic devices (diodes, inductors) are reported as not extracted.
+- Parallel devices with the same terminals (and L for MOS) are merged: MOS widths and
+  capacitances add, resistances combine as conductances. Multi-finger layouts match
+  single schematic devices; the schematic `m` multiplies W.
+- Resistors of one model in series through an unnamed net that nothing else touches merge
+  into one, so a resistor drawn as several segments matches one schematic resistor. A
+  labelled net between them stops the merge. Merged devices are reported with their names
+  joined by `+`.
+- A resistor's or capacitor's model is compared only when the schematic names one.
 - Bulk terminals are ignored.
 - Devices that are always off (gate tied to bulk), such as dummy fingers, are dropped.
 - Net names are compared case-insensitively; `0`, `gnd` and `vss` are treated as the same.
 
 The demo cell `cmos_inverter` deliberately has LVS findings (a PMOS width and the load
 capacitor); `nand2`, `nor2`, `ring_osc5`, `current_mirror`, `ota5t`, `sram6t`, `aps3t`, `full_adder` and `ota2s` are clean.
+
+## IR drop and electromigration
+
+![IR drop heatmap of a power grid: blue near the pins, red where the drop is largest](images/emir-heatmap.svg)
+
+The **IR Drop / EM** section of the right panel (also **IR drop / EM analysis** in the
+command palette) analyses one net, typically a supply such as `vdd` or `gnd`:
+
+1. Type the **Net** name. The net needs labels in the top cell: they are its pads, held at
+   the pad voltage.
+2. Set **mA / device**: the current every device on the net draws. With `0`, the
+   schematic's operating point is simulated and each MOS draws its own drain current.
+3. Press **Run IR / EM**.
+
+The net's wires on layers with a sheet resistance are cut into tiles, joined by the
+resistance between them and by the resistance of each via cut. Every MOS with its source or
+drain on the net draws its current from the tile nearest to its gate, and the network is
+solved for the voltage drop from the pads. A current returned into a ground net gives the
+same rise as a drawn current gives drop.
+
+- The summary lists nodes, resistors, pads, loads and their total current, and the worst
+  drop and where it is. Tiles not connected to any pad are reported.
+- The canvas shows a heatmap of the drop, from blue (0 V) to red (the worst drop).
+- **EM** checks the current per µm of wire width against the layer's limit and the current
+  per via cut against the via's limit. Violations are listed (click one to zoom to it) and
+  outlined in red on the canvas.
+
+The limits come from the technology: `em` (A per µm of width) and `resistance` (Ω per
+square) in the parasitic coefficients of a layer (`[[cap]]` in a PDK file), and `em`
+(A per cut) and `resistance` (Ω per cut) of a `[[via]]`. A limit of 0 is not checked. The
+generic technology has illustrative values. From the command line:
+`ics emir <project> <cell> --net vdd [--currents FILE] [--json]` (exit code 1 on EM
+violations), and over MCP the `emir` tool.
 
 ## Sign-off with external tools
 
@@ -158,6 +223,7 @@ array in `tech.json`:
 ics drc myproj nand2 [--deck rules.drc]   # exit code 1 on violations
 ics extract myproj nand2                  # extracted SPICE netlist
 ics lvs myproj nand2                      # exit code 1 on differences
+ics emir myproj nand2 --net vdd           # exit code 1 on EM violations
 ics signoff myproj nand2                  # list the sign-off runsets
 ics signoff myproj nand2 "KLayout DRC"    # run one; exit code 1 on violations / mismatch
 ```

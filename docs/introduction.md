@@ -38,6 +38,8 @@ knows about the others:
 <span class="loop">Simulate again ↺</span>
 </div>
 
+![The design loop: schematic, simulate, generate layout, route, DRC and LVS, extract parasitics, simulate again](images/design-loop.svg)
+
 - Layouts are **generated from schematics** and **routed automatically**.
 - Layouts are **checked against schematics** (LVS) with clickable differences.
 - **Parasitics extracted from the layout** flow straight back into simulation.
@@ -48,8 +50,9 @@ knows about the others:
 <div class="ics-card">
 <span class="ics-icon">SCH</span>
 <h3>Schematic and simulation</h3>
-<p>Live connectivity, operating-point annotation, DC / AC / transient analyses on a
-built-in simulator or ngspice, Bode plots and automatic measurements.</p>
+<p>Live connectivity, operating-point annotation, DC / AC / transient / noise analyses
+on a built-in simulator correlated against ngspice (or ngspice itself, picked
+automatically when needed), Bode plots and automatic measurements.</p>
 </div>
 <div class="ics-card">
 <span class="ics-icon">P&amp;R</span>
@@ -60,26 +63,27 @@ dummies; a rip-up-and-reroute maze router wires every net DRC-clean.</p>
 <div class="ics-card">
 <span class="ics-icon">LAY</span>
 <h3>Hierarchical layout</h3>
-<p>Instances and arrays, level-of-detail rendering for large designs, Boolean layer
-operations, vias, PCells, GDSII and OASIS in and out.</p>
+<p>Instances and arrays, level-of-detail rendering for large designs, exact any-angle
+Boolean layer operations, vias, PCells, GDSII, OASIS, LEF and DEF in and out.</p>
 </div>
 <div class="ics-card">
 <span class="ics-icon">DRC</span>
 <h3>Verification</h3>
-<p>Rule-deck DRC with derived layers, connectivity extraction, LVS with device merging,
-and sign-off runs through KLayout, Calibre or netgen.</p>
+<p>Rule-deck DRC with incremental live checking, extraction and LVS of transistors,
+resistors and capacitors, IR drop and electromigration, and sign-off runs through
+KLayout, Calibre or netgen.</p>
 </div>
 <div class="ics-card">
 <span class="ics-icon">ADE</span>
 <h3>Analysis tools</h3>
-<p>A waveform calculator, corner, parametric and Monte Carlo sweeps with specs, yield
-and datasheets, and run-to-run comparison of results.</p>
+<p>A waveform calculator, corner and parametric sweeps, Monte Carlo with process
+variation and Pelgrom mismatch, specs, yield and datasheets, and run-to-run comparison.</p>
 </div>
 <div class="ics-card">
 <span class="ics-icon">GEN</span>
 <h3>Layout generators</h3>
-<p>Guard rings, via arrays, common-centroid matched placement and density fill, plus a
-visual DRC rule designer and Virtuoso-compatible SKILL.</p>
+<p>Guard rings, via arrays, common-centroid matched placement, density fill and
+model-based OPC, plus a visual DRC rule designer and Virtuoso-compatible SKILL.</p>
 </div>
 <div class="ics-card">
 <span class="ics-icon">PDK</span>
@@ -136,7 +140,8 @@ simulated, checked or exported from the command line, or driven by an agent.
 
 ## How to read this guide
 
-- New users: [Installation](install.md), then the [Quick tour](quick-tour.md).
+- New users: [Installation](install.md), then the [Quick tour](quick-tour.md), or
+  **Help > Interactive Tutorial** in the app.
 - Showing IC Studio to others: the [Demo gallery](demos.md).
 - Designing a circuit: [Schematic](schematic.md) and [Simulation](simulation.md).
 - Drawing and checking layout: [Layout](layout.md), [Verification](verification.md) and

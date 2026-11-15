@@ -1,0 +1,133 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 440" width="800" height="440" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title>Drawing a CMOS inverter layout layer by layer</title>
+  <style>
+    .nw { fill: #3a3f22; stroke: #a8b84a; stroke-width: 1.5; }
+    .df { fill: #2e7d4f; stroke: #4cd08a; stroke-width: 1.5; }
+    .po { fill: #c2413b; stroke: #ff6b62; stroke-width: 1.5; }
+    .ct { fill: #e6e8f2; }
+    .m1 { fill: rgba(47, 111, 176, 0.75); stroke: #5cc0ff; stroke-width: 1.5; }
+    .lbl { fill: #e6e8f2; font-family: 'JetBrains Mono', Consolas, Menlo, monospace; font-size: 13px; }
+    .mut { fill: #8a90b0; font-size: 12px; }
+    .g { transform-box: fill-box; transform-origin: 0 0; animation: 12s infinite both; }
+    .s1 { animation-name: g1; }
+    .s2 { animation-name: g2; }
+    .s3 { animation-name: g3; }
+    .s4 { animation-name: g4; }
+    .s5 { animation: p5 12s infinite both; }
+    .s6 { animation-name: g6; }
+    .s7 { animation-name: g7; }
+    .s8 { animation-name: g8; }
+    .s9 { animation: p9 12s infinite both; }
+    .cur { animation: cur 12s infinite both; }
+    .hl { animation: hl 12s infinite both; }
+    @keyframes g1 { 0% { opacity: 0; transform: scale(0); } 2% { opacity: 1; transform: scale(0); animation-timing-function: steps(6, end); } 10%, 94% { opacity: 1; transform: scale(1); } 100% { opacity: 0; transform: scale(1); } }
+    @keyframes g2 { 0%, 12% { opacity: 0; transform: scale(0); } 12.1% { opacity: 1; transform: scale(0); animation-timing-function: steps(5, end); } 18%, 94% { opacity: 1; transform: scale(1); } 100% { opacity: 0; transform: scale(1); } }
+    @keyframes g3 { 0%, 20% { opacity: 0; transform: scale(0); } 20.1% { opacity: 1; transform: scale(0); animation-timing-function: steps(5, end); } 26%, 94% { opacity: 1; transform: scale(1); } 100% { opacity: 0; transform: scale(1); } }
+    @keyframes g4 { 0%, 28% { opacity: 0; transform: scale(0); } 28.1% { opacity: 1; transform: scale(0); animation-timing-function: steps(6, end); } 36%, 94% { opacity: 1; transform: scale(1); } 100% { opacity: 0; transform: scale(1); } }
+    @keyframes p5 { 0%, 38% { opacity: 0; } 41%, 94% { opacity: 1; } 100% { opacity: 0; } }
+    @keyframes g6 { 0%, 48% { opacity: 0; transform: scale(0); } 48.1% { opacity: 1; transform: scale(0); animation-timing-function: steps(6, end); } 52%, 94% { opacity: 1; transform: scale(1); } 100% { opacity: 0; transform: scale(1); } }
+    @keyframes g7 { 0%, 53% { opacity: 0; transform: scale(0); } 53.1% { opacity: 1; transform: scale(0); animation-timing-function: steps(6, end); } 57%, 94% { opacity: 1; transform: scale(1); } 100% { opacity: 0; transform: scale(1); } }
+    @keyframes g8 { 0%, 58% { opacity: 0; transform: scale(0); } 58.1% { opacity: 1; transform: scale(0); animation-timing-function: steps(5, end); } 66%, 94% { opacity: 1; transform: scale(1); } 100% { opacity: 0; transform: scale(1); } }
+    @keyframes p9 { 0%, 66% { opacity: 0; } 70%, 94% { opacity: 1; } 100% { opacity: 0; } }
+    @keyframes cur {
+      0% { opacity: 0; transform: translate(300px, 30px); }
+      2% { opacity: 1; transform: translate(140px, 50px); }
+      10% { transform: translate(460px, 200px); }
+      12% { transform: translate(180px, 110px); }
+      18% { transform: translate(420px, 180px); }
+      20% { transform: translate(180px, 260px); }
+      26% { transform: translate(420px, 310px); }
+      28% { transform: translate(290px, 90px); }
+      36% { transform: translate(310px, 330px); }
+      40% { transform: translate(220px, 145px); }
+      46% { transform: translate(380px, 285px); }
+      48% { transform: translate(80px, 50px); }
+      52% { transform: translate(520px, 80px); }
+      53% { transform: translate(80px, 360px); }
+      57% { transform: translate(520px, 390px); }
+      58% { transform: translate(360px, 125px); }
+      66% { transform: translate(400px, 305px); }
+      72%, 94% { opacity: 1; transform: translate(480px, 250px); }
+      100% { opacity: 0; transform: translate(480px, 250px); }
+    }
+    @keyframes hl {
+      0%, 11% { transform: translate(0, 0); }
+      11.5%, 27% { transform: translate(0, 50px); }
+      27.5%, 37% { transform: translate(0, 100px); }
+      37.5%, 47% { transform: translate(0, 150px); }
+      47.5%, 100% { transform: translate(0, 200px); }
+    }
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+  </style>
+  <defs>
+    <pattern id="dots" width="10" height="10" patternUnits="userSpaceOnUse" x="0" y="0">
+      <circle cx="0.5" cy="0.5" r="1" fill="#262c48"/>
+    </pattern>
+  </defs>
+
+  <rect x="0.5" y="0.5" width="799" height="439" rx="14" fill="#0f1220" stroke="#262c48"/>
+
+  <!-- canvas -->
+  <rect x="30" y="30" width="530" height="380" rx="8" fill="#161a2c"/>
+  <rect x="30" y="30" width="530" height="380" rx="8" fill="url(#dots)"/>
+
+  <!-- 1 nwell -->
+  <rect class="nw g s1" x="140" y="50" width="320" height="150"/>
+  <!-- 2 P diffusion, 3 N diffusion -->
+  <rect class="df g s2" x="180" y="110" width="240" height="70"/>
+  <rect class="df g s3" x="180" y="260" width="240" height="50"/>
+  <!-- 4 poly gate crossing both diffusions, input stub and pad -->
+  <rect class="po g s4" x="290" y="90" width="20" height="240"/>
+  <rect class="po g s4" x="240" y="200" width="70" height="40"/>
+  <!-- 5 contacts: diffusion source/drain and poly -->
+  <g class="s5">
+    <rect class="ct" x="210" y="135" width="20" height="20"/>
+    <rect class="ct" x="370" y="135" width="20" height="20"/>
+    <rect class="ct" x="210" y="275" width="20" height="20"/>
+    <rect class="ct" x="370" y="275" width="20" height="20"/>
+    <rect class="ct" x="250" y="210" width="20" height="20"/>
+  </g>
+  <!-- 6 metal1: VDD rail, VSS rail, straps -->
+  <rect class="m1 g s6" x="80" y="50" width="440" height="30"/>
+  <rect class="m1 g s7" x="80" y="360" width="440" height="30"/>
+  <rect class="m1 g s8" x="200" y="65" width="40" height="100"/>
+  <rect class="m1 g s8" x="200" y="265" width="40" height="110"/>
+  <rect class="m1 g s8" x="360" y="125" width="40" height="180"/>
+  <rect class="m1 g s8" x="400" y="205" width="80" height="30"/>
+  <rect class="m1 g s8" x="120" y="205" width="160" height="30"/>
+  <g class="s9">
+    <text class="lbl" x="90" y="70">VDD</text>
+    <text class="lbl" x="90" y="380">VSS</text>
+    <text class="lbl" x="128" y="225">A</text>
+    <text class="lbl" x="462" y="225">Y</text>
+    <text class="mut" x="430" y="150">PMOS</text>
+    <text class="mut" x="430" y="290">NMOS</text>
+  </g>
+
+  <!-- cursor -->
+  <g class="cur" transform="translate(480 250)">
+    <path d="M0 0 L0 17 L4.5 12.5 L8 20 L11 18.5 L7.5 11.5 L13 11.5 Z" fill="#e6e8f2" stroke="#0f1220" stroke-width="1.2"/>
+  </g>
+
+  <!-- layer palette -->
+  <rect x="590" y="30" width="180" height="380" rx="8" fill="#161a2c"/>
+  <text x="608" y="58" fill="#e6e8f2" font-size="14" font-weight="600">Layers</text>
+  <g>
+    <rect class="hl" transform="translate(0 200)" x="598" y="72" width="164" height="36" rx="6" fill="#262c48" stroke="#9d90ff" stroke-width="1.5"/>
+  </g>
+  <g font-size="13" fill="#e6e8f2">
+    <rect class="nw" x="612" y="80" width="22" height="20" rx="3"/>
+    <text x="646" y="95">nwell</text>
+    <rect class="df" x="612" y="130" width="22" height="20" rx="3"/>
+    <text x="646" y="145">diffusion</text>
+    <rect class="po" x="612" y="180" width="22" height="20" rx="3"/>
+    <text x="646" y="195">poly</text>
+    <rect x="612" y="230" width="22" height="20" rx="3" fill="#262c48"/>
+    <rect class="ct" x="617" y="234" width="12" height="12"/>
+    <text x="646" y="245">contact</text>
+    <rect class="m1" x="612" y="280" width="22" height="20" rx="3"/>
+    <text x="646" y="295">metal1</text>
+  </g>
+  <text class="mut" x="608" y="360">Drag rectangles,</text>
+  <text class="mut" x="608" y="378">snapped to the grid</text>
+</svg>

@@ -1,0 +1,203 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 380" width="800" height="380" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title>Maze routing: expand, backtrace, rip-up and reroute</title>
+  <style>
+    .mono { font-family: 'JetBrains Mono', Consolas, Menlo, monospace; font-size: 12px; }
+    .obs { fill: #262c48; stroke: #3a4066; stroke-width: 1.5; }
+    .wire { fill: none; stroke-width: 10; stroke-linecap: square; stroke-linejoin: miter; stroke-dasharray: 1; }
+    .net1 { stroke: #5cc0ff; stroke-opacity: 0.85; }
+    .net2 { stroke: #b79cff; stroke-opacity: 0.85; }
+    .first { animation: first 14s infinite both; }
+    .route2 { animation: route2 14s infinite both; }
+    .reroute { animation: reroute 14s infinite both; }
+    .block { animation: block 14s infinite both; }
+    .hl { animation: hl 14s infinite both; }
+    @keyframes first { 0%, 26% { opacity: 1; stroke-dashoffset: 1; } 36%, 56% { opacity: 1; stroke-dashoffset: 0; stroke-dasharray: 1; } 57% { stroke-dasharray: 0.02 0.02; } 62%, 100% { opacity: 0; stroke-dashoffset: 0; stroke-dasharray: 0.02 0.02; } }
+    @keyframes route2 { 0%, 66% { opacity: 1; stroke-dashoffset: 1; } 74%, 95% { opacity: 1; stroke-dashoffset: 0; } 100% { opacity: 0; stroke-dashoffset: 0; } }
+    @keyframes reroute { 0%, 74% { opacity: 1; stroke-dashoffset: 1; } 88%, 95% { opacity: 1; stroke-dashoffset: 0; } 100% { opacity: 0; stroke-dashoffset: 0; } }
+    @keyframes block { 0%, 52% { opacity: 0; } 54%, 62% { opacity: 1; } 66%, 100% { opacity: 0; } }
+    @keyframes hl { 0%, 25% { transform: translate(0, 0); } 26%, 42% { transform: translate(0, 50px); } 43%, 100% { transform: translate(0, 100px); } }
+    @keyframes e0 { 0%, 3.0% { opacity: 0; } 3.6% { opacity: 0.7; } 6.0%, 38% { opacity: 0.35; } 42%, 100% { opacity: 0; } }
+    .e0 { animation: e0 14s infinite both; }
+    @keyframes e1 { 0%, 4.4% { opacity: 0; } 5.0% { opacity: 0.7; } 7.4%, 38% { opacity: 0.35; } 42%, 100% { opacity: 0; } }
+    .e1 { animation: e1 14s infinite both; }
+    @keyframes e2 { 0%, 5.8% { opacity: 0; } 6.4% { opacity: 0.7; } 8.8%, 38% { opacity: 0.35; } 42%, 100% { opacity: 0; } }
+    .e2 { animation: e2 14s infinite both; }
+    @keyframes e3 { 0%, 7.2% { opacity: 0; } 7.8% { opacity: 0.7; } 10.2%, 38% { opacity: 0.35; } 42%, 100% { opacity: 0; } }
+    .e3 { animation: e3 14s infinite both; }
+    @keyframes e4 { 0%, 8.6% { opacity: 0; } 9.2% { opacity: 0.7; } 11.6%, 38% { opacity: 0.35; } 42%, 100% { opacity: 0; } }
+    .e4 { animation: e4 14s infinite both; }
+    @keyframes e5 { 0%, 10.0% { opacity: 0; } 10.6% { opacity: 0.7; } 13.0%, 38% { opacity: 0.35; } 42%, 100% { opacity: 0; } }
+    .e5 { animation: e5 14s infinite both; }
+    @keyframes e6 { 0%, 11.4% { opacity: 0; } 12.0% { opacity: 0.7; } 14.4%, 38% { opacity: 0.35; } 42%, 100% { opacity: 0; } }
+    .e6 { animation: e6 14s infinite both; }
+    @keyframes e7 { 0%, 12.8% { opacity: 0; } 13.4% { opacity: 0.7; } 15.8%, 38% { opacity: 0.35; } 42%, 100% { opacity: 0; } }
+    .e7 { animation: e7 14s infinite both; }
+    @keyframes e8 { 0%, 14.2% { opacity: 0; } 14.8% { opacity: 0.7; } 17.2%, 38% { opacity: 0.35; } 42%, 100% { opacity: 0; } }
+    .e8 { animation: e8 14s infinite both; }
+    @keyframes e9 { 0%, 15.6% { opacity: 0; } 16.2% { opacity: 0.7; } 18.6%, 38% { opacity: 0.35; } 42%, 100% { opacity: 0; } }
+    .e9 { animation: e9 14s infinite both; }
+    @keyframes e10 { 0%, 17.0% { opacity: 0; } 17.6% { opacity: 0.7; } 20.0%, 38% { opacity: 0.35; } 42%, 100% { opacity: 0; } }
+    .e10 { animation: e10 14s infinite both; }
+    @keyframes e11 { 0%, 18.4% { opacity: 0; } 19.0% { opacity: 0.7; } 21.4%, 38% { opacity: 0.35; } 42%, 100% { opacity: 0; } }
+    .e11 { animation: e11 14s infinite both; }
+    @keyframes e12 { 0%, 19.8% { opacity: 0; } 20.4% { opacity: 0.7; } 22.8%, 38% { opacity: 0.35; } 42%, 100% { opacity: 0; } }
+    .e12 { animation: e12 14s infinite both; }
+    @keyframes e13 { 0%, 21.2% { opacity: 0; } 21.8% { opacity: 0.7; } 24.2%, 38% { opacity: 0.35; } 42%, 100% { opacity: 0; } }
+    .e13 { animation: e13 14s infinite both; }
+    @keyframes e14 { 0%, 22.6% { opacity: 0; } 23.2% { opacity: 0.7; } 25.6%, 38% { opacity: 0.35; } 42%, 100% { opacity: 0; } }
+    .e14 { animation: e14 14s infinite both; }
+    @keyframes e15 { 0%, 24.0% { opacity: 0; } 24.6% { opacity: 0.7; } 27.0%, 38% { opacity: 0.35; } 42%, 100% { opacity: 0; } }
+    .e15 { animation: e15 14s infinite both; }
+    @keyframes n0 { 0%, 44.0% { opacity: 0; } 44.5% { opacity: 0.6; } 46.0%, 62% { opacity: 0.3; } 66%, 100% { opacity: 0; } }
+    .n0 { animation: n0 14s infinite both; }
+    @keyframes n1 { 0%, 44.5% { opacity: 0; } 45.0% { opacity: 0.6; } 46.5%, 62% { opacity: 0.3; } 66%, 100% { opacity: 0; } }
+    .n1 { animation: n1 14s infinite both; }
+    @keyframes n2 { 0%, 45.0% { opacity: 0; } 45.5% { opacity: 0.6; } 47.0%, 62% { opacity: 0.3; } 66%, 100% { opacity: 0; } }
+    .n2 { animation: n2 14s infinite both; }
+    @keyframes n3 { 0%, 45.5% { opacity: 0; } 46.0% { opacity: 0.6; } 47.5%, 62% { opacity: 0.3; } 66%, 100% { opacity: 0; } }
+    .n3 { animation: n3 14s infinite both; }
+    @keyframes n4 { 0%, 46.0% { opacity: 0; } 46.5% { opacity: 0.6; } 48.0%, 62% { opacity: 0.3; } 66%, 100% { opacity: 0; } }
+    .n4 { animation: n4 14s infinite both; }
+    @keyframes n5 { 0%, 46.5% { opacity: 0; } 47.0% { opacity: 0.6; } 48.5%, 62% { opacity: 0.3; } 66%, 100% { opacity: 0; } }
+    .n5 { animation: n5 14s infinite both; }
+    @keyframes n6 { 0%, 47.0% { opacity: 0; } 47.5% { opacity: 0.6; } 49.0%, 62% { opacity: 0.3; } 66%, 100% { opacity: 0; } }
+    .n6 { animation: n6 14s infinite both; }
+    @keyframes n7 { 0%, 47.5% { opacity: 0; } 48.0% { opacity: 0.6; } 49.5%, 62% { opacity: 0.3; } 66%, 100% { opacity: 0; } }
+    .n7 { animation: n7 14s infinite both; }
+    @keyframes n8 { 0%, 48.0% { opacity: 0; } 48.5% { opacity: 0.6; } 50.0%, 62% { opacity: 0.3; } 66%, 100% { opacity: 0; } }
+    .n8 { animation: n8 14s infinite both; }
+    @keyframes n9 { 0%, 48.5% { opacity: 0; } 49.0% { opacity: 0.6; } 50.5%, 62% { opacity: 0.3; } 66%, 100% { opacity: 0; } }
+    .n9 { animation: n9 14s infinite both; }
+    @keyframes n10 { 0%, 49.0% { opacity: 0; } 49.5% { opacity: 0.6; } 51.0%, 62% { opacity: 0.3; } 66%, 100% { opacity: 0; } }
+    .n10 { animation: n10 14s infinite both; }
+    @keyframes n11 { 0%, 49.5% { opacity: 0; } 50.0% { opacity: 0.6; } 51.5%, 62% { opacity: 0.3; } 66%, 100% { opacity: 0; } }
+    .n11 { animation: n11 14s infinite both; }
+    @keyframes n12 { 0%, 50.0% { opacity: 0; } 50.5% { opacity: 0.6; } 52.0%, 62% { opacity: 0.3; } 66%, 100% { opacity: 0; } }
+    .n12 { animation: n12 14s infinite both; }
+    @keyframes n13 { 0%, 50.5% { opacity: 0; } 51.0% { opacity: 0.6; } 52.5%, 62% { opacity: 0.3; } 66%, 100% { opacity: 0; } }
+    .n13 { animation: n13 14s infinite both; }
+    @keyframes n14 { 0%, 51.0% { opacity: 0; } 51.5% { opacity: 0.6; } 53.0%, 62% { opacity: 0.3; } 66%, 100% { opacity: 0; } }
+    .n14 { animation: n14 14s infinite both; }
+    @keyframes n15 { 0%, 51.5% { opacity: 0; } 52.0% { opacity: 0.6; } 53.5%, 62% { opacity: 0.3; } 66%, 100% { opacity: 0; } }
+    .n15 { animation: n15 14s infinite both; }
+    @keyframes n16 { 0%, 52.0% { opacity: 0; } 52.5% { opacity: 0.6; } 54.0%, 62% { opacity: 0.3; } 66%, 100% { opacity: 0; } }
+    .n16 { animation: n16 14s infinite both; }
+    @keyframes n17 { 0%, 52.5% { opacity: 0; } 53.0% { opacity: 0.6; } 54.5%, 62% { opacity: 0.3; } 66%, 100% { opacity: 0; } }
+    .n17 { animation: n17 14s infinite both; }
+    @keyframes n18 { 0%, 53.0% { opacity: 0; } 53.5% { opacity: 0.6; } 55.0%, 62% { opacity: 0.3; } 66%, 100% { opacity: 0; } }
+    .n18 { animation: n18 14s infinite both; }
+    @keyframes n19 { 0%, 53.5% { opacity: 0; } 54.0% { opacity: 0.6; } 55.5%, 62% { opacity: 0.3; } 66%, 100% { opacity: 0; } }
+    .n19 { animation: n19 14s infinite both; }
+    @keyframes n20 { 0%, 54.0% { opacity: 0; } 54.5% { opacity: 0.6; } 56.0%, 62% { opacity: 0.3; } 66%, 100% { opacity: 0; } }
+    .n20 { animation: n20 14s infinite both; }
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+  </style>
+  <defs>
+    <pattern id="grid" width="22" height="22" patternUnits="userSpaceOnUse" x="40" y="70">
+      <path d="M22 0 V22 H0" fill="none" stroke="#262c48" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <rect x="0.5" y="0.5" width="799" height="379" rx="14" fill="#0f1220" stroke="#262c48"/>
+
+  <!-- routing grid with two placed cells -->
+  <rect x="20" y="30" width="400" height="330" rx="8" fill="#161a2c"/>
+  <rect x="40" y="70" width="352" height="264" fill="url(#grid)" stroke="#262c48"/>
+  <rect class="obs" x="106" y="114" width="110" height="176" rx="3"/>
+  <rect class="obs" x="238" y="114" width="110" height="176" rx="3"/>
+  <text class="mono" x="161.0" y="206" fill="#8a90b0" text-anchor="middle">U1</text>
+  <text class="mono" x="293.0" y="206" fill="#8a90b0" text-anchor="middle">U2</text>
+
+  <!-- net 1 wavefront, one ring per distance -->
+  <g fill="#5cc0ff">
+    <g class="e0" opacity="0"><rect x="41" y="93" width="20" height="20"/></g>
+    <g class="e1" opacity="0"><rect x="41" y="71" width="20" height="20"/> <rect x="41" y="115" width="20" height="20"/> <rect x="63" y="93" width="20" height="20"/></g>
+    <g class="e2" opacity="0"><rect x="41" y="137" width="20" height="20"/> <rect x="63" y="71" width="20" height="20"/> <rect x="63" y="115" width="20" height="20"/> <rect x="85" y="93" width="20" height="20"/></g>
+    <g class="e3" opacity="0"><rect x="41" y="159" width="20" height="20"/> <rect x="63" y="137" width="20" height="20"/> <rect x="85" y="71" width="20" height="20"/> <rect x="85" y="115" width="20" height="20"/> <rect x="107" y="93" width="20" height="20"/></g>
+    <g class="e4" opacity="0"><rect x="41" y="181" width="20" height="20"/> <rect x="63" y="159" width="20" height="20"/> <rect x="85" y="137" width="20" height="20"/> <rect x="107" y="71" width="20" height="20"/> <rect x="129" y="93" width="20" height="20"/></g>
+    <g class="e5" opacity="0"><rect x="41" y="203" width="20" height="20"/> <rect x="63" y="181" width="20" height="20"/> <rect x="85" y="159" width="20" height="20"/> <rect x="129" y="71" width="20" height="20"/> <rect x="151" y="93" width="20" height="20"/></g>
+    <g class="e6" opacity="0"><rect x="41" y="225" width="20" height="20"/> <rect x="63" y="203" width="20" height="20"/> <rect x="85" y="181" width="20" height="20"/> <rect x="151" y="71" width="20" height="20"/> <rect x="173" y="93" width="20" height="20"/></g>
+    <g class="e7" opacity="0"><rect x="41" y="247" width="20" height="20"/> <rect x="63" y="225" width="20" height="20"/> <rect x="85" y="203" width="20" height="20"/> <rect x="173" y="71" width="20" height="20"/> <rect x="195" y="93" width="20" height="20"/></g>
+    <g class="e8" opacity="0"><rect x="41" y="269" width="20" height="20"/> <rect x="63" y="247" width="20" height="20"/> <rect x="85" y="225" width="20" height="20"/> <rect x="195" y="71" width="20" height="20"/> <rect x="217" y="93" width="20" height="20"/></g>
+    <g class="e9" opacity="0"><rect x="41" y="291" width="20" height="20"/> <rect x="63" y="269" width="20" height="20"/> <rect x="85" y="247" width="20" height="20"/> <rect x="217" y="115" width="20" height="20"/> <rect x="239" y="93" width="20" height="20"/></g>
+    <g class="e10" opacity="0"><rect x="41" y="313" width="20" height="20"/> <rect x="63" y="291" width="20" height="20"/> <rect x="85" y="269" width="20" height="20"/> <rect x="217" y="137" width="20" height="20"/> <rect x="239" y="71" width="20" height="20"/> <rect x="261" y="93" width="20" height="20"/></g>
+    <g class="e11" opacity="0"><rect x="63" y="313" width="20" height="20"/> <rect x="85" y="291" width="20" height="20"/> <rect x="217" y="159" width="20" height="20"/> <rect x="261" y="71" width="20" height="20"/> <rect x="283" y="93" width="20" height="20"/></g>
+    <g class="e12" opacity="0"><rect x="85" y="313" width="20" height="20"/> <rect x="107" y="291" width="20" height="20"/> <rect x="217" y="181" width="20" height="20"/> <rect x="283" y="71" width="20" height="20"/> <rect x="305" y="93" width="20" height="20"/></g>
+    <g class="e13" opacity="0"><rect x="107" y="313" width="20" height="20"/> <rect x="129" y="291" width="20" height="20"/> <rect x="305" y="71" width="20" height="20"/> <rect x="327" y="93" width="20" height="20"/></g>
+    <g class="e14" opacity="0"><rect x="129" y="313" width="20" height="20"/> <rect x="151" y="291" width="20" height="20"/> <rect x="327" y="71" width="20" height="20"/> <rect x="349" y="93" width="20" height="20"/></g>
+    <g class="e15" opacity="0"><rect x="151" y="313" width="20" height="20"/> <rect x="173" y="291" width="20" height="20"/> <rect x="349" y="71" width="20" height="20"/> <rect x="349" y="115" width="20" height="20"/> <rect x="371" y="93" width="20" height="20"/></g>
+  </g>
+  <!-- net 2 wavefront: cannot reach its target -->
+  <g fill="#f5b83d">
+    <g class="n0" opacity="0"><rect x="217" y="203" width="20" height="20"/></g>
+    <g class="n1" opacity="0"><rect x="217" y="181" width="20" height="20"/> <rect x="217" y="225" width="20" height="20"/></g>
+    <g class="n2" opacity="0"><rect x="217" y="159" width="20" height="20"/> <rect x="217" y="247" width="20" height="20"/></g>
+    <g class="n3" opacity="0"><rect x="217" y="137" width="20" height="20"/> <rect x="217" y="269" width="20" height="20"/></g>
+    <g class="n4" opacity="0"><rect x="217" y="115" width="20" height="20"/> <rect x="217" y="291" width="20" height="20"/></g>
+    <g class="n5" opacity="0"><rect x="195" y="291" width="20" height="20"/> <rect x="217" y="313" width="20" height="20"/> <rect x="239" y="291" width="20" height="20"/></g>
+    <g class="n6" opacity="0"><rect x="173" y="291" width="20" height="20"/> <rect x="195" y="313" width="20" height="20"/> <rect x="239" y="313" width="20" height="20"/> <rect x="261" y="291" width="20" height="20"/></g>
+    <g class="n7" opacity="0"><rect x="151" y="291" width="20" height="20"/> <rect x="173" y="313" width="20" height="20"/> <rect x="261" y="313" width="20" height="20"/> <rect x="283" y="291" width="20" height="20"/></g>
+    <g class="n8" opacity="0"><rect x="129" y="291" width="20" height="20"/> <rect x="151" y="313" width="20" height="20"/> <rect x="283" y="313" width="20" height="20"/> <rect x="305" y="291" width="20" height="20"/></g>
+    <g class="n9" opacity="0"><rect x="107" y="291" width="20" height="20"/> <rect x="129" y="313" width="20" height="20"/> <rect x="305" y="313" width="20" height="20"/> <rect x="327" y="291" width="20" height="20"/></g>
+    <g class="n10" opacity="0"><rect x="85" y="291" width="20" height="20"/> <rect x="107" y="313" width="20" height="20"/> <rect x="327" y="313" width="20" height="20"/> <rect x="349" y="291" width="20" height="20"/></g>
+    <g class="n11" opacity="0"><rect x="63" y="291" width="20" height="20"/> <rect x="85" y="269" width="20" height="20"/> <rect x="85" y="313" width="20" height="20"/> <rect x="349" y="269" width="20" height="20"/> <rect x="349" y="313" width="20" height="20"/> <rect x="371" y="291" width="20" height="20"/></g>
+    <g class="n12" opacity="0"><rect x="41" y="291" width="20" height="20"/> <rect x="63" y="269" width="20" height="20"/> <rect x="63" y="313" width="20" height="20"/> <rect x="85" y="247" width="20" height="20"/> <rect x="349" y="247" width="20" height="20"/> <rect x="371" y="269" width="20" height="20"/> <rect x="371" y="313" width="20" height="20"/></g>
+    <g class="n13" opacity="0"><rect x="41" y="269" width="20" height="20"/> <rect x="41" y="313" width="20" height="20"/> <rect x="63" y="247" width="20" height="20"/> <rect x="85" y="225" width="20" height="20"/> <rect x="349" y="225" width="20" height="20"/> <rect x="371" y="247" width="20" height="20"/></g>
+    <g class="n14" opacity="0"><rect x="41" y="247" width="20" height="20"/> <rect x="63" y="225" width="20" height="20"/> <rect x="85" y="203" width="20" height="20"/> <rect x="349" y="203" width="20" height="20"/> <rect x="371" y="225" width="20" height="20"/></g>
+    <g class="n15" opacity="0"><rect x="41" y="225" width="20" height="20"/> <rect x="63" y="203" width="20" height="20"/> <rect x="85" y="181" width="20" height="20"/> <rect x="349" y="181" width="20" height="20"/> <rect x="371" y="203" width="20" height="20"/></g>
+    <g class="n16" opacity="0"><rect x="41" y="203" width="20" height="20"/> <rect x="63" y="181" width="20" height="20"/> <rect x="85" y="159" width="20" height="20"/> <rect x="349" y="159" width="20" height="20"/> <rect x="371" y="181" width="20" height="20"/></g>
+    <g class="n17" opacity="0"><rect x="41" y="181" width="20" height="20"/> <rect x="63" y="159" width="20" height="20"/> <rect x="85" y="137" width="20" height="20"/> <rect x="349" y="137" width="20" height="20"/> <rect x="371" y="159" width="20" height="20"/></g>
+    <g class="n18" opacity="0"><rect x="41" y="159" width="20" height="20"/> <rect x="63" y="137" width="20" height="20"/> <rect x="85" y="115" width="20" height="20"/> <rect x="349" y="115" width="20" height="20"/> <rect x="371" y="137" width="20" height="20"/></g>
+    <g class="n19" opacity="0"><rect x="41" y="137" width="20" height="20"/> <rect x="63" y="115" width="20" height="20"/> <rect x="371" y="115" width="20" height="20"/></g>
+    <g class="n20" opacity="0"><rect x="41" y="115" width="20" height="20"/></g>
+  </g>
+
+  <!-- wires -->
+  <path class="wire net1 first" opacity="0" pathLength="1" d="M51 103 H381"/>
+  <path class="wire net2 route2" pathLength="1" d="M227 213 V81"/>
+  <path class="wire net1 reroute" pathLength="1" d="M51 103 V301 H381 V103"/>
+
+  <!-- blocked marker -->
+  <g class="block" opacity="0" stroke="#ff5d6c" stroke-width="3" stroke-linecap="round">
+    <path d="M220 96 L234 110 M234 96 L220 110"/>
+    <text x="241" y="129" fill="#ff5d6c" stroke="none" font-size="13" font-weight="600">blocked</text>
+  </g>
+
+  <!-- pins -->
+  <g stroke-width="2">
+    <rect x="43" y="95" width="16" height="16" fill="#5cc0ff" stroke="#e6e8f2"/>
+    <rect x="373" y="95" width="16" height="16" fill="#5cc0ff" stroke="#e6e8f2"/>
+    <rect x="219" y="205" width="16" height="16" fill="#9d90ff" stroke="#e6e8f2"/>
+    <rect x="219" y="73" width="16" height="16" fill="#9d90ff" stroke="#e6e8f2"/>
+  </g>
+  <g class="mono" fill="#e6e8f2">
+    <text x="40" y="62">S1</text>
+    <text x="370" y="62">T1</text>
+    <text x="216" y="62">T2</text>
+    <text x="194" y="218" text-anchor="end">S2</text>
+  </g>
+
+  <!-- steps -->
+  <rect x="440" y="30" width="340" height="330" rx="8" fill="#161a2c"/>
+  <text x="460" y="62" fill="#e6e8f2" font-size="15" font-weight="600">Maze router</text>
+  <g>
+    <rect class="hl" transform="translate(0 100)" x="450" y="82" width="320" height="36" rx="6" fill="#262c48" stroke="#9d90ff" stroke-width="1.5"/>
+  </g>
+  <g font-size="14" fill="#e6e8f2">
+    <text x="466" y="105">1 expand</text>
+    <text x="466" y="155">2 backtrace</text>
+    <text x="466" y="205">3 rip-up and reroute</text>
+  </g>
+  <g font-size="12" fill="#8a90b0">
+    <text x="600" y="105">wavefront from S1</text>
+    <text x="600" y="155">shortest path to T1</text>
+  </g>
+  <g font-size="13" fill="#e6e8f2">
+    <rect x="466" y="250" width="26" height="10" fill="#5cc0ff" opacity="0.85"/>
+    <text x="502" y="260">net 1</text>
+    <rect x="466" y="278" width="26" height="10" fill="#b79cff" opacity="0.85"/>
+    <text x="502" y="288">net 2</text>
+    <rect class="obs" x="466" y="304" width="26" height="14" rx="2"/>
+    <text x="502" y="316">placed cell (obstacle)</text>
+  </g>
+</svg>

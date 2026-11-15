@@ -1,0 +1,122 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 400" width="800" height="400" role="img" aria-labelledby="title desc">
+  <title id="title">Layout versus schematic</title>
+  <desc id="desc">LVS pairs the devices and nets extracted from the layout of a NAND2 with those of its schematic. One NMOS width differs, is reported, then fixed, and the cell matches.</desc>
+  <style>
+    text { font-family: Inter, 'Segoe UI', Helvetica, Arial, sans-serif; }
+    :where(text:not([fill])) { fill: #e6e8f2; }
+    .mono, .mono text { font-family: 'JetBrains Mono', Consolas, Menlo, monospace; font-size: 13px; white-space: pre; }
+    .muted { fill: #8a90b0; }
+    .card { fill: #161a2c; stroke: #262c48; }
+    .link { fill: none; stroke: #4cd08a; stroke-width: 2; stroke-dasharray: 260; }
+    .a { animation-duration: 12s; animation-iteration-count: infinite; animation-fill-mode: both; animation-timing-function: ease-in-out; }
+
+    @keyframes l1 { 0%, 6% { stroke-dashoffset: 260; } 11%, 100% { stroke-dashoffset: 0; } }
+    @keyframes l2 { 0%, 11% { stroke-dashoffset: 260; } 16%, 100% { stroke-dashoffset: 0; } }
+    @keyframes l4 { 0%, 21% { stroke-dashoffset: 260; } 26%, 100% { stroke-dashoffset: 0; } }
+    @keyframes l5 { 0%, 26% { stroke-dashoffset: 260; } 31%, 100% { stroke-dashoffset: 0; } }
+    @keyframes l6 { 0%, 31% { stroke-dashoffset: 260; } 36%, 100% { stroke-dashoffset: 0; } }
+    @keyframes l7 { 0%, 36% { stroke-dashoffset: 260; } 41%, 100% { stroke-dashoffset: 0; } }
+    @keyframes l8 { 0%, 41% { stroke-dashoffset: 260; } 46%, 100% { stroke-dashoffset: 0; } }
+    @keyframes l3 { 0%, 68% { stroke-dashoffset: 260; } 74%, 100% { stroke-dashoffset: 0; } }
+    .l1 { animation-name: l1; } .l2 { animation-name: l2; } .l3 { animation-name: l3; } .l4 { animation-name: l4; }
+    .l5 { animation-name: l5; } .l6 { animation-name: l6; } .l7 { animation-name: l7; } .l8 { animation-name: l8; }
+
+    .bad { opacity: 0; animation-name: bad; }
+    @keyframes bad { 0%, 16% { opacity: 0; } 18%, 64% { opacity: 1; } 67%, 100% { opacity: 0; } }
+    .badline { stroke-dasharray: 260; animation-name: badline; }
+    @keyframes badline { 0%, 16% { stroke-dashoffset: 260; } 21%, 100% { stroke-dashoffset: 0; } }
+    .flash { animation: flash .8s steps(2, jump-none) infinite; }
+    @keyframes flash { 0% { opacity: 1; } 100% { opacity: .3; } }
+    .badrow { opacity: 0; animation-name: badrow; }
+    @keyframes badrow { 0%, 16% { opacity: 0; } 18%, 64% { opacity: 1; } 66%, 100% { opacity: 0; } }
+
+    .old { opacity: 0; animation-name: old; }
+    @keyframes old { 0%, 62% { opacity: 1; } 65%, 100% { opacity: 0; } }
+    .new { animation-name: new; }
+    @keyframes new { 0%, 62% { opacity: 0; } 65%, 100% { opacity: 1; } }
+    .fixhl { opacity: 0; animation-name: fixhl; }
+    @keyframes fixhl { 0%, 62% { opacity: 0; } 65% { opacity: 1; } 76%, 100% { opacity: 0; } }
+
+    .done { animation-name: done; }
+    @keyframes done { 0%, 76% { opacity: 0; transform: translateY(8px); } 80%, 100% { opacity: 1; transform: translateY(0); } }
+
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+  </style>
+
+  <rect x=".5" y=".5" width="799" height="399" rx="14" fill="#0f1220" stroke="#262c48"/>
+  <text x="24" y="34" font-size="16" font-weight="600">LVS: layout versus schematic</text>
+  <text x="776" y="34" font-size="12" text-anchor="end" class="muted">cell nand2 · devices matched by topology</text>
+
+  <!-- layout card -->
+  <rect class="card" x="24" y="52" width="270" height="270" rx="8"/>
+  <text x="40" y="76" font-size="13" font-weight="600" fill="#5cc0ff">Layout (extracted)</text>
+  <line x1="40" y1="86" x2="278" y2="86" stroke="#262c48"/>
+  <g class="mono">
+    <text x="40" y="110">M1  pmos  W=2.0  a</text>
+    <text x="40" y="134">M2  nmos  W=1.0  a</text>
+    <text x="40" y="158">M3  pmos  W=2.0  b</text>
+    <text class="a old" x="40" y="182">M4  nmos  <tspan fill="#ff5d6c">W=0.8</tspan>  b</text>
+    <text class="a new" x="40" y="182">M4  nmos  <tspan fill="#4cd08a">W=1.0</tspan>  b</text>
+    <text x="40" y="222">out</text>
+    <text x="40" y="246">net1</text>
+    <text x="40" y="270">vdd</text>
+    <text x="40" y="294">gnd</text>
+  </g>
+  <text x="278" y="222" font-size="12" text-anchor="end" class="muted">nets</text>
+  <rect class="a fixhl" x="30" y="167" width="258" height="21" rx="4" fill="none" stroke="#f5b83d" stroke-width="1.5"/>
+
+  <!-- schematic card -->
+  <rect class="card" x="506" y="52" width="270" height="270" rx="8"/>
+  <text x="522" y="76" font-size="13" font-weight="600" fill="#9d90ff">Schematic</text>
+  <line x1="522" y1="86" x2="760" y2="86" stroke="#262c48"/>
+  <g class="mono">
+    <text x="522" y="110">M1  pmos  W=2.0  a</text>
+    <text x="522" y="134">M2  pmos  W=2.0  b</text>
+    <text x="522" y="158">M3  nmos  W=1.0  a</text>
+    <text x="522" y="182">M4  nmos  W=1.0  b</text>
+    <text x="522" y="222">out</text>
+    <text x="522" y="246">x</text>
+    <text x="522" y="270">vdd</text>
+    <text x="522" y="294">gnd</text>
+  </g>
+  <text x="760" y="222" font-size="12" text-anchor="end" class="muted">nets</text>
+
+  <!-- connector dots -->
+  <g fill="#3a4066">
+    <circle cx="294" cy="106" r="3"/><circle cx="294" cy="130" r="3"/><circle cx="294" cy="154" r="3"/><circle cx="294" cy="178" r="3"/>
+    <circle cx="294" cy="218" r="3"/><circle cx="294" cy="242" r="3"/><circle cx="294" cy="266" r="3"/><circle cx="294" cy="290" r="3"/>
+    <circle cx="506" cy="106" r="3"/><circle cx="506" cy="130" r="3"/><circle cx="506" cy="154" r="3"/><circle cx="506" cy="178" r="3"/>
+    <circle cx="506" cy="218" r="3"/><circle cx="506" cy="242" r="3"/><circle cx="506" cy="266" r="3"/><circle cx="506" cy="290" r="3"/>
+  </g>
+
+  <!-- matches -->
+  <path class="link a l1" d="M294 106 C400 106 400 106 506 106"/>
+  <path class="link a l2" d="M294 130 C400 130 400 154 506 154"/>
+  <path class="link a l4" d="M294 154 C400 154 400 130 506 130"/>
+  <path class="link a l3" d="M294 178 C400 178 400 178 506 178"/>
+  <path class="link a l5" d="M294 218 C400 218 400 218 506 218"/>
+  <path class="link a l6" d="M294 242 C400 242 400 242 506 242"/>
+  <path class="link a l7" d="M294 266 C400 266 400 266 506 266"/>
+  <path class="link a l8" d="M294 290 C400 290 400 290 506 290"/>
+
+  <!-- mismatch -->
+  <g class="a bad">
+    <g class="flash">
+      <path class="a badline" d="M294 178 C400 178 400 178 506 178" fill="none" stroke="#ff5d6c" stroke-width="2.5"/>
+    </g>
+    <rect x="336" y="188" width="128" height="22" rx="5" fill="#0f1220" stroke="#ff5d6c"/>
+    <text x="400" y="204" font-size="12" text-anchor="middle" class="mono" fill="#ff5d6c">W 0.8 ≠ 1.0 µm</text>
+  </g>
+  <g class="a badrow">
+    <rect x="30" y="167" width="258" height="21" rx="4" fill="#ff5d6c" fill-opacity=".12"/>
+    <rect x="512" y="167" width="258" height="21" rx="4" fill="#ff5d6c" fill-opacity=".12"/>
+    <text x="400" y="346" font-size="13" text-anchor="middle" class="mono" fill="#ff5d6c">Parameter: M4 W 0.8 µm, schematic 1.0 µm</text>
+  </g>
+
+  <g class="a done">
+    <rect x="296" y="332" width="208" height="34" rx="17" fill="#4cd08a" fill-opacity=".14" stroke="#4cd08a"/>
+    <path d="M316 349 l5 5 l10 -10" fill="none" stroke="#4cd08a" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="340" y="355" font-size="15" font-weight="600" fill="#4cd08a">LVS match</text>
+    <text x="400" y="388" font-size="12" text-anchor="middle" class="muted">4 devices · 4 nets paired</text>
+  </g>
+</svg>

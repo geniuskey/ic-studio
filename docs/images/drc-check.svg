@@ -1,0 +1,124 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 320" width="800" height="320" role="img" aria-labelledby="title desc">
+  <title id="title">Design rule check</title>
+  <desc id="desc">Two metal1 shapes are too close. A DRC run flags a metal1.S spacing violation of 0.18 um against the 0.23 um rule; the shape is moved apart and the check comes back clean.</desc>
+  <defs>
+    <pattern id="dots" width="20" height="20" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1" fill="#262c48"/>
+    </pattern>
+    <linearGradient id="sweep" x1="0" x2="1">
+      <stop offset="0" stop-color="#9d90ff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#9d90ff" stop-opacity=".45"/>
+    </linearGradient>
+  </defs>
+  <style>
+    text { font-family: Inter, 'Segoe UI', Helvetica, Arial, sans-serif; }
+    :where(text:not([fill])) { fill: #e6e8f2; }
+    .mono { font-family: 'JetBrains Mono', Consolas, Menlo, monospace; white-space: pre; }
+    .muted { fill: #8a90b0; }
+    .m1 { fill: #2f6fb0; fill-opacity: .75; stroke: #5cc0ff; stroke-width: 1.5; }
+    .a { animation-duration: 10s; animation-iteration-count: infinite; animation-fill-mode: both; animation-timing-function: ease-in-out; }
+
+    .move { animation-name: move; }
+    @keyframes move { 0%, 60% { transform: translateX(-10px); } 70%, 100% { transform: translateX(0); } }
+
+    .scan { opacity: 0; animation-name: scan; animation-timing-function: linear; }
+    @keyframes scan {
+      0%, 8% { opacity: 0; transform: translateX(0); }
+      10% { opacity: 1; transform: translateX(0); }
+      28% { opacity: 1; transform: translateX(500px); }
+      30%, 100% { opacity: 0; transform: translateX(500px); }
+    }
+
+    .viol { opacity: 0; animation-name: viol; }
+    @keyframes viol { 0%, 29% { opacity: 0; } 31%, 60% { opacity: 1; } 63%, 100% { opacity: 0; } }
+    .blink { animation: blink .7s steps(2, jump-none) infinite; }
+    @keyframes blink { 0% { opacity: 1; } 100% { opacity: .25; } }
+
+    .ok { animation-name: ok; }
+    @keyframes ok { 0%, 70% { opacity: 0; } 75%, 100% { opacity: 1; } }
+
+    .btn { animation-name: btn; }
+    @keyframes btn { 0%, 4% { fill: #161a2c; } 7%, 12% { fill: #3b3470; } 16%, 100% { fill: #161a2c; } }
+
+    .s1 { animation-name: s1; } .s2 { animation-name: s2; } .s3 { animation-name: s3; } .s4 { animation-name: s4; }
+    @keyframes s1 { 0%, 29% { fill: #9d90ff; } 31%, 100% { fill: #8a90b0; } }
+    @keyframes s2 { 0%, 29% { fill: #8a90b0; } 31%, 59% { fill: #ff5d6c; } 61%, 100% { fill: #8a90b0; } }
+    @keyframes s3 { 0%, 59% { fill: #8a90b0; } 61%, 72% { fill: #f5b83d; } 74%, 100% { fill: #8a90b0; } }
+    @keyframes s4 { 0%, 72% { fill: #8a90b0; } 74%, 100% { fill: #4cd08a; } }
+
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+  </style>
+
+  <rect x=".5" y=".5" width="799" height="319" rx="14" fill="#0f1220" stroke="#262c48"/>
+
+  <text x="24" y="34" font-size="16" font-weight="600">Design rule check</text>
+  <g font-size="13" font-weight="600">
+    <text class="a s1" x="300" y="34" fill="#e6e8f2">1 Run DRC</text>
+    <text class="a s2" x="390" y="34" fill="#e6e8f2">2 Violation</text>
+    <text class="a s3" x="485" y="34" fill="#e6e8f2">3 Fix</text>
+    <text class="a s4" x="545" y="34" fill="#4cd08a">4 Clean</text>
+  </g>
+
+  <!-- layout canvas -->
+  <rect x="24" y="52" width="520" height="248" rx="8" fill="#161a2c" stroke="#262c48"/>
+  <rect x="25" y="53" width="518" height="246" rx="7" fill="url(#dots)"/>
+  <text x="36" y="72" font-size="12" class="muted">metal1 · 1 µm = 200 px</text>
+
+  <rect class="m1" x="150" y="96" width="150" height="150"/>
+  <g class="a move">
+    <rect class="m1" x="346" y="96" width="150" height="150"/>
+  </g>
+
+  <!-- violation: 0.18 um gap -->
+  <g class="a viol">
+    <g class="blink">
+      <rect x="300" y="140" width="36" height="62" fill="#ff5d6c" fill-opacity=".18" stroke="#ff5d6c" stroke-width="2" stroke-dasharray="5 3"/>
+    </g>
+    <g stroke="#ff5d6c" stroke-width="1.5">
+      <line x1="300" y1="118" x2="336" y2="118"/>
+      <line x1="300" y1="112" x2="300" y2="124"/>
+      <line x1="336" y1="112" x2="336" y2="124"/>
+    </g>
+    <rect x="196" y="62" width="248" height="24" rx="5" fill="#0f1220" stroke="#ff5d6c"/>
+    <text x="320" y="79" font-size="13" text-anchor="middle" class="mono" fill="#ff5d6c">0.18 µm &lt; 0.23 µm  metal1.S</text>
+  </g>
+
+  <!-- after the fix: 0.23 um gap -->
+  <g class="a ok">
+    <g stroke="#4cd08a" stroke-width="1.5">
+      <line x1="300" y1="118" x2="346" y2="118"/>
+      <line x1="300" y1="112" x2="300" y2="124"/>
+      <line x1="346" y1="112" x2="346" y2="124"/>
+    </g>
+    <text x="323" y="88" font-size="12" text-anchor="middle" class="mono" fill="#4cd08a">0.23 µm</text>
+    <rect x="248" y="258" width="150" height="30" rx="15" fill="#4cd08a" fill-opacity=".14" stroke="#4cd08a"/>
+    <path d="M266 273 l5 5 l10 -10" fill="none" stroke="#4cd08a" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="290" y="278" font-size="14" font-weight="600" fill="#4cd08a">DRC clean</text>
+  </g>
+
+  <!-- DRC sweep -->
+  <g class="a scan">
+    <rect x="0" y="53" width="44" height="246" fill="url(#sweep)"/>
+    <rect x="42" y="53" width="3" height="246" fill="#9d90ff"/>
+  </g>
+
+  <!-- results panel -->
+  <rect x="560" y="52" width="216" height="248" rx="8" fill="#161a2c" stroke="#262c48"/>
+  <text x="576" y="76" font-size="13" font-weight="600">DRC</text>
+  <rect class="a btn" x="576" y="88" width="184" height="28" rx="6" fill="#161a2c" stroke="#9d90ff"/>
+  <text x="668" y="107" font-size="13" text-anchor="middle" fill="#9d90ff">Run DRC</text>
+  <line x1="576" y1="130" x2="760" y2="130" stroke="#262c48"/>
+
+  <g class="a viol">
+    <circle cx="584" cy="152" r="4" fill="#ff5d6c"/>
+    <text x="596" y="157" font-size="13" class="mono" fill="#ff5d6c">metal1.S (1)</text>
+    <text x="596" y="178" font-size="12" class="muted">metal1 space &lt; 0.23 µm</text>
+    <text x="596" y="198" font-size="12" class="mono muted">(1.50, 0.70)-(1.68, 1.01)</text>
+    <text x="576" y="232" font-size="12" class="muted">1 violation</text>
+  </g>
+  <g class="a ok">
+    <circle cx="584" cy="152" r="4" fill="#4cd08a"/>
+    <text x="596" y="157" font-size="13" fill="#4cd08a">No violations</text>
+    <text x="596" y="178" font-size="12" class="muted">all rules pass</text>
+  </g>
+</svg>

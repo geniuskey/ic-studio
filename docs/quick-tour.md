@@ -4,6 +4,13 @@ This tour walks through the demo project: simulation, hierarchical layout, autom
 and route, verification and post-layout simulation. It ends by building a small circuit
 from scratch.
 
+For a guided start inside the app, choose **Help > Interactive Tutorial** (or **Take the
+tutorial** on the welcome page). A guide window walks through nine steps on the demo's
+`cmos_inverter`: open the demo project, open the schematic, select a device, simulate,
+measure a waveform, open the layout, run DRC, run LVS and find a command in the palette.
+Each step completes on its own when you do it; **Show me** does it for you, **Skip** moves
+on and **Back** returns.
+
 ## Open the demo project
 
 ```sh

@@ -258,6 +258,13 @@ afterwards** to route them again.
 the layout inspector) edits the technology's [DRC deck](technology.md#drc-rule-deck) as
 forms instead of text.
 
+It also works on deck files, with or without a project. **Open...** reads a deck file (an
+IC Studio deck, or an SVRF deck, which is translated; **Save as...** then writes it as an
+IC Studio deck), **Save** writes the draft back to the file and **Save as...** to a new
+one. When no project is open, the **Technology** menu in the toolbar picks the technology
+the rules are written for: the **Generic technology** or a PDK file (**Load PDK...**); a
+dot marks a draft that differs from the deck file.
+
 - **Start here**: a step-by-step guide for people new to DRC (start from a deck, fill the
   gaps, fix problems, add rules, try the deck on the active cell, apply), a glossary and a
   picture of every kind of check.
@@ -329,6 +336,8 @@ A compact cell may have no room for fill inside its bounding box; fill a larger 
 around it instead.
 
 ## OPC
+
+![The drawn target, its printed contour with rounded corners and pulled-back ends, and the corrected mask with serifs](images/opc.svg)
 
 **Tools > OPC** corrects one layer of the active layout for optical proximity effects.
 

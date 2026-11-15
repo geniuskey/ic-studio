@@ -40,6 +40,8 @@ the layout commands; every item shows its bindkey, and the command palette lists
 
 ## Drawing
 
+![Rectangles drawn layer by layer, active, poly, contacts and metal, until they form an inverter](images/layout-drawing.svg)
+
 Keys act on the canvas only while the mouse is over it.
 
 | Tool | Key | How to use |
@@ -320,3 +322,35 @@ Layers are mapped by GDS layer / datatype. Layers the technology does not have a
 to it on import, so nothing is lost. A [stream layer map](tools.md#stream-layer-map)
 (**Tools > Stream Layer Map**, or a Virtuoso layer map file) renumbers layers on export,
 maps other numbers onto technology layers on import, or drops them.
+
+## LEF and DEF
+
+LEF abstracts and DEF placements exchange blocks with place-and-route tools such as
+OpenROAD.
+
+| Action | Menu | Command line |
+|---|---|---|
+| Write the active cell's abstract | **File > Export > Cell LEF abstract...** | `ics lef export <project> <cells>... [-o FILE] [--obs detailed\|block\|none] [--class BLOCK]` |
+| Read LEF macros as layout cells of a new library | **File > Import > LEF abstracts...** | `ics lef import <project> <FILE> [--lib NAME]` |
+| Write the active cell as DEF | **File > Export > Cell DEF...** | `ics def export <project> <cell> [-o FILE] [--lef FILE]` |
+| Read a DEF as a new top cell | **File > Import > DEF placement...** | `ics def import <project> <FILE> [--lib NAME]` |
+
+- **Abstract**: the LEF starts with a technology header (units, grid, routing and cut
+  layers, default vias). Each macro has its `CLASS`, `ORIGIN` and `SIZE` (the boundary
+  layer's extent, else the cell's full extent), a `PIN` per labelled net with its shapes on
+  the routing layers as `PORT`s (`DIRECTION` from the devices it drives or is driven by,
+  `USE POWER` / `GROUND` for supply names), and `OBS` for the other metal and the cuts
+  between routing layers. Obstructions are the merged shapes (`detailed`, default), one
+  block per layer around the pins (`block`) or none. Poly and diffusion are left out.
+- **LEF import** creates one layout cell per macro: its box on the boundary layer, the pin
+  ports with a label of the pin name, and the obstructions. LEF layer names are matched to
+  technology layers by name, or by their canonical form (`M1`, `met1` and `metal1` are the
+  same layer).
+- **DEF export** writes the die area, the components (the placed cells; array elements
+  become `name_i_j`), the pins (top-level labels) and the nets between the pins of the
+  placed cells. `--lef` also writes the abstracts of the placed cells.
+- **DEF import** creates a top cell that places the project cells named by the components'
+  macros (those in `--lib` first, default `work`), with the pin shapes and their labels and
+  the die area on the boundary layer. Macros without a cell are reported.
+
+Over MCP the same is `export_lef`, `import_lef`, `export_def` and `import_def`.

@@ -1,0 +1,128 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 400" width="800" height="400" role="img" aria-label="Monte Carlo: output waveforms of many runs fan out while a delay histogram grows, with mean and plus or minus three sigma markers">
+  <style>
+    text { font-family: Inter, 'Segoe UI', Helvetica, Arial, sans-serif; fill: #8a90b0; font-size: 12px; }
+    .mono { font-family: 'JetBrains Mono', Consolas, Menlo, monospace; }
+    .hi { fill: #e6e8f2; }
+    .grid { stroke: #262c48; stroke-width: 1; fill: none; }
+    .axis { stroke: #3a4066; stroke-width: 1.5; fill: none; }
+    .run { fill: none; stroke: #9d90ff; stroke-width: 1.6; opacity: 0.35; }
+    .bar { fill: #9d90ff; fill-opacity: 0.5; stroke: #9d90ff; transform-box: fill-box; transform-origin: 50% 100%; }
+    .cnt { font-family: 'JetBrains Mono', Consolas, Menlo, monospace; font-size: 13px; fill: #e6e8f2; }
+    .hide { opacity: 0; }
+    .a { animation-duration: 10s; animation-iteration-count: infinite; animation-fill-mode: both; animation-timing-function: ease-out; }
+    .stats { animation-name: stats; }
+    @keyframes stats { 0%, 65% { opacity: 0; } 71%, 95% { opacity: 1; } 100% { opacity: 0; } }
+    @keyframes c0 { 0%, 4% { opacity: 0; stroke: #e6e8f2; } 5% { opacity: 1; stroke: #e6e8f2; } 10%, 95% { opacity: 0.35; stroke: #9d90ff; } 100% { opacity: 0; stroke: #9d90ff; } }
+    @keyframes c1 { 0%, 7.8% { opacity: 0; stroke: #e6e8f2; } 8.8% { opacity: 1; stroke: #e6e8f2; } 13.8%, 95% { opacity: 0.35; stroke: #9d90ff; } 100% { opacity: 0; stroke: #9d90ff; } }
+    @keyframes c2 { 0%, 11.6% { opacity: 0; stroke: #e6e8f2; } 12.6% { opacity: 1; stroke: #e6e8f2; } 17.6%, 95% { opacity: 0.35; stroke: #9d90ff; } 100% { opacity: 0; stroke: #9d90ff; } }
+    @keyframes c3 { 0%, 15.4% { opacity: 0; stroke: #e6e8f2; } 16.4% { opacity: 1; stroke: #e6e8f2; } 21.4%, 95% { opacity: 0.35; stroke: #9d90ff; } 100% { opacity: 0; stroke: #9d90ff; } }
+    @keyframes c4 { 0%, 19.2% { opacity: 0; stroke: #e6e8f2; } 20.2% { opacity: 1; stroke: #e6e8f2; } 25.2%, 95% { opacity: 0.35; stroke: #9d90ff; } 100% { opacity: 0; stroke: #9d90ff; } }
+    @keyframes c5 { 0%, 23% { opacity: 0; stroke: #e6e8f2; } 24% { opacity: 1; stroke: #e6e8f2; } 29%, 95% { opacity: 0.35; stroke: #9d90ff; } 100% { opacity: 0; stroke: #9d90ff; } }
+    @keyframes c6 { 0%, 26.8% { opacity: 0; stroke: #e6e8f2; } 27.8% { opacity: 1; stroke: #e6e8f2; } 32.8%, 95% { opacity: 0.35; stroke: #9d90ff; } 100% { opacity: 0; stroke: #9d90ff; } }
+    @keyframes c7 { 0%, 30.6% { opacity: 0; stroke: #e6e8f2; } 31.6% { opacity: 1; stroke: #e6e8f2; } 36.6%, 95% { opacity: 0.35; stroke: #9d90ff; } 100% { opacity: 0; stroke: #9d90ff; } }
+    @keyframes c8 { 0%, 34.4% { opacity: 0; stroke: #e6e8f2; } 35.4% { opacity: 1; stroke: #e6e8f2; } 40.4%, 95% { opacity: 0.35; stroke: #9d90ff; } 100% { opacity: 0; stroke: #9d90ff; } }
+    @keyframes c9 { 0%, 38.2% { opacity: 0; stroke: #e6e8f2; } 39.2% { opacity: 1; stroke: #e6e8f2; } 44.2%, 95% { opacity: 0.35; stroke: #9d90ff; } 100% { opacity: 0; stroke: #9d90ff; } }
+    @keyframes c10 { 0%, 42% { opacity: 0; stroke: #e6e8f2; } 43% { opacity: 1; stroke: #e6e8f2; } 48%, 95% { opacity: 0.35; stroke: #9d90ff; } 100% { opacity: 0; stroke: #9d90ff; } }
+    @keyframes c11 { 0%, 45.8% { opacity: 0; stroke: #e6e8f2; } 46.8% { opacity: 1; stroke: #e6e8f2; } 51.8%, 95% { opacity: 0.35; stroke: #9d90ff; } 100% { opacity: 0; stroke: #9d90ff; } }
+    @keyframes c12 { 0%, 49.6% { opacity: 0; stroke: #e6e8f2; } 50.6% { opacity: 1; stroke: #e6e8f2; } 55.6%, 95% { opacity: 0.35; stroke: #9d90ff; } 100% { opacity: 0; stroke: #9d90ff; } }
+    @keyframes c13 { 0%, 53.4% { opacity: 0; stroke: #e6e8f2; } 54.4% { opacity: 1; stroke: #e6e8f2; } 59.4%, 95% { opacity: 0.35; stroke: #9d90ff; } 100% { opacity: 0; stroke: #9d90ff; } }
+    @keyframes c14 { 0%, 57.2% { opacity: 0; stroke: #e6e8f2; } 58.2% { opacity: 1; stroke: #e6e8f2; } 63.2%, 95% { opacity: 0.35; stroke: #9d90ff; } 100% { opacity: 0; stroke: #9d90ff; } }
+    @keyframes c15 { 0%, 61% { opacity: 0; stroke: #e6e8f2; } 62% { opacity: 1; stroke: #e6e8f2; } 67%, 95% { opacity: 0.35; stroke: #9d90ff; } 100% { opacity: 0; stroke: #9d90ff; } }
+    @keyframes k0 { 0%, 4% { opacity: 0; } 4.5%, 12% { opacity: 1; } 12.5%, 100% { opacity: 0; } }
+    @keyframes k1 { 0%, 12% { opacity: 0; } 12.5%, 20% { opacity: 1; } 20.5%, 100% { opacity: 0; } }
+    @keyframes k2 { 0%, 20% { opacity: 0; } 20.5%, 28% { opacity: 1; } 28.5%, 100% { opacity: 0; } }
+    @keyframes k3 { 0%, 28% { opacity: 0; } 28.5%, 36% { opacity: 1; } 36.5%, 100% { opacity: 0; } }
+    @keyframes k4 { 0%, 36% { opacity: 0; } 36.5%, 44% { opacity: 1; } 44.5%, 100% { opacity: 0; } }
+    @keyframes k5 { 0%, 44% { opacity: 0; } 44.5%, 52% { opacity: 1; } 52.5%, 100% { opacity: 0; } }
+    @keyframes k6 { 0%, 52% { opacity: 0; } 52.5%, 60% { opacity: 1; } 60.5%, 100% { opacity: 0; } }
+    @keyframes k7 { 0%, 60% { opacity: 0; } 60.5%, 95% { opacity: 1; } 100% { opacity: 0; } }
+    @keyframes b0 { 0%, 4% { transform: scaleY(0); } 35% { transform: scaleY(0.33); } 64%, 95% { transform: scaleY(1); } 100% { transform: scaleY(0); } }
+    @keyframes b1 { 0%, 4% { transform: scaleY(0); } 35% { transform: scaleY(0.37); } 64%, 95% { transform: scaleY(1); } 100% { transform: scaleY(0); } }
+    @keyframes b2 { 0%, 4% { transform: scaleY(0); } 35% { transform: scaleY(0.50); } 64%, 95% { transform: scaleY(1); } 100% { transform: scaleY(0); } }
+    @keyframes b3 { 0%, 4% { transform: scaleY(0); } 35% { transform: scaleY(0.34); } 64%, 95% { transform: scaleY(1); } 100% { transform: scaleY(0); } }
+    @keyframes b4 { 0%, 4% { transform: scaleY(0); } 35% { transform: scaleY(0.44); } 64%, 95% { transform: scaleY(1); } 100% { transform: scaleY(0); } }
+    @keyframes b5 { 0%, 4% { transform: scaleY(0); } 35% { transform: scaleY(0.45); } 64%, 95% { transform: scaleY(1); } 100% { transform: scaleY(0); } }
+    @keyframes b6 { 0%, 4% { transform: scaleY(0); } 35% { transform: scaleY(0.39); } 64%, 95% { transform: scaleY(1); } 100% { transform: scaleY(0); } }
+    @keyframes b7 { 0%, 4% { transform: scaleY(0); } 35% { transform: scaleY(0.43); } 64%, 95% { transform: scaleY(1); } 100% { transform: scaleY(0); } }
+    @keyframes b8 { 0%, 4% { transform: scaleY(0); } 35% { transform: scaleY(0.32); } 64%, 95% { transform: scaleY(1); } 100% { transform: scaleY(0); } }
+    @keyframes b9 { 0%, 4% { transform: scaleY(0); } 35% { transform: scaleY(0.31); } 64%, 95% { transform: scaleY(1); } 100% { transform: scaleY(0); } }
+    @keyframes b10 { 0%, 4% { transform: scaleY(0); } 35% { transform: scaleY(0.35); } 64%, 95% { transform: scaleY(1); } 100% { transform: scaleY(0); } }
+    @keyframes b11 { 0%, 4% { transform: scaleY(0); } 35% { transform: scaleY(0.46); } 64%, 95% { transform: scaleY(1); } 100% { transform: scaleY(0); } }
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+  </style>
+
+  <rect x="0.5" y="0.5" width="799" height="399" rx="14" fill="#0f1220" stroke="#262c48"/>
+
+  <!-- left: output waveforms of each run -->
+  <rect x="24" y="20" width="380" height="324" rx="10" fill="#161a2c"/>
+  <text x="70" y="44">out, one trace per run</text>
+    <text class="cnt a hide" style="animation-name:k0" x="388" y="44" text-anchor="end">run 1 / 200</text>
+    <text class="cnt a hide" style="animation-name:k1" x="388" y="44" text-anchor="end">run 12 / 200</text>
+    <text class="cnt a hide" style="animation-name:k2" x="388" y="44" text-anchor="end">run 25 / 200</text>
+    <text class="cnt a hide" style="animation-name:k3" x="388" y="44" text-anchor="end">run 47 / 200</text>
+    <text class="cnt a hide" style="animation-name:k4" x="388" y="44" text-anchor="end">run 80 / 200</text>
+    <text class="cnt a hide" style="animation-name:k5" x="388" y="44" text-anchor="end">run 118 / 200</text>
+    <text class="cnt a hide" style="animation-name:k6" x="388" y="44" text-anchor="end">run 160 / 200</text>
+    <text class="cnt a" style="animation-name:k7" x="388" y="44" text-anchor="end">run 200 / 200</text>
+  <path class="grid" d="M70 160 H390" stroke-dasharray="3 5"/>
+  <path class="grid" d="M138.6 56 V260 M230 56 V260 M321.4 56 V260"/>
+  <path d="M70.0 259.7 75.7 259.4 81.4 258.7 87.1 256.9 92.9 253.1 98.6 244.8 104.3 228.2 110.0 199.4 115.7 160.0 121.4 120.6 127.1 91.8 132.9 75.2 138.6 66.9 144.3 63.1 150.0 61.3 155.7 60.6 161.4 60.3 167.1 60.1 172.9 60.0 178.6 60.0 184.3 60.0 190.0 60.0 195.7 60.0 201.4 60.0 207.1 60.0 212.9 60.0 218.6 60.0 224.3 60.0 230.0 60.0 235.7 60.0 241.4 60.0 247.1 60.0 252.9 60.0 258.6 60.0 264.3 60.0 270.0 60.0 275.7 60.0 281.4 60.0 287.1 60.0 292.9 60.0 298.6 60.0 304.3 60.0 310.0 60.0 315.7 60.0 321.4 60.0 327.1 60.0 332.9 60.0 338.6 60.0 344.3 60.0 350.0 60.0 355.7 60.0 361.4 60.0 367.1 60.0 372.9 60.0 378.6 60.0 384.3 60.0 390.0 60.0" fill="none" stroke="#5cc0ff" stroke-width="1.6" stroke-opacity="0.6" stroke-dasharray="5 4"/>
+  <text x="96" y="78" style="fill:#5cc0ff">in</text>
+    <path class="run a" style="animation-name:c0" d="M70.0 60.0 81.4 60.0 92.9 60.0 104.3 60.0 115.7 60.0 127.1 60.0 138.6 60.0 150.0 60.0 161.4 60.0 172.9 60.0 184.3 60.0 195.7 60.1 207.1 60.2 218.6 60.5 230.0 61.3 241.4 63.6 252.9 70.1 264.3 86.5 275.7 120.9 287.1 171.3 298.6 216.5 310.0 242.3 321.4 253.5 332.9 257.7 344.3 259.2 355.7 259.7 367.1 259.9 378.6 260.0 390.0 260.0"/>
+    <path class="run a" style="animation-name:c1" d="M70.0 60.0 81.4 60.0 92.9 60.0 104.3 60.0 115.7 60.0 127.1 60.0 138.6 60.0 150.0 60.0 161.4 60.0 172.9 60.0 184.3 60.0 195.7 60.0 207.1 60.1 218.6 60.2 230.0 60.6 241.4 61.4 252.9 63.3 264.3 67.9 275.7 78.4 287.1 100.0 298.6 136.0 310.0 180.2 321.4 217.5 332.9 240.2 344.3 251.4 355.7 256.4 367.1 258.5 378.6 259.4 390.0 259.8"/>
+    <path class="run a" style="animation-name:c2" d="M70.0 60.0 81.4 60.0 92.9 60.0 104.3 60.0 115.7 60.0 127.1 60.0 138.6 60.0 150.0 60.0 161.4 60.0 172.9 60.0 184.3 60.0 195.7 60.0 207.1 60.1 218.6 60.3 230.0 60.9 241.4 62.5 252.9 66.8 264.3 77.8 275.7 102.9 287.1 146.5 298.6 196.1 310.0 231.2 321.4 248.6 332.9 255.8 344.3 258.5 355.7 259.4 367.1 259.8 378.6 259.9 390.0 260.0"/>
+    <path class="run a" style="animation-name:c3" d="M70.0 60.0 81.4 60.0 92.9 60.0 104.3 60.0 115.7 60.0 127.1 60.0 138.6 60.0 150.0 60.0 161.4 60.0 172.9 60.0 184.3 60.0 195.7 60.1 207.1 60.1 218.6 60.4 230.0 60.9 241.4 62.5 252.9 66.5 264.3 76.2 275.7 98.0 287.1 136.6 298.6 184.5 310.0 222.7 321.4 244.1 332.9 253.7 344.3 257.6 355.7 259.1 367.1 259.7 378.6 259.9 390.0 260.0"/>
+    <path class="run a" style="animation-name:c4" d="M70.0 60.0 81.4 60.0 92.9 60.0 104.3 60.0 115.7 60.0 127.1 60.0 138.6 60.0 150.0 60.0 161.4 60.0 172.9 60.0 184.3 60.0 195.7 60.1 207.1 60.1 218.6 60.4 230.0 60.8 241.4 62.0 252.9 64.9 264.3 71.3 275.7 85.3 287.1 111.8 298.6 151.6 310.0 194.2 321.4 226.2 332.9 244.5 344.3 253.3 355.7 257.2 367.1 258.8 378.6 259.5 390.0 259.8"/>
+    <path class="run a" style="animation-name:c5" d="M70.0 60.0 81.4 60.0 92.9 60.0 104.3 60.0 115.7 60.0 127.1 60.0 138.6 60.0 150.0 60.0 161.4 60.0 172.9 60.0 184.3 60.0 195.7 60.0 207.1 60.1 218.6 60.3 230.0 60.7 241.4 61.9 252.9 65.0 264.3 72.7 275.7 90.4 287.1 124.1 298.6 170.8 310.0 213.2 321.4 239.2 332.9 251.6 344.3 256.7 355.7 258.7 367.1 259.5 378.6 259.8 390.0 259.9"/>
+    <path class="run a" style="animation-name:c6" d="M70.0 60.0 81.4 60.0 92.9 60.0 104.3 60.0 115.7 60.0 127.1 60.0 138.6 60.0 150.0 60.0 161.4 60.0 172.9 60.0 184.3 60.0 195.7 60.0 207.1 60.1 218.6 60.4 230.0 61.1 241.4 63.1 252.9 68.6 264.3 82.9 275.7 114.0 287.1 162.9 298.6 210.5 310.0 239.4 321.4 252.3 332.9 257.2 344.3 259.0 355.7 259.7 367.1 259.9 378.6 260.0 390.0 260.0"/>
+    <path class="run a" style="animation-name:c7" d="M70.0 60.0 81.4 60.0 92.9 60.0 104.3 60.0 115.7 60.0 127.1 60.0 138.6 60.0 150.0 60.0 161.4 60.0 172.9 60.0 184.3 60.0 195.7 60.1 207.1 60.2 218.6 60.4 230.0 61.2 241.4 63.3 252.9 68.8 264.3 82.2 275.7 110.8 287.1 156.4 298.6 203.5 310.0 234.8 321.4 249.9 332.9 256.2 344.3 258.6 355.7 259.5 367.1 259.8 378.6 259.9 390.0 260.0"/>
+    <path class="run a" style="animation-name:c8" d="M70.0 60.0 81.4 60.0 92.9 60.0 104.3 60.0 115.7 60.0 127.1 60.0 138.6 60.0 150.0 60.0 161.4 60.0 172.9 60.0 184.3 60.0 195.7 60.1 207.1 60.2 218.6 60.4 230.0 61.0 241.4 62.3 252.9 65.6 264.3 73.2 275.7 89.4 287.1 119.3 298.6 161.4 310.0 203.1 321.4 232.0 332.9 247.5 344.3 254.7 355.7 257.8 367.1 259.1 378.6 259.6 390.0 259.8"/>
+    <path class="run a" style="animation-name:c9" d="M70.0 60.0 81.4 60.0 92.9 60.0 104.3 60.0 115.7 60.0 127.1 60.0 138.6 60.0 150.0 60.0 161.4 60.0 172.9 60.0 184.3 60.0 195.7 60.1 207.1 60.2 218.6 60.4 230.0 61.1 241.4 62.8 252.9 67.2 264.3 78.1 275.7 101.9 287.1 142.6 298.6 190.3 310.0 226.5 321.4 245.9 332.9 254.4 344.3 257.9 355.7 259.2 367.1 259.7 378.6 259.9 390.0 260.0"/>
+    <path class="run a" style="animation-name:c10" d="M70.0 60.0 81.4 60.0 92.9 60.0 104.3 60.0 115.7 60.0 127.1 60.0 138.6 60.0 150.0 60.0 161.4 60.0 172.9 60.0 184.3 60.0 195.7 60.1 207.1 60.2 218.6 60.5 230.0 61.6 241.4 64.6 252.9 73.5 264.3 95.9 275.7 139.9 287.1 193.7 298.6 231.9 310.0 249.8 321.4 256.5 332.9 258.8 344.3 259.6 355.7 259.9 367.1 260.0 378.6 260.0 390.0 260.0"/>
+    <path class="run a" style="animation-name:c11" d="M70.0 60.0 81.4 60.0 92.9 60.0 104.3 60.0 115.7 60.0 127.1 60.0 138.6 60.0 150.0 60.0 161.4 60.0 172.9 60.0 184.3 60.0 195.7 60.1 207.1 60.3 218.6 60.8 230.0 62.4 241.4 67.1 252.9 80.1 264.3 110.4 275.7 160.9 287.1 210.9 298.6 240.5 310.0 253.1 321.4 257.7 332.9 259.2 344.3 259.7 355.7 259.9 367.1 260.0 378.6 260.0 390.0 260.0"/>
+    <path class="run a" style="animation-name:c12" d="M70.0 60.0 81.4 60.0 92.9 60.0 104.3 60.0 115.7 60.0 127.1 60.0 138.6 60.0 150.0 60.0 161.4 60.0 172.9 60.0 184.3 60.0 195.7 60.0 207.1 60.1 218.6 60.3 230.0 60.9 241.4 62.6 252.9 67.1 264.3 78.9 275.7 105.7 287.1 151.3 298.6 200.8 310.0 234.2 321.4 250.0 332.9 256.4 344.3 258.7 355.7 259.5 367.1 259.8 378.6 259.9 390.0 260.0"/>
+    <path class="run a" style="animation-name:c13" d="M70.0 60.0 81.4 60.0 92.9 60.0 104.3 60.0 115.7 60.0 127.1 60.0 138.6 60.0 150.0 60.0 161.4 60.0 172.9 60.0 184.3 60.0 195.7 60.1 207.1 60.2 218.6 60.5 230.0 61.3 241.4 63.3 252.9 68.5 264.3 81.1 275.7 107.5 287.1 150.3 298.6 197.0 310.0 230.4 321.4 247.7 332.9 255.1 344.3 258.1 355.7 259.3 367.1 259.7 378.6 259.9 390.0 260.0"/>
+    <path class="run a" style="animation-name:c14" d="M70.0 60.0 81.4 60.0 92.9 60.0 104.3 60.0 115.7 60.0 127.1 60.0 138.6 60.0 150.0 60.0 161.4 60.0 172.9 60.0 184.3 60.0 195.7 60.1 207.1 60.2 218.6 60.4 230.0 61.3 241.4 63.9 252.9 71.2 264.3 89.9 275.7 128.8 287.1 181.9 298.6 224.6 310.0 246.5 321.4 255.3 332.9 258.4 344.3 259.5 355.7 259.8 367.1 259.9 378.6 260.0 390.0 260.0"/>
+    <path class="run a" style="animation-name:c15" d="M70.0 60.0 81.4 60.0 92.9 60.0 104.3 60.0 115.7 60.0 127.1 60.0 138.6 60.0 150.0 60.0 161.4 60.0 172.9 60.0 184.3 60.0 195.7 60.0 207.1 60.1 218.6 60.3 230.0 60.8 241.4 62.1 252.9 65.5 264.3 73.9 275.7 93.2 287.1 129.3 298.6 177.1 310.0 218.0 321.4 241.9 332.9 252.8 344.3 257.2 355.7 259.0 367.1 259.6 378.6 259.9 390.0 259.9"/>
+  <path class="axis" d="M70 56 V260 H390"/>
+  <g text-anchor="middle">
+    <text x="138.6" y="278">25</text><text x="230" y="278">45</text><text x="321.4" y="278">65</text>
+    <text x="230" y="300" class="hi">time (ps)</text>
+  </g>
+  <g text-anchor="end"><text x="64" y="264">0</text><text x="64" y="164">0.9</text><text x="64" y="64">1.8</text></g>
+
+  <!-- right: histogram of the measured delay -->
+  <rect x="420" y="20" width="356" height="324" rx="10" fill="#161a2c"/>
+  <text x="460" y="44">tpd histogram</text>
+  <path class="grid" d="M460 170 H760 M460 80 H760" stroke-dasharray="3 5"/>
+    <rect class="bar a" style="animation-name:b0" x="461.5" y="259.4" width="22" height="0.6"/>
+    <rect class="bar a" style="animation-name:b1" x="486.5" y="256.2" width="22" height="3.8"/>
+    <rect class="bar a" style="animation-name:b2" x="511.5" y="242.6" width="22" height="17.4"/>
+    <rect class="bar a" style="animation-name:b3" x="536.5" y="205.8" width="22" height="54.2"/>
+    <rect class="bar a" style="animation-name:b4" x="561.5" y="144.6" width="22" height="115.4"/>
+    <rect class="bar a" style="animation-name:b5" x="586.5" y="91.5" width="22" height="168.5"/>
+    <rect class="bar a" style="animation-name:b6" x="611.5" y="91.5" width="22" height="168.5"/>
+    <rect class="bar a" style="animation-name:b7" x="636.5" y="144.6" width="22" height="115.4"/>
+    <rect class="bar a" style="animation-name:b8" x="661.5" y="205.8" width="22" height="54.2"/>
+    <rect class="bar a" style="animation-name:b9" x="686.5" y="242.6" width="22" height="17.4"/>
+    <rect class="bar a" style="animation-name:b10" x="711.5" y="256.2" width="22" height="3.8"/>
+    <rect class="bar a" style="animation-name:b11" x="736.5" y="259.4" width="22" height="0.6"/>
+  <path class="axis" d="M460 56 V260 H760"/>
+  <g text-anchor="middle">
+    <text x="460" y="278">32</text><text x="535" y="278">35</text><text x="610" y="278">38</text>
+    <text x="685" y="278">41</text><text x="760" y="278">44</text>
+    <text x="610" y="300" class="hi">delay (ps)</text>
+  </g>
+  <g text-anchor="end"><text x="454" y="264">0</text><text x="454" y="174">25</text><text x="454" y="84">50</text></g>
+  <g class="stats a">
+    <path d="M610 62 V260" stroke="#f5b83d" stroke-width="2"/>
+    <path d="M490 62 V260 M730 62 V260" stroke="#ff5d6c" stroke-width="1.5" stroke-dasharray="5 4"/>
+    <text class="mono" x="616" y="70" style="fill:#f5b83d">mean 38.0 ps</text>
+    <text class="mono" x="496" y="70" style="fill:#ff5d6c">-3σ</text>
+    <text class="mono" x="724" y="70" text-anchor="end" style="fill:#ff5d6c">+3σ</text>
+    <text class="mono" x="760" y="322" text-anchor="end" style="fill:#e6e8f2">σ = 1.6 ps</text>
+  </g>
+
+  <!-- caption -->
+  <text x="400" y="376" text-anchor="middle" style="font-size:13px"><tspan class="hi">process variation + Pelgrom mismatch</tspan><tspan class="mono" dx="18">σ(ΔVt) = A</tspan><tspan class="mono" dy="4" font-size="12">Vt</tspan><tspan class="mono" dy="-4"> / √(WL)</tspan></text>
+</svg>

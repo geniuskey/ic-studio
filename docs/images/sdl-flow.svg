@@ -1,0 +1,173 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 420" width="800" height="420" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title>Schematic-driven layout: generate, place, route</title>
+  <style>
+    .w { stroke: #5cc0ff; stroke-width: 2; fill: none; }
+    .sym { stroke: #e6e8f2; stroke-width: 2; fill: none; }
+    .dot { fill: #5cc0ff; }
+    .t { fill: #e6e8f2; font-family: 'JetBrains Mono', Consolas, Menlo, monospace; font-size: 13px; }
+    .mut { fill: #8a90b0; font-size: 12px; }
+    .nw { fill: #3a3f22; stroke: #a8b84a; stroke-width: 1.5; }
+    .df { fill: #2e7d4f; stroke: #4cd08a; stroke-width: 1.5; }
+    .po { fill: #c2413b; stroke: #ff6b62; stroke-width: 1.5; }
+    .ct { fill: #e6e8f2; }
+    .m1 { fill: rgba(47, 111, 176, 0.75); stroke: #5cc0ff; stroke-width: 1.5; }
+    .pin { fill: none; stroke: #9d90ff; stroke-width: 1.5; }
+    .fly { stroke: #f5b83d; stroke-width: 1.5; stroke-dasharray: 5 4; fill: none; }
+    .fl { fill: #f5b83d; font-family: 'JetBrains Mono', Consolas, Menlo, monospace; font-size: 12px; }
+    .step { font-size: 14px; font-weight: 600; fill: #e6e8f2; text-anchor: middle; }
+    .a { animation: 12s infinite both; }
+    .frame { animation-name: frame; }
+    .hlp { animation-name: hls; }
+    .fp { animation-name: flyp; }
+    .fn { animation-name: flyn; }
+    .bar { animation-name: bar; }
+    .fvdd { animation-name: fvdd; }
+    .fvss { animation-name: fvss; }
+    .fy { animation-name: fy; }
+    .fa { animation-name: fa; }
+    .rvdd { animation-name: rvdd; }
+    .rvss { animation-name: rvss; }
+    .ry { animation-name: ry; }
+    .ra { animation-name: ra; }
+    .march { animation: march 0.8s linear infinite; }
+    @keyframes frame { 0%, 2% { opacity: 0; } 8%, 94% { opacity: 1; } 100% { opacity: 0; } }
+    @keyframes hls { 0%, 3% { opacity: 0; } 6%, 18% { opacity: 1; } 24%, 100% { opacity: 0; } }
+    @keyframes flyp {
+      0%, 5% { opacity: 0; transform: translate(-375px, 0) scale(0.5); }
+      6% { opacity: 1; transform: translate(-375px, 0) scale(0.5); }
+      22%, 32% { transform: translate(-90px, 0) scale(1); }
+      42%, 94% { opacity: 1; transform: translate(0, 0) scale(1); }
+      100% { opacity: 0; transform: translate(0, 0) scale(1); }
+    }
+    @keyframes flyn {
+      0%, 7% { opacity: 0; transform: translate(-375px, -30px) scale(0.5); }
+      8% { opacity: 1; transform: translate(-375px, -30px) scale(0.5); }
+      24%, 32% { transform: translate(90px, 0) scale(1); }
+      42%, 94% { opacity: 1; transform: translate(0, 0) scale(1); }
+      100% { opacity: 0; transform: translate(0, 0) scale(1); }
+    }
+    @keyframes bar { 0%, 28% { transform: translate(0, 0); } 30%, 50% { transform: translate(150px, 0); } 52%, 100% { transform: translate(300px, 0); } }
+    @keyframes fvdd { 0%, 42% { opacity: 0; } 46%, 56% { opacity: 1; } 59%, 100% { opacity: 0; } }
+    @keyframes fvss { 0%, 42% { opacity: 0; } 46%, 60% { opacity: 1; } 63%, 100% { opacity: 0; } }
+    @keyframes fy { 0%, 42% { opacity: 0; } 46%, 64% { opacity: 1; } 68%, 100% { opacity: 0; } }
+    @keyframes fa { 0%, 42% { opacity: 0; } 46%, 70% { opacity: 1; } 74%, 100% { opacity: 0; } }
+    @keyframes rvdd { 0%, 55% { opacity: 0; } 59%, 94% { opacity: 1; } 100% { opacity: 0; } }
+    @keyframes rvss { 0%, 59% { opacity: 0; } 63%, 94% { opacity: 1; } 100% { opacity: 0; } }
+    @keyframes ry { 0%, 64% { opacity: 0; } 68%, 94% { opacity: 1; } 100% { opacity: 0; } }
+    @keyframes ra { 0%, 70% { opacity: 0; } 74%, 94% { opacity: 1; } 100% { opacity: 0; } }
+    @keyframes march { to { stroke-dashoffset: -9; } }
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+  </style>
+  <defs>
+    <!-- transistor PCell, centred: diffusion, poly gate, S and D contacts -->
+    <g id="fet">
+      <rect class="df" x="-50" y="-25" width="100" height="50"/>
+      <rect class="po" x="-8" y="-40" width="16" height="80"/>
+      <rect class="ct" x="-34" y="-6" width="12" height="12"/>
+      <rect class="ct" x="22" y="-6" width="12" height="12"/>
+    </g>
+  </defs>
+
+  <rect x="0.5" y="0.5" width="799" height="419" rx="14" fill="#0f1220" stroke="#262c48"/>
+
+  <!-- step labels -->
+  <text class="step" x="400" y="30">1 Generate</text>
+  <text class="step" x="550" y="30">2 Place</text>
+  <text class="step" x="700" y="30">3 Route</text>
+  <g>
+    <rect class="a bar" transform="translate(300 0)" x="360" y="38" width="80" height="3" rx="1.5" fill="#9d90ff"/>
+  </g>
+
+  <!-- schematic -->
+  <rect x="20" y="50" width="280" height="350" rx="8" fill="#161a2c"/>
+  <text class="mut" x="34" y="72">schematic</text>
+  <g>
+    <path class="w" d="M170 85 H200 M185 85 V115 H165 M165 145 H185 V235 H165 M165 265 H185 V310"/>
+    <path class="w" d="M60 190 H110 M110 130 V250 M110 130 H145.5 M110 250 H155 M185 190 H250"/>
+    <path class="w" d="M172 310 H198 M177 316 H193 M182 322 H188"/>
+    <path class="sym" d="M165 110 V150 M155 112 V148 M165 230 V270 M155 232 V268"/>
+    <circle class="sym" cx="150" cy="130" r="4.5"/>
+    <circle class="dot" cx="110" cy="190" r="3.5"/>
+    <circle class="dot" cx="185" cy="190" r="3.5"/>
+    <text class="t" x="172" y="80">VDD</text>
+    <text class="t" x="200" y="330">VSS</text>
+    <text class="t" x="40" y="195">A</text>
+    <text class="t" x="258" y="195">Y</text>
+    <text class="t" x="200" y="134">MP</text>
+    <text class="t" x="200" y="254">MN</text>
+  </g>
+  <g class="a hlp" opacity="0" fill="none" stroke="#f5b83d" stroke-width="1.5">
+    <rect x="138" y="104" width="58" height="52" rx="5"/>
+    <rect x="138" y="224" width="58" height="52" rx="5"/>
+  </g>
+
+  <!-- layout -->
+  <rect x="330" y="50" width="450" height="350" rx="8" fill="#161a2c"/>
+  <g class="a frame">
+    <text class="mut" x="344" y="72">layout</text>
+    <rect x="390" y="52" width="350" height="316" fill="none" stroke="#3a4066" stroke-dasharray="3 3"/>
+  </g>
+
+  <!-- placed PCells (fly in from the schematic) -->
+  <g transform="translate(540 130)">
+    <g class="a fp">
+      <rect class="nw" x="-70" y="-45" width="140" height="70"/>
+      <use href="#fet"/>
+      <text class="t" x="-66" y="-30" font-size="12">MP</text>
+    </g>
+  </g>
+  <g transform="translate(540 280)">
+    <g class="a fn">
+      <use href="#fet"/>
+      <text class="t" x="56" y="-12" font-size="12">MN</text>
+    </g>
+  </g>
+
+  <!-- routed metal1 -->
+  <g class="a rvdd">
+    <rect class="m1" x="410" y="60" width="310" height="20"/>
+    <rect class="m1" x="504" y="70" width="16" height="62"/>
+  </g>
+  <g class="a rvss">
+    <rect class="m1" x="410" y="330" width="310" height="20"/>
+    <rect class="m1" x="504" y="278" width="16" height="62"/>
+  </g>
+  <g class="a ry">
+    <rect class="m1" x="560" y="122" width="16" height="166"/>
+    <rect class="m1" x="568" y="197" width="132" height="16"/>
+  </g>
+  <g class="a ra">
+    <rect class="m1" x="532" y="156" width="16" height="98"/>
+    <rect class="m1" x="405" y="197" width="143" height="16"/>
+    <rect class="ct" x="534" y="158" width="12" height="12"/>
+    <rect class="ct" x="534" y="240" width="12" height="12"/>
+  </g>
+
+  <!-- pins -->
+  <g class="a frame">
+    <rect class="pin" x="415" y="65" width="10" height="10"/>
+    <rect class="pin" x="415" y="335" width="10" height="10"/>
+    <rect class="pin" x="405" y="200" width="10" height="10"/>
+    <rect class="pin" x="688" y="200" width="10" height="10"/>
+    <text class="t" x="345" y="100">VDD</text>
+    <text class="t" x="350" y="345">VSS</text>
+    <text class="t" x="400" y="232">A</text>
+    <text class="t" x="704" y="232">Y</text>
+  </g>
+
+  <!-- flylines (ratsnest) -->
+  <g class="a fvdd" opacity="0">
+    <path class="fly march" d="M425 70 L512 130"/>
+  </g>
+  <g class="a fvss" opacity="0">
+    <path class="fly march" d="M425 340 L512 280"/>
+  </g>
+  <g class="a fy" opacity="0">
+    <path class="fly march" d="M568 130 L568 280 M568 130 L688 205"/>
+    <text class="fl" x="620" y="150">Y</text>
+  </g>
+  <g class="a fa" opacity="0">
+    <path class="fly march" d="M415 205 L540 165 M540 165 L540 246"/>
+    <text class="fl" x="468" y="180">A</text>
+  </g>
+</svg>

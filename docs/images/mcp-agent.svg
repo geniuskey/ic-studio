@@ -1,0 +1,197 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 440" width="800" height="440" role="img" aria-labelledby="title desc">
+  <title id="title">AI agent over MCP</title>
+  <desc id="desc">An AI agent calls the MCP tools place_pcell, route and run_drc in turn. Each call goes through the ics mcp server to the design database of the running app, the window updates live, and the JSON result returns to the agent.</desc>
+  <defs>
+    <pattern id="dots" width="20" height="20" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1" fill="#262c48"/>
+    </pattern>
+    <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L8 4 L0 8 Z" fill="#3a4066"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family: Inter, 'Segoe UI', Helvetica, Arial, sans-serif; }
+    :where(text:not([fill])) { fill: #e6e8f2; }
+    .mono, .mono text { font-family: 'JetBrains Mono', Consolas, Menlo, monospace; font-size: 12px; white-space: pre; }
+    .muted { fill: #8a90b0; }
+    .card { fill: #161a2c; stroke: #262c48; }
+    .wire { fill: none; stroke: #3a4066; stroke-width: 2; marker-end: url(#arr); }
+    .diff { fill: #2e7d4f; stroke: #4cd08a; stroke-width: 1.2; }
+    .poly { fill: #c2413b; stroke: #ff6b62; stroke-width: 1.2; }
+    .m1 { fill: #2f6fb0; fill-opacity: .75; stroke: #5cc0ff; stroke-width: 1.2; }
+    .a { animation-duration: 14s; animation-iteration-count: infinite; animation-fill-mode: both; animation-timing-function: ease-in-out; }
+
+    /* packets: one call per 4 s slot, shifted with animation-delay */
+    .req { opacity: 0; animation-name: req; }
+    @keyframes req {
+      0% { opacity: 0; transform: translate(272px, 112px); }
+      1.4% { opacity: 1; transform: translate(272px, 112px); }
+      6.4% { opacity: 1; transform: translate(366px, 112px); }
+      10.7% { opacity: 1; transform: translate(366px, 262px); }
+      15% { opacity: 1; transform: translate(468px, 262px); }
+      15.7%, 100% { opacity: 0; transform: translate(468px, 262px); }
+    }
+    .res { opacity: 0; animation-name: res; }
+    @keyframes res {
+      0%, 16.4% { opacity: 0; transform: translate(468px, 142px); }
+      17.1% { opacity: 1; transform: translate(468px, 142px); }
+      20.7% { opacity: 1; transform: translate(366px, 142px); }
+      25% { opacity: 1; transform: translate(272px, 142px); }
+      25.7%, 100% { opacity: 0; transform: translate(272px, 142px); }
+    }
+    .k2 { animation-delay: 4s; } .k3 { animation-delay: 8s; }
+
+    @keyframes c1q { 0%, .5% { opacity: 0; } 1.4%, 100% { opacity: 1; } }
+    @keyframes c1r { 0%, 24.5% { opacity: 0; } 25.5%, 100% { opacity: 1; } }
+    @keyframes c2q { 0%, 29% { opacity: 0; } 30%, 100% { opacity: 1; } }
+    @keyframes c2r { 0%, 53% { opacity: 0; } 54.5%, 100% { opacity: 1; } }
+    @keyframes c3q { 0%, 57.5% { opacity: 0; } 58.5%, 100% { opacity: 1; } }
+    @keyframes c3r { 0%, 81.5% { opacity: 0; } 83%, 100% { opacity: 1; } }
+    .c1q { animation-name: c1q; } .c1r { animation-name: c1r; } .c2q { animation-name: c2q; }
+    .c2r { animation-name: c2r; } .c3q { animation-name: c3q; } .c3r { animation-name: c3r; }
+
+    /* app updates */
+    @keyframes u1 { 0%, 14.5% { opacity: 0; transform: translateY(-8px); } 16.5%, 100% { opacity: 1; transform: translateY(0); } }
+    @keyframes fly { 0%, 15.5% { opacity: 0; } 17%, 43% { opacity: 1; } 44.5%, 100% { opacity: 0; } }
+    @keyframes u2 { 0%, 43% { opacity: 0; } 45%, 100% { opacity: 1; } }
+    @keyframes u3 { 0%, 71.5% { opacity: 0; } 73.5%, 100% { opacity: 1; } }
+    .u1 { animation-name: u1; } .fly { animation-name: fly; opacity: 0; } .u2 { animation-name: u2; } .u3 { animation-name: u3; }
+    @keyframes l1 { 0%, 15% { opacity: 0; } 16.5%, 43% { opacity: 1; } 44.5%, 100% { opacity: 0; } }
+    @keyframes l2 { 0%, 43% { opacity: 0; } 44.5%, 71.5% { opacity: 1; } 73%, 100% { opacity: 0; } }
+    @keyframes l3 { 0%, 71.5% { opacity: 0; } 73.5%, 100% { opacity: 1; } }
+    .l1 { animation-name: l1; opacity: 0; } .l2 { animation-name: l2; opacity: 0; } .l3 { animation-name: l3; }
+
+    .live { animation: live 1.6s ease-in-out infinite; }
+    @keyframes live { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+  </style>
+
+  <rect x=".5" y=".5" width="799" height="439" rx="14" fill="#0f1220" stroke="#262c48"/>
+  <text x="24" y="34" font-size="16" font-weight="600">AI agent over MCP</text>
+  <text x="776" y="34" font-size="12" text-anchor="end" class="muted">live mode: tool calls edit the open project</text>
+
+  <!-- agent -->
+  <rect class="card" x="24" y="52" width="240" height="372" rx="8"/>
+  <circle cx="44" cy="74" r="7" fill="#9d90ff"/>
+  <text x="58" y="79" font-size="13" font-weight="600">AI agent</text>
+  <line x1="40" y1="90" x2="248" y2="90" stroke="#262c48"/>
+  <rect x="40" y="100" width="208" height="26" rx="8" fill="#262c48"/>
+  <text x="50" y="118" font-size="12">Add an NMOS, route, run DRC</text>
+
+  <g class="a c1q">
+    <text x="40" y="148" class="mono" fill="#9d90ff">→ place_pcell</text>
+    <text x="40" y="164" class="mono muted">{"cell":"amp","kind":"nmos"}</text>
+  </g>
+  <g class="a c1r">
+    <text x="40" y="184" class="mono" fill="#4cd08a">← {"id":7,"device":</text>
+    <text x="40" y="200" class="mono" fill="#4cd08a">  "nmos W=1um L=0.18um nf=1"}</text>
+  </g>
+  <g class="a c2q">
+    <text x="40" y="226" class="mono" fill="#9d90ff">→ route</text>
+    <text x="40" y="242" class="mono muted">{"cell":"amp"}</text>
+  </g>
+  <g class="a c2r">
+    <text x="40" y="262" class="mono" fill="#4cd08a">← {"routed":3,"failed":0}</text>
+  </g>
+  <g class="a c3q">
+    <text x="40" y="288" class="mono" fill="#9d90ff">→ run_drc</text>
+    <text x="40" y="304" class="mono muted">{"cell":"amp"}</text>
+  </g>
+  <g class="a c3r">
+    <text x="40" y="324" class="mono" fill="#4cd08a">← {"clean":true,"violations":0}</text>
+    <rect x="40" y="344" width="208" height="26" rx="8" fill="#262c48"/>
+    <text x="50" y="362" font-size="12">Done: amp is placed, routed, clean.</text>
+  </g>
+
+  <!-- server -->
+  <rect class="card" x="300" y="96" width="132" height="60" rx="8" stroke-width="1.5"/>
+  <text x="366" y="122" font-size="14" font-weight="600" text-anchor="middle" class="mono" style="font-size:14px">ics mcp</text>
+  <text x="366" y="142" font-size="12" text-anchor="middle" class="muted">JSON-RPC · stdio</text>
+  <path class="wire" d="M264 112 H298"/>
+  <path class="wire" d="M300 142 H266"/>
+  <path class="wire" d="M478 142 H434"/>
+  <path class="wire" d="M366 156 V228"/>
+  <path class="wire" d="M432 262 H478"/>
+
+  <!-- database -->
+  <g fill="#161a2c" stroke="#3a4066" stroke-width="1.5">
+    <path d="M308 240 V286 A58 12 0 0 0 424 286 V240"/>
+    <ellipse cx="366" cy="240" rx="58" ry="12"/>
+  </g>
+  <text x="366" y="270" font-size="12" text-anchor="middle">design database</text>
+  <text x="366" y="286" font-size="12" text-anchor="middle" class="muted">project amp</text>
+  <text x="455" y="254" font-size="12" text-anchor="middle" class="muted">live</text>
+
+  <!-- app window -->
+  <rect class="card" x="480" y="52" width="296" height="372" rx="8"/>
+  <path d="M480 60 a8 8 0 0 1 8 -8 h280 a8 8 0 0 1 8 8 v16 h-296 z" fill="#262c48"/>
+  <circle cx="494" cy="64" r="4" fill="#ff5d6c"/><circle cx="508" cy="64" r="4" fill="#f5b83d"/><circle cx="522" cy="64" r="4" fill="#4cd08a"/>
+  <text x="628" y="68" font-size="12" text-anchor="middle" class="muted">IC Studio · work/amp · Layout</text>
+  <rect x="488" y="84" width="280" height="292" fill="#0f1220"/>
+  <rect x="488" y="84" width="280" height="292" fill="url(#dots)"/>
+
+  <!-- existing: rails and PMOS -->
+  <rect class="m1" x="496" y="90" width="264" height="10"/>
+  <rect class="m1" x="496" y="340" width="264" height="10"/>
+  <text x="500" y="116" font-size="12" class="mono muted">vdd</text>
+  <text x="500" y="334" font-size="12" class="mono muted">gnd</text>
+  <rect x="548" y="104" width="164" height="62" fill="#3a3f22" stroke="#a8b84a" stroke-width="1"/>
+  <rect class="diff" x="560" y="116" width="140" height="38"/>
+  <rect class="poly" x="624" y="108" width="12" height="70"/>
+  <text x="720" y="140" font-size="12" class="mono">M1</text>
+
+  <!-- call 1: NMOS appears -->
+  <g class="a u1">
+    <rect class="diff" x="560" y="270" width="140" height="34"/>
+    <rect class="poly" x="624" y="258" width="12" height="56"/>
+    <rect x="620" y="246" width="20" height="16" class="poly"/>
+    <text x="720" y="292" font-size="12" class="mono">M2</text>
+  </g>
+  <g class="a fly" stroke="#f5b83d" stroke-width="1.5" stroke-dasharray="4 3" fill="none">
+    <path d="M686 140 V286"/>
+    <path d="M630 178 V250"/>
+    <path d="M572 286 V345"/>
+  </g>
+
+  <!-- call 2: routed metal1 -->
+  <g class="a u2">
+    <rect class="poly" x="620" y="174" width="20" height="16"/>
+    <rect class="m1" x="680" y="128" width="12" height="164"/>
+    <rect class="m1" x="624" y="176" width="12" height="80"/>
+    <rect class="m1" x="566" y="96" width="12" height="40"/>
+    <rect class="m1" x="566" y="280" width="12" height="64"/>
+    <g fill="#e6e8f2">
+      <rect x="683" y="131" width="6" height="6"/><rect x="683" y="283" width="6" height="6"/>
+      <rect x="627" y="179" width="6" height="6"/><rect x="627" y="251" width="6" height="6"/>
+      <rect x="569" y="127" width="6" height="6"/><rect x="569" y="283" width="6" height="6"/>
+    </g>
+    <text x="700" y="218" font-size="12" class="mono" fill="#5cc0ff">out</text>
+    <text x="602" y="218" font-size="12" class="mono" fill="#5cc0ff">in</text>
+  </g>
+
+  <!-- call 3: DRC clean -->
+  <g class="a u3">
+    <rect x="636" y="352" width="124" height="20" rx="10" fill="#4cd08a" fill-opacity=".14" stroke="#4cd08a"/>
+    <path d="M647 362 l3.5 3.5 l7 -7" fill="none" stroke="#4cd08a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="664" y="366" font-size="12" font-weight="600" fill="#4cd08a">DRC clean</text>
+  </g>
+
+  <!-- status bar -->
+  <line x1="480" y1="384" x2="776" y2="384" stroke="#262c48"/>
+  <circle class="live" cx="496" cy="404" r="4" fill="#4cd08a"/>
+  <text x="506" y="408" font-size="12" fill="#4cd08a">MCP live</text>
+  <g class="mono" fill="#8a90b0">
+    <text class="a l1" x="568" y="408" fill="#8a90b0">MCP · place_pcell amp</text>
+    <text class="a l2" x="568" y="408" fill="#8a90b0">MCP · route amp -&gt; 3 routed</text>
+    <text class="a l3" x="568" y="408" fill="#8a90b0">MCP · run_drc amp -&gt; clean</text>
+  </g>
+
+  <!-- packets (drawn last, on top) -->
+  <g class="a req"><rect x="-40" y="-10" width="80" height="20" rx="10" fill="#9d90ff"/><text y="4" text-anchor="middle" class="mono" fill="#0f1220">tools/call</text></g>
+  <g class="a req k2"><rect x="-40" y="-10" width="80" height="20" rx="10" fill="#9d90ff"/><text y="4" text-anchor="middle" class="mono" fill="#0f1220">tools/call</text></g>
+  <g class="a req k3"><rect x="-40" y="-10" width="80" height="20" rx="10" fill="#9d90ff"/><text y="4" text-anchor="middle" class="mono" fill="#0f1220">tools/call</text></g>
+  <g class="a res"><rect x="-32" y="-10" width="64" height="20" rx="10" fill="#4cd08a"/><text y="4" text-anchor="middle" class="mono" fill="#0f1220">result</text></g>
+  <g class="a res k2"><rect x="-32" y="-10" width="64" height="20" rx="10" fill="#4cd08a"/><text y="4" text-anchor="middle" class="mono" fill="#0f1220">result</text></g>
+  <g class="a res k3"><rect x="-32" y="-10" width="64" height="20" rx="10" fill="#4cd08a"/><text y="4" text-anchor="middle" class="mono" fill="#0f1220">result</text></g>
+</svg>

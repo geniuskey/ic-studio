@@ -1,6 +1,8 @@
 # Keyboard shortcuts
 
-`Ctrl` on Windows and Linux is `Cmd` on macOS. Press `F1` in the app to show this list.
+`Ctrl` on Windows and Linux is `Cmd` on macOS. The app labels shortcuts for the platform
+it runs on (`Ctrl+K` on Windows and Linux, `⌘K` on macOS) in menus, tooltips and this
+list. Press `F1` in the app to show it.
 Canvas keys work while the mouse is over the canvas and no text field has focus.
 
 ## General

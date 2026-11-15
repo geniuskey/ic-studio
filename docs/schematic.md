@@ -13,6 +13,8 @@ Open a cell's schematic view (or press `Ctrl+2` with a cell open) to edit it.
 Schematic coordinates are integer grid points. Keys act on the canvas only while the
 mouse is over it and no text field has focus.
 
+![Placing devices, drawing wires, highlighting a net and annotating the operating point](images/schematic-wiring.svg)
+
 ## Devices
 
 | Key | Device | Name prefix | Pins | Default parameters |

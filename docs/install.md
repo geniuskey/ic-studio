@@ -44,6 +44,12 @@ To update, run the installer again; this works while the app or an agent is runn
 replaces `ics` together with the app, and on its first start the new version adds any
 example projects missing from `Documents/IC Studio/Examples`.
 
+With **Check for updates** on in **Settings** (the default), the app looks for a newer
+release when it starts and shows an **Update available** toast with **Update now**,
+**Release notes** and **Later**. The updater can replace the programs while an older
+`ics mcp` server still runs from them, and if installing fails part way it puts the
+previous version back.
+
 Options are environment variables:
 
 | Variable | Effect |

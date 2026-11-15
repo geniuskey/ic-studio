@@ -60,11 +60,14 @@ Layer:
 - `routing`: a routing layer carries net labels and is used by extraction and the router.
 
 Via: `name`, `bottom`, `cut`, `top` (layer names), `cut_size`, `cut_spacing`,
-`enc_bottom`, `enc_top` (dbu) and `resistance` (Ω per cut).
+`enc_bottom`, `enc_top` (dbu), `resistance` (Ω per cut) and `em` (optional
+electromigration limit in A per cut, see
+[IR drop and electromigration](verification.md#ir-drop-and-electromigration)).
 
 Parasitic coefficients (`caps`), one entry per layer: `layer`, `area` (aF/µm²),
 `fringe` (aF/µm of edge), `coupling` (aF; adds `coupling * length / spacing` for a
-parallel neighbour) and `resistance` (Ω per square).
+parallel neighbour), `resistance` (Ω per square) and `em` (optional electromigration
+limit in A per µm of wire width).
 
 ## DRC rule deck
 
@@ -217,14 +220,14 @@ The main sections:
 | `[[pin_label]]` | Net label layer of a conducting layer: `layer`, `label` (e.g. `Metal1` and `Metal1.text`). Routing labels named nets there, extraction reads labels there as names of that layer's nets |
 | `[[pcell_layer]]` | Extra layer the PCells draw: `layer`, `around` (`poly_contact`, `diff_contact`, `gate`, `diffusion`, `poly` or a layer name), `enc`, optional `kinds` (`nmos`, `pmos`, `poly_res`, `mom_cap`, `ntap`, `ptap`) |
 | `drc_extra` | Deck lines appended to the deck derived from the layer rules (top-level key, before the tables) |
-| `[[via]]` | `name`, `bottom`, `cut`, `top`, `size`, `space`, `enc_bottom`, `enc_top`, `resistance` |
+| `[[via]]` | `name`, `bottom`, `cut`, `top`, `size`, `space`, `enc_bottom`, `enc_top`, `resistance`, optional `em` (A per cut) |
 | `[[device]]` | `name`, `type` (`nmos` / `pmos`), `layers`, `exclude`, `subckt` |
 | `[[resistor]]` | Resistor: marked body of a conducting layer: `name`, `layer`, `layers` (markers), `exclude`, `sheet` (Ω per square). `poly_res` draws the markers of the resistor on the poly layer |
 | `[[capacitor]]` | Capacitor: marked overlap of two conducting layers: `name`, `bottom`, `top`, `layers`, `area` (fF/µm²), optional `perimeter` (fF/µm). `mom_cap` draws the markers of the metal1 / metal2 capacitor |
-| `[models]` | `path`, `extra` (more model files loaded at the same corner), `corners`, `default`, `length_unit` (`m` or `um`) |
+| `[models]` | `path`, `extra` (more model files loaded at the same corner), `corners`, `default`, `length_unit` (`m` or `um`), `osdi` (compiled Verilog-A models, OpenVAF `.osdi`, that ngspice loads first), `lde` (`true` when the models take the layout-dependent parameters `nf sa sb sd`; post-layout decks then [back-annotate them](simulation.md#post-layout-simulation)) |
 | `drc_deck` | Optional DRC deck file |
 | `[[signoff]]` | External DRC / LVS runsets: `name`, `tool` (`klayout`, `calibre`, `netgen`, `builtin`), `check` (`drc`, `lvs`), `deck`, `vars`, `klayout`, `skip`, `ground` (see [Verification](verification.md#sign-off-with-external-tools)) |
-| `[[cap]]` | Parasitic coefficients, as in `tech.json` |
+| `[[cap]]` | Parasitic coefficients, as in `tech.json`, with optional `resistance` (Ω per square) and `em` (A per µm of width) |
 
 What changes with a PDK:
 

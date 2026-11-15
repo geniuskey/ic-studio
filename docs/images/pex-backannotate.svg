@@ -1,0 +1,141 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 420" width="800" height="420" role="img" aria-labelledby="title desc">
+  <title id="title">Parasitic extraction</title>
+  <desc id="desc">A metal1 wire is split into segments with a resistor and a capacitor to ground each. The RC network is written into the post-layout netlist, and the simulated output edge with parasitics arrives later than the schematic-only edge.</desc>
+  <defs>
+    <pattern id="dots" width="20" height="20" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1" fill="#262c48"/>
+    </pattern>
+    <path id="res" d="M0 0 h15 l2.5 -6 l6 12 l6 -12 l6 12 l6 -12 l6 12 l2.5 -6 h15" fill="none" stroke="#f5b83d" stroke-width="2" stroke-linejoin="round"/>
+    <g id="cap" fill="none" stroke="#f5b83d" stroke-width="2">
+      <path d="M0 0 v18 M-9 18 h18 M-9 24 h18 M0 24 v10"/>
+      <path d="M-8 34 h16 M-5 38 h10 M-2 42 h4" stroke="#8a90b0" stroke-width="1.5"/>
+    </g>
+  </defs>
+  <style>
+    text { font-family: Inter, 'Segoe UI', Helvetica, Arial, sans-serif; }
+    :where(text:not([fill])) { fill: #e6e8f2; }
+    .mono, .mono text { font-family: 'JetBrains Mono', Consolas, Menlo, monospace; font-size: 13px; white-space: pre; }
+    .muted { fill: #8a90b0; }
+    .a { animation-duration: 12s; animation-iteration-count: infinite; animation-fill-mode: both; animation-timing-function: ease-out; }
+
+    .pop { transform-box: fill-box; transform-origin: center; }
+    @keyframes p1 { 0%, 8% { opacity: 0; transform: scale(.2); } 12%, 100% { opacity: 1; transform: scale(1); } }
+    @keyframes p2 { 0%, 13% { opacity: 0; transform: scale(.2); } 17%, 100% { opacity: 1; transform: scale(1); } }
+    @keyframes p3 { 0%, 18% { opacity: 0; transform: scale(.2); } 22%, 100% { opacity: 1; transform: scale(1); } }
+    @keyframes p4 { 0%, 23% { opacity: 0; transform: scale(.2); } 27%, 100% { opacity: 1; transform: scale(1); } }
+    .p1 { animation-name: p1; } .p2 { animation-name: p2; } .p3 { animation-name: p3; } .p4 { animation-name: p4; }
+
+    .fly { opacity: 0; animation-name: fly; animation-timing-function: ease-in-out; }
+    @keyframes fly {
+      0%, 29% { opacity: 0; transform: translate(0, 0); }
+      30% { opacity: 1; transform: translate(0, 0); }
+      38% { opacity: 1; transform: translate(262px, -20px); }
+      39%, 100% { opacity: 0; transform: translate(262px, -20px); }
+    }
+    .f2 { animation-delay: .4s; } .f3 { animation-delay: .8s; }
+
+    @keyframes n1 { 0%, 33% { opacity: 0; } 35%, 100% { opacity: 1; } }
+    @keyframes n2 { 0%, 36% { opacity: 0; } 38%, 100% { opacity: 1; } }
+    @keyframes n3 { 0%, 39% { opacity: 0; } 41%, 100% { opacity: 1; } }
+    @keyframes n4 { 0%, 42% { opacity: 0; } 44%, 100% { opacity: 1; } }
+    @keyframes n5 { 0%, 45% { opacity: 0; } 47%, 100% { opacity: 1; } }
+    .n1 { animation-name: n1; } .n2 { animation-name: n2; } .n3 { animation-name: n3; } .n4 { animation-name: n4; } .n5 { animation-name: n5; }
+
+    .trace { fill: none; stroke-width: 2.5; stroke-dasharray: 800; }
+    .tb { animation-name: tb; animation-timing-function: linear; }
+    .ta { animation-name: ta; animation-timing-function: linear; }
+    @keyframes tb { 0%, 50% { stroke-dashoffset: 800; } 62%, 100% { stroke-dashoffset: 0; } }
+    @keyframes ta { 0%, 62% { stroke-dashoffset: 800; } 74%, 100% { stroke-dashoffset: 0; } }
+    .delta { animation-name: delta; }
+    @keyframes delta { 0%, 75% { opacity: 0; } 79%, 100% { opacity: 1; } }
+
+    .s1 { animation-name: s1; } .s2 { animation-name: s2; } .s3 { animation-name: s3; }
+    @keyframes s1 { 0%, 29% { fill: #9d90ff; } 31%, 100% { fill: #8a90b0; } }
+    @keyframes s2 { 0%, 29% { fill: #8a90b0; } 31%, 49% { fill: #9d90ff; } 51%, 100% { fill: #8a90b0; } }
+    @keyframes s3 { 0%, 49% { fill: #8a90b0; } 51%, 100% { fill: #9d90ff; } }
+
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+  </style>
+
+  <rect x=".5" y=".5" width="799" height="419" rx="14" fill="#0f1220" stroke="#262c48"/>
+  <text x="24" y="34" font-size="16" font-weight="600">Parasitic extraction and back-annotation</text>
+  <g font-size="13" font-weight="600">
+    <text class="a s1" x="476" y="34" fill="#e6e8f2">1 Extract RC</text>
+    <text class="a s2" x="574" y="34" fill="#e6e8f2">2 Netlist</text>
+    <text class="a s3" x="650" y="34" fill="#e6e8f2">3 Simulate</text>
+  </g>
+
+  <!-- layout wire -->
+  <rect x="24" y="52" width="420" height="176" rx="8" fill="#161a2c" stroke="#262c48"/>
+  <rect x="25" y="53" width="418" height="174" rx="7" fill="url(#dots)"/>
+  <rect x="40" y="78" width="60" height="44" rx="5" fill="#0f1220" stroke="#8a90b0"/>
+  <text x="70" y="105" font-size="12" text-anchor="middle" class="muted">driver</text>
+  <rect x="360" y="78" width="60" height="44" rx="5" fill="#0f1220" stroke="#8a90b0"/>
+  <text x="390" y="105" font-size="12" text-anchor="middle" class="muted">load</text>
+  <rect x="100" y="94" width="260" height="12" fill="#2f6fb0" fill-opacity=".75" stroke="#5cc0ff" stroke-width="1.5"/>
+  <text x="230" y="86" font-size="12" text-anchor="middle" fill="#5cc0ff">metal1 · net out</text>
+  <g stroke="#3a4066" stroke-dasharray="3 3">
+    <line x1="165" y1="106" x2="165" y2="160"/><line x1="230" y1="106" x2="230" y2="160"/>
+    <line x1="295" y1="106" x2="295" y2="160"/><line x1="360" y1="106" x2="360" y2="160"/>
+  </g>
+
+  <!-- distributed RC -->
+  <g class="a pop p1"><use href="#res" x="100" y="160"/><use href="#cap" x="165" y="160"/></g>
+  <g class="a pop p2"><use href="#res" x="165" y="160"/><use href="#cap" x="230" y="160"/></g>
+  <g class="a pop p3"><use href="#res" x="230" y="160"/><use href="#cap" x="295" y="160"/></g>
+  <g class="a pop p4"><use href="#res" x="295" y="160"/><use href="#cap" x="360" y="160"/></g>
+  <g fill="#f5b83d">
+    <circle cx="100" cy="160" r="3"/><circle cx="165" cy="160" r="3"/><circle cx="230" cy="160" r="3"/>
+    <circle cx="295" cy="160" r="3"/><circle cx="360" cy="160" r="3"/>
+  </g>
+  <text x="40" y="164" font-size="12" class="muted">RC</text>
+
+  <!-- flying elements -->
+  <g class="a fly"><rect x="214" y="150" width="16" height="10" rx="3" fill="#f5b83d"/></g>
+  <g class="a fly f2"><rect x="214" y="150" width="16" height="10" rx="3" fill="#f5b83d"/></g>
+  <g class="a fly f3"><rect x="214" y="150" width="16" height="10" rx="3" fill="#f5b83d"/></g>
+
+  <!-- netlist card -->
+  <rect x="460" y="52" width="316" height="176" rx="8" fill="#161a2c" stroke="#262c48"/>
+  <text x="476" y="76" font-size="13" font-weight="600">Post-layout netlist</text>
+  <line x1="476" y1="86" x2="760" y2="86" stroke="#262c48"/>
+  <g class="mono">
+    <text class="a n1" x="476" y="110" fill="#8a90b0">* RC network of net out</text>
+    <text class="a n2" x="476" y="132">R1 out  out_1 <tspan fill="#f5b83d">4.2</tspan></text>
+    <text class="a n3" x="476" y="154">C1 out_1 0    <tspan fill="#f5b83d">0.31f</tspan></text>
+    <text class="a n4" x="476" y="176">R2 out_1 out_2 <tspan fill="#f5b83d">4.2</tspan></text>
+    <text class="a n5" x="476" y="198" fill="#8a90b0">... 4 R, 4 C</text>
+  </g>
+
+  <!-- waveform -->
+  <rect x="24" y="240" width="752" height="164" rx="8" fill="#161a2c" stroke="#262c48"/>
+  <g stroke="#3a4066">
+    <line x1="70" y1="384" x2="760" y2="384"/>
+    <line x1="70" y1="252" x2="70" y2="384"/>
+    <line x1="70" y1="316" x2="760" y2="316" stroke-dasharray="4 4"/>
+  </g>
+  <text x="62" y="266" font-size="12" text-anchor="end" class="muted">1.8</text>
+  <text x="62" y="320" font-size="12" text-anchor="end" class="muted">50%</text>
+  <text x="62" y="374" font-size="12" text-anchor="end" class="muted">0</text>
+  <text x="756" y="400" font-size="12" text-anchor="end" class="muted">time</text>
+  <text x="84" y="266" font-size="12" class="mono muted">v(out)</text>
+
+  <path class="trace a tb" d="M70 370 H300 C330 370 330 262 360 262 H750" stroke="#5cc0ff"/>
+  <path class="trace a ta" d="M70 370 H310 C360 370 380 264 460 262 H750" stroke="#f5b83d"/>
+
+  <g class="a delta">
+    <g stroke="#e6e8f2" stroke-width="1.5" fill="none">
+      <line x1="330" y1="330" x2="330" y2="340" stroke="#5cc0ff"/>
+      <line x1="374" y1="330" x2="374" y2="340" stroke="#f5b83d"/>
+      <path d="M334 335 H370 M338 331 l-4 4 l4 4 M366 331 l4 4 l-4 4"/>
+    </g>
+    <text x="384" y="350" font-size="13" class="mono">Δt = +44 ps</text>
+  </g>
+
+  <g font-size="12">
+    <line x1="560" y1="350" x2="584" y2="350" stroke="#5cc0ff" stroke-width="2.5"/>
+    <text x="592" y="354">schematic</text>
+    <line x1="560" y1="372" x2="584" y2="372" stroke="#f5b83d" stroke-width="2.5"/>
+    <text x="592" y="376">with parasitics</text>
+  </g>
+</svg>

@@ -26,6 +26,7 @@ jobs:
         with:
           mdbook-version: "0.4.52"
       - run: mdbook build docs
+      - run: mdbook build docs/ko
       - uses: actions/upload-pages-artifact@v3
         with:
           path: target/guide

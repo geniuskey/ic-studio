@@ -32,6 +32,8 @@ contact arrangements, bent or 45° gates), write a generator in SKILL: see
 
 ## Placing and changing PCells
 
+![A MOSFET PCell redrawn as its fingers and width change](images/pcell-params.svg)
+
 | Where | How |
 |---|---|
 | Layout editor | Press `I`, pick the PCell in the left panel, set its parameters, click to place |

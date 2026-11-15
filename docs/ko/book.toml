@@ -1,0 +1,20 @@
+[book]
+title = "IC Studio"
+description = "IC Studio: 하나의 네이티브 앱에서 회로도, SPICE 시뮬레이션, 레이아웃, 자동 배치 배선, DRC, LVS, 기생 성분 추출까지 다루는 오픈소스 풀커스텀 IC 설계 환경."
+authors = ["geniuskey"]
+language = "ko"
+src = "."
+
+[build]
+build-dir = "../../target/guide/ko"
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/geniuskey/ic-studio"
+edit-url-template = "https://github.com/geniuskey/ic-studio/edit/main/docs/ko/{path}"
+site-url = "/ic-studio/ko/"
+default-theme = "navy"
+preferred-dark-theme = "navy"
+additional-css = ["../theme/custom.css"]
+additional-js = ["../theme/lang.js"]
+smart-punctuation = true

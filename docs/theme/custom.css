@@ -441,3 +441,27 @@ blockquote {
         grid-template-columns: 1fr;
     }
 }
+
+.ics-lang {
+    display: inline-flex;
+    align-items: center;
+    height: var(--menu-bar-height, 50px);
+    padding: 0 10px;
+    font-size: 1.35rem;
+    font-weight: 600;
+    color: var(--icons) !important;
+    text-decoration: none !important;
+}
+
+.ics-lang:hover {
+    color: var(--icons-hover) !important;
+}
+
+.content img[src$=".svg"] {
+    display: block;
+    width: 100%;
+    height: auto;
+    margin: 1.2em auto;
+    border-radius: var(--ics-radius);
+    box-shadow: var(--ics-shadow);
+}

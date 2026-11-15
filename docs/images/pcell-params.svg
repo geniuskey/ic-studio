@@ -1,0 +1,142 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 380" width="800" height="380" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title>An nmos PCell regenerating as its parameters change</title>
+  <style>
+    .df { fill: #2e7d4f; stroke: #4cd08a; stroke-width: 1.5; }
+    .po { fill: #c2413b; stroke: #ff6b62; stroke-width: 1.5; }
+    .ct { fill: #e6e8f2; }
+    .m1 { fill: rgba(47, 111, 176, 0.75); stroke: #5cc0ff; stroke-width: 1.5; }
+    .imp { fill: none; stroke: #8a90b0; stroke-width: 1; stroke-dasharray: 5 4; }
+    .mono { font-family: 'JetBrains Mono', Consolas, Menlo, monospace; font-size: 14px; fill: #e6e8f2; }
+    .chg { fill: #f5b83d; }
+    .pin { font-family: 'JetBrains Mono', Consolas, Menlo, monospace; font-size: 13px; fill: #8a90b0; text-anchor: middle; }
+    .cap { font-size: 13px; fill: #8a90b0; text-anchor: middle; }
+    .sa { animation: sa 12s infinite both; }
+    .sb { animation: sb 12s infinite both; }
+    .sc { animation: sc 12s infinite both; }
+    .flash { animation: flash 4s infinite both; }
+    @keyframes sa { 0%, 30% { opacity: 1; } 33%, 97% { opacity: 0; } 100% { opacity: 1; } }
+    @keyframes sb { 0%, 30% { opacity: 0; } 33%, 63% { opacity: 1; } 66%, 100% { opacity: 0; } }
+    @keyframes sc { 0%, 63% { opacity: 0; } 66%, 97% { opacity: 1; } 100% { opacity: 0; } }
+    @keyframes flash { 0% { opacity: 0.8; } 15%, 88% { opacity: 0; } 94% { opacity: 1; } 100% { opacity: 0.8; } }
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+  </style>
+  <defs>
+    <!-- source/drain strip: metal1 over a contact column, centred on (0,0) -->
+    <g id="sd4">
+      <rect class="m1" x="-16" y="-74" width="32" height="148"/>
+      <rect class="ct" x="-8" y="-68" width="16" height="16"/>
+      <rect class="ct" x="-8" y="-28" width="16" height="16"/>
+      <rect class="ct" x="-8" y="12" width="16" height="16"/>
+      <rect class="ct" x="-8" y="52" width="16" height="16"/>
+    </g>
+    <g id="sd2">
+      <rect class="m1" x="-16" y="-34" width="32" height="68"/>
+      <rect class="ct" x="-8" y="-28" width="16" height="16"/>
+      <rect class="ct" x="-8" y="12" width="16" height="16"/>
+    </g>
+  </defs>
+
+  <rect x="0.5" y="0.5" width="799" height="379" rx="14" fill="#0f1220" stroke="#262c48"/>
+
+  <!-- parameter panel -->
+  <rect x="30" y="30" width="240" height="320" rx="8" fill="#161a2c"/>
+  <text x="50" y="62" fill="#e6e8f2" font-size="15" font-weight="600">nmos</text>
+  <text x="102" y="62" fill="#8a90b0" font-size="13">PCell parameters</text>
+  <g class="mono">
+    <text x="50" y="115">w</text>
+    <text x="50" y="165">l</text>
+    <text x="50" y="215">fingers</text>
+  </g>
+  <g fill="#0f1220" stroke="#3a4066">
+    <rect x="140" y="96" width="112" height="28" rx="5"/>
+    <rect x="140" y="146" width="112" height="28" rx="5"/>
+    <rect x="140" y="196" width="112" height="28" rx="5"/>
+  </g>
+  <rect class="flash" opacity="0" x="140" y="96" width="112" height="128" rx="5" fill="none" stroke="#f5b83d" stroke-width="1.5"/>
+  <line x1="50" y1="248" x2="252" y2="248" stroke="#262c48"/>
+  <text x="50" y="280" fill="#8a90b0" font-size="13">total width</text>
+  <text x="50" y="330" fill="#8a90b0" font-size="12">w is per finger</text>
+
+  <g class="mono sa" opacity="0">
+    <text x="152" y="115">1.0 µm</text>
+    <text x="152" y="165">0.18 µm</text>
+    <text x="152" y="215">1</text>
+    <text x="152" y="280">1.0 µm</text>
+  </g>
+  <g class="mono sb" opacity="0">
+    <text x="152" y="115">1.0 µm</text>
+    <text x="152" y="165">0.18 µm</text>
+    <text class="chg" x="152" y="215">2</text>
+    <text class="chg" x="152" y="280">2.0 µm</text>
+  </g>
+  <g class="mono sc">
+    <text class="chg" x="152" y="115">0.5 µm</text>
+    <text x="152" y="165">0.18 µm</text>
+    <text class="chg" x="152" y="215">4</text>
+    <text x="152" y="280">2.0 µm</text>
+  </g>
+
+  <!-- regenerate arrow -->
+  <path d="M282 190 H328" stroke="#9d90ff" stroke-width="2" fill="none"/>
+  <path d="M328 184 L338 190 L328 196 Z" fill="#9d90ff"/>
+
+  <!-- layout canvas -->
+  <rect x="350" y="30" width="420" height="320" rx="8" fill="#161a2c"/>
+
+  <!-- fingers = 1, w = 1.0 -->
+  <g class="sa" opacity="0">
+    <rect class="imp" x="475" y="115" width="130" height="190"/>
+    <rect class="df" x="490" y="130" width="100" height="160"/>
+    <rect class="po" x="530" y="110" width="20" height="200"/>
+    <rect class="po" x="520" y="80" width="40" height="30"/>
+    <rect class="ct" x="532" y="87" width="16" height="16"/>
+    <use href="#sd4" x="510" y="210"/>
+    <use href="#sd4" x="570" y="210"/>
+    <text class="pin" x="510" y="328">S</text>
+    <text class="pin" x="570" y="328">D</text>
+    <text class="pin" x="540" y="70">G</text>
+    <text class="cap" x="560" y="56">1 finger</text>
+  </g>
+
+  <!-- fingers = 2, w = 1.0: drain shared by both fingers -->
+  <g class="sb" opacity="0">
+    <rect class="imp" x="445" y="115" width="190" height="190"/>
+    <rect class="df" x="460" y="130" width="160" height="160"/>
+    <rect class="po" x="500" y="110" width="20" height="200"/>
+    <rect class="po" x="560" y="110" width="20" height="200"/>
+    <rect class="po" x="500" y="80" width="80" height="30"/>
+    <rect class="ct" x="532" y="87" width="16" height="16"/>
+    <use href="#sd4" x="480" y="210"/>
+    <use href="#sd4" x="540" y="210"/>
+    <use href="#sd4" x="600" y="210"/>
+    <text class="pin" x="480" y="328">S</text>
+    <text class="pin" x="540" y="328">D</text>
+    <text class="pin" x="600" y="328">S</text>
+    <text class="pin" x="540" y="70">G</text>
+    <text class="cap" x="560" y="56">2 fingers, shared drain</text>
+  </g>
+
+  <!-- fingers = 4, w = 0.5: S/D strips shared between neighbours -->
+  <g class="sc">
+    <rect class="imp" x="385" y="155" width="310" height="110"/>
+    <rect class="df" x="400" y="170" width="280" height="80"/>
+    <rect class="po" x="440" y="150" width="20" height="120"/>
+    <rect class="po" x="500" y="150" width="20" height="120"/>
+    <rect class="po" x="560" y="150" width="20" height="120"/>
+    <rect class="po" x="620" y="150" width="20" height="120"/>
+    <rect class="po" x="440" y="120" width="200" height="30"/>
+    <rect class="ct" x="532" y="127" width="16" height="16"/>
+    <use href="#sd2" x="420" y="210"/>
+    <use href="#sd2" x="480" y="210"/>
+    <use href="#sd2" x="540" y="210"/>
+    <use href="#sd2" x="600" y="210"/>
+    <use href="#sd2" x="660" y="210"/>
+    <text class="pin" x="420" y="290">S</text>
+    <text class="pin" x="480" y="290">D</text>
+    <text class="pin" x="540" y="290">S</text>
+    <text class="pin" x="600" y="290">D</text>
+    <text class="pin" x="660" y="290">S</text>
+    <text class="pin" x="540" y="110">G</text>
+    <text class="cap" x="560" y="56">4 fingers, shared S/D</text>
+  </g>
+</svg>

@@ -9,7 +9,7 @@ on Windows, Linux and macOS. Unlike a standalone layout viewer, the schematic, t
 simulator and the layout share one design database: layouts are generated from
 schematics, checked against them (LVS) and their parasitics flow back into simulation.
 
-**[User guide](https://geniuskey.github.io/ic-studio/)** · [Quick tour](https://geniuskey.github.io/ic-studio/quick-tour.html) · [Demo gallery and scripts](https://geniuskey.github.io/ic-studio/demos.html)
+**[User guide](https://geniuskey.github.io/ic-studio/)** · [Quick tour](https://geniuskey.github.io/ic-studio/quick-tour.html) · [Demo gallery and scripts](https://geniuskey.github.io/ic-studio/demos.html) · [한국어 가이드](https://geniuskey.github.io/ic-studio/ko/)
 
 ![Auto place and route of a 28-transistor full adder](docs/screenshots/demo_pnr_routed.png)
 

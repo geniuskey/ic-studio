@@ -16,5 +16,6 @@ site-url = "/ic-studio/"
 default-theme = "navy"
 preferred-dark-theme = "navy"
 additional-css = ["theme/custom.css"]
+additional-js = ["theme/lang.js"]
 smart-punctuation = true
 

@@ -5,6 +5,8 @@ through the Model Context Protocol (stdio). An agent can create and open project
 netlists, simulate, edit layouts, generate and route layout from a schematic, and run DRC,
 extraction and LVS.
 
+![An AI agent calls ics mcp tools, which edit and check the project, and reads the results back](images/mcp-agent.svg)
+
 ## Setup
 
 The [release installer](install.md#install-a-release) registers the server with Claude
@@ -52,15 +54,15 @@ or copy `skills/ic-studio` into `~/.claude/skills/`.
 
 ## Tools
 
-The server has 34 tools:
+The server has 40 tools:
 
 | Tool | Purpose |
 |---|---|
 | `open_project`, `new_project`, `save_project`, `project_info` | Project management; `project_info` lists the technology layers, vias and all cells |
 | `get_netlist` | SPICE deck of a cell |
 | `write_schematic` | Create or replace a cell's schematic from a SPICE netlist; its analysis lines set the simulation setup |
-| `set_simulation` | Change a cell's analyses, backend, temperature, extra lines, parasitics or corner |
-| `simulate` | Run the cell's saved analyses (optional `backend`, `parasitics`); returns a compact summary |
+| `set_simulation` | Change a cell's analyses (`op`, `dc`, `ac`, `tran`, `noise`), backend, temperature, extra lines, parasitics or corner |
+| `simulate` | Run the cell's saved analyses (optional `backend`: `builtin`, `ngspice` or `auto`; `parasitics`); returns a compact summary with the warnings of what the built-in engine approximates |
 | `run_spice` | Simulate a raw SPICE deck |
 | `layout_summary` | Bounding box, shapes per layer, labels and instances |
 | `add_rect`, `add_path`, `add_label` | Draw shapes; a label on a routing layer names the net under it |
@@ -83,6 +85,8 @@ The server has 34 tools:
 | `opc` | Optical proximity correction of a layer: EPE statistics without and with correction, mask area, worst fragments; `apply` writes the mask to `<layer>_opc`, replacing the previous one (the drawn layer is never changed) |
 | `load_pdk` | Replace the technology with a PDK file |
 | `export_gds`, `import_gds` | GDSII / OASIS export and import (import skips layers the technology lacks); both apply the technology's stream layer map |
+| `export_lef`, `import_lef` | Write a cell's LEF abstract (`obs`: `detailed`, `block` or `none`; `class`), or import LEF macros as layout cells of a new library (see [LEF and DEF](layout.md#lef-and-def)) |
+| `export_def`, `import_def` | Write a top cell as DEF (optional `lef_path` for the placed cells' abstracts), or import a DEF as a new top cell |
 | `run_skill` | Run Cadence SKILL code (`code`) or a `.il` file (`file`); returns `output`, `value` and the `modified` cells |
 | `gui_status` | Whether a desktop app is connected, and its project |
 

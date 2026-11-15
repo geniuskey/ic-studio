@@ -6,6 +6,8 @@ runs and CI; `ics mcp` also runs the [MCP server](mcp.md) for AI agents. The
 it with `cargo build --release -p ics-cli` (binary `target/release/ics`) or run it with
 `cargo run -p ics-cli -- <args>`.
 
+![A terminal running ics commands one after another, each answering with JSON](images/cli-pipeline.svg)
+
 - `<CELL>` is `lib/cell` or just the cell name (the first cell with that name is used).
 - Exit code 0 means success. Errors print `error: <message>` to stderr and exit with 1.
 - `ics --help` and `ics <command> --help` describe every option.
@@ -20,11 +22,16 @@ it with `cargo build --release -p ics-cli` (binary `target/release/ics`) or run 
 | `ics info <PROJECT>` | List libraries, cells and views |
 | `ics netlist <PROJECT> <CELL>` | Print the cell's SPICE deck |
 | `ics schematic <PROJECT> <CELL> <NETLIST> [--overwrite]` | Create or replace a cell's schematic from a SPICE netlist file and save |
-| `ics sim <PROJECT> <CELL> [--backend builtin\|ngspice] [--json] [--parasitics]` | Simulate with the cell's saved setup |
-| `ics spice <FILE> [--backend builtin\|ngspice] [--json]` | Simulate a SPICE file with its own analyses |
+| `ics sim <PROJECT> <CELL> [--backend builtin\|ngspice\|auto] [--json] [--parasitics] [--compare [--tol T]]` | Simulate with the cell's saved setup; `--compare` correlates the built-in engine against ngspice |
+| `ics spice <FILE> [--backend builtin\|ngspice\|auto] [--json] [--compare [--tol T]]` | Simulate a SPICE file with its own analyses |
+| `ics mc <PROJECT> <CELL> --measure ANALYSIS:EXPR... [--runs N] [--seed S] [--avt V] [--abeta V] [--vto-sigma V] [--kp-sigma V] [--parasitics] [--json]` | Monte Carlo on the built-in engine with process variation and Pelgrom mismatch |
 | `ics gds <PROJECT> <CELL> -o <FILE>` | Export the cell and every cell it places to GDSII, or to OASIS when `FILE` ends in `.oas` / `.oasis` |
 | `ics gds-info <FILE>` | Print hierarchy statistics and timings of a GDSII or OASIS file |
 | `ics import-gds <PROJECT> <FILE> [--lib NAME] [--skip-unknown-layers] [--json]` | Import a GDSII or OASIS file as a new library |
+| `ics lef export <PROJECT> <CELL>... [-o FILE] [--obs detailed\|block\|none] [--class CLASS]` | Write LEF abstracts of cells with a technology header (stdout without `-o`) |
+| `ics lef import <PROJECT> <FILE> [--lib NAME]` | Import LEF macros as layout cells of a new library and save |
+| `ics def export <PROJECT> <CELL> [-o FILE] [--lef FILE]` | Write a top cell as DEF; `--lef` also writes the placed cells' abstracts |
+| `ics def import <PROJECT> <FILE> [--lib NAME]` | Import a DEF as a new top cell placing the project's cells and save |
 | `ics lib-storage <PROJECT> <LIB> gds\|json` | Change how a library is stored on disk |
 | `ics import-tech <PROJECT> <LYP> [--lyt FILE]` | Replace the technology's layers from a KLayout `.lyp` |
 | `ics load-pdk <PROJECT> <PDK>` | Replace the technology with a PDK file (see Technology) |
@@ -61,9 +68,12 @@ ics schematic myproj ota ota.cir && ics route myproj ota --place && ics lvs mypr
 ### Simulation
 
 `ics sim` uses the analyses, temperature, extra lines and backend saved for the cell in the
-app. `--backend` overrides the backend; `--parasitics` adds layout parasitics (also enabled
-when the saved setup has them on). Without `--json`, it prints each dataset's title and
-point count, operating-point values and device regions, and the vector names of sweeps.
+app. `--backend` overrides the backend (`auto` picks ngspice only when the built-in engine
+would not evaluate the deck as written, see [Backends](simulation.md#auto));
+`--parasitics` adds layout parasitics (also enabled when the saved setup has them on).
+Without `--json`, it prints each dataset's title and point count, operating-point values
+and device regions, and the vector names of sweeps. The backend and any warnings about what
+the built-in engine approximates go to stderr.
 
 With `--json`, the full results go to stdout:
 
@@ -71,6 +81,7 @@ With `--json`, the full results go to stdout:
 {
   "backend": "built-in",
   "elapsed_ms": 3.1,
+  "warnings": [],
   "datasets": [
     { "analysis": "tran", "title": "...", "vectors": { "time": [0, 1e-11], "v(out)": [0, 0.01] } }
   ]
@@ -81,6 +92,24 @@ AC vectors are `{ "re": [...], "im": [...] }`.
 
 `ics spice deck.cir` simulates any SPICE file with the analyses in the file
 (default backend built-in).
+
+`--compare` runs the deck on ngspice (the reference) and on the built-in engine and prints
+the worst disagreement of every vector; it exits with 1 when the largest relative error is
+above `--tol` (default `0.05`). See
+[Built-in engine versus ngspice](simulation.md#built-in-engine-versus-ngspice).
+
+`ics mc` runs the cell's analyses `--runs` times (default 100, reproducible with `--seed`)
+with a global threshold and transconductance shift per polarity (`--vto-sigma` default
+`20m` V, `--kp-sigma` default `0.03`) and per-device mismatch σ(ΔVth) = `avt` / √(W L),
+σ(Δβ/β) = `abeta` / √(W L) (`--avt` default `5n` = 5 mV·µm, `--abeta` default `10n` =
+1 %·µm). Each `--measure` is an analysis and a
+[calculator](tools.md#waveform-calculator) expression with a scalar result; the command
+prints mean, sigma, min and max of each. The same runs from the app's
+[Monte Carlo window](simulation.md#monte-carlo-window).
+
+```sh
+ics mc demo ota5t --runs 200 --measure "op:v(out)" --measure "ac:bandwidth(v(out))"
+```
 
 ### GDS
 
@@ -147,10 +176,12 @@ ics info demo
 ics netlist demo cmos_inverter
 ics sim demo rc_lowpass --json > rc.json
 ics sim demo nand2 --backend ngspice
+ics sim demo cmos_inverter --compare
 ics sim demo ring_osc5 --parasitics
 ics drc demo nand2 && ics lvs demo nand2
 ics extract demo inv_chain
 ics gds demo inv_tiles -o tiles.gds
+ics def export demo inv_chain -o chain.def --lef chain.lef
 ics import-gds demo chip.gds --lib chip
 ics import-tech demo sky130A.lyp --lyt sky130A.lyt
 ics skill demo make_pads.il --json

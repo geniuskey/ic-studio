@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 360" width="800" height="360" role="img" aria-label="Inverter transient: input pulse and inverted output traced by a time cursor, then a propagation delay measurement of 38 ps">
+  <style>
+    text { font-family: Inter, 'Segoe UI', Helvetica, Arial, sans-serif; fill: #8a90b0; font-size: 12px; }
+    .mono { font-family: 'JetBrains Mono', Consolas, Menlo, monospace; }
+    .grid { stroke: #262c48; stroke-width: 1; }
+    .axis { stroke: #3a4066; stroke-width: 1.5; fill: none; }
+    .tin { fill: none; stroke: #5cc0ff; stroke-width: 2.2; stroke-linejoin: round; }
+    .tout { fill: none; stroke: #9d90ff; stroke-width: 2.2; stroke-linejoin: round; }
+    .a { animation-duration: 9s; animation-iteration-count: infinite; animation-fill-mode: both; }
+    .cover { animation-name: sweep; animation-timing-function: linear; }
+    .cursor { opacity: 0; animation-name: cursor; animation-timing-function: linear; }
+    .measure { animation-name: measure; }
+    @keyframes sweep { 0% { transform: translateX(-640px); } 55%, 100% { transform: translateX(0); } }
+    @keyframes cursor {
+      0% { transform: translateX(-640px); opacity: 1; }
+      55% { transform: translateX(0); opacity: 1; }
+      59%, 100% { transform: translateX(0); opacity: 0; }
+    }
+    @keyframes measure { 0%, 58% { opacity: 0; } 64%, 95% { opacity: 1; } 99%, 100% { opacity: 0; } }
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+  </style>
+  <defs>
+    <clipPath id="plot"><rect x="90" y="50" width="640" height="240"/></clipPath>
+  </defs>
+
+  <rect x="0.5" y="0.5" width="799" height="359" rx="14" fill="#0f1220" stroke="#262c48"/>
+  <rect x="24" y="20" width="752" height="324" rx="10" fill="#161a2c"/>
+  <text x="90" y="40">Transient · CMOS inverter</text>
+
+  <!-- legend -->
+  <path class="tin" d="M640 36 H664"/><text x="670" y="40" style="fill:#e6e8f2">in</text>
+  <path class="tout" d="M700 36 H724"/><text x="730" y="40" style="fill:#e6e8f2">out</text>
+
+  <!-- traces, revealed left to right -->
+  <g clip-path="url(#plot)">
+    <path class="grid" d="M90 70 H730 M90 170 H730" stroke-dasharray="3 5"/>
+    <path class="tin" d="M90 270 H218 L243.6 70 H474 L499.6 270 H730"/>
+    <path class="tout" d="M90 70 H234 C246 70 250 140 255 170 S266 268 290 270 H480 C494 270 510 210 516 170 S530 72 560 70 H730"/>
+    <rect class="cover a" x="730" y="50" width="650" height="240" fill="#161a2c"/>
+  </g>
+
+  <!-- grid and axes (drawn above the reveal mask) -->
+  <g class="grid">
+    <path d="M218 50 V290 M346 50 V290 M474 50 V290 M602 50 V290 M730 50 V290"/>
+  </g>
+  <path class="axis" d="M90 50 V290 H730"/>
+  <g text-anchor="middle">
+    <text x="90" y="308">0</text><text x="218" y="308">0.2</text><text x="346" y="308">0.4</text>
+    <text x="474" y="308">0.6</text><text x="602" y="308">0.8</text><text x="730" y="308">1.0</text>
+    <text x="410" y="332" style="fill:#e6e8f2">time (ns)</text>
+  </g>
+  <g text-anchor="end">
+    <text x="82" y="274">0</text><text x="82" y="174">0.9</text><text x="82" y="74">1.8</text>
+  </g>
+  <text x="44" y="174" style="fill:#e6e8f2;font-size:13px">V</text>
+
+  <!-- time cursor -->
+  <g class="cursor a">
+    <path d="M730 50 V290" stroke="#e6e8f2" stroke-width="1.2" stroke-dasharray="4 3"/>
+    <path d="M724 50 H736" stroke="#e6e8f2" stroke-width="1.2"/>
+  </g>
+
+  <!-- delay measurement between the 50% crossings -->
+  <g class="measure a">
+    <path d="M230.8 150 V190 M255.1 150 V190" stroke="#f5b83d" stroke-width="1.2" stroke-dasharray="3 2"/>
+    <path d="M230.8 184 H255.1" stroke="#f5b83d" stroke-width="1.5"/>
+    <path d="M235 180 L230.8 184 L235 188 M250.9 180 L255.1 184 L250.9 188" stroke="#f5b83d" stroke-width="1.5" fill="none"/>
+    <circle cx="230.8" cy="170" r="3.5" fill="#5cc0ff"/>
+    <circle cx="255.1" cy="170" r="3.5" fill="#9d90ff"/>
+    <path d="M258 184 L296 210 H310" stroke="#f5b83d" stroke-width="1" fill="none"/>
+    <rect x="312" y="198" width="112" height="24" rx="5" fill="#2a2414" stroke="#f5b83d"/>
+    <text class="mono" x="368" y="215" text-anchor="middle" style="fill:#f5b83d;font-size:13px">tpd = 38 ps</text>
+    <text x="96" y="164">50%</text>
+  </g>
+</svg>

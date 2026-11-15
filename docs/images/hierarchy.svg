@@ -1,0 +1,143 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 380" width="800" height="380" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title>Project structure and layout hierarchy</title>
+  <style>
+    .nm { fill: #e6e8f2; font-family: 'JetBrains Mono', Consolas, Menlo, monospace; font-size: 13px; }
+    .kd { fill: #8a90b0; font-size: 12px; }
+    .tl { fill: none; stroke: #3a4066; stroke-width: 1.5; }
+    .fold { fill: #9d90ff; opacity: 0.85; }
+    .cellic { fill: none; stroke: #5cc0ff; stroke-width: 1.5; }
+    .nw { fill: #3a3f22; stroke: #a8b84a; stroke-width: 1; }
+    .df { fill: #2e7d4f; stroke: #4cd08a; stroke-width: 1; }
+    .po { fill: #c2413b; stroke: #ff6b62; stroke-width: 1; }
+    .m1 { fill: rgba(47, 111, 176, 0.75); stroke: #5cc0ff; stroke-width: 1; }
+    .a1 { animation: a1 10s infinite both; }
+    .a2 { animation: a2 10s infinite both; }
+    .a3 { animation: a3 10s infinite both; }
+    .a4 { animation: a4 10s infinite both; }
+    @keyframes a1 { 0%, 37% { opacity: 0; } 40%, 95% { opacity: 1; } 100% { opacity: 0; } }
+    @keyframes a2 { 0%, 41% { opacity: 0; } 45%, 95% { opacity: 1; } 100% { opacity: 0; } }
+    @keyframes a3 { 0%, 45% { opacity: 0; } 49%, 95% { opacity: 1; } 100% { opacity: 0; } }
+    @keyframes a4 { 0%, 80% { opacity: 0; } 84%, 95% { opacity: 1; } 100% { opacity: 0; } }
+    @keyframes r0 { 0%, 2% { opacity: 0; transform: translate(-12px, 0); } 5%, 95% { opacity: 1; transform: translate(0, 0); } 100% { opacity: 0; transform: translate(0, 0); } }
+    .r0 { animation: r0 10s infinite both; }
+    @keyframes r1 { 0%, 6% { opacity: 0; transform: translate(-12px, 0); } 9%, 95% { opacity: 1; transform: translate(0, 0); } 100% { opacity: 0; transform: translate(0, 0); } }
+    .r1 { animation: r1 10s infinite both; }
+    @keyframes r2 { 0%, 10% { opacity: 0; transform: translate(-12px, 0); } 13%, 95% { opacity: 1; transform: translate(0, 0); } 100% { opacity: 0; transform: translate(0, 0); } }
+    .r2 { animation: r2 10s infinite both; }
+    @keyframes r3 { 0%, 14% { opacity: 0; transform: translate(-12px, 0); } 17%, 95% { opacity: 1; transform: translate(0, 0); } 100% { opacity: 0; transform: translate(0, 0); } }
+    .r3 { animation: r3 10s infinite both; }
+    @keyframes r4 { 0%, 18% { opacity: 0; transform: translate(-12px, 0); } 21%, 95% { opacity: 1; transform: translate(0, 0); } 100% { opacity: 0; transform: translate(0, 0); } }
+    .r4 { animation: r4 10s infinite both; }
+    @keyframes r5 { 0%, 22% { opacity: 0; transform: translate(-12px, 0); } 25%, 95% { opacity: 1; transform: translate(0, 0); } 100% { opacity: 0; transform: translate(0, 0); } }
+    .r5 { animation: r5 10s infinite both; }
+    @keyframes r6 { 0%, 26% { opacity: 0; transform: translate(-12px, 0); } 29%, 95% { opacity: 1; transform: translate(0, 0); } 100% { opacity: 0; transform: translate(0, 0); } }
+    .r6 { animation: r6 10s infinite both; }
+    @keyframes r7 { 0%, 30% { opacity: 0; transform: translate(-12px, 0); } 33%, 95% { opacity: 1; transform: translate(0, 0); } 100% { opacity: 0; transform: translate(0, 0); } }
+    .r7 { animation: r7 10s infinite both; }
+    @keyframes i0 { 0%, 50% { opacity: 0; transform: translate(-5px, -160px); } 51% { opacity: 1; transform: translate(-5px, -160px); } 55%, 95% { opacity: 1; transform: translate(0, 0); } 100% { opacity: 0; transform: translate(0, 0); } }
+    .i0 { animation: i0 10s infinite both; }
+    @keyframes i1 { 0%, 56% { opacity: 0; transform: translate(-67px, -160px); } 57% { opacity: 1; transform: translate(-67px, -160px); } 61%, 95% { opacity: 1; transform: translate(0, 0); } 100% { opacity: 0; transform: translate(0, 0); } }
+    .i1 { animation: i1 10s infinite both; }
+    @keyframes i2 { 0%, 62% { opacity: 0; transform: translate(-129px, -160px); } 63% { opacity: 1; transform: translate(-129px, -160px); } 67%, 95% { opacity: 1; transform: translate(0, 0); } 100% { opacity: 0; transform: translate(0, 0); } }
+    .i2 { animation: i2 10s infinite both; }
+    @keyframes i3 { 0%, 68% { opacity: 0; transform: translate(-191px, -160px); } 69% { opacity: 1; transform: translate(-191px, -160px); } 73%, 95% { opacity: 1; transform: translate(0, 0); } 100% { opacity: 0; transform: translate(0, 0); } }
+    .i3 { animation: i3 10s infinite both; }
+    @keyframes i4 { 0%, 74% { opacity: 0; transform: translate(-253px, -160px); } 75% { opacity: 1; transform: translate(-253px, -160px); } 79%, 95% { opacity: 1; transform: translate(0, 0); } 100% { opacity: 0; transform: translate(0, 0); } }
+    .i4 { animation: i4 10s infinite both; }
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+  </style>
+  <defs>
+    <!-- cmos_inverter layout, 56 x 80 -->
+    <g id="inv">
+      <rect x="0" y="0" width="56" height="80" fill="#0f1220" stroke="#8a90b0" stroke-dasharray="2 2"/>
+      <rect class="nw" x="2" y="2" width="52" height="36"/>
+      <rect class="df" x="10" y="14" width="36" height="16"/>
+      <rect class="df" x="10" y="48" width="36" height="14"/>
+      <rect class="po" x="25" y="10" width="6" height="58"/>
+      <rect class="m1" x="2" y="2" width="52" height="7"/>
+      <rect class="m1" x="2" y="71" width="52" height="7"/>
+      <rect class="m1" x="12" y="5" width="6" height="22"/>
+      <rect class="m1" x="12" y="52" width="6" height="22"/>
+      <rect class="m1" x="38" y="18" width="6" height="42"/>
+    </g>
+  </defs>
+
+  <rect x="0.5" y="0.5" width="799" height="379" rx="14" fill="#0f1220" stroke="#262c48"/>
+
+  <!-- project tree -->
+  <rect x="20" y="30" width="390" height="320" rx="8" fill="#161a2c"/>
+  <text class="kd" x="40" y="60">Explorer</text>
+  <rect class="a1" x="96" y="235" width="300" height="24" rx="5" fill="#262c48" stroke="#9d90ff" stroke-width="1.5"/>
+  <g class="r0">
+    <path class="fold" d="M44 82 h5 l2 2 h7 v9 h-14 Z"/>
+    <text class="nm" x="64" y="92">myproj</text>
+    <text class="kd" x="390" y="92" text-anchor="end">Project</text>
+  </g>
+  <g class="r1">
+    <path class="tl" d="M51 100 V119 H64"/>
+    <path class="fold" d="M68 114 h5 l2 2 h7 v9 h-14 Z"/>
+    <text class="nm" x="88" y="124">work</text>
+    <text class="kd" x="390" y="124" text-anchor="end">Library</text>
+  </g>
+  <g class="r2">
+    <path class="tl" d="M75 132 V151 H88"/>
+    <rect class="cellic" x="92" y="146" width="12" height="12" rx="2"/>
+    <text class="nm" x="112" y="156">cmos_inverter</text>
+    <text class="kd" x="390" y="156" text-anchor="end">Cell</text>
+  </g>
+  <g class="r3">
+    <path class="tl" d="M99 164 V183 H112"/>
+    <circle cx="122" cy="184" r="4" fill="#5cc0ff"/>
+    <text class="nm" x="136" y="188">schematic</text>
+    <text class="kd" x="390" y="188" text-anchor="end">View</text>
+  </g>
+  <g class="r4">
+    <path class="tl" d="M99 164 V215 H112"/>
+    <circle cx="122" cy="216" r="4" fill="#f5b83d"/>
+    <text class="nm" x="136" y="220">simulation</text>
+    <text class="kd" x="390" y="220" text-anchor="end">View</text>
+  </g>
+  <g class="r5">
+    <path class="tl" d="M99 164 V247 H112"/>
+    <circle cx="122" cy="248" r="4" fill="#4cd08a"/>
+    <text class="nm" x="136" y="252">layout</text>
+    <text class="kd" x="390" y="252" text-anchor="end">View</text>
+  </g>
+  <g class="r6">
+    <path class="tl" d="M75 132 V279 H88"/>
+    <rect class="cellic" x="92" y="274" width="12" height="12" rx="2"/>
+    <text class="nm" x="112" y="284">ring_osc</text>
+    <text class="kd" x="390" y="284" text-anchor="end">Cell</text>
+  </g>
+  <g class="r7">
+    <path class="tl" d="M51 100 V311 H64"/>
+    <path class="fold" d="M68 306 h5 l2 2 h7 v9 h-14 Z"/>
+    <text class="nm" x="88" y="316">imported</text>
+    <text class="kd" x="390" y="316" text-anchor="end">Library</text>
+  </g>
+
+  <!-- layout hierarchy -->
+  <rect x="430" y="30" width="350" height="320" rx="8" fill="#161a2c"/>
+  <text class="kd" x="450" y="60">layout hierarchy</text>
+  <g class="a1">
+    <use href="#inv" x="450" y="80"/>
+    <text class="nm" x="520" y="112">cmos_inverter</text>
+    <text class="kd" x="520" y="132">sub-cell</text>
+  </g>
+  <g class="a2">
+    <rect x="445" y="200" width="320" height="142" rx="4" fill="none" stroke="#9d90ff" stroke-dasharray="5 4"/>
+    <text class="nm" x="455" y="224">ring_osc</text>
+    <text class="kd" x="530" y="224">top cell</text>
+  </g>
+  <g transform="translate(455 240)"><g class="i0"><use href="#inv"/></g></g>
+  <text class="kd a3" x="483" y="336" text-anchor="middle">I0</text>
+  <g transform="translate(517 240)"><g class="i1"><use href="#inv"/></g></g>
+  <text class="kd a3" x="545" y="336" text-anchor="middle">I1</text>
+  <g transform="translate(579 240)"><g class="i2"><use href="#inv"/></g></g>
+  <text class="kd a3" x="607" y="336" text-anchor="middle">I2</text>
+  <g transform="translate(641 240)"><g class="i3"><use href="#inv"/></g></g>
+  <text class="kd a3" x="669" y="336" text-anchor="middle">I3</text>
+  <g transform="translate(703 240)"><g class="i4"><use href="#inv"/></g></g>
+  <text class="kd a3" x="731" y="336" text-anchor="middle">I4</text>
+  <text class="kd a4" x="760" y="224" text-anchor="end">array 1 x 5</text>
+</svg>

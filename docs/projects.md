@@ -1,5 +1,7 @@
 # Projects, libraries and cells
 
+![A project holds libraries, a library holds cells, and each cell has schematic, simulation and layout views](images/hierarchy.svg)
+
 ## The window
 
 ![Project home](screenshots/02_project_home.png)
@@ -14,15 +16,21 @@
   (schematic checker findings) and **Netlist** (the SPICE netlist of the active cell).
 - **Menus**: File, Edit, View, Simulation, Verify, **Tools** (design copilot, optimizer,
   calculator, sweeps, results and browsers, generators, DRC rule designer, stream layer
-  map, dummy fill, SKILL; see [Tools](tools.md)) and Help (user guide, shortcuts, check for
-  updates). In the Layout workspace the Create and Options menus are added.
+  map, dummy fill, SKILL; see [Tools](tools.md)) and Help (interactive tutorial, user
+  guide, shortcuts, check for updates). In the Layout workspace the Create and Options
+  menus are added.
+- **Tool windows** open docked inside the main window. The pop-out button left of a
+  window's close button moves it into its own OS window, and **Dock** brings it back; the
+  choice is remembered per tool.
 - **Status bar**: workspace, zoom, selection, technology name, ngspice status and, while
   an agent is connected, "MCP live".
 
 ## Creating and opening projects
 
-The welcome page (shown when no project is open) has three cards: **Open demo project**,
-**New project...** and **Open project...**, plus a list of recent projects.
+The welcome page (shown when no project is open) has four cards: **Take the tutorial**
+(see [Quick tour](quick-tour.md)), **Open demo project**, **New project...** and
+**Open project...**, then a card per [example project](demos.md#example-projects) topic
+and a list of recent projects.
 
 - **File > New Project...**: enter a name (letters, digits, `_` and `-`) and a parent
   folder. The project is created in `<folder>/<name>` with the generic 180 nm technology.
@@ -86,7 +94,10 @@ with a `library.json`), so large imports stay compact.
 | Export the active cell's SPICE netlist | **File > Export > SPICE netlist...** |
 | Export the active cell and everything it places to GDSII / OASIS | **File > Export > Cell GDSII...** / **Cell OASIS...** |
 | Export every layout in the project to one GDSII / OASIS file | **File > Export > Library GDSII...** / **Library OASIS...** |
+| Import LEF macros / a DEF placement | **File > Import > LEF abstracts...** / **DEF placement...** |
+| Export the active cell's LEF abstract / DEF | **File > Export > Cell LEF abstract...** / **Cell DEF...** |
 
 GDS / OASIS import keeps the hierarchy. Layers that are not in the technology are added to it
 (and reported in the console). After import, the top cell opens in the Layout workspace.
-See [Technology](technology.md) for `.lyp` and PDK import.
+See [Technology](technology.md) for `.lyp` and PDK import, and
+[LEF and DEF](layout.md#lef-and-def) for abstracts and placements.

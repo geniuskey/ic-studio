@@ -7,6 +7,8 @@ shows the connections still to be made as flylines, and routes them.
 
 ## Step by step
 
+![Schematic devices become PCells in the layout with flylines, which are then routed](images/sdl-flow.svg)
+
 1. Draw and simulate the schematic. Give the external nets labels (`in`, `out`, ...);
    use the Ground and Supply symbols for the rails.
 2. With the cell active, choose **Verify > Generate Layout from Schematic**. The cell gets
@@ -78,6 +80,8 @@ name, for every schematic connection that is not yet made in the layout. They up
 every edit, so you can route by hand and watch them disappear.
 
 ## Router
+
+![The maze router's wavefront expanding to a target, then a blocking net ripped up and rerouted](images/place-and-route.svg)
 
 **Route Flylines** runs a maze router (A* search) over the routing metal layers above
 poly (metal1, metal2 and metal3 in the generic technology):
