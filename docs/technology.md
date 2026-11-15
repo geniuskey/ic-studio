@@ -289,3 +289,27 @@ routing with that technology.
 Existing layouts are kept: shapes move to the new layer with the same GDS layer /
 datatype (or the same name), layers in use that the file lacks are kept, and coordinates
 are rescaled if the database unit changes.
+
+
+## Importing a Virtuoso technology file
+
+A Cadence Virtuoso ASCII technology file (`.tf`, dumped with **Tools > Technology File
+Manager > Dump**) imports with its display resource file and stream layer map:
+
+```sh
+ics import-tech myproj mytech.tf --drf display.drf --layermap mytech.layermap
+```
+
+- Layers: each `techLayerPurposePriorities` entry whose layer is in `techLayers`; the
+  `drawing` purpose keeps the layer name, other purposes become `layer.purpose`.
+- Units: database units per micron from `viewTypeUnits` (`maskLayout`), the grid from
+  `mfgGridResolution`.
+- Rules: single-layer `minWidth`, `minSpacing` and `minArea` from the `foundry` constraint
+  group (or `physicalRules`), for drawing purposes.
+- Display: each layer-purpose's `techDisplays` packet in the `.drf` gives the fill colour,
+  and its stipple bitmap the nearest fill style (solid, hatch, cross, dots, outline).
+- Stream numbers: from the layer map, which also becomes the technology's stream map;
+  without one, the layer number with datatype 0 for `drawing` (reported as a guess).
+
+Vias, devices, two-layer rules and the rest of the rule set are not read; add them in a
+[PDK file](#pdk-files).

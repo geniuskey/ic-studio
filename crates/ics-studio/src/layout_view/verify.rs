@@ -262,6 +262,12 @@ impl LayoutEditor {
         Some(self.install_verified(v, generation))
     }
 
+    /// Show sign-off results read from a file (a run made elsewhere); returns a one-line summary.
+    pub fn show_signoff(&mut self, rep: SignoffReport) -> String {
+        let generation = self.verify.generation;
+        self.install_verified(Verified::Signoff(Ok(rep)), generation)
+    }
+
     /// Show results computed for layout `generation`; returns a one-line summary.
     pub fn install_verified(&mut self, v: Verified, generation: u64) -> String {
         let msg = match v {

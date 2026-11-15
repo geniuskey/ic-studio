@@ -35,11 +35,12 @@ it with `cargo build --release -p ics-cli` (binary `target/release/ics`) or run 
 | `ics def export <PROJECT> <CELL> [-o FILE] [--lef FILE]` | Write a top cell as DEF; `--lef` also writes the placed cells' abstracts |
 | `ics def import <PROJECT> <FILE> [--lib NAME]` | Import a DEF as a new top cell placing the project's cells and save |
 | `ics lib-storage <PROJECT> <LIB> gds\|json` | Change how a library is stored on disk |
-| `ics import-tech <PROJECT> <LYP> [--lyt FILE]` | Replace the technology's layers from a KLayout `.lyp` |
+| `ics import-tech <PROJECT> <FILE> [--lyt FILE] [--drf FILE] [--layermap FILE]` | Replace the technology from a KLayout `.lyp` or a Virtuoso `.tf` (with its `display.drf` and layer map) |
 | `ics load-pdk <PROJECT> <PDK>` | Replace the technology with a PDK file (see Technology) |
 | `ics drc <PROJECT> <CELL> [--deck FILE] [--fix]` | Run DRC (the deck may be SVRF); exit 1 on violations |
 | `ics extract <PROJECT> <CELL>` | Print the extracted netlist as SPICE |
 | `ics lvs <PROJECT> <CELL>` | Compare layout and schematic; exit 1 on differences |
+| `ics results <PROJECT> <CELL> <FILE>` | Show sign-off results made elsewhere (Calibre, KLayout, netgen); exit 1 on violations or a mismatch |
 | `ics emir <PROJECT> <CELL> --net NET [--currents FILE] [--json]` | IR drop and electromigration of a net from its labelled pins; currents per layout device (JSON) or from the schematic's operating point; exit 1 on EM violations |
 | `ics opc <PROJECT> <CELL> --layer LAYER [--apply] [--sigma UM] [--threshold T] [--fragment UM] [--max-out UM] [--max-in UM] [--iterations N] [--gain G] [--json]` | Optical proximity correction of a layer: EPE without and with correction; `--apply` writes the mask to `<LAYER>_opc` (replacing the previous mask; the drawn layer is never changed) and saves |
 | `ics signoff <PROJECT> <CELL> [RUNSET]` | Run an external KLayout / Calibre / netgen runset (list them without RUNSET); exit 1 on violations or a mismatch |

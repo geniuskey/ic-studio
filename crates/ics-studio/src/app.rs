@@ -149,6 +149,9 @@ pub enum Command {
     /// Run an external sign-off runset of the technology on the active cell: the one named
     /// (or uniquely matched), else the one selected in the Sign-off section.
     RunSignoff(Option<String>),
+    /// Show the results of a sign-off run made elsewhere (KLayout `.lyrdb` / `.lvsdb`, Calibre
+    /// results database or LVS report, netgen report) on the active cell; `None` asks for the file.
+    ImportSignoffResults(Option<PathBuf>),
     GenerateLayout,
     RouteFlylines,
     /// Import a GDSII or OASIS file (detected from its contents); `None` asks for the file.
@@ -993,6 +996,7 @@ impl IcStudio {
             },
             Command::ApplyOpc => self.apply_opc(),
             Command::RunSignoff(name) => self.run_signoff(ctx, name.as_deref()),
+            Command::ImportSignoffResults(path) => self.import_signoff_results(path),
             Command::GenerateLayout => self.generate_layout(),
             Command::RouteFlylines => self.route_flylines(),
             Command::ExportGds => self.export_stream(false, StreamFormat::Gds),
@@ -1276,6 +1280,30 @@ impl IcStudio {
         }
         self.workspace = Workspace::Layout;
         self.info(msg);
+    }
+
+    fn import_signoff_results(&mut self, path: Option<PathBuf>) {
+        let (Some(r), Some(p)) = (self.active.clone(), self.project.as_ref()) else {
+            self.warn("Open a layout to show sign-off results on".into());
+            return;
+        };
+        let Some(path) =
+            path.or_else(|| rfd::FileDialog::new().set_title("Sign-off results (Calibre, KLayout, netgen)").pick_file())
+        else {
+            return;
+        };
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) => return self.warn(format!("{}: {e}", path.display())),
+        };
+        match ics_core::signoff::import_results(&path, &text, p.tech.dbu_per_um, &r.cell) {
+            Ok(rep) => {
+                let msg = self.lay_eds.entry(r).or_default().show_signoff(rep);
+                self.workspace = Workspace::Layout;
+                self.info(msg);
+            }
+            Err(e) => self.warn(e),
+        }
     }
 
     fn run_signoff(&mut self, ctx: &egui::Context, name: Option<&str>) {
@@ -2021,6 +2049,9 @@ impl IcStudio {
                 }
                 if ui.button("Run Sign-off Runset").clicked() {
                     q.push(Command::RunSignoff(None));
+                }
+                if ui.button("Import Sign-off Results...").clicked() {
+                    q.push(Command::ImportSignoffResults(None));
                 }
                 ui.separator();
                 if ui.button("Generate Layout from Schematic").clicked() {
@@ -3004,6 +3035,7 @@ impl IcStudio {
             ("Matched placement (common centroid / interdigitated)".into(), "", Command::MatchedPlacement),
             ("Run corner / parametric sweep".into(), "", Command::RunSweep),
             ("Run sign-off runset (KLayout / Calibre / netgen)".into(), "", Command::RunSignoff(None)),
+            ("Import sign-off results (Calibre / KLayout / netgen)".into(), "", Command::ImportSignoffResults(None)),
             ("Generate layout from schematic".into(), "", Command::GenerateLayout),
             ("Route flylines".into(), "", Command::RouteFlylines),
             ("Export cell GDSII…".into(), "", Command::ExportGds),

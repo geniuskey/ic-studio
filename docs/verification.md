@@ -219,6 +219,17 @@ array in `tech.json`:
 ]
 ```
 
+### Results of runs made elsewhere
+
+DRC and LVS often run on a compute farm. Their results show on the cell like a local run:
+
+- GUI: **Import Sign-off Results...** in the Sign-off section (or the command palette)
+- CLI: `ics results <project> <cell> <file>`, non-zero exit on violations or an LVS mismatch
+
+The format is recognised from the file: a Calibre ASCII DRC results database, a Calibre LVS
+report, a KLayout report database (`.lyrdb`) or LVS database (`.lvsdb`), or a netgen
+report. DRC markers are placed in the cell's coordinates.
+
 ## From the command line
 
 ```sh

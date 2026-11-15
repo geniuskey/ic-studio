@@ -89,6 +89,18 @@ fn suite() -> Vec<(&'static str, String, f64)> {
             1e-3,
         ),
         (
+            "dspf_post_layout",
+            format!(
+                "* DSPF from parasitic extraction\n*|DSPF 1.3\n*|PROGRAM \"Calibre xRC\"\n*|DIVIDER /\n*|DELIMITER :\n.SUBCKT inv VDD VSS A Y\n*|GROUND_NET VSS\n\
+                 *|NET Y 1.6e-15PF\n*|P (Y B 0 1.0 2.0)\n*|I (MN:d MN d B 0 1.0 1.5)\nR1 Y Y:1 12.5\nR2 Y:1 MN:d 8.0\nR3 Y:1 MP:d 8.0\n\
+                 C1 Y VSS 0.5e-15\nC2 Y:1 VSS 0.3e-15\n*|NET A 1.1e-15PF\nR4 A MN:g 30\nR5 A MP:g 30\nC5 A VSS 0.4e-15\nCc1 A Y 0.1e-15\n\
+                 *Instance Section\nMN MN:d MN:g VSS VSS n45 L=0.1u W=1u AD=0.1p AS=0.1p PD=1.2u PS=1.2u\n\
+                 MP MP:d MP:g VDD VDD p45 L=0.1u W=2u AD=0.2p AS=0.2p PD=2.2u PS=2.2u\n.ENDS\n{b4}VDD vdd 0 1.8\nVIN in 0 PULSE(0 1.8 0.1n 20p 20p 0.5n 1n)\n\
+                 X1 vdd 0 in out inv\nCL out 0 2f\n.tran 1p 2n\n.end\n"
+            ),
+            0.06,
+        ),
+        (
             "bsim4_cs_ac",
             format!(
                 "* bsim4 cs\nVDD vdd 0 1.8\nVIN in 0 DC 1.1 AC 1\nRD vdd out 2k\nM1 out in 0 0 n45 w=2u l=0.1u nf=2 ad=0.2p as=0.2p pd=2.4u ps=2.4u\n\

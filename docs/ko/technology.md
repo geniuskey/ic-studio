@@ -274,3 +274,25 @@ IC Studio는 KLayout 레이어 속성(`.lyp`)과, 선택적으로 KLayout 테크
 기존 레이아웃은 유지됩니다. 도형은 같은 GDS layer / datatype(또는 같은 이름)을 가진 새 레이어로
 옮겨지고, 파일에 없지만 사용 중인 레이어는 유지되며, 데이터베이스 단위가 바뀌면 좌표가 다시
 스케일됩니다.
+
+
+## Virtuoso 테크놀로지 파일 가져오기
+
+Cadence Virtuoso ASCII 테크놀로지 파일(`.tf`, **Tools > Technology File Manager > Dump**로 생성)을
+디스플레이 리소스 파일과 스트림 레이어 맵과 함께 가져올 수 있습니다.
+
+```sh
+ics import-tech myproj mytech.tf --drf display.drf --layermap mytech.layermap
+```
+
+- 레이어: `techLayers`에 있는 레이어의 `techLayerPurposePriorities` 항목마다 하나. `drawing`
+  퍼포스는 레이어 이름 그대로, 다른 퍼포스는 `layer.purpose`가 됩니다.
+- 단위: µm당 데이터베이스 단위는 `viewTypeUnits`(`maskLayout`), 그리드는 `mfgGridResolution`.
+- 룰: drawing 퍼포스의 단일 레이어 `minWidth`, `minSpacing`, `minArea`(`foundry` 제약 그룹 또는
+  `physicalRules`).
+- 표시: `.drf`에서 레이어-퍼포스의 `techDisplays` 패킷이 채움 색을, 그 스티플 비트맵이 가장 가까운
+  채움 스타일(solid, hatch, cross, dots, outline)을 정합니다.
+- 스트림 번호: 레이어 맵에서 가져오며 맵은 테크놀로지의 스트림 맵이 됩니다. 맵이 없으면 레이어
+  번호와 `drawing`의 datatype 0을 쓰고 추정임을 알립니다.
+
+비아, 소자, 두 레이어 간 룰과 나머지 룰 세트는 읽지 않습니다. [PDK 파일](#pdk-파일)에 추가하세요.

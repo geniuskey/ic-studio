@@ -580,6 +580,48 @@ pub fn parse_lyrdb(text: &str, dbu_per_um: i64, top: &str) -> Result<DrcReport, 
     Ok(rep)
 }
 
+/// Results of a sign-off run made elsewhere (a cluster, another tool's flow), read from the
+/// file `path` holding `text`: a KLayout report database (`.lyrdb`) or LVS database (`.lvsdb`),
+/// a Calibre ASCII DRC results database or LVS report, or a netgen report. Markers are in
+/// `top`'s dbu at `dbu_per_um`.
+pub fn import_results(path: &Path, text: &str, dbu_per_um: i64, top: &str) -> Result<SignoffReport, String> {
+    let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    let head = text.trim_start();
+    let lower = text.to_ascii_lowercase();
+    let first: Vec<&str> = head.lines().next().unwrap_or("").split_whitespace().collect();
+    let (tool, drc, lvs) = if ext == "lyrdb" || head.starts_with("<?xml") || head.starts_with("<report-database") {
+        (Tool::Klayout, Some(parse_lyrdb(text, dbu_per_um, top)?), None)
+    } else if ext == "lvsdb" || head.starts_with("#%lvsdb") {
+        (Tool::Klayout, None, Some(parse_lvsdb(text, top)))
+    } else if lower.contains("netgen") || lower.contains("circuits match") || lower.contains("netlists match") {
+        (Tool::Netgen, None, Some(parse_netgen(text)))
+    } else if lower.contains("lvs report") || lower.contains("comparison results") {
+        (Tool::Calibre, None, Some(parse_calibre_lvs(text)))
+    } else if first.len() == 2 && first[1].parse::<f64>().is_ok() {
+        (Tool::Calibre, Some(parse_calibre_rdb(text, dbu_per_um)?), None)
+    } else {
+        return Err(format!(
+            "{}: not a recognised results file (KLayout .lyrdb / .lvsdb, Calibre results database or LVS report, netgen report)",
+            path.display()
+        ));
+    };
+    let check = if drc.is_some() { Check::Drc } else { Check::Lvs };
+    Ok(SignoffReport {
+        runset: format!(
+            "imported {}",
+            path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().to_string())
+        ),
+        tool,
+        check,
+        drc,
+        lvs,
+        log: String::new(),
+        dir: path.parent().map(Path::to_path_buf).unwrap_or_default(),
+        notes: vec![],
+        millis: 0.0,
+    })
+}
+
 /// Violations of a Calibre ASCII results database.
 pub fn parse_calibre_rdb(text: &str, dbu_per_um: i64) -> Result<DrcReport, String> {
     let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
@@ -760,6 +802,21 @@ mod tests {
   <item><category>'M1.W'</category><cell>inv</cell><values><value>text: ('x',r0 1,2)</value></values></item>
  </items>
 </report-database>"#;
+
+    #[test]
+    fn imports_results_by_format() {
+        let rdb = "inv 1000\nM1.S.1\n1 1 2 Jan 1 00:00:00 2026\nMetal1 spacing < 0.1\nmore\np 1 4\n0 0\n100 0\n100 50\n0 50\n";
+        let r = import_results(Path::new("/x/inv.drc.results"), rdb, 1000, "inv").unwrap();
+        assert_eq!((r.tool, r.check, r.drc.as_ref().map(|d| d.violations.len())), (Tool::Calibre, Check::Drc, Some(1)));
+        assert!(r.summary().contains("imported inv.drc.results"), "{}", r.summary());
+        let lvs = "                   LVS REPORT\n   OVERALL COMPARISON RESULTS\n      #       ###################\n             #       #   CORRECT   #\n";
+        let r = import_results(Path::new("lvs.rep"), lvs, 1000, "inv").unwrap();
+        assert_eq!((r.tool, r.check), (Tool::Calibre, Check::Lvs));
+        assert_eq!(r.lvs.unwrap().matched, Some(true));
+        let r = import_results(Path::new("n.out"), "Netlists match uniquely.\nCircuits match uniquely.\n", 1000, "inv").unwrap();
+        assert_eq!((r.tool, r.lvs.unwrap().matched), (Tool::Netgen, Some(true)));
+        assert!(import_results(Path::new("x.txt"), "hello world again\n", 1000, "inv").is_err());
+    }
 
     #[test]
     fn klayout_report_database() {

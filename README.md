@@ -174,8 +174,9 @@ Linux needs the usual windowing libraries:
 - `tech.json` with layers, GDS numbers, colours, fill patterns, width / spacing, vias,
   capacitance coefficients, sheet / via resistance and the DRC deck. A generic 180 nm-class demo technology is
   included.
-- Import KLayout layer properties (`.lyp`, plus `.lyt` for the database unit) to use a
-  real PDK's layer set, such as SKY130 or GF180
+- Import KLayout layer properties (`.lyp`, plus `.lyt` for the database unit) or a Cadence
+  Virtuoso technology file (`.tf` with `display.drf` and the layer map) to use a real PDK's
+  layer set, such as SKY130 or GF180
 - PDK files (`pdks/sky130A.toml`, `pdks/ihp-sg13g2.toml`): layers, vias, device recognition,
   SPICE model library and corners in one TOML file; extraction, LVS, netlists and PCells
   follow the PDK
@@ -344,7 +345,9 @@ fit for production use, including the optics of image sensors.
 1. **Trust**: PDK-grade simulation. Done: a SPICE front-end for libraries, parameters,
    subcircuits and model binning; BSIM4 currents, charges, junctions, noise and leakage;
    Spectre decks and model libraries; Spectre and CDL netlist output.
-2. **Fit into existing flows**: Calibre results (RVE / SVDB), OpenAccess / Virtuoso data.
+2. **Fit into existing flows**: Done: Virtuoso technology files (`.tf`, `display.drf`, layer
+   map), sign-off results from runs made elsewhere (Calibre, KLayout, netgen), DSPF
+   post-layout netlists, Spectre / CDL netlists. Next: OpenAccess / Virtuoso design data.
 3. **Image sensor pixels**: a pixel stack (microlens, colour filter, dielectrics, metal,
    silicon) with thin-film and ray optics, later RCWA / FDTD; QE, crosstalk and chief-ray
    angle; photocurrent into the pixel circuit simulation, metal layers from the layout.

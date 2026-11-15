@@ -173,6 +173,13 @@ Coupling to a layout net with no schematic counterpart is lumped to ground. The 
 shows a one-line summary. For a useful result, the layout should be LVS clean (see
 [Verification](verification.md)). From the command line: `ics sim <project> <cell> --parasitics`.
 
+### Netlists from a parasitic extractor
+
+DSPF netlists from Calibre xRC, StarRC or Quantus simulate as they are: `.include` the file
+in a testbench and instantiate its `.SUBCKT` (`X1 vdd 0 in out inv`). The `*|` lines are
+comments, node names like `MN:d` or `Y:1` are kept, and the parasitic nodes can be plotted
+as `v(x1.mn:d)`. Relative `.include` paths work with ngspice too.
+
 ## Backends
 
 ### Built-in engine

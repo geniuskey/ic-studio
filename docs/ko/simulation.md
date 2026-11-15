@@ -169,6 +169,13 @@ ngspice 경로는 **Settings**에서 지정합니다([설치](install.md#ngspice
 ([검증](verification.md) 참고). 명령줄에서는 `ics sim <project> <cell> --parasitics`를
 사용합니다.
 
+### 기생 추출 툴의 넷리스트
+
+Calibre xRC, StarRC, Quantus가 만든 DSPF 넷리스트는 그대로 시뮬레이션됩니다. 테스트벤치에서
+파일을 `.include`하고 그 `.SUBCKT`를 인스턴스(`X1 vdd 0 in out inv`)로 쓰면 됩니다. `*|` 줄은
+주석으로 처리되고, `MN:d`나 `Y:1` 같은 노드 이름은 유지되어 `v(x1.mn:d)`처럼 기생 노드 파형을 볼 수
+있습니다. 상대 경로 `.include`는 ngspice에서도 동작합니다.
+
 ## 백엔드
 
 ### 내장 엔진

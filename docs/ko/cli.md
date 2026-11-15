@@ -35,11 +35,12 @@
 | `ics def export <PROJECT> <CELL> [-o FILE] [--lef FILE]` | 최상위 셀을 DEF로 씀. `--lef`는 배치된 셀의 추상도 씀 |
 | `ics def import <PROJECT> <FILE> [--lib NAME]` | DEF를 프로젝트 셀을 배치하는 새 최상위 셀로 가져오고 저장 |
 | `ics lib-storage <PROJECT> <LIB> gds\|json` | 라이브러리의 디스크 저장 방식 변경 |
-| `ics import-tech <PROJECT> <LYP> [--lyt FILE]` | KLayout `.lyp`로 테크놀로지 레이어 교체 |
+| `ics import-tech <PROJECT> <FILE> [--lyt FILE] [--drf FILE] [--layermap FILE]` | KLayout `.lyp` 또는 Virtuoso `.tf`(`display.drf`, 레이어 맵 포함)로 테크놀로지 교체 |
 | `ics load-pdk <PROJECT> <PDK>` | 테크놀로지를 PDK 파일로 교체(테크놀로지 참고) |
 | `ics drc <PROJECT> <CELL> [--deck FILE] [--fix]` | DRC 실행(덱은 SVRF도 가능). 위반이 있으면 1로 종료 |
 | `ics extract <PROJECT> <CELL>` | 추출된 넷리스트를 SPICE로 출력 |
 | `ics lvs <PROJECT> <CELL>` | 레이아웃과 회로도 비교. 차이가 있으면 1로 종료 |
+| `ics results <PROJECT> <CELL> <FILE>` | 다른 곳에서 실행한 사인오프 결과 표시(Calibre, KLayout, netgen). 위반이나 불일치가 있으면 1로 종료 |
 | `ics emir <PROJECT> <CELL> --net NET [--currents FILE] [--json]` | 라벨이 붙은 핀 기준으로 넷의 IR 드롭과 일렉트로마이그레이션 분석. 전류는 레이아웃 소자별(JSON) 또는 회로도의 동작점에서 가져옴. EM 위반이 있으면 1로 종료 |
 | `ics opc <PROJECT> <CELL> --layer LAYER [--apply] [--sigma UM] [--threshold T] [--fragment UM] [--max-out UM] [--max-in UM] [--iterations N] [--gain G] [--json]` | 레이어의 광근접 보정. 보정 전후 EPE 출력. `--apply`는 마스크를 `<LAYER>_opc`에 쓰고(이전 마스크 교체, 그린 레이어는 바뀌지 않음) 저장 |
 | `ics signoff <PROJECT> <CELL> [RUNSET]` | 외부 KLayout / Calibre / netgen 런셋 실행(RUNSET이 없으면 목록 출력). 위반이나 불일치가 있으면 1로 종료 |

@@ -117,6 +117,39 @@ pub fn resolve_backend(deck: &str, opts: &SimOptions) -> (Backend, Option<String
     }
 }
 
+/// `deck` with the relative file of each `.include` / `.inc` / `.lib file section` line made
+/// absolute against `dir`.
+fn absolute_includes(deck: &str, dir: &Path) -> String {
+    let mut out = String::with_capacity(deck.len());
+    for line in deck.lines() {
+        let t = line.trim_start();
+        let lower = t.to_ascii_lowercase();
+        let cmd = lower.split_whitespace().next().unwrap_or("");
+        let args: Vec<&str> = t.split_whitespace().collect();
+        let file_arg = match cmd {
+            ".include" | ".inc" if args.len() >= 2 => Some(1),
+            ".lib" if args.len() >= 3 => Some(1),
+            _ => None,
+        };
+        match file_arg {
+            Some(k) => {
+                let file = args[k].trim_matches(['"', '\'']);
+                let path = Path::new(file);
+                if path.is_relative() {
+                    let mut a: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+                    a[k] = format!("\"{}\"", dir.join(path).display());
+                    out += &a.join(" ");
+                } else {
+                    out += line;
+                }
+            }
+            None => out += line,
+        }
+        out.push('\n');
+    }
+    out
+}
+
 /// Run `analyses` on `deck`. If `analyses` is empty the deck's own dot-analyses are used.
 pub fn simulate(deck: &str, analyses: &[Analysis], opts: &SimOptions) -> Result<SimResults, SimError> {
     // ngspice does not read the Spectre language: it gets the flattened SPICE deck.
@@ -174,7 +207,12 @@ pub fn simulate(deck: &str, analyses: &[Analysis], opts: &SimOptions) -> Result<
         }
         _ => {
             res.backend = ngspice::detect(&opts.ngspice_exe).unwrap_or_else(|| "ngspice".into());
-            let (ds, log) = ngspice::run(&opts.ngspice_exe, deck, &analyses)?;
+            // ngspice runs in a work folder: relative library paths are taken from the deck's.
+            let deck = match &opts.deck_dir {
+                Some(dir) => absolute_includes(deck, dir),
+                None => deck.to_string(),
+            };
+            let (ds, log) = ngspice::run(&opts.ngspice_exe, &deck, &analyses)?;
             res.datasets = ds;
             res.log = res.warnings.iter().map(|w| format!("{w}\n")).collect::<String>() + &log;
         }
@@ -186,6 +224,12 @@ pub fn simulate(deck: &str, analyses: &[Analysis], opts: &SimOptions) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relative_includes_become_absolute_for_ngspice() {
+        let d = absolute_includes("* t\n.include models.sp\n.lib 'lib/x.lib' tt\n.inc /abs/y.sp\nR1 a 0 1\n", Path::new("/w"));
+        assert_eq!(d, "* t\n.include \"/w/models.sp\"\n.lib \"/w/lib/x.lib\" tt\n.inc /abs/y.sp\nR1 a 0 1\n");
+    }
 
     #[test]
     fn builtin_reads_model_libraries_and_rejects_compiled_models() {

@@ -307,15 +307,27 @@ enum Cmd {
         #[arg(value_enum)]
         storage: StorageArg,
     },
-    /// Replace the technology with the layers of a KLayout layer properties file (.lyp).
-    /// Layout shapes keep their GDS layer/datatype; layers missing from the file are kept.
+    /// Replace the technology with one read from KLayout layer properties (`.lyp`) or a Cadence
+    /// Virtuoso ASCII technology file (`.tf`, with `--drf` and `--layermap`). Layout shapes keep
+    /// their GDS layer/datatype; layers missing from the file are kept.
     ImportTech {
         project: PathBuf,
-        lyp: PathBuf,
+        /// `.lyp` (KLayout) or `.tf` (Virtuoso) file.
+        file: PathBuf,
         /// KLayout technology file (.lyt) supplying the name and database unit.
         #[arg(long)]
         lyt: Option<PathBuf>,
+        /// Virtuoso display resource file (display.drf) for colours and fill patterns.
+        #[arg(long)]
+        drf: Option<PathBuf>,
+        /// Stream layer map (Virtuoso layer map file) for the GDSII / OASIS numbers.
+        #[arg(long)]
+        layermap: Option<PathBuf>,
     },
+    /// Show the results of a sign-off run made elsewhere on a cell: KLayout `.lyrdb` / `.lvsdb`,
+    /// Calibre ASCII results database or LVS report, netgen report. Non-zero exit on violations
+    /// or an LVS mismatch.
+    Results { project: PathBuf, cell: String, file: PathBuf },
     /// Replace the technology with a PDK file (TOML: layers, vias, devices, models; see
     /// `pdks/sky130A.toml`). Variables like ${PDK_ROOT} in its paths come from the environment.
     LoadPdk { project: PathBuf, pdk: PathBuf },
@@ -761,6 +773,39 @@ fn run(cli: Cli) -> Result<(), String> {
             print_drc(&rep, &d, p.tech.dbu_per_um);
             if !rep.violations.is_empty() {
                 return Err("DRC failed".into());
+            }
+        }
+        Cmd::Results { project, cell, file } => {
+            let p = Project::open(&project).map_err(|e| e.to_string())?;
+            let r = resolve(&p, &cell)?;
+            let text = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+            let rep = ics_core::signoff::import_results(&file, &text, p.tech.dbu_per_um, &r.cell)?;
+            println!("{}", rep.summary());
+            if let Some(d) = &rep.drc {
+                let um = |v: i64| v as f64 / p.tech.dbu_per_um as f64;
+                for v in &d.violations {
+                    let m = v.marker;
+                    println!(
+                        "  {:<16} ({:.3}, {:.3})-({:.3}, {:.3}) {}",
+                        v.rule,
+                        um(m.x0),
+                        um(m.y0),
+                        um(m.x1),
+                        um(m.y1),
+                        v.description
+                    );
+                }
+                if !d.violations.is_empty() {
+                    return Err("DRC failed".into());
+                }
+            }
+            if let Some(l) = &rep.lvs {
+                for m in &l.messages {
+                    println!("  {m}");
+                }
+                if l.matched != Some(true) {
+                    return Err("LVS failed".into());
+                }
             }
         }
         Cmd::Compact { project, cell, dir, no_infer } => {
@@ -1218,14 +1263,28 @@ fn run(cli: Cli) -> Result<(), String> {
                 eprintln!("warning: {w}");
             }
         }
-        Cmd::ImportTech { project, lyp, lyt } => {
+        Cmd::ImportTech { project, file, lyt, drf, layermap } => {
             let mut p = Project::open(&project).map_err(|e| e.to_string())?;
             let read = |f: &PathBuf| std::fs::read_to_string(f).map_err(|e| format!("{}: {e}", f.display()));
-            let name = lyp.file_stem().map_or("tech".into(), |s| s.to_string_lossy().to_string());
-            let mut tech = ics_core::tech_import::from_lyp(&read(&lyp)?, &name).map_err(|e| format!("{}: {e}", lyp.display()))?;
-            if let Some(f) = &lyt {
-                ics_core::tech_import::apply_lyt(&mut tech, &read(f)?).map_err(|e| format!("{}: {e}", f.display()))?;
-            }
+            let name = file.file_stem().map_or("tech".into(), |s| s.to_string_lossy().to_string());
+            let virtuoso = file.extension().is_some_and(|e| e.eq_ignore_ascii_case("tf"));
+            let tech = if virtuoso {
+                let drf = drf.as_ref().map(read).transpose()?;
+                let map = layermap.as_ref().map(read).transpose()?;
+                let (tech, notes) = ics_core::virtuoso::from_techfile(&read(&file)?, drf.as_deref(), map.as_deref(), &name)
+                    .map_err(|e| format!("{}: {e}", file.display()))?;
+                for n in &notes {
+                    eprintln!("note: {n}");
+                }
+                tech
+            } else {
+                let mut tech =
+                    ics_core::tech_import::from_lyp(&read(&file)?, &name).map_err(|e| format!("{}: {e}", file.display()))?;
+                if let Some(f) = &lyt {
+                    ics_core::tech_import::apply_lyt(&mut tech, &read(f)?).map_err(|e| format!("{}: {e}", f.display()))?;
+                }
+                tech
+            };
             let warnings = p.set_tech(tech)?;
             p.save().map_err(|e| e.to_string())?;
             println!("technology {}: {} layers, {} dbu per µm", p.tech.name, p.tech.layers.len(), p.tech.dbu_per_um);

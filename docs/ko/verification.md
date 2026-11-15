@@ -201,6 +201,17 @@ Layout 워크스페이스에서 테크놀로지에 런셋이 있으면 **Sign-of
 ]
 ```
 
+### 다른 곳에서 실행한 결과
+
+DRC와 LVS는 흔히 서버 팜에서 돌립니다. 그 결과를 로컬 실행 결과처럼 셀 위에 표시할 수 있습니다.
+
+- GUI: Sign-off 섹션(또는 명령 팔레트)의 **Import Sign-off Results...**
+- CLI: `ics results <project> <cell> <file>`. 위반이나 LVS 불일치가 있으면 0이 아닌 코드로 종료합니다.
+
+형식은 파일 내용으로 판별합니다: Calibre ASCII DRC 결과 데이터베이스, Calibre LVS 리포트, KLayout
+리포트 데이터베이스(`.lyrdb`)나 LVS 데이터베이스(`.lvsdb`), netgen 리포트. DRC 마커는 셀 좌표에
+놓입니다.
+
 ## 명령줄에서
 
 ```sh
