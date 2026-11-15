@@ -143,18 +143,12 @@ pub struct Card {
 /// Parameters whose values change behaviour the port does not model, with the value that
 /// keeps the model inside what it evaluates.
 const UNMODELLED: &[(&str, f64, &str)] = &[
-    ("igcmod", 0.0, "gate-to-channel tunnelling"),
-    ("igbmod", 0.0, "gate-to-body tunnelling"),
     ("rdsmod", 0.0, "external source / drain resistances"),
     ("rbodymod", 0.0, "body resistance network"),
     ("rgatemod", 0.0, "gate resistance"),
     ("trnqsmod", 0.0, "transient non-quasi-static model"),
     ("acnqsmod", 0.0, "AC non-quasi-static model"),
     ("mtrlmod", 0.0, "material (high-k) model"),
-    ("alpha0", 0.0, "substrate current"),
-    ("alpha1", 0.0, "substrate current"),
-    ("agidl", 0.0, "GIDL current"),
-    ("agisl", 0.0, "GISL current"),
 ];
 
 impl Card {
@@ -385,6 +379,7 @@ pub struct Inst {
     jct_d: Junction,
     dio_s: JunctionDc,
     dio_d: JunctionDc,
+    leak: Option<Leakage>,
     // Noise.
     temp_k: f64,
     tnoimod: i32,
@@ -398,6 +393,117 @@ pub struct Inst {
     lintnoi: f64,
     kf: f64,
     af: f64,
+}
+
+/// Leakage parameters (size dependent), present when any leakage current is enabled.
+#[derive(Debug, Clone, PartialEq)]
+struct Leakage {
+    alpha0: f64,
+    alpha1: f64,
+    beta0: f64,
+    gidlmod: i32,
+    /// a, b, c, e, r, k, f of GIDL and GISL.
+    gidl: [f64; 7],
+    gisl: [f64; 7],
+    gidlclamp: f64,
+    weff_cj: f64,
+    igcmod: i32,
+    igbmod: i32,
+    nigc: f64,
+    /// (a, b, c) of the gate-to-channel, gate-to-source and gate-to-drain tunnelling.
+    igc: [f64; 3],
+    igs: [f64; 3],
+    igd: [f64; 3],
+    pigcd: Option<f64>,
+    aechvb: f64,
+    bechvb: f64,
+    aechvb_edge_s: f64,
+    aechvb_edge_d: f64,
+    bechvb_edge: f64,
+    vfbsd: f64,
+    igbacc: [f64; 3],
+    igbinv: [f64; 3],
+    nigbacc: f64,
+    nigbinv: f64,
+    eigbinv: f64,
+    igb_area: f64,
+}
+
+/// Leakage currents of a BSIM4 device.
+pub struct Leak {
+    /// Currents into the drain, gate, source and bulk terminals (device polarity), with their
+    /// derivatives with respect to (Vds, Vgs, Vbs); they sum to zero.
+    pub terminal: [D; 4],
+    /// Gate currents to the source, drain and bulk (for shot noise).
+    pub gate_s: f64,
+    pub gate_d: f64,
+    pub gate_b: f64,
+}
+
+/// `exp(x)` clamped to [MIN_EXP, MAX_EXP] at |x| > 34, as the tunnelling expressions do.
+fn exp_clamped(x: D) -> D {
+    if x.v > EXP_THRESHOLD {
+        D::c(MAX_EXP)
+    } else if x.v < -EXP_THRESHOLD {
+        D::c(MIN_EXP)
+    } else {
+        x.exp()
+    }
+}
+
+/// `t0 ln(1 + e^(x/t0))`, the smooth positive part used by the tunnelling currents.
+fn soft_plus(x: D, t0: f64) -> D {
+    let r = x / t0;
+    if r.v > EXP_THRESHOLD {
+        x
+    } else if r.v < -EXP_THRESHOLD {
+        D::c(t0 * (1.0 + MIN_EXP).ln())
+    } else {
+        t0 * (1.0 + r.exp()).ln()
+    }
+}
+
+/// Tunnelling current density factor `exp(b (a + (ac - b) v - bc v²))` scaled.
+fn tunnel(coef: [f64; 3], bexp: f64, v: D) -> D {
+    let [a, b, c] = coef;
+    exp_clamped(bexp * (a + (a * c - b) * v - b * c * v * v))
+}
+
+/// GIDL (or GISL) current: `p` = (a, b, c, e, r, k, f), `vdx` the drain (source) voltage over
+/// the gate, `vgx_eff` the gate drive, `vbx` the bulk-junction voltage.
+fn gidl_current(p: &[f64; 7], gidlmod: i32, clamp: f64, weff_cj: f64, tox3: f64, vdx: D, vgx_eff: D, vbx: D) -> D {
+    const EXPL_THRESHOLD: f64 = 100.0;
+    const MIN_EXPL: f64 = 3.720075976e-44;
+    const MAX_EXPL: f64 = 2.688117142e43;
+    let [a, b, c, e, r, k, f] = *p;
+    if gidlmod == 0 {
+        let t1 = (vdx - vgx_eff - e) / tox3;
+        if a <= 0.0 || b <= 0.0 || t1.v <= 0.0 || c <= 0.0 || vbx.v > 0.0 {
+            return D::c(0.0);
+        }
+        let t2 = b / t1;
+        let i = if t2.v < 100.0 { a * weff_cj * t1 * (-t2).exp() } else { a * weff_cj * MIN_EXPL * t1 };
+        let t5 = -(vbx * vbx * vbx);
+        i * (t5 / (c + t5))
+    } else {
+        let t1 = (vdx - r * vgx_eff - e) / tox3;
+        if a <= 0.0 || b <= 0.0 || t1.v <= 0.0 || c < 0.0 {
+            return D::c(0.0);
+        }
+        let t2 = b / t1;
+        let i = if t2.v < EXPL_THRESHOLD { weff_cj * a * t1 * (-t2).exp() } else { weff_cj * a * MIN_EXPL * t1 };
+        let mut t4 = vbx - f;
+        if t4.v > clamp {
+            t4 = D::c(clamp);
+        }
+        let t6 = if t4.v == 0.0 {
+            D::c(MAX_EXPL)
+        } else {
+            let t5 = k / t4;
+            if t5.v < EXPL_THRESHOLD { t5.exp() } else { D::c(MAX_EXPL) }
+        };
+        i * t6
+    }
 }
 
 /// Values of the current model the noise model reads.
@@ -795,6 +901,96 @@ impl Inst {
         let dio_s = JunctionDc::new(isat_s.max(0.0), vtm * njs, ijths);
         let dio_d = JunctionDc::new(isat_d.max(0.0), vtm * njd, c.g("ijthdfwd", ijths));
 
+        // Leakage: substrate current, GIDL / GISL and gate tunnelling.
+        let leak = {
+            // A GISL parameter defaults to its GIDL counterpart, binning terms included.
+            let b2 = |name: &str, alt: &str, d: f64| -> f64 {
+                let g = |pre: &str, d: f64| c.g(&format!("{pre}{name}"), c.g(&format!("{pre}{alt}"), d));
+                g("", d) + g("l", 0.0) * inv_l + g("w", 0.0) * inv_w + g("p", 0.0) * inv_lw
+            };
+            let nm = !c.pmos;
+            let igcmod = c.g("igcmod", 0.0) as i32;
+            let igbmod = c.g("igbmod", 0.0) as i32;
+            let alpha0 = b("alpha0", 0.0);
+            let alpha1 = b("alpha1", 0.0);
+            let beta0 = b("beta0", 0.0);
+            let agidl = b("agidl", 0.0);
+            let agisl = b2("agisl", "agidl", 0.0);
+            let isub_on = alpha0 + alpha1 * leff > 0.0 && beta0 > 0.0;
+            if !(isub_on || agidl > 0.0 || agisl > 0.0 || igcmod != 0 || igbmod != 0) {
+                None
+            } else {
+                let ntox = b("ntox", 1.0);
+                let poxedge = b("poxedge", 1.0);
+                let toxref = c.g("toxref", 30.0e-10);
+                let tox_ratio = (ntox * (toxref / toxe).ln()).exp() / toxe / toxe;
+                let tox_ratio_edge = (ntox * (toxref / (toxe * poxedge)).ln()).exp() / toxe / toxe / poxedge / poxedge;
+                let aechvb0 = if nm { 4.97232e-7 } else { 3.42537e-7 };
+                let bechvb0 = if nm { 7.45669e11 } else { 1.16645e12 };
+                let dlcig = c.g("dlcig", lint).max(0.0);
+                let dlcigd = c.g("dlcigd", dlcig).max(0.0);
+                let ig = |n: &str, d_n: f64, d_p: f64, alt: &str| b2(n, alt, if nm { d_n } else { d_p });
+                Some(Leakage {
+                    alpha0,
+                    alpha1,
+                    beta0,
+                    gidlmod: c.g("gidlmod", 0.0) as i32,
+                    gidl: [
+                        agidl,
+                        b("bgidl", 2.3e9),
+                        b("cgidl", 0.5),
+                        b("egidl", 0.8),
+                        b("rgidl", 1.0),
+                        b("kgidl", 0.0),
+                        b("fgidl", 1.0),
+                    ],
+                    gisl: [
+                        agisl,
+                        b2("bgisl", "bgidl", 2.3e9),
+                        b2("cgisl", "cgidl", 0.5),
+                        b2("egisl", "egidl", 0.8),
+                        b2("rgisl", "rgidl", 1.0),
+                        b2("kgisl", "kgidl", 0.0),
+                        b2("fgisl", "fgidl", 1.0),
+                    ],
+                    gidlclamp: c.g("gidlclamp", -1e-5),
+                    weff_cj,
+                    igcmod,
+                    igbmod,
+                    nigc: b("nigc", 1.0),
+                    igc: [
+                        b("aigc", if nm { 1.36e-2 } else { 9.80e-3 }),
+                        b("bigc", if nm { 1.71e-3 } else { 7.59e-4 }),
+                        b("cigc", if nm { 0.075 } else { 0.03 }),
+                    ],
+                    igs: [
+                        ig("aigs", 1.36e-2, 9.80e-3, "aigsd"),
+                        ig("bigs", 1.71e-3, 7.59e-4, "bigsd"),
+                        ig("cigs", 0.075, 0.03, "cigsd"),
+                    ],
+                    igd: [
+                        ig("aigd", 1.36e-2, 9.80e-3, "aigsd"),
+                        ig("bigd", 1.71e-3, 7.59e-4, "bigsd"),
+                        ig("cigd", 0.075, 0.03, "cigsd"),
+                    ],
+                    pigcd: c.given("pigcd").then(|| b("pigcd", 1.0)),
+                    aechvb: aechvb0 * weff * leff * tox_ratio,
+                    bechvb: -bechvb0 * toxe,
+                    aechvb_edge_s: aechvb0 * weff * dlcig * tox_ratio_edge,
+                    aechvb_edge_d: aechvb0 * weff * dlcigd * tox_ratio_edge,
+                    bechvb_edge: -bechvb0 * toxe * poxedge,
+                    vfbsd: if ngate > 0.0 { vtm0 * (ngate / nsd).ln() } else { 0.0 }
+                        + b("vfbsdoff", 0.0) * (1.0 + b("tvfbsdoff", 0.0) * del_temp),
+                    igbacc: [b("aigbacc", 1.36e-2), b("bigbacc", 1.71e-3), b("cigbacc", 0.075)],
+                    igbinv: [b("aigbinv", 1.11e-2), b("bigbinv", 9.49e-4), b("cigbinv", 0.006)],
+                    nigbacc: b("nigbacc", 1.0),
+                    nigbinv: b("nigbinv", 3.0),
+                    eigbinv: b("eigbinv", 1.1),
+                    igb_area: 4.97232e-7 * weff * leff * tox_ratio,
+                })
+            }
+        };
+
         Ok(Inst {
             ty,
             mobmod,
@@ -915,6 +1111,7 @@ impl Inst {
             jct_d,
             dio_s,
             dio_d,
+            leak,
             temp_k: t,
             tnoimod: c.g("tnoimod", 0.0) as i32,
             fnoimod: c.g("fnoimod", 1.0) as i32,
@@ -941,7 +1138,7 @@ impl Inst {
         let vds_d = D::var(vds, 0);
         let vgs_d = D::var(vgs, 1);
         let vbs_d = D::var(vbs, 2);
-        let (ids, i) = self.ids(vds_d, vgs_d, vbs_d);
+        let (ids, i, _, _) = self.ids(vds_d, vgs_d, vbs_d);
         Eval { ids: ids * self.nf, vth: i.vth, vdsat: i.vdsat, vgsteff: i.vgsteff }
     }
 
@@ -1056,6 +1253,105 @@ impl Inst {
         (1.0 + t1 * t2, t1, t5)
     }
 
+    /// Whether the device has leakage currents (substrate, GIDL / GISL, gate tunnelling).
+    pub fn has_leakage(&self) -> bool {
+        self.leak.is_some()
+    }
+
+    /// Leakage currents at `vds`, `vgs`, `vbs` (device polarity, `vds` of either sign).
+    pub fn leakage(&self, vds: f64, vgs: f64, vbs: f64) -> Option<Leak> {
+        const DELTA_3: f64 = 0.02;
+        let lk = self.leak.as_ref()?;
+        let p = self;
+        let (vds, vgs, vbs) = (D::var(vds, 0), D::var(vgs, 1), D::var(vbs, 2));
+        let reverse = vds.v < 0.0;
+        let (mvds, mvgs, mvbs) = if reverse { (-vds, vgs - vds, vbs - vds) } else { (vds, vgs, vbs) };
+        let (ed, es) = if reverse { (2, 0) } else { (0, 2) };
+        let f = p.front(mvds, mvgs, mvbs);
+        let (_, _, isub, vdseff) = p.ids(mvds, mvgs, mvbs);
+        let zero = D::c(0.0);
+        let mut i = [zero; 4];
+        let nf = p.nf;
+
+        // Substrate current: effective drain to bulk.
+        i[ed] = i[ed] + isub * nf;
+        i[3] = i[3] - isub * nf;
+
+        // GIDL (drain to bulk) and GISL (source to bulk) in the terminal frame.
+        let tox3 = 3.0 * p.toxe;
+        let vgs_eff = poly_depletion(p.vfb + p.phi, p.ngate, EPSSI, p.coxe, vgs);
+        let vgd_eff = poly_depletion(p.vfb + p.phi, p.ngate, EPSSI, p.coxe, vgs - vds);
+        let igidl = gidl_current(&lk.gidl, lk.gidlmod, lk.gidlclamp, lk.weff_cj, tox3, vds, vgs_eff, vbs - vds) * nf;
+        let igisl = gidl_current(&lk.gisl, lk.gidlmod, lk.gidlclamp, lk.weff_cj, tox3, -vds, vgd_eff, vbs) * nf;
+        i[0] = i[0] + igidl;
+        i[2] = i[2] + igisl;
+        i[3] = i[3] - igidl - igisl;
+
+        let (mut gate_s, mut gate_d, mut gate_b) = (zero, zero, zero);
+        if lk.igcmod != 0 || lk.igbmod != 0 {
+            let vt = if p.tempmod < 2 { p.vtm } else { p.vtm0 };
+            let vfb = p.vfbzb;
+            let v3 = vfb - f.vgs_eff + f.vbseff - DELTA_3;
+            let t0 = if vfb <= 0.0 { (v3 * v3 - 4.0 * DELTA_3 * vfb).sqrt() } else { (v3 * v3 + 4.0 * DELTA_3 * vfb).sqrt() };
+            let vfbeff = vfb - 0.5 * (v3 + t0);
+            let voxacc = if (vfb - vfbeff).v < 0.0 { zero } else { vfb - vfbeff };
+            let t0 = 0.5 * p.k1ox;
+            let t3 = f.vgs_eff - vfbeff - f.vbseff - f.vgsteff;
+            let voxdepinv = if p.k1ox == 0.0 {
+                zero
+            } else if t3.v < 0.0 {
+                -t3
+            } else {
+                p.k1ox * ((t0 * t0 + t3).sqrt() - t0)
+            } + f.vgsteff;
+
+            if lk.igcmod != 0 {
+                // Gate to channel, split between source and drain.
+                let von = if lk.igcmod == 1 { D::c(p.ty * p.vth0) } else { f.vth };
+                let vaux = soft_plus(f.vgs_eff - von, vt * lk.nigc);
+                let igc = lk.aechvb * (mvgs * vaux) * tunnel(lk.igc, lk.bechvb, voxdepinv);
+                let pigcd = match lk.pigcd {
+                    Some(v) => D::c(v),
+                    None => {
+                        let t12 = f.vgsteff + 1.0e-20;
+                        let t13 = (-lk.bechvb) / t12 / t12;
+                        t13 * (1.0 - 0.5 * vdseff / t12)
+                    }
+                };
+                let t7 = -pigcd * vdseff;
+                let t8 = t7 * t7 + 2.0e-4;
+                let t9 = exp_clamped(t7);
+                let igcs = igc * ((t9 - 1.0 + 1.0e-4 - t7) / t8);
+                let igcd = igc * ((t7 * t9 - (t9 - 1.0 - 1.0e-4)) / t8);
+                // Gate to source / drain overlap (edge) tunnelling, terminal frame.
+                let edge = |vgx: D, coef: [f64; 3], a: f64| {
+                    let t0 = vgx - lk.vfbsd;
+                    let vgx_eff = (t0 * t0 + 1.0e-4).sqrt();
+                    a * (vgx * vgx_eff) * tunnel(coef, lk.bechvb_edge, vgx_eff)
+                };
+                let igs = edge(vgs, lk.igs, lk.aechvb_edge_s);
+                let igd = edge(vgs - vds, lk.igd, lk.aechvb_edge_d);
+                let (to_s, to_d) = if reverse { (igcd, igcs) } else { (igcs, igcd) };
+                gate_s = (igs + to_s) * nf;
+                gate_d = (igd + to_d) * nf;
+            }
+            if lk.igbmod != 0 {
+                let vaux = soft_plus(-f.vgs_eff + f.vbseff + vfb, vt * lk.nigbacc);
+                let t12 = -7.45669e11 * p.toxe;
+                let igbacc = lk.igb_area * ((mvgs - mvbs) * vaux) * tunnel(lk.igbacc, t12, voxacc);
+                let vaux = soft_plus(voxdepinv - lk.eigbinv, vt * lk.nigbinv);
+                let igbinv = lk.igb_area * 0.75610 * ((mvgs - mvbs) * vaux) * tunnel(lk.igbinv, t12 * 1.31724, voxdepinv);
+                gate_b = (igbacc + igbinv) * nf;
+            }
+        }
+        i[1] = i[1] + gate_s + gate_d + gate_b;
+        i[2] = i[2] - gate_s;
+        i[0] = i[0] - gate_d;
+        i[3] = i[3] - gate_b;
+        let _ = es;
+        Some(Leak { terminal: i, gate_s: gate_s.v, gate_d: gate_d.v, gate_b: gate_b.v })
+    }
+
     /// Bulk-source and bulk-drain junction currents at `vbs`, `vbd` (device polarity), with
     /// their conductances: ((ibs, gbs), (ibd, gbd)).
     pub fn junction_currents(&self, vbs: f64, vbd: f64) -> ((f64, f64), (f64, f64)) {
@@ -1069,7 +1365,7 @@ impl Inst {
     pub fn noise(&self, vds: f64, vgs: f64, vbs: f64, freq: f64) -> (f64, f64) {
         const DELTA_4: f64 = 0.02;
         let p = self;
-        let (id, i) = p.ids(D::c(vds), D::c(vgs), D::c(vbs));
+        let (id, i, _, _) = p.ids(D::c(vds), D::c(vgs), D::c(vbs));
         let cd = (id.v * p.nf).abs();
         let temp = p.temp_k;
 
@@ -1266,7 +1562,7 @@ impl Inst {
         (qgate, qbulk, qdrn)
     }
 
-    fn ids(&self, vds: D, vgs: D, vbs: D) -> (D, Internals) {
+    fn ids(&self, vds: D, vgs: D, vbs: D) -> (D, Internals, D, D) {
         let p = self;
         let epssub = EPSSI;
         let toxe = p.toxe;
@@ -1451,6 +1747,22 @@ impl Inst {
         let mut idsa = idl * (1.0 + diff_vds / vadibl);
         idsa = idsa * (1.0 + diff_vds / vadits);
         idsa = idsa * (1.0 + (va / vasat).ln() / cclm);
+        // Substrate (impact ionisation) current.
+        let isub = {
+            let (alpha0, alpha1, beta0) = p.leak.as_ref().map_or((0.0, 0.0, 0.0), |l| (l.alpha0, l.alpha1, l.beta0));
+            let tmp = alpha0 + alpha1 * leff;
+            if tmp <= 0.0 || beta0 <= 0.0 {
+                D::c(0.0)
+            } else {
+                let t2 = tmp / leff;
+                let t1 = if diff_vds.v > beta0 / EXP_THRESHOLD {
+                    t2 * diff_vds * (-beta0 / diff_vds).exp()
+                } else {
+                    t2 * MIN_EXP * diff_vds
+                };
+                t1 * idsa * vdseff
+            }
+        };
         let ids = idsa * (1.0 + diff_vds / vascbe);
         let mut cdrain = ids * vdseff;
 
@@ -1480,7 +1792,7 @@ impl Inst {
             rds: rds.v,
             xdep: xdep.v,
         };
-        (cdrain, internals)
+        (cdrain, internals, isub, vdseff)
     }
 }
 
@@ -1592,7 +1904,7 @@ mod tests {
         assert!((a.vth0 - 0.41).abs() < 1e-12 && (b.vth0 - 0.5).abs() < 1e-12, "{} {}", a.vth0, b.vth0);
         c.p.insert("lint".into(), 0.1e-6);
         assert!(Inst::new(&c, Geometry::new(1e-6, 0.1e-6, 1.0), 27.0).unwrap_err().contains("length"));
-        let w = card(false, &[("igcmod", 1.0), ("mobmod", 3.0), ("version", 4.5)]).warnings();
+        let w = card(false, &[("rdsmod", 1.0), ("igcmod", 1.0), ("mobmod", 3.0), ("version", 4.5)]).warnings();
         assert_eq!(w.len(), 3, "{w:?}");
     }
 }

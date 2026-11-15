@@ -230,6 +230,31 @@ fn mos_charges(model: &MosModel, mult: f64, v: [f64; 4]) -> Option<([f64; 4], [[
     Some((qs, c))
 }
 
+/// Leakage currents of a BSIM4 MOS at terminal voltages `v` (d, g, s, b), times `mult`: the
+/// currents into each terminal, their derivatives with respect to `v`, and the gate currents to
+/// source, drain and bulk; None without leakage.
+/// Terminal currents (d, g, s, b), their Jacobian over (vd, vg, vs, vb), and the gate
+/// currents to source, drain and bulk.
+type LeakageStamp = ([f64; 4], [[f64; 4]; 4], [f64; 3]);
+
+fn mos_leakage(model: &MosModel, mult: f64, v: [f64; 4]) -> Option<LeakageStamp> {
+    let inst = model.bsim4.as_ref()?.inst.as_deref()?;
+    if !inst.has_leakage() {
+        return None;
+    }
+    let sign = if model.pmos { -1.0 } else { 1.0 };
+    let lk = inst.leakage(sign * (v[0] - v[2]), sign * (v[1] - v[2]), sign * (v[3] - v[2]))?;
+    let mut i = [0.0; 4];
+    let mut g = [[0.0; 4]; 4];
+    for t in 0..4 {
+        let q = lk.terminal[t];
+        i[t] = sign * q.v * mult;
+        let [dd, dg, db] = q.d.map(|x| x * mult);
+        g[t] = [dd, dg, -(dd + dg + db), db];
+    }
+    Some((i, g, [lk.gate_s * mult, lk.gate_d * mult, lk.gate_b * mult]))
+}
+
 fn bsim4_eval(pmos: bool, inst: &crate::bsim4::Inst, mult: f64, vd: f64, vg: f64, vs: f64, vb: f64) -> MosEval {
     let sign = if pmos { -1.0 } else { 1.0 };
     let (mut d, g, mut s, b) = (sign * vd, sign * vg, sign * vs, sign * vb);
@@ -546,6 +571,19 @@ impl Engine {
                         }
                     }
                     cur(&mut rhs, *d, *s, i_eq);
+                    if let Some((i, g, _)) = mos_leakage(model, *mult, [vs[0], vs[1], vs[2], vs[3]]) {
+                        for t in 0..4 {
+                            let Some(r) = idx(nodes[t]) else { continue };
+                            let mut lin = i[t];
+                            for j in 0..4 {
+                                lin -= g[t][j] * vs[j];
+                                if let Some(col) = idx(nodes[j]) {
+                                    m.add(r, col, g[t][j]);
+                                }
+                            }
+                            rhs[r] -= lin;
+                        }
+                    }
                     // small drain-source conductance for robustness
                     cond(&mut m, *d, *s, gmin);
                 }
@@ -788,7 +826,9 @@ impl Engine {
             .iter()
             .position(|e| e.name().eq_ignore_ascii_case(source) && matches!(e, Element::V { .. } | Element::I { .. }))
             .ok_or_else(|| SimError::Engine(format!("DC sweep source '{source}' not found")))?;
-        let n = ((stop - start) / step).abs().floor() as usize + 1;
+        // Steps that land on `stop` up to rounding (e.g. -1.2 to 1.2 by 0.05) include it.
+        let steps = ((stop - start) / step).abs();
+        let n = (steps + 1e-9 * steps.max(1.0)).floor() as usize + 1;
         if n > 1_000_000 {
             return Err(SimError::Engine("DC sweep has too many points".into()));
         }
@@ -891,6 +931,16 @@ impl Engine {
                             }
                         }
                     }
+                    if let Some((_, g, _)) = mos_leakage(model, *mult, [vs[0], vs[1], vs[2], vs[3]]) {
+                        for t in 0..4 {
+                            let Some(r) = idx(nodes[t]) else { continue };
+                            for j in 0..4 {
+                                if let Some(col) = idx(nodes[j]) {
+                                    m.add(r, col, Complex64::new(g[t][j], 0.0));
+                                }
+                            }
+                        }
+                    }
                     y(&mut m, *d, *s, Complex64::new(self.c.options.gmin, 0.0));
                 }
             }
@@ -962,6 +1012,13 @@ impl Engine {
                     }
                     let (thermal, flicker) = inst.noise(vd - vs, v(*g) - vs, v(*b) - vs, f);
                     out.push((*d, *s, (thermal + flicker) * m));
+                    let x = |n| self.v(x0, n);
+                    if let Some((_, _, [gs, gd, gb])) = mos_leakage(model, *m, [x(*d), x(*g), x(*s), x(*b)]) {
+                        // Shot noise of the gate currents.
+                        for (t, i) in [(*s, gs), (*d, gd), (*b, gb)] {
+                            out.push((*g, t, 2.0 * CHARGE * i.abs()));
+                        }
+                    }
                 }
                 Element::M { d, g, s, b, model, w, l, m, .. } => {
                     let v = |n| self.v(x0, n);
@@ -1387,6 +1444,14 @@ mod tests {
             Some(Element::M { model, .. }) => model,
             _ => unreachable!(),
         }
+    }
+
+    #[test]
+    fn dc_sweeps_include_the_stop_value() {
+        let ds = engine("* t\nV1 a 0 0\nR1 a 0 1k\n.end").run_dc("V1", -1.2, 1.2, 0.05).unwrap();
+        let v = &ds.get("v1").unwrap().re;
+        assert_eq!(v.len(), 49);
+        assert!((v[48] - 1.2).abs() < 1e-12, "{}", v[48]);
     }
 
     #[test]

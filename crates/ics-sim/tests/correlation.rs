@@ -17,9 +17,14 @@ fn bsim4_models() -> String {
         nfactor=1.6 eta0=0.0125 etab=0 a0=1 keta=0.04 pdiblc1=0.001 pdiblc2=0.001 pdiblcb=-0.005 drout=0.5 \
         pvag=1e-20 delta=0.01 pscbe1=8.14e8 pscbe2=1e-7 fprout=0.2 pdits=0.08 pditsd=0.23 pditsl=2.3e6 rdsw=155 \
         kt1=-0.11 kt2=0.022 at=33000 ute=-1.5 ua1=4.31e-9 ub1=7.61e-18 uc1=-5.6e-11";
+    // Substrate current, GIDL / GISL and gate tunnelling.
+    let leak = "alpha0=0.074 alpha1=0.005 beta0=30 agidl=2e-4 bgidl=2.1e9 cgidl=2e-4 egidl=0.8 igcmod=1 igbmod=1 \
+        pigcd=1 aigc=0.012 bigc=0.0028 cigc=0.002 aigsd=0.0087 bigsd=0.0012 cigsd=0.002 toxref=1.25e-9 aigbacc=0.012 \
+        bigbacc=0.0028 cigbacc=0.002 aigbinv=0.014 bigbinv=0.004 cigbinv=0.004 dlcig=2.5e-9";
     format!(
         ".model n45 nmos {common} vth0=0.46893 ndep=3.4e18 vfb=-0.55 u0=0.049 ua=6e-10 ub=1.2e-18 vsat=130000 pclm=0.04\n\
-         .model p45 pmos {common} vth0=-0.49158 ndep=2.44e18 vfb=0.55 u0=0.0021 ua=2e-9 ub=0.5e-18 vsat=90000 pclm=0.12\n"
+         .model p45 pmos {common} vth0=-0.49158 ndep=2.44e18 vfb=0.55 u0=0.0021 ua=2e-9 ub=0.5e-18 vsat=90000 pclm=0.12\n\
+         .model n45l nmos {common} vth0=0.46893 ndep=3.4e18 vfb=-0.55 u0=0.049 ua=6e-10 ub=1.2e-18 vsat=130000 pclm=0.04 {leak}\n"
     )
 }
 
@@ -71,6 +76,16 @@ fn suite() -> Vec<(&'static str, String, f64)> {
                 "* bsim4 junctions\n.temp 120\nVD d 0 0\nVG g 0 0\nM1 d g 0 0 n45 w=1u l=45n ad=0.2p as=0.2p pd=2.4u ps=2.4u nf=3\n{b4}\
                  .dc VD -1.0 0.5 0.02\n.end\n"
             ),
+            1e-3,
+        ),
+        (
+            "bsim4_leakage_id_vg",
+            format!("* leakage\nVD d 0 1.2\nVG g 0 0\nVB b 0 0\nM1 d g 0 b n45l w=1u l=45n nf=2\n{b4}.dc VG -0.8 1.2 0.05\n.end\n"),
+            1e-3,
+        ),
+        (
+            "bsim4_leakage_reverse",
+            format!("* leakage\nVD d 0 0\nVG g 0 1\nVB b 0 -0.3\nM1 d g 0 b n45l w=1u l=45n\n{b4}.dc VD -1 1.2 0.05\n.end\n"),
             1e-3,
         ),
         (

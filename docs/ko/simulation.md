@@ -205,7 +205,9 @@ Rust로 작성한 수정 절점 해석(MNA) 엔진입니다. 다음을 지원합
   의존 overlap 커패시턴스, 바닥/측벽/게이트측 측벽 접합 커패시턴스(접합 면적과 둘레는 `ad as pd ps`
   또는 finger 배치에서 계산)를 따르므로 과도 해석과 AC 결과도 ngspice와 일치합니다. 접합 전류는
   `diomod=1`(면적/측벽/게이트측 측벽 포화전류와 온도 의존성, `ijthsfwd` 이상은 선형), 잡음은
-  `tnoimod=0`과 `fnoimod` 0 / 1을 따릅니다. 게이트 터널링, GIDL, 기판 전류, `rdsmod=1`, 게이트/바디 저항망, 비준정적(NQS) 모델,
+  `tnoimod=0`과 `fnoimod` 0 / 1(게이트 전류의 shot 잡음 포함)을 따릅니다. 누설 전류는 기판 전류
+  (`alpha0 alpha1 beta0`), GIDL / GISL(`gidlmod` 0, 1), 게이트 터널링(`igcmod` 1 / 2와 소스/드레인 분배·
+  edge 전류, `igbmod=1`)을 계산합니다. `rdsmod=1`, 게이트/바디 저항망, 비준정적(NQS) 모델,
   응력 효과는 계산하지 않고 경고로 알립니다.
 
 BSIM4 모델은 UC Berkeley BSIM Research Group이 개발했습니다(Copyright (c) University of

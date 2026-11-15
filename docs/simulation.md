@@ -215,8 +215,10 @@ A modified nodal analysis engine written in Rust. It supports:
   areas and perimeters from `ad as pd ps` or the finger layout; transient and AC results
   match ngspice as well. Junction currents follow `diomod=1` (area, sidewall and gate-edge
   saturation currents with their temperature dependence, linear above `ijthsfwd`); noise
-  follows `tnoimod=0` and `fnoimod` 0 / 1. Gate tunnelling, GIDL,
-  substrate current, `rdsmod=1`, gate / body resistance networks, non-quasi-static models
+  follows `tnoimod=0` and `fnoimod` 0 / 1, with shot noise of the gate currents. Leakage:
+  substrate current (`alpha0 alpha1 beta0`), GIDL / GISL (`gidlmod` 0 and 1) and gate
+  tunnelling (`igcmod` 1 / 2 with the source / drain partition and edge currents, `igbmod=1`).
+  `rdsmod=1`, gate / body resistance networks, non-quasi-static models
   and stress effects are not evaluated and are reported as warnings.
 
 The BSIM4 model is developed by the BSIM Research Group of the University of California,
