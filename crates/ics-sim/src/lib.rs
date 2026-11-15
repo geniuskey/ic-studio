@@ -11,12 +11,15 @@ pub mod calc;
 pub mod circuit;
 pub mod correlate;
 pub mod engine;
+pub mod expr;
+pub mod frontend;
 pub mod linalg;
 pub mod montecarlo;
 pub mod ngspice;
 pub mod optimize;
 pub mod results;
 
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use ics_core::{Analysis, Backend};
@@ -40,16 +43,18 @@ pub enum SimError {
 pub struct SimOptions {
     pub backend: Backend,
     pub ngspice_exe: String,
+    /// Folder that relative `.include` / `.lib` paths of the deck are taken from (the current
+    /// folder without one).
+    pub deck_dir: Option<PathBuf>,
 }
 
 impl Default for SimOptions {
     fn default() -> Self {
-        Self { backend: Backend::Builtin, ngspice_exe: ngspice::default_exe() }
+        Self { backend: Backend::Builtin, ngspice_exe: ngspice::default_exe(), deck_dir: None }
     }
 }
 
-/// The first deck line loading models the built-in engine cannot read (model libraries,
-/// compiled Verilog-A models).
+/// The first deck line loading model files (model libraries, compiled Verilog-A models).
 pub(crate) fn external_models(deck: &str) -> Option<&str> {
     deck.lines().map(str::trim).find(|l| {
         let l = l.to_ascii_lowercase();
@@ -57,12 +62,37 @@ pub(crate) fn external_models(deck: &str) -> Option<&str> {
     })
 }
 
+/// The first deck line loading compiled (Verilog-A) models, which only ngspice evaluates.
+fn compiled_models(deck: &str) -> Option<&str> {
+    deck.lines().map(str::trim).find(|l| {
+        let l = l.to_ascii_lowercase();
+        l.starts_with("pre_osdi") || l.starts_with(".hdl") || l.starts_with(".osdi")
+    })
+}
+
+/// The flat circuit of `deck` for the built-in engine: libraries, parameters and subcircuits
+/// are resolved first (see [`frontend`]), with errors and warnings pointing at the source lines.
+pub fn parse_for_builtin(deck: &str, dir: Option<&Path>) -> Result<circuit::Circuit, SimError> {
+    if !frontend::needs_expansion(deck) {
+        return circuit::parse_deck(deck);
+    }
+    let e = frontend::expand(deck, dir)?;
+    let mut c = circuit::parse_deck(&e.deck).map_err(|err| e.map_error(err))?;
+    c.title = deck.lines().next().unwrap_or("").trim_start_matches('*').trim().to_string();
+    c.warnings = e.warnings.iter().cloned().chain(c.warnings.iter().map(|w| e.map_warning(w))).collect();
+    Ok(c)
+}
+
 /// Why the built-in engine would not evaluate `deck` as written (None when it does).
 pub fn builtin_shortfall(deck: &str) -> Option<String> {
-    if let Some(l) = external_models(deck) {
-        return Some(format!("the deck loads external models ('{l}')"));
+    builtin_shortfall_in(deck, None)
+}
+
+fn builtin_shortfall_in(deck: &str, dir: Option<&Path>) -> Option<String> {
+    if let Some(l) = compiled_models(deck) {
+        return Some(format!("the deck loads compiled models ('{l}')"));
     }
-    match circuit::parse_deck(deck) {
+    match parse_for_builtin(deck, dir) {
         Err(e) => Some(e.to_string()),
         Ok(c) => c.warnings.first().map(|w| match c.warnings.len() {
             1 => w.clone(),
@@ -77,7 +107,7 @@ pub fn resolve_backend(deck: &str, opts: &SimOptions) -> (Backend, Option<String
     if opts.backend != Backend::Auto {
         return (opts.backend, None);
     }
-    match builtin_shortfall(deck) {
+    match builtin_shortfall_in(deck, opts.deck_dir.as_deref()) {
         None => (Backend::Builtin, None),
         Some(why) if ngspice::detect(&opts.ngspice_exe).is_some() => {
             (Backend::Ngspice, Some(format!("auto: ngspice, because {why}")))
@@ -91,16 +121,14 @@ pub fn simulate(deck: &str, analyses: &[Analysis], opts: &SimOptions) -> Result<
     let start = Instant::now();
     let (backend, why) = resolve_backend(deck, opts);
     if backend == Backend::Builtin
-        && let Some(l) = external_models(deck)
+        && let Some(l) = compiled_models(deck)
     {
-        return Err(SimError::Engine(format!(
-            "the built-in engine cannot load model libraries ('{l}'); select ngspice for PDK models"
-        )));
+        return Err(SimError::Engine(format!("the built-in engine cannot load compiled models ('{l}'); select ngspice")));
     }
     // ngspice reads the deck itself (PDK subcircuits, model libraries); only the built-in
     // engine needs the parsed circuit.
     let mut circuit = match backend {
-        Backend::Builtin => Some(circuit::parse_deck(deck)?),
+        Backend::Builtin => Some(parse_for_builtin(deck, opts.deck_dir.as_deref())?),
         _ => None,
     };
     let analyses: Vec<Analysis> = match (&mut circuit, analyses.is_empty()) {
@@ -148,15 +176,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_rejects_model_libraries() {
-        let deck = "* t\n.lib \"/pdk/models.lib\" tt\nV1 a 0 1\nR1 a 0 1k\n.op\n.end\n";
+    fn builtin_reads_model_libraries_and_rejects_compiled_models() {
+        let deck = "* t\n.lib \"/nonexistent/models.lib\" tt\nV1 a 0 1\nR1 a 0 1k\n.op\n.end\n";
+        let e = simulate(deck, &[], &SimOptions::default()).unwrap_err().to_string();
+        assert!(e.contains("line 2") && e.contains("cannot read '/nonexistent/models.lib'"), "{e}");
+        let deck = "* t\n.control\npre_osdi m.osdi\n.endc\nR1 a 0 1k\n.op\n.end\n";
         let e = simulate(deck, &[], &SimOptions::default()).unwrap_err().to_string();
         assert!(e.contains("select ngspice"), "{e}");
     }
 
     #[test]
+    fn hierarchical_decks_simulate_on_the_builtin_engine() {
+        // A divider written as a parameterised subcircuit: 1.8 V * 3k / (1k + 3k).
+        let deck = "* div\n.param vdd=1.8 rt=1k\n.subckt div top mid bot ratio=1\nR1 top mid {rt}\nR2 mid bot {rt*ratio}\n.ends\n\
+                    V1 a 0 {vdd}\nX1 a m 0 div ratio=3\n.op\n.end\n";
+        let r = simulate(deck, &[], &SimOptions::default()).unwrap();
+        let v = r.datasets[0].vectors.iter().find(|v| v.name == "v(m)").unwrap();
+        assert!((v.re[0] - 1.35).abs() < 1e-6, "{:?}", v.re);
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+        let e = simulate(&deck.replace("{rt*ratio}", "{rt*nope}"), &[], &SimOptions::default()).unwrap_err().to_string();
+        assert!(e.contains("netlist line 5") && e.contains("nope"), "{e}");
+    }
+
+    #[test]
     fn auto_stays_builtin_for_supported_decks() {
-        let opts = SimOptions { backend: Backend::Auto, ngspice_exe: "/nonexistent/ngspice".into() };
+        let opts = SimOptions { backend: Backend::Auto, ngspice_exe: "/nonexistent/ngspice".into(), deck_dir: None };
         let r = simulate("* t\nV1 a 0 1\nR1 a 0 1k\n.op\n.end\n", &[], &opts).unwrap();
         assert_eq!(r.backend, "built-in");
         assert!(r.warnings.is_empty());
@@ -176,7 +220,7 @@ mod tests {
             circuit::deck_analyses(deck),
             vec![Analysis::Op, Analysis::Dc { source: "V2".into(), start: "0".into(), stop: "1.8".into(), step: "0.1".into() }]
         );
-        let opts = SimOptions { backend: Backend::Ngspice, ngspice_exe: "/nonexistent/ngspice".into() };
+        let opts = SimOptions { backend: Backend::Ngspice, ngspice_exe: "/nonexistent/ngspice".into(), deck_dir: None };
         let e = simulate(deck, &[], &opts).unwrap_err();
         assert!(!matches!(e, SimError::Parse { .. }), "{e}");
     }

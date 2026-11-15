@@ -175,12 +175,23 @@ ngspice 경로는 **Settings**에서 지정합니다([설치](install.md#ngspice
 
 Rust로 작성한 수정 절점 해석(MNA) 엔진입니다. 다음을 지원합니다.
 
-- 소자 `R C L V I D M`(서브서킷과 동작 모델(behavioural) 소스는 미지원),
+- 소자 `R C L V I D M`와 서브서킷 인스턴스 `X`(동작 모델(behavioural) 소스는 미지원),
 - 소스: `DC`, `AC mag [phase]`, `PULSE(v1 v2 td tr tf pw per)`,
   `SIN(vo va freq td theta)`, `PWL(t v ...)`,
 - 지시어 `.model`, `.op`, `.dc`, `.ac`, `.tran`, `.noise`, `.temp`, `.title`, `.end`.
-  `.options`, `.param`, `.subckt` 같은 다른 점(dot) 라인은 무시되며, `.include`나 `.lib`가
-  있는 덱은 거부됩니다(모델 라이브러리는 ngspice 필요).
+  `.options`, `.ic` 같은 다른 점(dot) 라인은 무시되며, 컴파일된 Verilog-A 모델(`pre_osdi`)을
+  읽는 덱은 ngspice가 필요합니다.
+- PDK 형식의 계층 덱은 시뮬레이션 전에 평탄화됩니다.
+  - `.include` / `.inc` 파일과 `.lib <file> <section>` 라이브러리 섹션(경로는 포함하는 파일
+    기준, `ics spice`에서는 덱 파일의 폴더 기준),
+  - 수식을 쓰는 `.param`(`+ - * / ^ **`, 비교, `?:`, `sqrt exp log min max pow abs if ...`;
+    `agauss` / `gauss` / `unif`는 공칭값), `{expr}`와 `'expr'` 값, 값으로 쓴 파라미터 이름,
+  - `.subckt name ports [params:] k=v ...` / `.ends`(중첩 정의 포함)와 인스턴스
+    `X... nodes name k=v`. 평탄화된 소자와 노드 이름은 ngspice와 같습니다(`m.x1.m1`,
+    `x1.net`). `.global` 노드는 전역으로 유지됩니다.
+  - 서브서킷 안의 `.model` 카드는 인스턴스마다 그 파라미터로 평가되고, `lmin lmax wmin wmax`가
+    있는 `name.N` 카드는 인스턴스의 `l`과 `w`(`nf`가 있으면 finger당)로 bin이 선택됩니다.
+  - 오류와 경고에는 원본 파일과 줄 번호가 표시됩니다.
 - 다이오드 모델: `is n cjo vj m fc tt rs bv ibv kf af eg xti tnom`,
 - MOS level 1: `vto kp u0 lambda gamma phi tox ld cgso cgdo cgbo cj cjsw mj mjsw pb fc is
   js rd rs rsh kf af tnom`, 인스턴스 파라미터 `w l m ad as pd ps nrd nrs`.

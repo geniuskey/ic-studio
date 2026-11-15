@@ -179,12 +179,25 @@ shows a one-line summary. For a useful result, the layout should be LVS clean (s
 
 A modified nodal analysis engine written in Rust. It supports:
 
-- elements `R C L V I D M` (no subcircuits or behavioural sources),
+- elements `R C L V I D M` and subcircuit instances `X` (no behavioural sources),
 - sources: `DC`, `AC mag [phase]`, `PULSE(v1 v2 td tr tf pw per)`,
   `SIN(vo va freq td theta)`, `PWL(t v ...)`,
 - directives `.model`, `.op`, `.dc`, `.ac`, `.tran`, `.noise`, `.temp`, `.title`, `.end`;
-  other dot lines such as `.options`, `.param` and `.subckt` are ignored, and a deck with
-  `.include` or `.lib` is rejected (model libraries need ngspice),
+  other dot lines such as `.options` and `.ic` are ignored, and decks that load compiled
+  Verilog-A models (`pre_osdi`) need ngspice,
+- hierarchical decks as PDKs write them, flattened before simulation:
+  - `.include` / `.inc` files and `.lib <file> <section>` library sections, with paths
+    relative to the including file (for `ics spice`, to the deck's folder),
+  - `.param` with expressions (`+ - * / ^ **`, comparisons, `?:`, `sqrt exp log min max
+    pow abs if ...`; `agauss` / `gauss` / `unif` give their nominal value), `{expr}` and
+    `'expr'` values and bare parameter names as values,
+  - `.subckt name ports [params:] k=v ...` / `.ends` with nested definitions, and instances
+    `X... nodes name k=v`; flattened devices and nodes are named like ngspice (`m.x1.m1`,
+    `x1.net`), and `.global` nodes stay global,
+  - `.model` cards inside subcircuits, evaluated with each instance's parameters, and model
+    binning: cards `name.N` with `lmin lmax wmin wmax` are selected by an instance's `l` and
+    `w` (per finger with `nf`),
+  - errors and warnings name the file and line they come from,
 - diode model: `is n cjo vj m fc tt rs bv ibv kf af eg xti tnom`,
 - MOS level 1: `vto kp u0 lambda gamma phi tox ld cgso cgdo cgbo cj cjsw mj mjsw pb fc is
   js rd rs rsh kf af tnom`, with instance parameters `w l m ad as pd ps nrd nrs`.

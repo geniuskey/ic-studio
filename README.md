@@ -335,9 +335,22 @@ mouse input, and check accessibility labels and glyph coverage.
 
 ## Roadmap
 
-- Python API (PyO3)
-- Non-Manhattan DRC and extraction
-- Resistor / capacitor definitions in the bundled PDKs
+The goal is one environment for design, analysis, simulation, prediction and process,
+fit for production use, including the optics of image sensors.
+
+1. **Trust**: PDK-grade simulation. Done: a SPICE front-end for libraries, parameters,
+   subcircuits and model binning. Next: BSIM4 in the built-in engine, Spectre / HSPICE /
+   CDL netlists.
+2. **Fit into existing flows**: Calibre results (RVE / SVDB), OpenAccess / Virtuoso data.
+3. **Image sensor pixels**: a pixel stack (microlens, colour filter, dielectrics, metal,
+   silicon) with thin-film and ray optics, later RCWA / FDTD; QE, crosstalk and chief-ray
+   angle; photocurrent into the pixel circuit simulation, metal layers from the layout.
+4. **Prediction and process**: surrogate models for yield and specs, silicon-to-simulation
+   correlation, process emulation (3-D cross-sections from layout and process steps) and
+   process data management.
+
+Also: Python API (PyO3), non-Manhattan DRC and extraction, resistor / capacitor definitions
+in the bundled PDKs.
 
 ## License
 

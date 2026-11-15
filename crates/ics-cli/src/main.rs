@@ -665,7 +665,8 @@ fn run(cli: Cli) -> Result<(), String> {
         }
         Cmd::Spice { file, backend: b, json, compare, tol } => {
             let deck = std::fs::read_to_string(&file).map_err(|e| e.to_string())?;
-            let opts = SimOptions { backend: backend(b), ..Default::default() };
+            let deck_dir = std::path::Path::new(&file).parent().map(|d| d.to_path_buf());
+            let opts = SimOptions { backend: backend(b), deck_dir, ..Default::default() };
             if compare {
                 return print_correlation(&deck, &[], &opts, tol);
             }

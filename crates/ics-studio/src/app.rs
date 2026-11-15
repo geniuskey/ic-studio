@@ -733,7 +733,7 @@ impl IcStudio {
     }
 
     fn sim_options(&self, backend: ics_core::Backend) -> SimOptions {
-        SimOptions { backend, ngspice_exe: self.settings.ngspice_path.clone() }
+        SimOptions { backend, ngspice_exe: self.settings.ngspice_path.clone(), ..Default::default() }
     }
 
     fn netlist_active(&self) -> Option<(String, Vec<String>)> {

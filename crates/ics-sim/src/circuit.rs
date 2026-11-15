@@ -324,7 +324,7 @@ impl Circuit {
 /// MOS model parameters the built-in engine evaluates.
 const MOS_PARAMS: &[&str] = &[
     "level", "vto", "kp", "u0", "lambda", "gamma", "phi", "tox", "ld", "cgso", "cgdo", "cgbo", "cj", "cjsw", "mj", "mjsw", "pb",
-    "fc", "is", "js", "rd", "rs", "rsh", "kf", "af", "tnom",
+    "fc", "is", "js", "rd", "rs", "rsh", "kf", "af", "tnom", "lmin", "lmax", "wmin", "wmax",
 ];
 /// Diode model parameters the built-in engine evaluates.
 const DIODE_PARAMS: &[&str] =
