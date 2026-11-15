@@ -1,0 +1,143 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 300" width="800" height="300" role="img" aria-label="Zooming from a wafer to a chip, to a cell, to a single transistor">
+  <style>
+    text { font-family: Inter, 'Segoe UI', Helvetica, Arial, sans-serif; fill: #8a90b0; font-size: 12px; }
+    .mono { font-family: 'JetBrains Mono', Consolas, Menlo, monospace; }
+    .hi { fill: #e6e8f2; }
+    .title { fill: #e6e8f2; font-size: 14px; font-weight: 600; }
+    .grid { stroke: #262c48; stroke-width: 1; fill: none; }
+    .axis { stroke: #3a4066; stroke-width: 1.5; fill: none; }
+    .wire { stroke: #c9cde6; stroke-width: 2; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+    .a { animation-iteration-count: infinite; animation-fill-mode: both; }
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+
+    .card { fill: #161a2c; stroke: #3a4066; stroke-width: 1.5; animation-name: lit; animation-duration: 8s; }
+    .s1 .card { animation-delay: 0s; } .s2 .card { animation-delay: 2s; }
+    .s3 .card { animation-delay: 4s; } .s4 .card { animation-delay: 6s; }
+    @keyframes lit { 0% { stroke: #3a4066; fill: #161a2c; } 3%, 22% { stroke: #9d90ff; fill: #1f2442; } 26%, 100% { stroke: #3a4066; fill: #161a2c; } }
+    .zoombox { animation: blink 2s infinite; }
+    @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+    .chan { animation: chan 2s infinite; }
+    @keyframes chan { 0%, 30% { opacity: 0; } 50%, 85% { opacity: 1; } 100% { opacity: 0; } }
+
+  </style>
+  <rect x="0.5" y="0.5" width="799" height="299" rx="14" fill="#0f1220" stroke="#262c48"/>
+  <g class="s1">
+    <rect class="card a" x="28" y="38" width="164" height="190" rx="12"/>
+    <g transform="translate(110 128)">
+      <circle cx="0" cy="0" r="62" fill="#1b2140" stroke="#5a6190" stroke-width="1.5"/>
+      <rect x="-39" y="-23" width="14" height="14" rx="1.5" fill="#2b3360" stroke="#3f4980"/>
+      <rect x="-39" y="-7" width="14" height="14" rx="1.5" fill="#2b3360" stroke="#3f4980"/>
+      <rect x="-39" y="9" width="14" height="14" rx="1.5" fill="#2b3360" stroke="#3f4980"/>
+      <rect x="-39" y="25" width="14" height="14" rx="1.5" fill="#2b3360" stroke="#3f4980"/>
+      <rect x="-23" y="-39" width="14" height="14" rx="1.5" fill="#2b3360" stroke="#3f4980"/>
+      <rect x="-23" y="-23" width="14" height="14" rx="1.5" fill="#2b3360" stroke="#3f4980"/>
+      <rect x="-23" y="-7" width="14" height="14" rx="1.5" fill="#2b3360" stroke="#3f4980"/>
+      <rect x="-23" y="9" width="14" height="14" rx="1.5" fill="#2b3360" stroke="#3f4980"/>
+      <rect x="-23" y="25" width="14" height="14" rx="1.5" fill="#2b3360" stroke="#3f4980"/>
+      <rect x="-23" y="41" width="14" height="14" rx="1.5" fill="#2b3360" stroke="#3f4980"/>
+      <rect x="-7" y="-39" width="14" height="14" rx="1.5" fill="#2b3360" stroke="#3f4980"/>
+      <rect x="-7" y="-23" width="14" height="14" rx="1.5" fill="#2b3360" stroke="#3f4980"/>
+      <rect x="-7" y="-7" width="14" height="14" rx="1.5" fill="#2b3360" stroke="#3f4980"/>
+      <rect x="-7" y="9" width="14" height="14" rx="1.5" fill="#2b3360" stroke="#3f4980"/>
+      <rect x="-7" y="25" width="14" height="14" rx="1.5" fill="#2b3360" stroke="#3f4980"/>
+      <rect x="-7" y="41" width="14" height="14" rx="1.5" fill="#2b3360" stroke="#3f4980"/>
+      <rect x="9" y="-39" width="14" height="14" rx="1.5" fill="#2b3360" stroke="#3f4980"/>
+      <rect x="9" y="-23" width="14" height="14" rx="1.5" fill="#2b3360" stroke="#3f4980"/>
+      <rect x="9" y="-7" width="14" height="14" rx="1.5" fill="#2b3360" stroke="#3f4980"/>
+      <rect x="9" y="9" width="14" height="14" rx="1.5" fill="#2b3360" stroke="#3f4980"/>
+      <rect x="9" y="25" width="14" height="14" rx="1.5" fill="#2b3360" stroke="#3f4980"/>
+      <rect x="25" y="-39" width="14" height="14" rx="1.5" fill="#2b3360" stroke="#3f4980"/>
+      <rect x="25" y="-23" width="14" height="14" rx="1.5" fill="#2b3360" stroke="#3f4980"/>
+      <rect x="25" y="-7" width="14" height="14" rx="1.5" fill="#2b3360" stroke="#3f4980"/>
+      <rect x="25" y="9" width="14" height="14" rx="1.5" fill="#2b3360" stroke="#3f4980"/>
+      <rect x="25" y="25" width="14" height="14" rx="1.5" fill="#2b3360" stroke="#3f4980"/>
+      <rect x="41" y="-23" width="14" height="14" rx="1.5" fill="#2b3360" stroke="#3f4980"/>
+      <rect x="41" y="-7" width="14" height="14" rx="1.5" fill="#2b3360" stroke="#3f4980"/>
+      <rect class="zoombox" x="9" y="-7" width="14" height="14" fill="none" stroke="#f5b83d" stroke-width="1.6"/>
+    </g>
+    <text x="110" y="254" text-anchor="middle" class="title">Wafer</text>
+    <text x="110" y="274" text-anchor="middle">300 mm, hundreds of chips</text>
+  </g>
+  <g class="s2">
+    <rect class="card a" x="218" y="38" width="164" height="190" rx="12"/>
+    <g transform="translate(300 128)">
+      <rect x="-60" y="-60" width="120" height="120" rx="4" fill="#1b2140" stroke="#5a6190" stroke-width="1.5"/>
+      <rect x="-50" y="-50" width="46" height="36" fill="#2b3360" stroke="#3f4980"/>
+      <rect x="4" y="-50" width="46" height="56" fill="#26304f" stroke="#3f4980"/>
+      <rect x="-50" y="-6" width="46" height="56" fill="#26304f" stroke="#3f4980"/>
+      <rect x="4" y="14" width="46" height="36" fill="#2b3360" stroke="#3f4980"/>
+      <path d="M-48 -12 V-8" stroke="#508cfa" stroke-width="1"/>
+      <path d="M-42 -12 V-8" stroke="#508cfa" stroke-width="1"/>
+      <path d="M-36 -12 V-8" stroke="#508cfa" stroke-width="1"/>
+      <path d="M-30 -12 V-8" stroke="#508cfa" stroke-width="1"/>
+      <path d="M-24 -12 V-8" stroke="#508cfa" stroke-width="1"/>
+      <path d="M-18 -12 V-8" stroke="#508cfa" stroke-width="1"/>
+      <path d="M-12 -12 V-8" stroke="#508cfa" stroke-width="1"/>
+      <path d="M-6 -12 V-8" stroke="#508cfa" stroke-width="1"/>
+      <path d="M0 -12 V-8" stroke="#508cfa" stroke-width="1"/>
+      <path d="M6 -12 V-8" stroke="#508cfa" stroke-width="1"/>
+      <path d="M12 -12 V-8" stroke="#508cfa" stroke-width="1"/>
+      <path d="M18 -12 V-8" stroke="#508cfa" stroke-width="1"/>
+      <path d="M24 -12 V-8" stroke="#508cfa" stroke-width="1"/>
+      <path d="M30 -12 V-8" stroke="#508cfa" stroke-width="1"/>
+      <path d="M36 -12 V-8" stroke="#508cfa" stroke-width="1"/>
+      <path d="M42 -12 V-8" stroke="#508cfa" stroke-width="1"/>
+      <path d="M48 -12 V-8" stroke="#508cfa" stroke-width="1"/>
+      <path d="M-2 -48 H2" stroke="#d264e6" stroke-width="1"/>
+      <path d="M-2 -40 H2" stroke="#d264e6" stroke-width="1"/>
+      <path d="M-2 -32 H2" stroke="#d264e6" stroke-width="1"/>
+      <path d="M-2 -24 H2" stroke="#d264e6" stroke-width="1"/>
+      <path d="M-2 -16 H2" stroke="#d264e6" stroke-width="1"/>
+      <path d="M-2 -8 H2" stroke="#d264e6" stroke-width="1"/>
+      <path d="M-2 0 H2" stroke="#d264e6" stroke-width="1"/>
+      <path d="M-2 8 H2" stroke="#d264e6" stroke-width="1"/>
+      <path d="M-2 16 H2" stroke="#d264e6" stroke-width="1"/>
+      <path d="M-2 24 H2" stroke="#d264e6" stroke-width="1"/>
+      <path d="M-2 32 H2" stroke="#d264e6" stroke-width="1"/>
+      <path d="M-2 40 H2" stroke="#d264e6" stroke-width="1"/>
+      <path d="M-2 48 H2" stroke="#d264e6" stroke-width="1"/>
+      <rect class="zoombox" x="12" y="20" width="16" height="16" fill="none" stroke="#f5b83d" stroke-width="1.6"/>
+    </g>
+    <text x="300" y="254" text-anchor="middle" class="title">Chip (die)</text>
+    <text x="300" y="274" text-anchor="middle">a few mm, blocks and wiring</text>
+  </g>
+  <g class="s3">
+    <rect class="card a" x="408" y="38" width="164" height="190" rx="12"/>
+    <g transform="translate(490 128)">
+      <rect x="-60" y="-60" width="120" height="120" rx="4" fill="#161a2c" stroke="#5a6190" stroke-width="1.5"/>
+      <rect x="-52" y="-56" width="104" height="52" fill="rgba(120,200,120,0.18)" stroke="#78c878" stroke-dasharray="3 2"/>
+      <rect x="-34" y="-44" width="68" height="26" fill="rgba(70,190,90,0.45)" stroke="#46be5a"/>
+      <rect x="-34" y="18" width="68" height="20" fill="rgba(70,190,90,0.45)" stroke="#46be5a"/>
+      <rect x="-4" y="-52" width="8" height="98" fill="rgba(230,60,60,0.65)" stroke="#e63c3c"/>
+      <rect x="-30" y="-58" width="16" height="116" fill="rgba(80,140,250,0.4)" stroke="#508cfa"/>
+      <rect x="14" y="-36" width="16" height="70" fill="rgba(80,140,250,0.4)" stroke="#508cfa"/>
+      <rect x="-26" y="-36" width="8" height="8" fill="#ebebeb"/>
+      <rect x="-26" y="24" width="8" height="8" fill="#ebebeb"/>
+      <rect x="18" y="-36" width="8" height="8" fill="#ebebeb"/>
+      <rect x="18" y="24" width="8" height="8" fill="#ebebeb"/>
+      <rect class="zoombox" x="-14" y="12" width="28" height="32" fill="none" stroke="#f5b83d" stroke-width="1.6"/>
+    </g>
+    <text x="490" y="254" text-anchor="middle" class="title">Cell</text>
+    <text x="490" y="274" text-anchor="middle">a few µm, a handful of transistors</text>
+  </g>
+  <g class="s4">
+    <rect class="card a" x="598" y="38" width="164" height="190" rx="12"/>
+    <g transform="translate(680 128)">
+      <rect x="-62" y="-10" width="124" height="62" fill="#2a2f4a" stroke="#5a6190" stroke-width="1.5"/>
+      <text x="0" y="44" text-anchor="middle" style="font-size:10px">p-substrate</text>
+      <path d="M-56 -10 V6 Q-56 14 -48 14 H-20 Q-14 14 -14 6 V-10 Z" fill="rgba(230,120,60,0.6)" stroke="#e6783c"/>
+      <path d="M14 -10 V6 Q14 14 20 14 H48 Q56 14 56 6 V-10 Z" fill="rgba(230,120,60,0.6)" stroke="#e6783c"/>
+      <text x="-35" y="6" text-anchor="middle" class="hi" style="font-size:10px">n+</text>
+      <text x="35" y="6" text-anchor="middle" class="hi" style="font-size:10px">n+</text>
+      <rect x="-16" y="-14" width="32" height="4" fill="#9aa3d0"/>
+      <rect x="-16" y="-34" width="32" height="20" fill="rgba(230,60,60,0.7)" stroke="#e63c3c"/>
+      <rect class="chan" x="-14" y="-10" width="28" height="3" fill="#5cc0ff"/>
+      <text x="-35" y="-18" text-anchor="middle" style="font-size:10px">S</text>
+      <text x="0" y="-40" text-anchor="middle" style="font-size:10px">G</text>
+      <text x="35" y="-18" text-anchor="middle" style="font-size:10px">D</text>
+    </g>
+    <text x="680" y="254" text-anchor="middle" class="title">Transistor</text>
+    <text x="680" y="274" text-anchor="middle">180 nm gate, the switch</text>
+  </g>
+  <path d="M198 128 h14" stroke="#5a6190" stroke-width="2" fill="none"/><path d="M208 122 l6 6 l-6 6" stroke="#5a6190" stroke-width="2" fill="none"/><path d="M388 128 h14" stroke="#5a6190" stroke-width="2" fill="none"/><path d="M398 122 l6 6 l-6 6" stroke="#5a6190" stroke-width="2" fill="none"/><path d="M578 128 h14" stroke="#5a6190" stroke-width="2" fill="none"/><path d="M588 122 l6 6 l-6 6" stroke="#5a6190" stroke-width="2" fill="none"/>
+</svg>

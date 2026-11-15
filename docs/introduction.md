@@ -9,6 +9,7 @@ layout, verify it and simulate it again with the parasitics, without leaving the
 or converting a single file.</p>
 <div class="ics-actions">
 <a class="ics-button primary" href="quick-tour.html">Take the quick tour</a>
+<a class="ics-button" href="learn/index.html">New to chip design? Start here</a>
 <a class="ics-button" href="demos.html">See the demos</a>
 <a class="ics-button" href="install.html">Install</a>
 <a class="ics-button" href="https://github.com/geniuskey/ic-studio">GitHub</a>
@@ -142,6 +143,9 @@ simulated, checked or exported from the command line, or driven by an agent.
 
 ## How to read this guide
 
+- New to chip design: the [Learn IC design](learn/index.md) course explains circuits,
+  transistors, logic gates, layout and amplifiers from scratch, with animated figures and
+  three hands-on tutorials.
 - New users: [Installation](install.md), then the [Quick tour](quick-tour.md), or
   **Help > Interactive Tutorial** in the app.
 - Showing IC Studio to others: the [Demo gallery](demos.md).

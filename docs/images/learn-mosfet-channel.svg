@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 360" width="800" height="360" role="img" aria-label="NMOS cross-section: as the gate voltage rises above the threshold voltage an inversion channel forms under the gate and electrons flow from source to drain">
+  <style>
+    text { font-family: Inter, 'Segoe UI', Helvetica, Arial, sans-serif; fill: #8a90b0; font-size: 12px; }
+    .mono { font-family: 'JetBrains Mono', Consolas, Menlo, monospace; }
+    .hi { fill: #e6e8f2; }
+    .title { fill: #e6e8f2; font-size: 14px; font-weight: 600; }
+    .grid { stroke: #262c48; stroke-width: 1; fill: none; }
+    .axis { stroke: #3a4066; stroke-width: 1.5; fill: none; }
+    .wire { stroke: #c9cde6; stroke-width: 2; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+    .a { animation-iteration-count: infinite; animation-fill-mode: both; }
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+
+    .gauge { animation-name: gauge; animation-duration: 9s; animation-timing-function: ease-in-out; transform-box: fill-box; transform-origin: 50% 100%; }
+    @keyframes gauge { 0% { transform: scaleY(0.02); } 35%, 68% { transform: scaleY(1); } 88%, 100% { transform: scaleY(0.02); } }
+    .gate { animation-name: gate; animation-duration: 9s; }
+    @keyframes gate { 0% { fill: rgba(230,60,60,0.35); } 35%, 68% { fill: rgba(230,60,60,0.9); } 88%, 100% { fill: rgba(230,60,60,0.35); } }
+    .dep { animation-name: dep; animation-duration: 9s; }
+    @keyframes dep { 0%, 3% { opacity: 0; } 10%, 80% { opacity: 1; } 86%, 100% { opacity: 0; } }
+    .chan, .on { animation-name: chan; animation-duration: 9s; }
+    @keyframes chan { 0%, 9% { opacity: 0; } 16%, 76% { opacity: 1; } 82%, 100% { opacity: 0; } }
+    .off { animation-name: off; animation-duration: 9s; }
+    @keyframes off { 0%, 9% { opacity: 1; } 14%, 78% { opacity: 0; } 84%, 100% { opacity: 1; } }
+    .e { animation: flow 1.6s linear infinite; }
+    @keyframes flow { from { transform: translateX(0); } to { transform: translateX(220px); } }
+    .plus { fill: #e6e8f2; font-size: 13px; font-weight: 700; }
+
+  </style>
+  <rect x="0.5" y="0.5" width="799" height="359" rx="14" fill="#0f1220" stroke="#262c48"/>
+  <!-- gauge -->
+  <rect x="24" y="20" width="150" height="320" rx="10" fill="#161a2c"/>
+  <text x="99" y="46" text-anchor="middle" class="title">V<tspan dy="4" style="font-size:10px">GS</tspan></text>
+  <rect x="80" y="70" width="38" height="220" rx="6" fill="#0f1220" stroke="#3a4066"/>
+  <rect class="gauge a" x="84" y="74" width="30" height="212" rx="4" fill="#9d90ff"/>
+  <path d="M74 233 H124" stroke="#f5b83d" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <text x="128" y="237" style="fill:#f5b83d">V<tspan dy="3" style="font-size:9px">th</tspan></text>
+  <text x="70" y="78" text-anchor="end">1.8 V</text>
+  <text x="70" y="290" text-anchor="end">0</text>
+  <text x="99" y="316" text-anchor="middle">gate voltage</text>
+
+  <!-- cross-section -->
+  <rect x="190" y="20" width="586" height="320" rx="10" fill="#161a2c"/>
+  <text x="210" y="46" class="title">NMOS cross-section</text>
+  <rect x="210" y="190" width="546" height="130" fill="#2a2f4a" stroke="#5a6190"/>
+  <text x="483" y="306" text-anchor="middle">p-type substrate (holes are the majority carriers)</text>
+  <path d="M220 190 V232 Q220 252 240 252 H330 Q350 252 350 232 V190 Z" fill="rgba(230,120,60,0.55)" stroke="#e6783c"/>
+  <path d="M616 190 V232 Q616 252 636 252 H726 Q746 252 746 232 V190 Z" fill="rgba(230,120,60,0.55)" stroke="#e6783c"/>
+  <text x="285" y="236" text-anchor="middle" class="hi">n+ source</text>
+  <text x="681" y="236" text-anchor="middle" class="hi">n+ drain</text>
+  <path class="dep a" d="M350 192 H616 V236 Q483 250 350 236 Z" fill="rgba(245,184,61,0.10)" stroke="#f5b83d" stroke-dasharray="4 3"/>
+  <rect x="346" y="178" width="274" height="12" fill="#9aa3d0"/>
+  <text x="626" y="188" style="font-size:10px">thin oxide</text>
+  <rect class="gate a" x="346" y="120" width="274" height="58" stroke="#e63c3c"/>
+  <text x="483" y="154" text-anchor="middle" class="hi">poly gate</text>
+  <g class="gate-plus on a"><text class="plus" x="370" y="138">+</text><text class="plus" x="430" y="138">+</text><text class="plus" x="490" y="138">+</text><text class="plus" x="550" y="138">+</text><text class="plus" x="600" y="138">+</text></g>
+  <path class="wire" d="M285 190 V80 M483 120 V80 M681 190 V80"/>
+  <text x="285" y="72" text-anchor="middle" class="hi">S (0 V)</text>
+  <text x="483" y="72" text-anchor="middle" class="hi">G</text>
+  <text x="681" y="72" text-anchor="middle" class="hi">D (+)</text>
+  <g class="chan a">
+    <rect x="340" y="191" width="286" height="9" fill="rgba(92,192,255,0.55)"/>
+    <defs><clipPath id="ch"><rect x="342" y="190" width="282" height="12"/></clipPath></defs>
+    <g clip-path="url(#ch)"><circle class="e" cx="120" cy="196" r="3" fill="#e6e8f2"/><circle class="e" cx="142" cy="196" r="3" fill="#e6e8f2"/><circle class="e" cx="164" cy="196" r="3" fill="#e6e8f2"/><circle class="e" cx="186" cy="196" r="3" fill="#e6e8f2"/><circle class="e" cx="208" cy="196" r="3" fill="#e6e8f2"/><circle class="e" cx="230" cy="196" r="3" fill="#e6e8f2"/><circle class="e" cx="252" cy="196" r="3" fill="#e6e8f2"/><circle class="e" cx="274" cy="196" r="3" fill="#e6e8f2"/><circle class="e" cx="296" cy="196" r="3" fill="#e6e8f2"/><circle class="e" cx="318" cy="196" r="3" fill="#e6e8f2"/><circle class="e" cx="340" cy="196" r="3" fill="#e6e8f2"/><circle class="e" cx="362" cy="196" r="3" fill="#e6e8f2"/><circle class="e" cx="384" cy="196" r="3" fill="#e6e8f2"/><circle class="e" cx="406" cy="196" r="3" fill="#e6e8f2"/><circle class="e" cx="428" cy="196" r="3" fill="#e6e8f2"/><circle class="e" cx="450" cy="196" r="3" fill="#e6e8f2"/><circle class="e" cx="472" cy="196" r="3" fill="#e6e8f2"/><circle class="e" cx="494" cy="196" r="3" fill="#e6e8f2"/><circle class="e" cx="516" cy="196" r="3" fill="#e6e8f2"/><circle class="e" cx="538" cy="196" r="3" fill="#e6e8f2"/><circle class="e" cx="560" cy="196" r="3" fill="#e6e8f2"/><circle class="e" cx="582" cy="196" r="3" fill="#e6e8f2"/><circle class="e" cx="604" cy="196" r="3" fill="#e6e8f2"/><circle class="e" cx="626" cy="196" r="3" fill="#e6e8f2"/></g>
+    <path d="M520 268 H600" stroke="#5cc0ff" stroke-width="2"/><path d="M594 262 l8 6 l-8 6" stroke="#5cc0ff" stroke-width="2" fill="none"/>
+    <text x="510" y="272" text-anchor="end" style="fill:#5cc0ff">electrons flow S → D, current I<tspan dy="3" style="font-size:9px">D</tspan></text>
+  </g>
+  <text class="off a" x="756" y="46" text-anchor="end" style="fill:#e6e8f2">V<tspan dy="3" style="font-size:9px">GS</tspan><tspan dy="-3"> &lt; V</tspan><tspan dy="3" style="font-size:9px">th</tspan><tspan dy="-3">: no channel, the switch is OFF</tspan></text>
+  <text class="on a" x="756" y="46" text-anchor="end" style="fill:#5cc0ff">V<tspan dy="3" style="font-size:9px">GS</tspan><tspan dy="-3"> &gt; V</tspan><tspan dy="3" style="font-size:9px">th</tspan><tspan dy="-3">: an n-type channel forms, the switch is ON</tspan></text>
+</svg>

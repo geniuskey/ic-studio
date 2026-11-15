@@ -2,6 +2,19 @@
 
 [소개](introduction.md)
 
+# IC 설계 배우기
+
+- [여기서 시작하세요](learn/index.md)
+- [10분 만에 보는 회로 기초](learn/circuits.md)
+- [MOSFET](learn/mosfet.md)
+- [CMOS 논리 회로](learn/cmos-logic.md)
+- [실습: 인버터 설계](learn/tutorial-inverter.md)
+- [회로에서 실리콘으로](learn/layout-basics.md)
+- [실습: 인버터 레이아웃](learn/tutorial-layout.md)
+- [아날로그 기본 블록](learn/analog-basics.md)
+- [실습: 증폭기 설계](learn/tutorial-amplifier.md)
+- [용어집](learn/glossary.md)
+
 # 시작하기
 
 - [설치](install.md)

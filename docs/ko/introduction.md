@@ -9,6 +9,7 @@
 하나도 변환할 필요가 없습니다.</p>
 <div class="ics-actions">
 <a class="ics-button primary" href="quick-tour.html">빠른 둘러보기</a>
+<a class="ics-button" href="learn/index.html">반도체 설계가 처음이라면</a>
 <a class="ics-button" href="demos.html">데모 보기</a>
 <a class="ics-button" href="install.html">설치</a>
 <a class="ics-button" href="https://github.com/geniuskey/ic-studio">GitHub</a>
@@ -140,6 +141,8 @@ cargo run --release -- --demo --cell full_adder --workspace layout
 
 ## 이 가이드 읽는 법
 
+- 반도체 설계가 처음인 경우: [IC 설계 배우기](learn/index.md) 과정이 회로, 트랜지스터,
+  논리 게이트, 레이아웃, 증폭기를 애니메이션 그림과 세 개의 실습으로 처음부터 설명합니다.
 - 처음 사용하는 경우: [설치](install.md) 후 [빠른 둘러보기](quick-tour.md), 또는 앱에서
   **Help > Interactive Tutorial**.
 - IC Studio를 다른 사람에게 시연하는 경우: [데모 갤러리](demos.md).
