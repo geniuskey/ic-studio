@@ -1,3 +1,5 @@
+<!-- seo title="빠른 둘러보기: 회로도부터 포스트 레이아웃 시뮬레이션까지" description="IC Studio 둘러보기: 회로 시뮬레이션, 계층 레이아웃, 자동 배치 배선, DRC와 LVS 검증, 기생 성분을 반영한 재시뮬레이션까지." -->
+
 # 빠른 둘러보기
 
 이 둘러보기에서는 데모 프로젝트로 시뮬레이션, 계층형 레이아웃, 자동 배치 배선, 검증, 포스트
@@ -32,7 +34,7 @@ cargo run --release -- --demo
    확인합니다.
 4. `Ctrl+2`를 눌러 회로도로 돌아갑니다. 동작점의 노드 전압과 드레인 전류가 회로도에 표시됩니다.
 
-![동작점 주석이 표시된 회로도](../screenshots/07_schematic_op.png)
+![동작점 주석이 표시된 회로도](../screenshots/07_schematic_op.webp)
 
 `rc_lowpass`(AC: **f -3 dB** 열에 코너 주파수가 표시됨)와 `ota5t`(AC: 개루프 이득과 단위 이득
 주파수)도 실행해 보세요.
@@ -54,7 +56,7 @@ cargo run --release -- --demo
    곳이 플라이라인으로 표시됩니다.
 4. **Verify > Route Flylines**를 선택합니다. 모든 넷이 메탈로 배선됩니다.
 
-![생성 후 배선된 전가산기](../screenshots/demo_pnr_routed.png)
+![생성 후 배선된 전가산기](../screenshots/demo_pnr_routed.webp)
 
 ## 4. 검증
 
@@ -64,7 +66,7 @@ cargo run --release -- --demo
 4. `cmos_inverter`를 열고 LVS를 실행합니다. 의도적으로 넣은 차이가 나열됩니다. 항목을 클릭하면 해당
    위치로 확대됩니다.
 
-![LVS 결과](../screenshots/12_layout_lvs.png)
+![LVS 결과](../screenshots/12_layout_lvs.webp)
 
 ## 5. 포스트 레이아웃 시뮬레이션
 

@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "docs/**"
+      - "scripts/guide-seo.py"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -22,11 +23,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: peaceiris/actions-mdbook@v2
         with:
           mdbook-version: "0.4.52"
       - run: mdbook build docs
       - run: mdbook build docs/ko
+      - run: python3 scripts/guide-seo.py target/guide
       - uses: actions/upload-pages-artifact@v3
         with:
           path: target/guide

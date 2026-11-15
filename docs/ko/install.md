@@ -1,3 +1,5 @@
+<!-- seo title="IC Studio 설치 (Windows, macOS, Linux)" description="Windows, macOS, Linux에서 명령 한 줄로 IC Studio를 설치하거나 Rust로 소스에서 빌드하는 방법. SPICE 시뮬레이션용 ngspice 설정 포함." -->
+
 # 설치
 
 릴리스 빌드를 명령 하나로 설치하거나, Rust 툴체인으로 IC Studio를 소스에서 빌드할 수 있습니다.

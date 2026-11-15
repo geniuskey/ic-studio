@@ -1,3 +1,5 @@
+<!-- seo title="IC 레이아웃 편집기: 레이어, 계층, GDSII" description="IC Studio 레이아웃 편집: 레이어별 도형 그리기, 편집과 정렬, 계층 구성, SKILL 스크립트, GDSII, LEF, DEF 파일 교환." -->
+
 # 레이아웃 편집기
 
 셀의 레이아웃 뷰를 엽니다(셀이 열려 있으면 `Ctrl+4`). 레이아웃 좌표는 데이터베이스 단위(dbu)이며,
@@ -11,7 +13,7 @@ generic 테크놀로지에서 1 dbu = 1 nm이고 y축은 위쪽을 향합니다.
 **Verify** 메뉴에 레이아웃 명령이 들어갑니다. 모든 항목에 바인드키가 표시되며, 명령 팔레트에는
 "Layout <menu>: <item>" 형식으로 나열됩니다.
 
-![레이아웃 편집기](../screenshots/06_layout.png)
+![레이아웃 편집기](../screenshots/06_layout.webp)
 
 - **왼쪽 패널**: **Hierarchy**(표시 레벨과 배치된 셀의 트리), **Layers**, 현재 도구의 옵션.
 - **툴바**: 실행 취소 / 다시 실행, 도구(**Select**, **Stretch**, **Move**, **Copy**,
@@ -196,7 +198,7 @@ generic 테크놀로지에서 1 dbu = 1 nm이고 y축은 위쪽을 향합니다.
 
 ## 계층
 
-![계층](../screenshots/08_layout_hierarchy.png)
+![계층](../screenshots/08_layout_hierarchy.webp)
 
 ### 셀 또는 배열 배치
 
@@ -217,7 +219,7 @@ generic 테크놀로지에서 1 dbu = 1 nm이고 y축은 위쪽을 향합니다.
 
 큰 설계도 빠르게 유지됩니다. 화면에서 작은 셀은 박스로, 아주 작은 도형은 점으로 축약됩니다.
 
-![인버터 8192개](../screenshots/09_layout_tiles.png)
+![인버터 8192개](../screenshots/09_layout_tiles.webp)
 
 계층 트리(**Edit > Hierarchy Tree**, `Shift+T`)는 현재 셀에 배치된 셀을 개수와 함께 나열하며,
 클릭하면 그 셀을 엽니다. **Tools > Hierarchy Browser**는 프로젝트 전체의 레이아웃 계층과 사용처

@@ -1,3 +1,5 @@
+<!-- seo title="데모 갤러리: IC 설계 예제" description="IC Studio에 포함된 아날로그/디지털 IC 설계 예제: OTA, 전가산기, SRAM 어레이, 배선된 레이아웃과 데모 스크립트." -->
+
 # 데모 갤러리
 
 아래의 모든 예제는 IC Studio에 기본으로 포함되어 있습니다. 다음 명령으로 한꺼번에 엽니다.
@@ -39,7 +41,7 @@ cargo run --release -- --demo
 
 <div class="ics-card">
 
-![자동 배치 배선 후의 전가산기](../screenshots/demo_pnr_routed.png)
+![자동 배치 배선 후의 전가산기](../screenshots/demo_pnr_routed.webp)
 
 ### `full_adder` <span class="ics-tag">자동 P&amp;R</span>
 
@@ -50,7 +52,7 @@ cargo run --release -- --demo
 
 <div class="ics-card">
 
-![매칭 배치를 적용한 2단 OTA](../screenshots/demo_ota2s.png)
+![매칭 배치를 적용한 2단 OTA](../screenshots/demo_ota2s.webp)
 
 ### `ota2s` <span class="ics-tag">자동 P&amp;R</span> <span class="ics-tag">아날로그</span>
 
@@ -61,7 +63,7 @@ common-centroid 순서로 배치한 뒤 배선합니다. 개루프 이득은 약
 
 <div class="ics-card">
 
-![전가산기 과도 해석 시뮬레이션](../screenshots/demo_full_adder_sim.png)
+![전가산기 과도 해석 시뮬레이션](../screenshots/demo_full_adder_sim.webp)
 
 ### `full_adder` 시뮬레이션
 
@@ -71,7 +73,7 @@ common-centroid 순서로 배치한 뒤 배선합니다. 개루프 이득은 약
 
 <div class="ics-card">
 
-![8 x 8 SRAM 어레이](../screenshots/demo_sram_array.png)
+![8 x 8 SRAM 어레이](../screenshots/demo_sram_array.webp)
 
 ### `sram_array`
 
@@ -82,7 +84,7 @@ common-centroid 순서로 배치한 뒤 배선합니다. 개루프 이득은 약
 
 <div class="ics-card">
 
-![8 x 8 이미지 센서 픽셀 어레이](../screenshots/demo_pixel_array.png)
+![8 x 8 이미지 센서 픽셀 어레이](../screenshots/demo_pixel_array.webp)
 
 ### `pixel_array`
 
@@ -93,7 +95,7 @@ common-centroid 순서로 배치한 뒤 배선합니다. 개루프 이득은 약
 
 <div class="ics-card">
 
-![2단계 계층의 인버터 8192개](../screenshots/09_layout_tiles.png)
+![2단계 계층의 인버터 8192개](../screenshots/09_layout_tiles.webp)
 
 ### `inv_tiles`
 
@@ -182,7 +184,7 @@ common-centroid 순서로 배치한 뒤 배선합니다. 개루프 이득은 약
 | 7 | 레이아웃에서 소자 클릭 후 `Ctrl+2` | 회로도에서 같은 소자가 선택됨(크로스 프로빙) |
 | 8 | **Run DRC**, **Run LVS** | 위반 없음, 레이아웃이 회로도와 일치 |
 
-![배선 전 플라이라인이 표시된 배치](../screenshots/demo_pnr_placed.png)
+![배선 전 플라이라인이 표시된 배치](../screenshots/demo_pnr_placed.webp)
 
 <div class="callout say">
 
@@ -269,7 +271,7 @@ Claude Code 같은 에이전트에 [MCP 서버](mcp.md)를 등록한 상태에�
 와이어, DRC와 LVS 결과, AC 플롯이 차례로 나타나며, 각 단계는 콘솔에 `MCP · <tool> ...`로 기록됩니다.
 모든 레이아웃 단계는 `Ctrl+Z`로 되돌릴 수 있습니다.
 
-![라이브 모드에서 회로도를 작성하는 에이전트](../screenshots/demo_mcp_live.png)
+![라이브 모드에서 회로도를 작성하는 에이전트](../screenshots/demo_mcp_live.webp)
 
 <div class="callout say">
 

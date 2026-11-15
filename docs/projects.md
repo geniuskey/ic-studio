@@ -1,10 +1,12 @@
+<!-- seo title="Projects, Libraries and Cells" description="How IC Studio organizes designs into projects, libraries, cells and views, plus a tour of the window, menus, command palette and project files." -->
+
 # Projects, libraries and cells
 
 ![A project holds libraries, a library holds cells, and each cell has schematic, simulation and layout views](images/hierarchy.svg)
 
 ## The window
 
-![Project home](screenshots/02_project_home.png)
+![Project home](screenshots/02_project_home.webp)
 
 - **Menu bar** (see **Menus** below) with a breadcrumb `project > library > cell`. A dot after the cell name means unsaved changes. On the
   right, **Search commands...** opens the command palette.

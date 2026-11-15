@@ -101,6 +101,7 @@ pre > code.hljs {
 }
 
 .content img {
+    height: auto;
     border-radius: 10px;
     box-shadow: var(--ics-shadow);
     border: 1px solid var(--ics-card-border);

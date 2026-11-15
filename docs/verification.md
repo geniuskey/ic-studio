@@ -1,3 +1,5 @@
+<!-- seo title="DRC, LVS and Parasitic Extraction" description="Verify IC layouts in IC Studio: design rule check (DRC), connectivity extraction, layout versus schematic (LVS), parasitic extraction and IR drop / EM analysis." -->
+
 # Verification: DRC, extraction and LVS
 
 The verification tools are in the **Verify** menu and in the right panel of the Layout
@@ -9,7 +11,7 @@ the panel notes that results are out of date.
 
 ![A spacing violation is marked, the shape is moved and the check comes back clean](images/drc-check.svg)
 
-![DRC](screenshots/11_layout_drc.png)
+![DRC](screenshots/11_layout_drc.webp)
 
 1. Open the cell's layout.
 2. Press **Run DRC** in the **Design Rule Check** section (or **Verify > Run DRC**).
@@ -100,7 +102,7 @@ How the extractor works:
 
 ![The layout and schematic netlists side by side, devices matched one by one](images/lvs-compare.svg)
 
-![LVS](screenshots/12_layout_lvs.png)
+![LVS](screenshots/12_layout_lvs.webp)
 
 1. The cell needs both a schematic and a layout. Device names do not have to match, but
    labels on the layout's pins (`in`, `out`, `vdd`, ...) help: equal net names anchor

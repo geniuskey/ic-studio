@@ -11,19 +11,19 @@ schematics, checked against them (LVS) and their parasitics flow back into simul
 
 **[User guide](https://geniuskey.github.io/ic-studio/)** · [Quick tour](https://geniuskey.github.io/ic-studio/quick-tour.html) · [Demo gallery and scripts](https://geniuskey.github.io/ic-studio/demos.html) · [한국어 가이드](https://geniuskey.github.io/ic-studio/ko/)
 
-![Auto place and route of a 28-transistor full adder](docs/screenshots/demo_pnr_routed.png)
+![Auto place and route of a 28-transistor full adder](docs/screenshots/demo_pnr_routed.webp)
 
 | Schematic with DC operating point back-annotation | Transient / DC sweep waveforms |
 |---|---|
-| ![Schematic](docs/screenshots/07_schematic_op.png) | ![Simulation](docs/screenshots/04_simulation.png) |
+| ![Schematic](docs/screenshots/07_schematic_op.webp) | ![Simulation](docs/screenshots/04_simulation.webp) |
 | **Hierarchical layout: 8192 inverters, level of detail** | **Parametric devices (PCells)** |
-| ![Hierarchy](docs/screenshots/09_layout_tiles.png) | ![PCells](docs/screenshots/10_layout_pcells.png) |
+| ![Hierarchy](docs/screenshots/09_layout_tiles.webp) | ![PCells](docs/screenshots/10_layout_pcells.webp) |
 | **Common-centroid matched OTA, placed and routed automatically** | **8 × 8 SRAM array** |
-| ![OTA](docs/screenshots/demo_ota2s.png) | ![SRAM](docs/screenshots/demo_sram_array.png) |
+| ![OTA](docs/screenshots/demo_ota2s.webp) | ![SRAM](docs/screenshots/demo_sram_array.webp) |
 | **Layout generated from the schematic, with flylines** | **Rule-deck DRC on placed cells** |
-| ![SDL](docs/screenshots/13_layout_sdl.png) | ![DRC](docs/screenshots/11_layout_drc.png) |
+| ![SDL](docs/screenshots/13_layout_sdl.webp) | ![DRC](docs/screenshots/11_layout_drc.webp) |
 | **Monte Carlo with spec statistics, yield and histogram** | **Visual DRC rule designer with self-tested rules** |
-| ![Monte Carlo](docs/screenshots/tool_monte_carlo.png) | ![Rule designer](docs/screenshots/tool_rule_designer.png) |
+| ![Monte Carlo](docs/screenshots/tool_monte_carlo.webp) | ![Rule designer](docs/screenshots/tool_rule_designer.webp) |
 
 ## Install
 

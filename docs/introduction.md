@@ -1,6 +1,8 @@
+<!-- seo title="IC Studio: Open-Source Full-Custom IC Design Software" description="Open-source full-custom IC design in one native app: schematic capture, SPICE simulation, layout, auto place and route, DRC, LVS and parasitic extraction." -->
+
 <div class="ics-hero">
 <span class="ics-eyebrow">Open-source · full-custom IC design</span>
-<p class="ics-title">From schematic to sign-off,<br>in one native app.</p>
+<h1 class="ics-title">From schematic to sign-off,<br>in one native app.</h1>
 <p class="ics-lede">IC Studio puts schematic capture, SPICE simulation, layout, automatic place and route,
 DRC, LVS and parasitic extraction on one design database. Draw a circuit, generate its
 layout, verify it and simulate it again with the parasitics, without leaving the window
@@ -13,7 +15,7 @@ or converting a single file.</p>
 </div>
 </div>
 
-![Auto place and route: a 28-transistor full adder generated from its schematic, LVS clean](screenshots/demo_pnr_routed.png)
+![Auto place and route: a 28-transistor full adder generated from its schematic, LVS clean](screenshots/demo_pnr_routed.webp)
 
 <div class="ics-stats">
 <div class="ics-stat"><b>28T</b><span>full adder placed and routed automatically, DRC and LVS clean</span></div>

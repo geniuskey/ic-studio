@@ -1,3 +1,5 @@
+<!-- seo title="IC Layout Editor: Layers, Hierarchy, GDSII" description="Edit IC layout in IC Studio: draw on layers, edit and align shapes, build hierarchy, run SKILL scripts and exchange GDSII, LEF and DEF files." -->
+
 # Layout editor
 
 Open a cell's layout view (or press `Ctrl+4` with a cell open). Layout coordinates are
@@ -12,7 +14,7 @@ menu bar adds **Create** and **Options** menus, and **Edit**, **View** and **Ver
 the layout commands; every item shows its bindkey, and the command palette lists them as
 "Layout <menu>: <item>".
 
-![Layout editor](screenshots/06_layout.png)
+![Layout editor](screenshots/06_layout.webp)
 
 - **Left panel**: **Hierarchy** (drawn levels and the tree of placed cells), **Layers**,
   and the options of the current tool.
@@ -202,7 +204,7 @@ listed as "Layout Assist: <item>".
 
 ## Hierarchy
 
-![Hierarchy](screenshots/08_layout_hierarchy.png)
+![Hierarchy](screenshots/08_layout_hierarchy.webp)
 
 ### Placing a cell or an array
 
@@ -226,7 +228,7 @@ labelled boxes. Missing cells are drawn in red.
 Large designs stay fast: cells that are small on screen collapse to boxes and tiny shapes
 to dots.
 
-![8192 inverters](screenshots/09_layout_tiles.png)
+![8192 inverters](screenshots/09_layout_tiles.webp)
 
 The hierarchy tree (**Edit > Hierarchy Tree**, `Shift+T`) lists the cells placed in the
 current cell with their counts; click one to open it. **Tools > Hierarchy Browser** shows

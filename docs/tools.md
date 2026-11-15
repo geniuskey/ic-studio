@@ -1,3 +1,5 @@
+<!-- seo title="Design Tools: Waveform Calculator, Sweeps, Optimizer" description="IC Studio design tools: waveform calculator, corner and sweep manager, optimizer, results and net browsers, layout generators, dummy fill and OPC." -->
+
 # Tools
 
 The **Tools** menu collects the sub-tools, modelled on their Cadence Virtuoso
@@ -25,7 +27,7 @@ back; the choice is remembered per tool. Every tool is also in the command palet
 
 ## Waveform Calculator
 
-![Waveform Calculator](screenshots/tool_calculator.png)
+![Waveform Calculator](screenshots/tool_calculator.webp)
 
 **Tools > Waveform Calculator** (also **Simulation > Waveform Calculator**) evaluates
 expressions on the active cell's simulation results.
@@ -63,7 +65,7 @@ Examples on the `rc_lowpass` demo: `bandwidth(v(out)/v(in))` is about 159 kHz;
 
 ## Corner / Sweep Manager
 
-![Corner / Sweep Manager](screenshots/tool_sweep.png)
+![Corner / Sweep Manager](screenshots/tool_sweep.webp)
 
 **Tools > Corner / Sweep Manager** runs the active cell's simulation setup over every
 combination of:
@@ -88,7 +90,7 @@ table to highlight its trace. The setup is saved with the cell (`sim.json`).
 
 ### Monte Carlo
 
-![Monte Carlo](screenshots/tool_monte_carlo.png)
+![Monte Carlo](screenshots/tool_monte_carlo.webp)
 
 The **Monte Carlo** section repeats every point **Runs** times with random parameter
 values (the same samples at every corner and temperature, reproducible with **Seed**).
@@ -162,7 +164,7 @@ select its devices in the schematic.
 
 ## Hierarchy Browser
 
-![Hierarchy Browser](screenshots/tool_hierarchy.png)
+![Hierarchy Browser](screenshots/tool_hierarchy.webp)
 
 **Tools > Hierarchy Browser** shows every layout of the project as a tree from its top
 cells (layouts no other layout places), with placement counts (arrays count every
@@ -175,7 +177,7 @@ form (**Edit > Hierarchy Tree**, `Shift+T`) lists only the cells under the curre
 
 ## Net Browser
 
-![Net Browser](screenshots/tool_net_browser.png)
+![Net Browser](screenshots/tool_net_browser.webp)
 
 **Tools > Net Browser** lists the nets of the active layout's extraction (it extracts the
 nets when there is no extraction yet; **Extract** runs it again):
@@ -199,7 +201,7 @@ that `u` / `Ctrl+Z` undoes.
 
 ### Guard Ring
 
-![Guard ring around a cell](screenshots/tool_guard_ring.png)
+![Guard ring around a cell](screenshots/tool_guard_ring.webp)
 
 Surrounds an area with a diffusion ring: a **p+ substrate ring** (for NMOS) or an **n+
 ring in nwell** (for PMOS, with an nwell covering the ring and the area). The ring has its
@@ -220,7 +222,7 @@ Cut size, spacing and enclosure come from the via definition.
 
 ### Matched Placement
 
-![Matched placement](screenshots/tool_matched.png)
+![Matched placement](screenshots/tool_matched.webp)
 
 Re-places matched MOS devices of the layout (for example a differential pair or a current
 mirror) as unit devices in a pattern:
@@ -252,7 +254,7 @@ afterwards** to route them again.
 
 ## DRC Rule Designer
 
-![DRC Rule Designer](screenshots/tool_rule_designer.png)
+![DRC Rule Designer](screenshots/tool_rule_designer.webp)
 
 **Tools > DRC Rule Designer** (also **Rule Designer...** in the **Rule deck** section of
 the layout inspector) edits the technology's [DRC deck](technology.md#drc-rule-deck) as
@@ -292,7 +294,7 @@ deck and counts violations per rule), **Apply to technology** and **Apply & run 
 
 ## Stream Layer Map
 
-![Stream Layer Map](screenshots/tool_stream_map.png)
+![Stream Layer Map](screenshots/tool_stream_map.webp)
 
 **Tools > Stream Layer Map** sets which GDSII / OASIS layer and datatype each technology
 layer is written as and read from, like a Virtuoso XStream layer map. Each row maps a
@@ -315,7 +317,7 @@ The map applies to **File > Import / Export**, `ics gds`, `ics import-gds` and t
 
 ## Dummy Fill
 
-![Dummy Fill](screenshots/tool_dummy_fill.png)
+![Dummy Fill](screenshots/tool_dummy_fill.webp)
 
 **Tools > Dummy Fill** adds grid-aligned fill squares to a layer, to meet a
 [density rule](technology.md#rules).

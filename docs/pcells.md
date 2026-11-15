@@ -1,6 +1,8 @@
+<!-- seo title="PCells and Custom Devices" description="Use IC Studio's parametric cells (PCells) to generate correct MOSFETs, resistors and capacitors for generic180, SKY130 or any technology, or define your own." -->
+
 # PCells and custom devices
 
-![PCells](screenshots/10_layout_pcells.png)
+![PCells](screenshots/10_layout_pcells.webp)
 
 IC Studio has six built-in parametric cells (PCells). They are drawn by code from the
 technology, so the same parameters give a correct device in generic180, SKY130 or any

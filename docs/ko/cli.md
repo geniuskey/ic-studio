@@ -1,3 +1,5 @@
+<!-- seo title="명령줄 도구 (ics)" description="ics CLI로 터미널에서 IC Studio 자동화: 프로젝트 생성, 넷리스트, 시뮬레이션, DRC와 LVS, GDS 내보내기를 배치나 CI에서 JSON 출력으로." -->
+
 # 명령줄 (`ics`)
 
 `ics`는 데스크톱 앱과 같은 프로젝트 폴더를 다룹니다. 스크립트, 일괄 실행, CI에 사용하며,

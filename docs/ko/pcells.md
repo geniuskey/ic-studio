@@ -1,6 +1,8 @@
+<!-- seo title="PCell과 사용자 정의 소자" description="IC Studio의 파라메트릭 셀(PCell)로 generic180, SKY130 등 어떤 공정에서도 올바른 MOSFET, 저항, 커패시터를 생성하거나 직접 정의하기." -->
+
 # PCell과 사용자 정의 소자
 
-![PCell](../screenshots/10_layout_pcells.png)
+![PCell](../screenshots/10_layout_pcells.webp)
 
 IC Studio에는 여섯 가지 내장 파라미터 셀(PCell)이 있습니다. PCell은 테크놀로지 정보를 바탕으로
 코드가 그리므로, 같은 파라미터로 generic180, SKY130 또는 다른 어떤 PDK에서도 올바른 소자를

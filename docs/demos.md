@@ -1,3 +1,5 @@
+<!-- seo title="Demo Gallery: Example IC Designs" description="Example analog and digital IC designs that ship with IC Studio: OTAs, full adders, SRAM arrays, routed layouts and demo scripts you can open in one click." -->
+
 # Demo gallery
 
 Every example below ships with IC Studio. Open them all with:
@@ -40,7 +42,7 @@ IC Studio to an audience.
 
 <div class="ics-card">
 
-![Full adder after automatic place and route](screenshots/demo_pnr_routed.png)
+![Full adder after automatic place and route](screenshots/demo_pnr_routed.webp)
 
 ### `full_adder` <span class="ics-tag">auto P&amp;R</span>
 
@@ -52,7 +54,7 @@ clean.
 
 <div class="ics-card">
 
-![Two-stage OTA with matched placement](screenshots/demo_ota2s.png)
+![Two-stage OTA with matched placement](screenshots/demo_ota2s.webp)
 
 ### `ota2s` <span class="ics-tag">auto P&amp;R</span> <span class="ics-tag">analog</span>
 
@@ -64,7 +66,7 @@ open-loop gain.
 
 <div class="ics-card">
 
-![Full adder transient simulation](screenshots/demo_full_adder_sim.png)
+![Full adder transient simulation](screenshots/demo_full_adder_sim.webp)
 
 ### `full_adder` simulation
 
@@ -75,7 +77,7 @@ waveforms are the truth table.
 
 <div class="ics-card">
 
-![8 x 8 SRAM array](screenshots/demo_sram_array.png)
+![8 x 8 SRAM array](screenshots/demo_sram_array.webp)
 
 ### `sram_array`
 
@@ -86,7 +88,7 @@ straps. The bit cell itself is DRC and LVS clean and simulates a write and hold.
 
 <div class="ics-card">
 
-![8 x 8 image sensor pixel array](screenshots/demo_pixel_array.png)
+![8 x 8 image sensor pixel array](screenshots/demo_pixel_array.webp)
 
 ### `pixel_array`
 
@@ -97,7 +99,7 @@ over an n+ / p-substrate photodiode) with labelled rows and columns.
 
 <div class="ics-card">
 
-![8192 inverters in two levels of hierarchy](screenshots/09_layout_tiles.png)
+![8192 inverters in two levels of hierarchy](screenshots/09_layout_tiles.webp)
 
 ### `inv_tiles`
 
@@ -189,7 +191,7 @@ Slower, for an audience that cares about layout. Use the adder or the OTA.
 | 7 | Click a device in the layout, then `Ctrl+2` | The same device is selected in the schematic (cross-probing) |
 | 8 | **Run DRC**, **Run LVS** | No violations; layout matches schematic |
 
-![Placement with flylines, before routing](screenshots/demo_pnr_placed.png)
+![Placement with flylines, before routing](screenshots/demo_pnr_placed.webp)
 
 <div class="callout say">
 
@@ -282,7 +284,7 @@ The status bar shows **MCP live**. The schematic appears in the window, then the
 devices, the routed wires, the DRC and LVS results and the AC plot, each logged in the
 console as `MCP · <tool> ...`. Every layout step can be undone with `Ctrl+Z`.
 
-![An agent writing a schematic in live mode](screenshots/demo_mcp_live.png)
+![An agent writing a schematic in live mode](screenshots/demo_mcp_live.webp)
 
 <div class="callout say">
 

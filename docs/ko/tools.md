@@ -1,3 +1,5 @@
+<!-- seo title="설계 도구: 파형 계산기, 스윕, 옵티마이저" description="IC Studio 설계 도구: 파형 계산기, 코너/스윕 관리자, 옵티마이저, 결과/넷 브라우저, 레이아웃 생성기, 더미 필, OPC." -->
+
 # 도구
 
 **Tools** 메뉴에는 Cadence Virtuoso의 대응 기능을 본뜬 보조 도구가 모여 있습니다. 각 도구는
@@ -25,7 +27,7 @@
 
 ## Waveform Calculator
 
-![Waveform Calculator](../screenshots/tool_calculator.png)
+![Waveform Calculator](../screenshots/tool_calculator.webp)
 
 **Tools > Waveform Calculator**(또는 **Simulation > Waveform Calculator**)는 활성 셀의
 시뮬레이션 결과에 대해 수식을 계산합니다.
@@ -61,7 +63,7 @@ Simulation 측정값의 f -3 dB 열과 같은 지점입니다(단일 극점이�
 
 ## Corner / Sweep Manager
 
-![Corner / Sweep Manager](../screenshots/tool_sweep.png)
+![Corner / Sweep Manager](../screenshots/tool_sweep.webp)
 
 **Tools > Corner / Sweep Manager**는 활성 셀의 시뮬레이션 설정을 다음 항목의 모든 조합에 대해
 실행합니다.
@@ -86,7 +88,7 @@ Simulation 측정값의 f -3 dB 열과 같은 지점입니다(단일 극점이�
 
 ### Monte Carlo
 
-![몬테카를로](../screenshots/tool_monte_carlo.png)
+![몬테카를로](../screenshots/tool_monte_carlo.webp)
 
 **Monte Carlo** 섹션은 모든 포인트를 무작위 파라미터 값으로 **Runs** 횟수만큼 반복합니다(모든
 코너와 온도에서 같은 샘플을 쓰며, **Seed**로 재현 가능). 각 **변동 파라미터**는 다음을 가집니다.
@@ -157,7 +159,7 @@ to schematic**은 최적 값을 회로도에 씁니다.
 
 ## Hierarchy Browser
 
-![Hierarchy Browser](../screenshots/tool_hierarchy.png)
+![Hierarchy Browser](../screenshots/tool_hierarchy.webp)
 
 **Tools > Hierarchy Browser**는 프로젝트의 모든 레이아웃을 최상위 셀(다른 레이아웃이 배치하지 않는
 레이아웃)부터 시작하는 트리로 보여 주며, 배치 횟수를 함께 표시합니다(어레이는 모든 요소를 셉니다).
@@ -170,7 +172,7 @@ to schematic**은 최적 값을 회로도에 씁니다.
 
 ## Net Browser
 
-![Net Browser](../screenshots/tool_net_browser.png)
+![Net Browser](../screenshots/tool_net_browser.webp)
 
 **Tools > Net Browser**는 활성 레이아웃 추출 결과의 넷을 나열합니다(아직 추출 결과가 없으면 넷을
 추출하며, **Extract**로 다시 실행합니다).
@@ -194,7 +196,7 @@ to schematic**은 최적 값을 회로도에 씁니다.
 
 ### Guard Ring
 
-![셀을 둘러싼 가드 링](../screenshots/tool_guard_ring.png)
+![셀을 둘러싼 가드 링](../screenshots/tool_guard_ring.webp)
 
 영역을 확산 링으로 둘러쌉니다. **p+ substrate ring**(NMOS용) 또는 **n+ ring in nwell**(PMOS용,
 링과 영역을 덮는 nwell 포함) 중 하나입니다. 링에는 임플란트, 각 변을 따라 선택적인 **Contacts**,
@@ -215,7 +217,7 @@ to schematic**은 최적 값을 회로도에 씁니다.
 
 ### Matched Placement
 
-![매칭 배치](../screenshots/tool_matched.png)
+![매칭 배치](../screenshots/tool_matched.webp)
 
 레이아웃의 매칭된 MOS 소자(예: 차동 쌍이나 전류 미러)를 단위 소자로 나누어 패턴으로 다시
 배치합니다.
@@ -245,7 +247,7 @@ to schematic**은 최적 값을 회로도에 씁니다.
 
 ## DRC Rule Designer
 
-![DRC Rule Designer](../screenshots/tool_rule_designer.png)
+![DRC Rule Designer](../screenshots/tool_rule_designer.webp)
 
 **Tools > DRC Rule Designer**(레이아웃 인스펙터의 **Rule deck** 섹션에 있는 **Rule Designer...**도
 같음)는 테크놀로지의 [DRC 덱](technology.md#drc-룰-덱)을 텍스트 대신 폼으로 편집합니다.
@@ -280,7 +282,7 @@ cell**(초안 덱을 실행해 룰별 위반 수를 셈), **Apply to technology*
 
 ## Stream Layer Map
 
-![Stream Layer Map](../screenshots/tool_stream_map.png)
+![Stream Layer Map](../screenshots/tool_stream_map.webp)
 
 **Tools > Stream Layer Map**은 Virtuoso XStream layer map처럼, 각 테크놀로지 레이어를 어떤 GDSII /
 OASIS 레이어와 데이터타입으로 쓰고 읽을지 설정합니다. 각 행은 스트림 레이어 / 데이터타입을
@@ -303,7 +305,7 @@ OASIS 레이어와 데이터타입으로 쓰고 읽을지 설정합니다. 각 �
 
 ## Dummy Fill
 
-![Dummy Fill](../screenshots/tool_dummy_fill.png)
+![Dummy Fill](../screenshots/tool_dummy_fill.webp)
 
 **Tools > Dummy Fill**은 [밀도 룰](technology.md#룰)을 만족하도록 레이어에 그리드 정렬된 필 사각형을
 추가합니다.

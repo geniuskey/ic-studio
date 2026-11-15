@@ -1,10 +1,12 @@
+<!-- seo title="프로젝트, 라이브러리, 셀" description="IC Studio가 설계를 프로젝트, 라이브러리, 셀, 뷰로 구성하는 방식과 창, 메뉴, 명령 팔레트, 프로젝트 파일 안내." -->
+
 # 프로젝트, 라이브러리, 셀
 
 ![프로젝트는 라이브러리를, 라이브러리는 셀을 담고, 각 셀에는 회로도, 시뮬레이션, 레이아웃 뷰가 있음](../images/hierarchy.svg)
 
 ## 창 구성
 
-![프로젝트 홈](../screenshots/02_project_home.png)
+![프로젝트 홈](../screenshots/02_project_home.webp)
 
 - **메뉴 바**(아래 **메뉴** 항목 참고)에는 `project > library > cell` 경로 표시가 있습니다. 셀
   이름 뒤의 점은 저장하지 않은 변경 사항이 있다는 뜻입니다. 오른쪽의 **Search commands...**는 명령

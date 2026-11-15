@@ -1,6 +1,8 @@
+<!-- seo title="IC Studio: 오픈소스 풀커스텀 IC 설계 소프트웨어" description="회로도 입력, SPICE 시뮬레이션, 레이아웃, 자동 배치 배선, DRC, LVS, 기생 성분 추출을 하나의 네이티브 앱에서 다루는 오픈소스 IC 설계 환경." -->
+
 <div class="ics-hero">
 <span class="ics-eyebrow">오픈 소스 · 풀 커스텀 IC 설계</span>
-<p class="ics-title">회로도부터 사인오프까지,<br>하나의 네이티브 앱에서.</p>
+<h1 class="ics-title">회로도부터 사인오프까지,<br>하나의 네이티브 앱에서.</h1>
 <p class="ics-lede">IC Studio는 회로도 입력, SPICE 시뮬레이션, 레이아웃, 자동 배치 배선, DRC, LVS,
 기생 성분 추출을 하나의 설계 데이터베이스 위에서 제공합니다. 회로를 그리고, 레이아웃을
 생성하고, 검증한 뒤 기생 성분을 포함해 다시 시뮬레이션하기까지 창을 벗어나거나 파일을
@@ -13,7 +15,7 @@
 </div>
 </div>
 
-![자동 배치 배선: 회로도에서 생성한 28 트랜지스터 전가산기, LVS 통과](../screenshots/demo_pnr_routed.png)
+![자동 배치 배선: 회로도에서 생성한 28 트랜지스터 전가산기, LVS 통과](../screenshots/demo_pnr_routed.webp)
 
 <div class="ics-stats">
 <div class="ics-stat"><b>28T</b><span>전가산기를 자동으로 배치 배선, DRC와 LVS 통과</span></div>

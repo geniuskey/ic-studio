@@ -1,3 +1,5 @@
+<!-- seo title="Quick Tour: Schematic to Post-Layout Simulation" description="A guided tour of IC Studio: simulate a circuit, browse hierarchical layout, auto place and route, run DRC and LVS, then simulate with extracted parasitics." -->
+
 # Quick tour
 
 This tour walks through the demo project: simulation, hierarchical layout, automatic place
@@ -35,7 +37,7 @@ The `pcells` library holds the PCell variants the layouts use.
 4. Press `Ctrl+2` to go back to the schematic: node voltages and drain currents from the
    operating point are annotated on it.
 
-![Schematic with OP annotation](screenshots/07_schematic_op.png)
+![Schematic with OP annotation](screenshots/07_schematic_op.webp)
 
 Try `rc_lowpass` (AC: the **f -3 dB** column shows the corner frequency) and `ota5t`
 (AC: open-loop gain and unity-gain frequency).
@@ -57,7 +59,7 @@ Try `rc_lowpass` (AC: the **f -3 dB** column shows the corner frequency) and `ot
    flylines show the connections to make.
 4. Choose **Verify > Route Flylines**. Every net is routed on metal.
 
-![Generated and routed full adder](screenshots/demo_pnr_routed.png)
+![Generated and routed full adder](screenshots/demo_pnr_routed.webp)
 
 ## 4. Verification
 
@@ -67,7 +69,7 @@ Try `rc_lowpass` (AC: the **f -3 dB** column shows the corner frequency) and `ot
 4. Open `cmos_inverter` and run LVS: it lists the deliberate differences. Click one to
    zoom to it.
 
-![LVS result](screenshots/12_layout_lvs.png)
+![LVS result](screenshots/12_layout_lvs.webp)
 
 ## 5. Post-layout simulation
 

@@ -1,3 +1,5 @@
+<!-- seo title="Keyboard Shortcuts" description="All IC Studio keyboard shortcuts for the schematic editor, layout editor, simulation and navigation on Windows, Linux and macOS." -->
+
 # Keyboard shortcuts
 
 `Ctrl` on Windows and Linux is `Cmd` on macOS. The app labels shortcuts for the platform

@@ -1,3 +1,5 @@
+<!-- seo title="AI 에이전트용 MCP 서버" description="Model Context Protocol로 AI 에이전트를 IC Studio에 연결: Claude 등 MCP 클라이언트에서 프로젝트 생성, 회로도 편집, 시뮬레이션, 레이아웃 검증." -->
+
 # AI 에이전트용 MCP 서버
 
 `ics mcp`(`ics` 명령줄 도구의 `mcp` 명령)는 Model Context Protocol(stdio)을 통해 IC Studio를 AI

@@ -1,3 +1,5 @@
+<!-- seo title="Install IC Studio on Windows, macOS and Linux" description="Install IC Studio with one command on Windows, macOS or Linux, or build it from source with Rust. Optional ngspice setup for SPICE simulation." -->
+
 # Installation
 
 Install a release build with one command, or build IC Studio from source with the Rust

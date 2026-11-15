@@ -1,3 +1,5 @@
+<!-- seo title="공정 기술과 PDK 설정 (SKY130, IHP SG13G2)" description="IC Studio의 공정 기술 설정: 레이어, GDS 번호, DRC 룰 덱, 비아, SKY130과 IHP SG13G2 같은 오픈 PDK 가져오기." -->
+
 # 테크놀로지
 
 프로젝트의 테크놀로지(PDK)는 프로젝트 폴더의 `tech.json`에 들어 있습니다. 레이어와 GDS 번호,

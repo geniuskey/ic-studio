@@ -1,8 +1,10 @@
+<!-- seo title="Schematic Editor for IC Design" description="Draw transistor-level schematics in IC Studio: device library, wires, labels, symbols, hierarchy and netlisting for SPICE simulation." -->
+
 # Schematic editor
 
 Open a cell's schematic view (or press `Ctrl+2` with a cell open) to edit it.
 
-![Schematic editor](screenshots/03_schematic.png)
+![Schematic editor](screenshots/03_schematic.webp)
 
 - **Left panel**: **Tools** (Select, Wire, Label), the **Device Library** with one tile per
   primitive and its shortcut letter, and a short shortcut reminder.
@@ -131,7 +133,7 @@ After an operating point simulation, **Annotate OP** (on by default) shows each 
 voltage as a tag on the schematic and the current `id=...` under each transistor and
 diode.
 
-![OP annotation](screenshots/07_schematic_op.png)
+![OP annotation](screenshots/07_schematic_op.webp)
 
 ## Cross-probing
 

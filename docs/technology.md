@@ -1,3 +1,5 @@
+<!-- seo title="Technology and PDK Setup (SKY130, IHP SG13G2)" description="Configure the technology in IC Studio: layers, GDS numbers, DRC rule decks, vias and importing real open PDKs such as SKY130 and IHP SG13G2." -->
+
 # Technology
 
 The technology (PDK) of a project lives in `tech.json` in the project folder. It defines

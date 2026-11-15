@@ -1,9 +1,11 @@
+<!-- seo title="SPICE 시뮬레이션: DC, AC, 과도 해석, 몬테카를로" description="내장 엔진 또는 ngspice로 SPICE 시뮬레이션 실행: DC, AC, 과도 해석, 측정, 코너, 몬테카를로, 포스트 레이아웃 시뮬레이션." -->
+
 # 시뮬레이션
 
 Simulation 워크스페이스(`Ctrl+3`)에서는 활성 셀의 회로도에 대한 해석을 설정하고 실행하며 결과를
 확인합니다.
 
-![시뮬레이션](../screenshots/04_simulation.png)
+![시뮬레이션](../screenshots/04_simulation.webp)
 
 ## 시뮬레이션 실행
 
@@ -79,7 +81,7 @@ ngspice 경로는 **Settings**에서 지정합니다([설치](install.md#ngspice
   - DC와 과도 해석: MIN, MAX, PEAK-PEAK, FINAL.
   - AC: GAIN @ fstart, PEAK, f -3 dB, UNITY GAIN f.
 
-![RC 저역 통과 필터의 AC 해석](../screenshots/05_simulation_rc.png)
+![RC 저역 통과 필터의 AC 해석](../screenshots/05_simulation_rc.webp)
 
 ### 동작점
 

@@ -1,9 +1,11 @@
+<!-- seo title="SPICE Simulation: DC, AC, Transient, Monte Carlo" description="Run SPICE simulations in IC Studio with the built-in engine or ngspice: DC, AC and transient analyses, measurements, corners, Monte Carlo and post-layout runs." -->
+
 # Simulation
 
 The Simulation workspace (`Ctrl+3`) sets up and runs analyses of the active cell's
 schematic and shows the results.
 
-![Simulation](screenshots/04_simulation.png)
+![Simulation](screenshots/04_simulation.webp)
 
 ## Running a simulation
 
@@ -82,7 +84,7 @@ values as `name_re` / `name_im` columns).
   - DC and transient: MIN, MAX, PEAK-PEAK, FINAL.
   - AC: GAIN @ fstart, PEAK, f -3 dB, UNITY GAIN f.
 
-![AC analysis of the RC low-pass](screenshots/05_simulation_rc.png)
+![AC analysis of the RC low-pass](screenshots/05_simulation_rc.webp)
 
 ### Operating point
 

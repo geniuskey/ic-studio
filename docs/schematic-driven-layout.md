@@ -1,9 +1,11 @@
+<!-- seo title="Schematic-Driven Layout and Auto Routing" description="Generate a layout from a schematic in IC Studio: place transistors as PCells, follow flylines and route the connections automatically, LVS clean." -->
+
 # Schematic-driven layout
 
 IC Studio can build a layout from a schematic: it places the transistors as PCells,
 shows the connections still to be made as flylines, and routes them.
 
-![Schematic-driven layout](screenshots/13_layout_sdl.png)
+![Schematic-driven layout](screenshots/13_layout_sdl.webp)
 
 ## Step by step
 

@@ -1,8 +1,10 @@
+<!-- seo title="IC 설계용 회로도 편집기" description="IC Studio에서 트랜지스터 수준 회로도 그리기: 소자 라이브러리, 와이어, 레이블, 심볼, 계층 구조, SPICE 넷리스트 생성." -->
+
 # 회로도 편집기
 
 셀의 회로도 뷰를 열거나, 셀이 열린 상태에서 `Ctrl+2`를 눌러 편집합니다.
 
-![회로도 편집기](../screenshots/03_schematic.png)
+![회로도 편집기](../screenshots/03_schematic.webp)
 
 - **왼쪽 패널**: **Tools**(Select, Wire, Label), 프리미티브마다 타일과 단축키 문자가 표시되는
   **Device Library**, 그리고 간단한 단축키 안내.
@@ -126,7 +128,7 @@ SPICE 문자열이며, SPICE 배율 접미사(`10k`, `2.2p`, `180n`, `1meg`)를 
 동작점 시뮬레이션 후 **Annotate OP**(기본으로 켜짐)를 사용하면 각 노드 전압이 회로도에 태그로
 표시되고, 각 트랜지스터와 다이오드 아래에 전류 `id=...`가 표시됩니다.
 
-![동작점 표시](../screenshots/07_schematic_op.png)
+![동작점 표시](../screenshots/07_schematic_op.webp)
 
 ## 크로스 프로빙
 

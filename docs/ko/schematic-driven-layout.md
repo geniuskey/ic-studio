@@ -1,9 +1,11 @@
+<!-- seo title="회로도 기반 레이아웃과 자동 배선" description="IC Studio에서 회로도로부터 레이아웃 생성: 트랜지스터를 PCell로 배치하고 플라이라인을 따라 자동 배선, LVS 통과까지." -->
+
 # 회로도 기반 레이아웃
 
 IC Studio는 회로도로부터 레이아웃을 만들 수 있습니다. 트랜지스터를 PCell로 배치하고, 아직
 연결되지 않은 부분을 플라이라인으로 표시한 뒤, 이를 배선합니다.
 
-![회로도 기반 레이아웃](../screenshots/13_layout_sdl.png)
+![회로도 기반 레이아웃](../screenshots/13_layout_sdl.webp)
 
 ## 단계별 진행
 

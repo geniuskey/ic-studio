@@ -1,3 +1,5 @@
+<!-- seo title="DRC, LVS, 기생 성분 추출" description="IC Studio의 레이아웃 검증: 디자인 룰 체크(DRC), 연결성 추출, LVS(레이아웃 대 회로도), 기생 성분 추출, IR 드롭과 EM 분석." -->
+
 # 검증: DRC, 추출, LVS
 
 검증 도구는 **Verify** 메뉴와 Layout 워크스페이스의 오른쪽 패널에 있습니다. 활성 셀의 평탄화된
@@ -8,7 +10,7 @@
 
 ![간격 위반이 표시되고, 도형을 옮긴 뒤 다시 검사하면 깨끗해지는 과정](../images/drc-check.svg)
 
-![DRC](../screenshots/11_layout_drc.png)
+![DRC](../screenshots/11_layout_drc.webp)
 
 1. 셀의 레이아웃을 엽니다.
 2. **Design Rule Check** 섹션에서 **Run DRC**를 누릅니다(또는 **Verify > Run DRC**).
@@ -87,7 +89,7 @@ Live DRC는 증분적이고 계층적이어서 큰 레이아웃에서도 빠릅�
 
 ![레이아웃과 회로도 넷리스트를 나란히 놓고 소자를 하나씩 매칭하는 과정](../images/lvs-compare.svg)
 
-![LVS](../screenshots/12_layout_lvs.png)
+![LVS](../screenshots/12_layout_lvs.webp)
 
 1. 셀에 회로도와 레이아웃이 모두 있어야 합니다. 소자 이름은 일치하지 않아도 되지만, 레이아웃 핀의
    라벨(`in`, `out`, `vdd` 등)이 도움이 됩니다. 같은 넷 이름이 비교의 기준점이 됩니다.

@@ -1,3 +1,5 @@
+<!-- seo title="단축키" description="Windows, Linux, macOS에서 쓰는 IC Studio 회로도 편집기, 레이아웃 편집기, 시뮬레이션, 탐색 단축키 전체 목록." -->
+
 # 단축키
 
 Windows와 Linux의 `Ctrl`은 macOS에서 `Cmd`입니다. 앱은 실행 중인 플랫폼에 맞게 단축키를 표시합니다

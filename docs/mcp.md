@@ -1,3 +1,5 @@
+<!-- seo title="MCP Server for AI Agents" description="Connect AI agents to IC Studio over MCP: create projects, edit schematics, run simulations and verify layouts from Claude or other MCP clients." -->
+
 # MCP server for AI agents
 
 `ics mcp` (the `mcp` command of the `ics` command line tool) exposes IC Studio to AI agents

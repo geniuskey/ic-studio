@@ -1,3 +1,5 @@
+<!-- seo title="Command Line Interface (ics)" description="Script IC Studio from the terminal with the ics CLI: create projects, netlist, simulate, run DRC and LVS and export GDS in batch or CI, with JSON output." -->
+
 # Command line (`ics`)
 
 `ics` works on the same project folders as the desktop app. Use it for scripting, batch
