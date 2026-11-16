@@ -34,6 +34,7 @@ use crate::theme::{self, Palette};
 use crate::update;
 use ics_core::gds::StreamFormat;
 use ics_core::hier::Hier;
+use ics_core::project::LibStorage;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, Hash)]
 pub enum Workspace {
@@ -91,6 +92,14 @@ pub enum Command {
     CloseTab(CellRef),
     RenameCellDialog(CellRef),
     DeleteCellConfirm(CellRef),
+    /// New cell dialog with the library preselected.
+    NewCellInLibrary(String),
+    RenameLibraryDialog(String),
+    DeleteLibraryConfirm(String),
+    /// Store a library as JSON cell directories or as one GDSII file.
+    SetLibraryStorage(String, LibStorage),
+    /// Export one library's layouts (its top cells and everything they place) as GDSII / OASIS.
+    ExportLibraryStream(String, StreamFormat),
     CreateView(CellRef, ViewKind),
     SetWorkspace(Workspace),
     RunSimulation,
@@ -276,6 +285,8 @@ enum Dialog {
     NewCell { lib: String, name: String, description: String, schematic: bool, layout: bool, error: String },
     RenameCell { cell: CellRef, name: String, error: String },
     ConfirmDelete(CellRef),
+    RenameLibrary { lib: String, name: String, error: String },
+    ConfirmDeleteLibrary(String),
     Unsaved { then: Box<Command> },
     Settings,
     Shortcuts,
@@ -518,6 +529,8 @@ pub struct IcStudio {
     workspace: Workspace,
     tabs: Vec<CellRef>,
     active: Option<CellRef>,
+    /// Library selected in the Explorer (its header was clicked).
+    selected_lib: Option<String>,
     sch_eds: HashMap<CellRef, SchematicEditor>,
     lay_eds: HashMap<CellRef, LayoutEditor>,
     /// Cells descended into (Shift+X) or edited in place (x), for Shift+B (return).
@@ -588,6 +601,7 @@ impl IcStudio {
             dirty: false,
             workspace: Workspace::Home,
             tabs: vec![],
+            selected_lib: None,
             active: None,
             sch_eds: HashMap::new(),
             lay_eds: HashMap::new(),
@@ -695,6 +709,7 @@ impl IcStudio {
         self.dirty = false;
         self.tabs.clear();
         self.active = None;
+        self.selected_lib = None;
         self.sch_eds.clear();
         self.lay_eds.clear();
         self.hier.clear();
@@ -897,6 +912,35 @@ impl IcStudio {
                 self.dialog = Some(Dialog::RenameCell { name: r.cell.clone(), cell: r, error: String::new() })
             }
             Command::DeleteCellConfirm(r) => self.dialog = Some(Dialog::ConfirmDelete(r)),
+            Command::NewCellInLibrary(lib) => {
+                if self.project.as_ref().is_some_and(|p| p.libraries.iter().any(|l| l.name == lib)) {
+                    self.dialog = Some(Dialog::NewCell {
+                        lib,
+                        name: String::new(),
+                        description: String::new(),
+                        schematic: true,
+                        layout: false,
+                        error: String::new(),
+                    });
+                }
+            }
+            Command::RenameLibraryDialog(lib) => {
+                self.dialog = Some(Dialog::RenameLibrary { name: lib.clone(), lib, error: String::new() })
+            }
+            Command::DeleteLibraryConfirm(lib) => self.dialog = Some(Dialog::ConfirmDeleteLibrary(lib)),
+            Command::SetLibraryStorage(lib, storage) => {
+                if let Some(p) = self.project.as_mut() {
+                    match p.set_library_storage(&lib, storage) {
+                        Ok(()) => {
+                            self.mark_dirty();
+                            let how = if storage == LibStorage::Gds { "one GDSII file" } else { "JSON cell directories" };
+                            self.info(format!("Library '{lib}' will be stored as {how} on the next save"));
+                        }
+                        Err(e) => self.error(format!("Cannot change the storage of '{lib}': {e}")),
+                    }
+                }
+            }
+            Command::ExportLibraryStream(lib, format) => self.export_library_stream(&lib, format),
             Command::CreateView(r, v) => {
                 if let Some(c) = self.project.as_mut().and_then(|p| p.cell_mut(&r)) {
                     match v {
@@ -1883,6 +1927,59 @@ impl IcStudio {
         }
     }
 
+    /// Export library `lib`: its top cells and the hierarchy below them, which may include
+    /// cells of other libraries (PCells, for example).
+    fn export_library_stream(&mut self, lib: &str, format: StreamFormat) {
+        let Some(p) = &self.project else { return };
+        let tops = p.library_tops(lib);
+        if tops.is_empty() {
+            self.warn(format!("Library '{lib}' has no layouts to export"));
+            return;
+        }
+        let filter: &[&str] = if format == StreamFormat::Oasis { &["oas", "oasis"] } else { &["gds", "gds2"] };
+        let Some(path) = rfd::FileDialog::new()
+            .set_file_name(format!("{lib}.{}", format.extension()))
+            .add_filter(format.label(), filter)
+            .save_file()
+        else {
+            return;
+        };
+        let n = tops.iter().flat_map(|t| ics_core::hier::descendants(p, t)).collect::<std::collections::HashSet<_>>().len();
+        let bytes = ics_core::gds::write_stream_hier(format, lib, p, &tops, &ics_core::stream_map::export_tech(&p.tech));
+        match std::fs::write(&path, &bytes) {
+            Ok(()) => self.ok(format!("Exported {n} cell(s) of '{lib}' to {} ({} bytes)", path.display(), bytes.len())),
+            Err(e) => self.error(format!("{} export failed: {e}", format.label())),
+        }
+    }
+
+    /// After library `old` became `new` (or was deleted, `None`): retarget or drop the open
+    /// tabs, editors and results of its cells.
+    fn library_changed(&mut self, old: &str, new: Option<&str>) {
+        let map = |r: &CellRef| new.map(|n| CellRef::new(n, &r.cell));
+        self.hier.clear();
+        self.lay_return.clear();
+        self.probe = None;
+        self.tabs =
+            std::mem::take(&mut self.tabs).into_iter().filter_map(|t| if t.lib == old { map(&t) } else { Some(t) }).collect();
+        if let Some(a) = self.active.clone().filter(|a| a.lib == old) {
+            self.active = map(&a).or_else(|| self.tabs.first().cloned());
+        }
+        fn remap<V>(m: &mut HashMap<CellRef, V>, old: &str, new: Option<&str>) {
+            for k in m.keys().filter(|k| k.lib == old).cloned().collect::<Vec<_>>() {
+                let v = m.remove(&k).expect("key exists");
+                if let Some(n) = new {
+                    m.insert(CellRef::new(n, &k.cell), v);
+                }
+            }
+        }
+        remap(&mut self.sch_eds, old, new);
+        remap(&mut self.lay_eds, old, new);
+        remap(&mut self.sims, old, new);
+        if self.selected_lib.as_deref() == Some(old) {
+            self.selected_lib = new.map(str::to_string);
+        }
+    }
+
     fn import_gds(&mut self, path: Option<PathBuf>, layer_map: Option<PathBuf>) {
         if self.project.is_none() {
             return;
@@ -2732,84 +2829,152 @@ impl IcStudio {
         });
         for lib in &p.libraries {
             let id = ui.make_persistent_id(("lib", &lib.name));
-            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true)
-                .show_header(ui, |ui| {
+            let mut toggle = false;
+            let selected = self.selected_lib.as_deref() == Some(lib.name.as_str());
+            let mut header =
+                egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true).show_header(ui, |ui| {
                     let (r, painter) = ui.allocate_painter(Vec2::splat(16.0), Sense::hover());
-                    icons::paint(&painter, r.rect, Icon::Library, pal.text_weak);
-                    ui.label(RichText::new(&lib.name).strong());
-                })
-                .body(|ui| {
-                    for cell in &lib.cells {
-                        let r = CellRef::new(&lib.name, &cell.name);
-                        let active = self.active.as_ref() == Some(&r);
-                        let cid = ui.make_persistent_id(("cell", &r));
-                        egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), cid, active)
-                            .show_header(ui, |ui| {
-                                let (ir, painter) = ui.allocate_painter(Vec2::splat(14.0), Sense::hover());
-                                icons::paint(&painter, ir.rect, Icon::Cell, if active { pal.accent } else { pal.text_weak });
-                                let resp = ui.selectable_label(active, &cell.name);
-                                if resp.clicked() {
-                                    self.queue.push(Command::OpenCell(r.clone(), None));
-                                }
-                                resp.context_menu(|ui| {
-                                    if ui.button("Open schematic").clicked() {
-                                        self.queue.push(if cell.schematic.is_some() {
-                                            Command::OpenCell(r.clone(), Some(Workspace::Schematic))
-                                        } else {
-                                            Command::CreateView(r.clone(), ViewKind::Schematic)
-                                        });
-                                    }
-                                    if ui.button("Open layout").clicked() {
-                                        self.queue.push(if cell.layout.is_some() {
-                                            Command::OpenCell(r.clone(), Some(Workspace::Layout))
-                                        } else {
-                                            Command::CreateView(r.clone(), ViewKind::Layout)
-                                        });
-                                    }
-                                    ui.separator();
-                                    if ui.button("Rename…").clicked() {
-                                        self.queue.push(Command::RenameCellDialog(r.clone()));
-                                    }
-                                    if ui.button("Delete…").clicked() {
-                                        self.queue.push(Command::DeleteCellConfirm(r.clone()));
+                    icons::paint(&painter, r.rect, Icon::Library, if selected { pal.accent } else { pal.text_weak });
+                    let resp = ui.selectable_label(selected, RichText::new(&lib.name).strong());
+                    if resp.clicked() {
+                        self.selected_lib = Some(lib.name.clone());
+                        toggle = true;
+                    }
+                    if resp.secondary_clicked() {
+                        self.selected_lib = Some(lib.name.clone());
+                    }
+                    let gds = lib.storage == LibStorage::Gds;
+                    if gds {
+                        ui.label(RichText::new("GDS").small().color(pal.text_weak));
+                    }
+                    resp.context_menu(|ui| {
+                        ui.label(
+                            RichText::new(format!(
+                                "{} · {} cell(s) · {}",
+                                lib.name,
+                                lib.cells.len(),
+                                if gds { "GDSII file" } else { "JSON" }
+                            ))
+                            .small()
+                            .color(pal.text_weak),
+                        );
+                        ui.separator();
+                        if ui.button("New cell…").clicked() {
+                            self.queue.push(Command::NewCellInLibrary(lib.name.clone()));
+                        }
+                        let tops = p.library_tops(&lib.name);
+                        ui.add_enabled_ui(!tops.is_empty(), |ui| {
+                            ui.menu_button("Open top cell layout", |ui| {
+                                egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                                    for t in &tops {
+                                        if ui.button(&t.cell).clicked() {
+                                            self.queue.push(Command::OpenCell(t.clone(), Some(Workspace::Layout)));
+                                        }
                                     }
                                 });
-                                if !cell.description.is_empty() {
-                                    resp.on_hover_text(&cell.description);
-                                }
-                            })
-                            .body(|ui| {
-                                for (vk, icon, color, ws) in [
-                                    (ViewKind::Schematic, Icon::Schematic, pal.schematic, Workspace::Schematic),
-                                    (ViewKind::Simulation, Icon::Simulation, pal.simulation, Workspace::Simulation),
-                                    (ViewKind::Layout, Icon::Layout, pal.layout, Workspace::Layout),
-                                ] {
-                                    let exists = cell.has_view(vk);
-                                    ui.horizontal(|ui| {
-                                        let (ir, painter) = ui.allocate_painter(Vec2::splat(14.0), Sense::hover());
-                                        icons::paint(
-                                            &painter,
-                                            ir.rect,
-                                            icon,
-                                            if exists { color } else { pal.text_weak.gamma_multiply(0.5) },
-                                        );
-                                        let text = RichText::new(vk.label()).color(if exists { pal.text } else { pal.text_weak });
-                                        let is_open = active && self.workspace == ws;
-                                        if ui.selectable_label(is_open, text).clicked() {
-                                            self.queue.push(if exists {
-                                                Command::OpenCell(r.clone(), Some(ws))
-                                            } else {
-                                                Command::CreateView(r.clone(), vk)
-                                            });
-                                        }
-                                        if !exists {
-                                            ui.label(RichText::new("+ create").small().color(pal.text_weak));
-                                        }
+                            });
+                        });
+                        ui.separator();
+                        if ui.add_enabled(!tops.is_empty(), egui::Button::new("Export GDSII…")).clicked() {
+                            self.queue.push(Command::ExportLibraryStream(lib.name.clone(), StreamFormat::Gds));
+                        }
+                        if ui.add_enabled(!tops.is_empty(), egui::Button::new("Export OASIS…")).clicked() {
+                            self.queue.push(Command::ExportLibraryStream(lib.name.clone(), StreamFormat::Oasis));
+                        }
+                        let mut store_gds = gds;
+                        if ui
+                            .checkbox(&mut store_gds, "Store as one GDSII file")
+                            .on_hover_text("Save the library's layouts in a single .gds file instead of JSON cell directories")
+                            .changed()
+                        {
+                            let storage = if store_gds { LibStorage::Gds } else { LibStorage::Json };
+                            self.queue.push(Command::SetLibraryStorage(lib.name.clone(), storage));
+                        }
+                        ui.separator();
+                        if ui.button("Rename…").clicked() {
+                            self.queue.push(Command::RenameLibraryDialog(lib.name.clone()));
+                        }
+                        if ui.button("Delete…").clicked() {
+                            self.queue.push(Command::DeleteLibraryConfirm(lib.name.clone()));
+                        }
+                    });
+                });
+            if toggle {
+                header.toggle();
+            }
+            header.body(|ui| {
+                for cell in &lib.cells {
+                    let r = CellRef::new(&lib.name, &cell.name);
+                    let active = self.active.as_ref() == Some(&r);
+                    let cid = ui.make_persistent_id(("cell", &r));
+                    egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), cid, active)
+                        .show_header(ui, |ui| {
+                            let (ir, painter) = ui.allocate_painter(Vec2::splat(14.0), Sense::hover());
+                            icons::paint(&painter, ir.rect, Icon::Cell, if active { pal.accent } else { pal.text_weak });
+                            let resp = ui.selectable_label(active, &cell.name);
+                            if resp.clicked() {
+                                self.selected_lib = None;
+                                self.queue.push(Command::OpenCell(r.clone(), None));
+                            }
+                            resp.context_menu(|ui| {
+                                if ui.button("Open schematic").clicked() {
+                                    self.queue.push(if cell.schematic.is_some() {
+                                        Command::OpenCell(r.clone(), Some(Workspace::Schematic))
+                                    } else {
+                                        Command::CreateView(r.clone(), ViewKind::Schematic)
                                     });
                                 }
+                                if ui.button("Open layout").clicked() {
+                                    self.queue.push(if cell.layout.is_some() {
+                                        Command::OpenCell(r.clone(), Some(Workspace::Layout))
+                                    } else {
+                                        Command::CreateView(r.clone(), ViewKind::Layout)
+                                    });
+                                }
+                                ui.separator();
+                                if ui.button("Rename…").clicked() {
+                                    self.queue.push(Command::RenameCellDialog(r.clone()));
+                                }
+                                if ui.button("Delete…").clicked() {
+                                    self.queue.push(Command::DeleteCellConfirm(r.clone()));
+                                }
                             });
-                    }
-                });
+                            if !cell.description.is_empty() {
+                                resp.on_hover_text(&cell.description);
+                            }
+                        })
+                        .body(|ui| {
+                            for (vk, icon, color, ws) in [
+                                (ViewKind::Schematic, Icon::Schematic, pal.schematic, Workspace::Schematic),
+                                (ViewKind::Simulation, Icon::Simulation, pal.simulation, Workspace::Simulation),
+                                (ViewKind::Layout, Icon::Layout, pal.layout, Workspace::Layout),
+                            ] {
+                                let exists = cell.has_view(vk);
+                                ui.horizontal(|ui| {
+                                    let (ir, painter) = ui.allocate_painter(Vec2::splat(14.0), Sense::hover());
+                                    icons::paint(
+                                        &painter,
+                                        ir.rect,
+                                        icon,
+                                        if exists { color } else { pal.text_weak.gamma_multiply(0.5) },
+                                    );
+                                    let text = RichText::new(vk.label()).color(if exists { pal.text } else { pal.text_weak });
+                                    let is_open = active && self.workspace == ws;
+                                    if ui.selectable_label(is_open, text).clicked() {
+                                        self.queue.push(if exists {
+                                            Command::OpenCell(r.clone(), Some(ws))
+                                        } else {
+                                            Command::CreateView(r.clone(), vk)
+                                        });
+                                    }
+                                    if !exists {
+                                        ui.label(RichText::new("+ create").small().color(pal.text_weak));
+                                    }
+                                });
+                            }
+                        });
+                }
+            });
         }
     }
 
@@ -3562,6 +3727,29 @@ impl IcStudio {
             let sc: &'static str = ["⌘1", "⌘2", "⌘3", "⌘4"][i];
             v.push((format!("Go to {} workspace", w.name()), sc, Command::SetWorkspace(*w)));
         }
+        if let Some(p) = &self.project
+            && let Some(lib) = self.palette_library()
+            && let Some(l) = p.libraries.iter().find(|l| l.name == lib)
+        {
+            let name = |what: &str| format!("Library {lib}: {what}");
+            v.push((name("new cell…"), "", Command::NewCellInLibrary(lib.clone())));
+            v.push((name("export GDSII…"), "", Command::ExportLibraryStream(lib.clone(), StreamFormat::Gds)));
+            v.push((name("export OASIS…"), "", Command::ExportLibraryStream(lib.clone(), StreamFormat::Oasis)));
+            let (storage, how) = match l.storage {
+                LibStorage::Json => (LibStorage::Gds, "store as one GDSII file"),
+                LibStorage::Gds => (LibStorage::Json, "store as JSON cell directories"),
+            };
+            v.push((name(how), "", Command::SetLibraryStorage(lib.clone(), storage)));
+            v.push((name("rename…"), "", Command::RenameLibraryDialog(lib.clone())));
+            v.push((name("delete…"), "", Command::DeleteLibraryConfirm(lib.clone())));
+            for t in p.library_tops(&lib) {
+                v.push((
+                    format!("Library {lib}: open top cell {} · layout", t.cell),
+                    "",
+                    Command::OpenCell(t, Some(Workspace::Layout)),
+                ));
+            }
+        }
         if let Some(p) = &self.project {
             for (r, c) in p.all_cells() {
                 if c.schematic.is_some() {
@@ -3573,6 +3761,16 @@ impl IcStudio {
             }
         }
         v
+    }
+
+    /// The library that library commands of the palette act on: the one selected in the
+    /// Explorer, else the active cell's.
+    fn palette_library(&self) -> Option<String> {
+        let p = self.project.as_ref()?;
+        self.selected_lib
+            .clone()
+            .filter(|l| p.libraries.iter().any(|x| &x.name == l))
+            .or_else(|| self.active.as_ref().map(|r| r.lib.clone()))
     }
 
     fn command_palette(&mut self, ctx: &egui::Context) {
@@ -3620,6 +3818,7 @@ impl IcStudio {
                 for (i, (name, sc, cmd)) in items.iter().enumerate() {
                     let selected = i == st.sel;
                     let (resp, p) = ui.allocate_painter(Vec2::new(ui.available_width(), 26.0), Sense::click());
+                    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, name));
                     if selected || resp.hovered() {
                         p.rect_filled(resp.rect, 5.0, if selected { pal.accent.gamma_multiply(0.3) } else { pal.bg_hover });
                     }
@@ -3850,6 +4049,70 @@ impl IcStudio {
                                 }
                             }
                             self.queue.push(Command::CloseTab(r));
+                            self.dirty = true;
+                            close = true;
+                        }
+                    });
+                }
+                Dialog::RenameLibrary { lib, name, error } => {
+                    ui.heading("Rename library");
+                    let l = ui.label("New name");
+                    let r = ui.text_edit_singleline(name).labelled_by(l.id);
+                    if !r.has_focus() && error.is_empty() && name == lib {
+                        r.request_focus();
+                    }
+                    if !error.is_empty() {
+                        ui.colored_label(pal.danger, error.as_str());
+                    }
+                    let enter = ui.input(|i| i.key_pressed(Key::Enter));
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            close = true;
+                        }
+                        if (ui.button("Rename").clicked() || enter)
+                            && let Some(p) = self.project.as_mut()
+                        {
+                            let new = name.trim().to_string();
+                            match p.rename_library(lib, &new) {
+                                Ok(()) => {
+                                    let old = lib.clone();
+                                    self.library_changed(&old, Some(&new));
+                                    self.info(format!("Renamed library '{old}' to '{new}'"));
+                                    self.dirty = true;
+                                    close = true;
+                                }
+                                Err(e) => *error = e,
+                            }
+                        }
+                    });
+                }
+                Dialog::ConfirmDeleteLibrary(lib) => {
+                    ui.heading("Delete library?");
+                    let (cells, users) = self.project.as_ref().map_or((0, 0), |p| {
+                        (p.libraries.iter().find(|l| &l.name == lib).map_or(0, |l| l.cells.len()), p.library_users(lib))
+                    });
+                    ui.label(format!(
+                        "Library '{lib}' and its {cells} cell(s) will be permanently deleted, including files on disk."
+                    ));
+                    if users > 0 {
+                        ui.colored_label(pal.danger, format!("{users} instance(s) in other libraries place its cells."));
+                    }
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            close = true;
+                        }
+                        if ui.button(RichText::new("Delete").color(pal.danger)).clicked() {
+                            let lib = lib.clone();
+                            if let Some(p) = self.project.as_mut() {
+                                match p.delete_library(&lib) {
+                                    Ok(()) => {
+                                        self.library_changed(&lib, None);
+                                        self.warn(format!("Deleted library '{lib}'"));
+                                    }
+                                    Err(e) => self.error(format!("Delete failed: {e}")),
+                                }
+                            }
                             self.dirty = true;
                             close = true;
                         }

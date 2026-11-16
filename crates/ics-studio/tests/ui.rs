@@ -2263,3 +2263,49 @@ fn import_cdl_netlist() {
     let mos = c.schematic.as_ref().unwrap().instances.iter().filter(|i| i.name.starts_with("MI")).count();
     assert_eq!(mos, 4, "two inverters of two transistors");
 }
+
+/// Right-clicking a library in the Explorer selects it and offers library-level actions:
+/// export, storage, rename and delete.
+#[test]
+fn explorer_library_context_menu() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = app(demo_args("cmos_inverter", "layout", false));
+    let libs =
+        |h: &Harness<'_, IcStudio>| h.state().project().unwrap().libraries.iter().map(|l| l.name.clone()).collect::<Vec<_>>();
+    assert!(libs(&h).contains(&"work".to_string()));
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "work").click_secondary();
+    h.run_steps(3);
+    for item in ["New cell…", "Open top cell layout", "Export GDSII…", "Export OASIS…", "Store as one GDSII file", "Rename…"]
+    {
+        assert!(h.query_by_label(item).is_some(), "context menu has '{item}'");
+    }
+    shot(&mut h, "explorer_library_menu");
+
+    h.get_by_label("Store as one GDSII file").click();
+    h.run_steps(3);
+    let gds =
+        |h: &Harness<'_, IcStudio>| h.state().project().unwrap().libraries.iter().find(|l| l.name == "work").map(|l| l.storage);
+    assert_eq!(gds(&h), Some(ics_core::project::LibStorage::Gds));
+
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "work").click_secondary();
+    h.run_steps(3);
+    h.get_by_label("Delete…").click();
+    h.run_steps(3);
+    assert!(h.query_by_label("Delete library?").is_some());
+    h.get_by_label("Delete").click();
+    h.run_steps(3);
+    assert!(!libs(&h).contains(&"work".to_string()));
+    assert!(h.state().active_ref().is_none_or(|r| r.lib != "work"), "tabs of the deleted library are closed");
+
+    // The command palette offers the same actions for the selected library.
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "pcells").click();
+    h.state_mut().command(Command::CommandPalette);
+    h.run_steps(2);
+    h.event(egui::Event::Text("library export".into()));
+    h.run_steps(3);
+    assert!(h.query_by_label_contains("Library pcells: export GDSII").is_some(), "palette targets the selected library");
+    assert!(h.query_by_label_contains("Library work:").is_none());
+    shot(&mut h, "explorer_library_palette");
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+}

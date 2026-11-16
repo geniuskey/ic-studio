@@ -494,6 +494,107 @@ impl Project {
         Ok(to)
     }
 
+    /// Rename library `old` to `new_name`, updating every layout instance that refers to its
+    /// cells. A saved library's directory (and GDS file) is renamed on disk and the manifest is
+    /// rewritten, so the project on disk stays consistent.
+    pub fn rename_library(&mut self, old: &str, new_name: &str) -> std::result::Result<(), String> {
+        if !valid_name(new_name) {
+            return Err(format!("'{new_name}' is not a valid library name (use letters, digits, _ and -)"));
+        }
+        if old == new_name {
+            return Ok(());
+        }
+        if self.libraries.iter().any(|l| l.name != old && l.name.eq_ignore_ascii_case(new_name)) {
+            return Err(format!("library '{new_name}' already exists"));
+        }
+        let idx = self.libraries.iter().position(|l| l.name == old).ok_or_else(|| format!("no library '{old}'"))?;
+        if let Some(root) = &self.root {
+            let from = root.join(old);
+            if from.exists() {
+                let to = root.join(new_name);
+                fs::rename(&from, &to).map_err(|e| format!("cannot rename {}: {e}", from.display()))?;
+                let gds = gds_file(&to, old);
+                if gds.exists() {
+                    fs::rename(&gds, gds_file(&to, new_name)).map_err(|e| format!("cannot rename {}: {e}", gds.display()))?;
+                }
+            }
+        }
+        self.libraries[idx].name = new_name.to_string();
+        for c in self.libraries.iter_mut().flat_map(|l| &mut l.cells) {
+            if let Some(l) = c.layout.as_mut() {
+                for i in &mut l.instances {
+                    if i.cell.lib == old {
+                        i.cell.lib = new_name.to_string();
+                    }
+                }
+            }
+        }
+        if let Some(root) = &self.root
+            && root.join(MANIFEST).exists()
+        {
+            self.write_manifest(root).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// The number of layout instances outside library `lib` that place one of its cells.
+    pub fn library_users(&self, lib: &str) -> usize {
+        self.libraries
+            .iter()
+            .filter(|l| l.name != lib)
+            .flat_map(|l| &l.cells)
+            .filter_map(|c| c.layout.as_ref())
+            .flat_map(|l| &l.instances)
+            .filter(|i| i.cell.lib == lib)
+            .count()
+    }
+
+    /// The cells of library `lib` with a layout that no other layout of the library places:
+    /// the top cells of a GDS library.
+    pub fn library_tops(&self, lib: &str) -> Vec<CellRef> {
+        let Some(l) = self.libraries.iter().find(|l| l.name == lib) else { return vec![] };
+        let used: HashSet<&str> = l
+            .cells
+            .iter()
+            .filter_map(|c| c.layout.as_ref())
+            .flat_map(|lay| &lay.instances)
+            .filter(|i| i.cell.lib == lib)
+            .map(|i| i.cell.cell.as_str())
+            .collect();
+        l.cells
+            .iter()
+            .filter(|c| c.layout.is_some() && !used.contains(c.name.as_str()))
+            .map(|c| CellRef::new(lib, &c.name))
+            .collect()
+    }
+
+    /// Delete library `lib` with all of its cells, from memory and (if saved) from disk.
+    pub fn delete_library(&mut self, lib: &str) -> std::result::Result<(), String> {
+        let idx = self.libraries.iter().position(|l| l.name == lib).ok_or_else(|| format!("no library '{lib}'"))?;
+        self.libraries.remove(idx);
+        if let Some(root) = &self.root {
+            let dir = root.join(lib);
+            if dir.is_dir() {
+                fs::remove_dir_all(&dir).map_err(|e| format!("cannot remove {}: {e}", dir.display()))?;
+            }
+            if root.join(MANIFEST).exists() {
+                self.write_manifest(root).map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(())
+    }
+
+    fn write_manifest(&self, root: &Path) -> Result<()> {
+        let manifest = Manifest {
+            name: self.name.clone(),
+            format_version: FORMAT_VERSION,
+            description: self.description.clone(),
+            libraries: self.libraries.iter().map(LibEntry::of).collect(),
+            settings: self.settings.clone(),
+        };
+        write_json(&root.join(MANIFEST), &manifest)
+    }
+
     pub fn save_as(&mut self, root: &Path) -> Result<()> {
         self.root = Some(root.to_path_buf());
         self.save()
@@ -502,14 +603,7 @@ impl Project {
     pub fn save(&self) -> Result<()> {
         let root = self.root.as_ref().ok_or_else(|| ProjectError::Other("project has no location".into()))?;
         fs::create_dir_all(root).map_err(io_err(root))?;
-        let manifest = Manifest {
-            name: self.name.clone(),
-            format_version: FORMAT_VERSION,
-            description: self.description.clone(),
-            libraries: self.libraries.iter().map(LibEntry::of).collect(),
-            settings: self.settings.clone(),
-        };
-        write_json(&root.join(MANIFEST), &manifest)?;
+        self.write_manifest(root)?;
         write_json(&root.join("tech.json"), &self.tech)?;
         for lib in &self.libraries {
             let lib_dir = root.join(&lib.name);
@@ -1011,6 +1105,33 @@ mod tests {
 
         q.save().unwrap();
         assert_eq!(canonical(&Project::open(&dir).unwrap()), canonical(&p));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn rename_and_delete_library_on_disk() {
+        let dir = temp_dir("libops");
+        let mut p = crate::examples::demo_project();
+        chip_library(&mut p);
+        p.save_as(&dir).unwrap();
+        assert_eq!(p.library_tops("chip").iter().map(|r| r.cell.as_str()).collect::<Vec<_>>(), ["empty", "res", "top"]);
+        assert_eq!(p.library_users("other"), 1);
+        assert!(p.rename_library("chip", "work").is_err(), "names must be unique");
+        p.rename_library("other", "ext").unwrap();
+        p.rename_library("chip", "soc").unwrap();
+        assert!(dir.join("soc").join("soc.gds").is_file());
+        assert!(!dir.join("chip").exists());
+        let top = p.cell(&CellRef::new("soc", "top")).unwrap().layout.as_ref().unwrap();
+        assert!(top.instances.iter().any(|i| i.cell == CellRef::new("ext", "leaf")));
+        assert!(top.instances.iter().all(|i| i.cell.lib != "chip"));
+        // Renames are on disk at once: the saved project opens with the new names.
+        let q = Project::open(&dir).unwrap();
+        assert!(q.cell(&CellRef::new("soc", "leaf")).is_some());
+        assert!(q.cell(&CellRef::new("ext", "leaf")).is_some());
+
+        p.delete_library("soc").unwrap();
+        assert!(!dir.join("soc").exists());
+        assert!(Project::open(&dir).unwrap().libraries.iter().all(|l| l.name != "soc"));
         fs::remove_dir_all(&dir).unwrap();
     }
 
