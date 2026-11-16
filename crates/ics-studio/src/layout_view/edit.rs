@@ -657,8 +657,6 @@ impl LayoutEditor {
     pub(super) fn layer_ops_panel(&mut self, ui: &mut egui::Ui, l: &mut Layout, cx: &mut LayCtx) -> bool {
         let tech = cx.tech;
         let mut changed = false;
-        ui.add_space(12.0);
-        theme::section(ui, "Layer operations");
         let layer_combo = |ui: &mut egui::Ui, id: &str, label: &str, v: &mut usize| {
             let lb = ui.label(label);
             egui::ComboBox::from_id_salt(id)

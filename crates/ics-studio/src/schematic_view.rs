@@ -1332,23 +1332,15 @@ fn param_hint(kind: DeviceKind, k: &str) -> &'static str {
 /// Device library palette with mini symbol previews.
 pub fn device_palette(ui: &mut egui::Ui, editor: &mut SchematicEditor) {
     let pal = theme::palette(ui.ctx());
-    theme::section(ui, "Tools");
-    ui.horizontal_wrapped(|ui| {
-        for (tool, label, key) in
-            [(SchTool::Select, "Select", "Esc"), (SchTool::Wire, "Wire", "W"), (SchTool::Label, "Label", "T")]
-        {
-            if ui.selectable_label(editor.tool == tool, label).on_hover_text(format!("Shortcut: {key}")).clicked() {
-                editor.set_tool(tool);
-            }
-        }
-    });
+    // Select / Wire / Label live on the canvas toolbar; only the label tool's net name is here.
     if editor.tool == SchTool::Label {
+        theme::section(ui, "Net Label");
         ui.horizontal(|ui| {
             let l = ui.label("Net:");
             ui.add(egui::TextEdit::singleline(&mut editor.label_text).desired_width(110.0)).labelled_by(l.id);
         });
+        ui.add_space(6.0);
     }
-    ui.add_space(6.0);
     theme::section(ui, "Device Library · analogLib");
     let cell = Vec2::new(ui.available_width() / 2.0 - 4.0, 64.0);
     egui::Grid::new("devgrid").num_columns(2).spacing([6.0, 6.0]).show(ui, |ui| {

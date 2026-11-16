@@ -6,9 +6,9 @@ Open a cell's schematic view (or press `Ctrl+2` with a cell open) to edit it.
 
 ![Schematic editor](screenshots/03_schematic.webp)
 
-- **Left panel**: **Tools** (Select, Wire, Label), the **Device Library** with one tile per
-  primitive and its shortcut letter, and a short shortcut reminder.
-- **Toolbar**: the current tool, undo / redo, rotate, mirror, duplicate, fit, the **Grid**
+- **Left panel**: the **Device Library** with one tile per primitive and its shortcut
+  letter, and a short shortcut reminder. With the label tool, the net name to place.
+- **Toolbar**: Select, Wire and Label, the current tool, undo / redo, rotate, mirror, duplicate, fit, the **Grid**
   and **Annotate OP** checkboxes, and **Simulate** (`F5`).
 - **Right panel**: the property inspector.
 

@@ -3072,20 +3072,41 @@ impl LayoutEditor {
         if changed {
             cx.touched();
         }
-        let ops_changed = if self.selection.is_empty() { self.layer_ops_panel(ui, l, cx) } else { self.ops_panel(ui, l, cx) };
-        if ops_changed {
-            changed = true;
-            cx.touched();
+        if self.selection.is_empty() {
+            // Nothing selected: verification first; the Boolean layer operations fold below it.
+            self.compare_panel(ui, cx);
+            self.verify_panel(ui, l, cx);
+            ui.add_space(12.0);
+            let ops = egui::CollapsingHeader::new("Layer operations")
+                .id_salt("lay_layer_ops")
+                .default_open(false)
+                .show(ui, |ui| self.layer_ops_panel(ui, l, cx));
+            if ops.body_returned == Some(true) {
+                changed = true;
+                cx.touched();
+            }
+            if self.constraints_panel(ui, l, cx) {
+                changed = true;
+                cx.touched();
+            }
+            if changed {
+                self.layout_changed();
+            }
+        } else {
+            if self.ops_panel(ui, l, cx) {
+                changed = true;
+                cx.touched();
+            }
+            if self.constraints_panel(ui, l, cx) {
+                changed = true;
+                cx.touched();
+            }
+            if changed {
+                self.layout_changed();
+            }
+            self.compare_panel(ui, cx);
+            self.verify_panel(ui, l, cx);
         }
-        if self.constraints_panel(ui, l, cx) {
-            changed = true;
-            cx.touched();
-        }
-        if changed {
-            self.layout_changed();
-        }
-        self.compare_panel(ui, cx);
-        self.verify_panel(ui, l, cx);
         (changed, open)
     }
 }

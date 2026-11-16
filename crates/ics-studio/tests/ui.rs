@@ -2594,6 +2594,23 @@ fn schematic_context_menu() {
     assert_eq!(count(&h), before * 2, "duplicate should copy every instance");
 }
 
+/// Explorer: libraries of generated PCells start folded; the filter lists matching cells only.
+#[test]
+fn explorer_filter() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = app(demo_args("cmos_inverter", "schematic", false));
+    h.run_steps(4);
+    assert!(h.query_by_label("nmos_w1000_l180_nf1").is_none(), "pcells library should start folded");
+    assert!(h.query_by_label("ring_osc5").is_some());
+    let f = h.get_by_label("Filter");
+    f.focus();
+    f.type_text("inv_");
+    h.run_steps(3);
+    assert!(h.query_by_label("inv_chain").is_some());
+    assert!(h.query_by_label("ring_osc5").is_none(), "non-matching cells are hidden");
+    shot(&mut h, "explorer_filter");
+}
+
 /// Cmd+D deselects all in the schematic, as in the layout; Shift+Cmd+D duplicates.
 #[test]
 fn schematic_cmd_d_matches_layout() {

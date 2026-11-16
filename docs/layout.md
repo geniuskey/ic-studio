@@ -25,8 +25,9 @@ the layout commands; every item shows its bindkey, and the command palette lists
 - **Status bar**: `X` / `Y` of the cursor; while a command is in progress `dX`, `dY` and
   `Dist` from its reference point; `Sel: n` (`Sel(P): n` for a partial selection); `Cmd:`
   the current tool; and a `mouse L: … M: … R: …` line telling what each button does now.
-- **Right panel**: cell statistics or the inspector, **Edit** operations, **Layer
-  operations**, and the verification sections (see [Verification](verification.md)).
+- **Right panel**: with nothing selected, cell statistics, the verification sections (see
+  [Verification](verification.md)) and the folded **Layer operations**; with a selection,
+  the inspector, **Edit** operations, then the verification sections.
 
 ## Layers
 
@@ -183,7 +184,8 @@ first.
 
 ## Layer operations
 
-With nothing selected, **Layer operations** computes Boolean results:
+With nothing selected, **Layer operations** (folded under the verification sections; click to
+open it) computes Boolean results:
 
 1. Choose layer **A**, an **Operation** (AND, OR, NOT, XOR, SIZE) and layer **B** (or a
    distance **By** in µm for SIZE).

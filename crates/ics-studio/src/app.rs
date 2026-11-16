@@ -506,6 +506,11 @@ const SHORTCUTS: &[ShortcutGroup] = &[
     ),
 ];
 
+/// Explorer hover text of a cell: its full name (long names are cut by the panel) and description.
+fn cell_tip(cell: &Cell) -> String {
+    if cell.description.is_empty() { cell.name.clone() } else { format!("{}\n{}", cell.name, cell.description) }
+}
+
 /// How long a warning stays on the status bar.
 const FLASH_TIME: Duration = Duration::from_secs(8);
 
@@ -567,6 +572,8 @@ pub struct IcStudio {
     active: Option<CellRef>,
     /// Library selected in the Explorer (its header was clicked).
     selected_lib: Option<String>,
+    /// Explorer filter: a part of a cell name; empty shows the library tree.
+    explorer_filter: String,
     sch_eds: HashMap<CellRef, SchematicEditor>,
     lay_eds: HashMap<CellRef, LayoutEditor>,
     /// Cells descended into (Shift+X) or edited in place (x), for Shift+B (return).
@@ -642,6 +649,7 @@ impl IcStudio {
             workspace: Workspace::Home,
             tabs: vec![],
             selected_lib: None,
+            explorer_filter: String::new(),
             active: None,
             sch_eds: HashMap::new(),
             lay_eds: HashMap::new(),
@@ -2978,12 +2986,54 @@ impl IcStudio {
                 }
             });
         });
+        ui.horizontal(|ui| {
+            let l = ui.label(RichText::new("Filter").small().color(pal.text_weak));
+            let te = egui::TextEdit::singleline(&mut self.explorer_filter).hint_text("cell name").desired_width(f32::INFINITY);
+            let resp = ui.add(te).labelled_by(l.id);
+            if resp.has_focus() && ui.input(|i| i.key_pressed(Key::Escape)) {
+                self.explorer_filter.clear();
+            }
+        });
+        let filter = self.explorer_filter.trim().to_lowercase();
+        if !filter.is_empty() {
+            let mut any = false;
+            for lib in &p.libraries {
+                let hits: Vec<&Cell> = lib.cells.iter().filter(|c| c.name.to_lowercase().contains(&filter)).collect();
+                if hits.is_empty() {
+                    continue;
+                }
+                any = true;
+                ui.label(RichText::new(&lib.name).small().strong().color(pal.text_weak));
+                for cell in hits {
+                    let r = CellRef::new(&lib.name, &cell.name);
+                    let active = self.active.as_ref() == Some(&r);
+                    ui.horizontal(|ui| {
+                        ui.add_space(8.0);
+                        let (ir, painter) = ui.allocate_painter(Vec2::splat(14.0), Sense::hover());
+                        icons::paint(&painter, ir.rect, Icon::Cell, if active { pal.accent } else { pal.text_weak });
+                        let resp = ui.selectable_label(active, &cell.name);
+                        if resp.clicked() {
+                            self.selected_lib = None;
+                            self.queue.push(Command::OpenCell(r.clone(), None));
+                        }
+                        let resp = Self::cell_menu(Some(p), &mut self.queue, &resp, &r, None);
+                        resp.on_hover_text(cell_tip(cell));
+                    });
+                }
+            }
+            if !any {
+                ui.label(RichText::new("No cell matches").color(pal.text_weak));
+            }
+            return;
+        }
         for lib in &p.libraries {
+            // Libraries of generated PCell variants start folded: they are many, and rarely opened.
+            let generated = !lib.cells.is_empty() && lib.cells.iter().all(|c| c.pcell.is_some());
             let id = ui.make_persistent_id(("lib", &lib.name));
             let mut toggle = false;
             let selected = self.selected_lib.as_deref() == Some(lib.name.as_str());
-            let mut header =
-                egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true).show_header(ui, |ui| {
+            let mut header = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, !generated)
+                .show_header(ui, |ui| {
                     let (r, painter) = ui.allocate_painter(Vec2::splat(16.0), Sense::hover());
                     icons::paint(&painter, r.rect, Icon::Library, if selected { pal.accent } else { pal.text_weak });
                     let resp = ui.selectable_label(selected, RichText::new(&lib.name).strong());
@@ -3068,9 +3118,7 @@ impl IcStudio {
                                 self.queue.push(Command::OpenCell(r.clone(), None));
                             }
                             let resp = Self::cell_menu(Some(p), &mut self.queue, &resp, &r, None);
-                            if !cell.description.is_empty() {
-                                resp.on_hover_text(&cell.description);
-                            }
+                            resp.on_hover_text(cell_tip(cell));
                         })
                         .body(|ui| {
                             for (vk, icon, color, ws) in [
