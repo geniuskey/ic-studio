@@ -162,8 +162,50 @@ OpenAccess는 바이너리 C++ 데이터베이스이므로, IC Studio와 Cadence
 
   IC Studio의 **CDL** 넷리스트(`ics netlist --format cdl`)를 Virtuoso의 CDL 가져오기로 읽는 방법도 있습니다.
 
-CDL 임포트는 계층 auCdl 형식 넷리스트와 데모 셀의 CDL 왕복으로 테스트했습니다. SKILL 스크립트는 IC Studio의
-SKILL 리더로 문법을 확인했지만, 아직 Virtuoso 세션에서 실행해 보지는 않았습니다.
+### 라이브러리 통째로: Virtuoso 덤프
+
+CDL은 연결 정보만 담습니다. 회로도와 레이아웃을 함께 옮기려면 Virtuoso 안에서 작은 SKILL 스크립트로 라이브러리를
+텍스트로 쓴 다음 그 파일을 가져옵니다.
+
+1. **File > Export > Virtuoso dump script (icsDump.il)...**(또는 `ics dump-skill -o icsDump.il`)로 스크립트를
+   저장합니다.
+2. Virtuoso CIW에서 실행합니다.
+
+   ```skill
+   load("icsDump.il")
+   icsDumpLib("myLib" "/tmp/myLib.icsdump")                          ; 모든 셀
+   icsDumpLib("myLib" "/tmp/amp.icsdump" ?cells list("amp" "bias"))  ; 일부 셀
+   icsDumpLib("myLib" "/tmp/sch.icsdump" ?views list("schematic"))   ; 회로도만
+   ```
+
+3. IC Studio에서 **File > Import > Virtuoso library dump...**(또는
+   `ics import-virtuoso <project> /tmp/myLib.icsdump [--map virtuoso_symbols.toml] [--scale S] [--overwrite]`,
+   MCP `import_virtuoso`)를 실행합니다.
+
+옮겨지는 내용은 다음과 같습니다.
+
+- **회로도**: 회로도마다 셀이 하나 생깁니다. 인스턴스는 SKILL 내보내기와 같은 심볼 맵을 거꾸로 써서 IC Studio
+  소자에 대응시킵니다(기본값은 analogLib). 파라미터는 인스턴스의 CDF 값이어서, 인스턴스가 바꾸지 않은 기본값도
+  들어옵니다. 각 터미널의 넷은 Virtuoso의 연결 정보에서 가져옵니다. 덤프에 들어 있는 다른 회로도의 인스턴스는
+  서브서킷으로 보고, CDL 임포트처럼 인스턴스 경로를 붙여 평탄화합니다(`MI0/M0`). `pPar("wp")`는 부모의 값을
+  쓰고, 부모가 주지 않으면 셀의 CDF 기본값을 씁니다. 서브서킷이 없는 회로도는 Virtuoso의 배치와 방향을 그대로
+  씁니다(그리드 한 칸이 `--scale` 사용자 단위). 다만 그렇게 해서 연결이 달라지면 소자를 줄 단위로 배치하고 경고를
+  냅니다. 핀, 전원, `basic` 심볼은 넷이 이미 터미널에 있으므로 소자로 가져오지 않습니다. 반복 인스턴스
+  (`I0<0:3>`)는 경고와 함께 건너뜁니다.
+- **레이아웃**: 사각형, 폴리곤, 패스(`path`, `pathSeg`), 레이블, 인스턴스, mosaic(배열로)을 가져옵니다.
+  레이어-퍼포스 쌍은 테크놀로지 레이어에 대응시킵니다. `drawing`이 아닌 퍼포스는 먼저 `metal1.pin` /
+  `metal1_pin`을 찾고, 없으면 `pin`, `net`, `label`, `boundary` 퍼포스에 한해 레이어 자체를 씁니다. 알 수 없는
+  레이어의 도형은 개수를 세어 알려 주고 건너뜁니다. 다른 라이브러리의 마스터(표준 셀, PDK 소자)는 그 라이브러리의
+  셀로 들어옵니다. PCell variant는 `<cell>_pc<n>`이라는 고정 셀이 됩니다. 레이어와 데이터베이스 단위가 맞도록
+  PDK 테크놀로지(`.tf`, `display.drf`, 레이어 맵)를 먼저 불러 오세요.
+
+이미 있는 회로도와 레이아웃은 `--overwrite`를 주지 않으면 그대로 둡니다.
+
+CDL 임포트는 계층 auCdl 형식 넷리스트와 데모 셀의 CDL 왕복으로 테스트했습니다. 덤프 리더는 스크립트 형식의
+덤프로 테스트했습니다. 스크립트의 레이아웃 부분(`icsDumpLay`)은 IC Studio의 SKILL 인터프리터로 데모
+레이아웃에서도 실행했고, 그 결과를 다시 읽으면 도형과 인스턴스가 같습니다. SKILL 내보내기와 덤프 스크립트는
+아직 Virtuoso 세션에서 실행해 보지 않았습니다. 회로도 부분은 내장 인터프리터가 흉내 내지 않는 `cdfGetInstCDF`,
+`instTerms`, `terminals`를 씁니다.
 
 ## 동작점 표시
 

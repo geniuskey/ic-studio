@@ -57,6 +57,7 @@ pub mod tech;
 pub mod tech_import;
 pub mod units;
 pub mod virtuoso;
+pub mod virtuoso_dump;
 
 pub use geom::{IRect, Orient, Pt};
 pub use layout::{ArraySpec, CellInst, Geometry, Layout, Shape, Trans};

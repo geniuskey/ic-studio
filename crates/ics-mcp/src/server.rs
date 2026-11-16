@@ -210,6 +210,7 @@ mod tests {
             "project_info",
             "get_netlist",
             "import_cdl",
+            "import_virtuoso",
             "export_skill_schematic",
             "write_schematic",
             "set_simulation",

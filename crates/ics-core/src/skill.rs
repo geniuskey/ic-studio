@@ -2778,7 +2778,7 @@ impl<'p> Interp<'p> {
                             .unwrap_or_default(),
                     ),
                     "bBox" => self.cell_bbox(&cell).map_or(Value::Nil, |b| self.box_val(b)),
-                    "isParamCell" => Value::Nil,
+                    "isParamCell" | "superMaster" | "mosaics" => Value::Nil,
                     "layerPurposePairs" | "lpps" => {
                         let mut layers: Vec<usize> =
                             self.layout(cv).map(|l| l.shapes.iter().map(|s| s.layer).collect()).unwrap_or_default();

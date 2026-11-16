@@ -229,6 +229,12 @@ pub enum Command {
     ImportCdl(Option<PathBuf>),
     /// Write the active schematic as a SKILL script that recreates it in Virtuoso.
     ExportSkill,
+    /// Import a Virtuoso library dump (`icsDumpLib`): schematics and layouts; `None` asks for
+    /// the file.
+    ImportVirtuoso(Option<PathBuf>),
+    /// Save `icsDump.il`, the SKILL script that writes a Virtuoso library dump; `None` asks
+    /// where.
+    SaveDumpSkill(Option<PathBuf>),
     ToggleTheme,
     ToggleConsole,
     Settings,
@@ -1145,6 +1151,8 @@ impl IcStudio {
             Command::ImportTech => self.import_tech(),
             Command::ImportCdl(path) => self.import_cdl(path),
             Command::ExportSkill => self.export_skill(),
+            Command::ImportVirtuoso(path) => self.import_virtuoso(path),
+            Command::SaveDumpSkill(path) => self.save_dump_skill(path),
             Command::LoadSkill(path) => self.load_skill(path),
             Command::Ciw => {
                 self.show_console = true;
@@ -2238,6 +2246,54 @@ impl IcStudio {
         }
     }
 
+    fn import_virtuoso(&mut self, path: Option<PathBuf>) {
+        let Some(path) =
+            path.or_else(|| rfd::FileDialog::new().add_filter("Virtuoso library dump", &["icsdump", "txt"]).pick_file())
+        else {
+            return;
+        };
+        let Some(p) = self.project.as_mut() else { return };
+        let res = std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| {
+            let d = ics_core::virtuoso_dump::Dump::parse(&t)?;
+            ics_core::virtuoso_dump::import_dump(&d, &p.tech, &ics_core::cadence::SymbolMap::analog_lib(), 0.1875)
+        });
+        let imp = match res {
+            Ok(i) => i,
+            Err(e) => return self.error(format!("Cannot import {}: {e}", path.display())),
+        };
+        let mut warnings = imp.warnings.clone();
+        let done = match ics_core::virtuoso_dump::apply(p, &imp, false, &mut warnings) {
+            Ok(d) => d,
+            Err(e) => return self.error(e),
+        };
+        self.hier.clear();
+        self.mark_dirty();
+        let (sch, lay) = (done.iter().filter(|a| a.schematic).count(), done.iter().filter(|a| a.layout).count());
+        self.ok(format!("Virtuoso: {sch} schematic(s) and {lay} layout(s) imported from {}", path.display()));
+        for w in warnings {
+            self.warn(format!("Virtuoso: {w}"));
+        }
+        if let Some(a) = done.iter().find(|a| a.schematic).or_else(|| done.iter().find(|a| a.layout)) {
+            let ws = if a.schematic { Workspace::Schematic } else { Workspace::Layout };
+            self.queue.push(Command::OpenCell(a.cell.clone(), Some(ws)));
+        }
+    }
+
+    fn save_dump_skill(&mut self, path: Option<PathBuf>) {
+        let Some(path) =
+            path.or_else(|| rfd::FileDialog::new().set_file_name("icsDump.il").add_filter("SKILL script", &["il"]).save_file())
+        else {
+            return;
+        };
+        match std::fs::write(&path, ics_core::virtuoso_dump::DUMP_SKILL) {
+            Ok(()) => self.ok(format!(
+                "Wrote {}. In the Virtuoso CIW: load(\"icsDump.il\") then icsDumpLib(\"myLib\" \"/tmp/myLib.icsdump\")",
+                path.display()
+            )),
+            Err(e) => self.error(format!("Cannot write {}: {e}", path.display())),
+        }
+    }
+
     fn export_skill(&mut self) {
         let (Some(p), Some(r)) = (self.project.as_ref(), self.active.clone()) else { return };
         let Some(sch) = p.cell(&r).and_then(|c| c.schematic.as_ref()) else {
@@ -2495,6 +2551,9 @@ impl IcStudio {
                     if ui.add_enabled(has_project, egui::Button::new("CDL netlist (Virtuoso)…")).clicked() {
                         q.push(Command::ImportCdl(None));
                     }
+                    if ui.add_enabled(has_project, egui::Button::new("Virtuoso library dump…")).clicked() {
+                        q.push(Command::ImportVirtuoso(None));
+                    }
                 });
                 ui.menu_button("Export", |ui| {
                     if ui.add_enabled(has_project, egui::Button::new("SPICE netlist…")).clicked() {
@@ -2502,6 +2561,9 @@ impl IcStudio {
                     }
                     if ui.add_enabled(has_project, egui::Button::new("Virtuoso schematic (SKILL)…")).clicked() {
                         q.push(Command::ExportSkill);
+                    }
+                    if ui.button("Virtuoso dump script (icsDump.il)…").clicked() {
+                        q.push(Command::SaveDumpSkill(None));
                     }
                     if ui.add_enabled(has_project, egui::Button::new("Cell GDSII…")).clicked() {
                         q.push(Command::ExportGds);
@@ -3717,6 +3779,8 @@ impl IcStudio {
             ("AI models (provider, model, API key)…".into(), "", Command::AiModels),
             ("Export SPICE netlist…".into(), "", Command::ExportNetlist),
             ("Import CDL netlist (Virtuoso)…".into(), "", Command::ImportCdl(None)),
+            ("Import Virtuoso library dump…".into(), "", Command::ImportVirtuoso(None)),
+            ("Save Virtuoso dump script (icsDump.il)…".into(), "", Command::SaveDumpSkill(None)),
             ("Export Virtuoso schematic (SKILL)…".into(), "", Command::ExportSkill),
             ("Toggle light / dark theme".into(), "", Command::ToggleTheme),
             ("Toggle console".into(), "⌘J", Command::ToggleConsole),

@@ -569,6 +569,20 @@ pub fn definitions() -> Vec<Value> {
             &[],
         ),
         tool(
+            "import_virtuoso",
+            &format!(
+                "Import a Cadence Virtuoso library dump written by icsDumpLib (the SKILL script icsDump.il; 'ics dump-skill' prints it): every schematic becomes a cell (instances matched to devices through a symbol map, analogLib by default; instances of other dumped schematics flattened with instance paths; the Virtuoso placement kept when it gives the same connectivity) and every layout its cell's layout (shapes on technology layers, instances, mosaics, masters from other libraries and PCell variants as cells of their own). Existing views are kept unless overwrite. Returns the cells with what was imported and warnings. {NOT_SAVED}"
+            ),
+            json!({
+                "dump": {"type": "string", "description": "Dump text."},
+                "path": {"type": "string", "description": "A dump file instead of the text."},
+                "map": {"type": "string", "description": "Symbol map TOML ([[symbol]] entries with kind, model, lib, cell, terms, params)."},
+                "scale": {"type": "number", "description": "Virtuoso user units per schematic grid point (default 0.1875)."},
+                "overwrite": {"type": "boolean", "description": "Replace existing schematics and layouts (default false)."}
+            }),
+            &[],
+        ),
+        tool(
             "export_skill_schematic",
             "Write a cell's schematic as a SKILL script that recreates it in Cadence Virtuoso (load it in the CIW). Devices become analogLib symbols (nmos4, pmos4, res, cap, ind, vdc, idc, diode) or the symbols of a map; every terminal gets a wire stub and a wire label with its net at the symbol's pin, found when the script runs. Returns the script (and writes it to path when given) with warnings for devices without a symbol.",
             json!({
@@ -1074,6 +1088,7 @@ impl State {
             "write_schematic" => self.write_schematic(a),
             "import_cdl" => self.import_cdl(a),
             "export_skill_schematic" => self.export_skill_schematic(a),
+            "import_virtuoso" => self.import_virtuoso(a),
             "set_simulation" => self.set_simulation(a),
             "simulate" => self.simulate(a),
             "run_spice" => self.run_spice(a),
@@ -1314,6 +1329,34 @@ impl State {
             "pins": imp.flat.pins.iter().map(|(n, d)| json!({"name": n, "direction": d})).collect::<Vec<_>>(),
             "subckts": imp.subckts, "warnings": imp.imported.warnings,
         }))
+    }
+
+    fn import_virtuoso(&mut self, a: &Args) -> Result<Value, String> {
+        let text = match (a.opt_str("dump")?, a.opt_str("path")?) {
+            (Some(t), _) => t.to_string(),
+            (None, Some(p)) => std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))?,
+            _ => return Err("give the dump as dump or path".into()),
+        };
+        let map = match a.opt_str("map")? {
+            Some(t) => ics_core::cadence::SymbolMap::from_toml(t)?,
+            None => ics_core::cadence::SymbolMap::analog_lib(),
+        };
+        let scale = a.0.get("scale").and_then(Value::as_f64).unwrap_or(0.1875);
+        let d = ics_core::virtuoso_dump::Dump::parse(&text)?;
+        let imp = ics_core::virtuoso_dump::import_dump(&d, &self.project()?.tech, &map, scale)?;
+        let overwrite = a.opt_bool("overwrite")?.unwrap_or(false);
+        let mut warnings = imp.warnings.clone();
+        let done = ics_core::virtuoso_dump::apply(self.project_mut()?, &imp, overwrite, &mut warnings)?;
+        self.dirty = true;
+        let cells: Vec<Value> = done
+            .iter()
+            .map(|d| {
+                let c = imp.cells.iter().find(|c| c.cell == d.cell).expect("imported");
+                json!({"cell": d.cell.to_string(), "schematic": d.schematic, "layout": d.layout,
+                       "devices": c.devices, "virtuoso_placement": c.placed})
+            })
+            .collect();
+        Ok(json!({"cells": cells, "warnings": warnings}))
     }
 
     fn export_skill_schematic(&mut self, a: &Args) -> Result<Value, String> {

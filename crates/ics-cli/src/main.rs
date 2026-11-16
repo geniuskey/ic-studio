@@ -101,6 +101,28 @@ enum Cmd {
         #[arg(long, default_value_t = 0.1875)]
         scale: f64,
     },
+    /// Write icsDump.il, the SKILL script that dumps a Virtuoso library for import-virtuoso
+    /// (in the CIW: load("icsDump.il") then icsDumpLib("myLib" "/tmp/myLib.icsdump")).
+    DumpSkill {
+        /// Output file (.il; default: standard output).
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
+    /// Import a Virtuoso library dump written by icsDumpLib: schematics (flattened, Virtuoso
+    /// placement kept when possible) and layouts (with their masters). Saves the project.
+    ImportVirtuoso {
+        project: PathBuf,
+        dump: PathBuf,
+        /// Symbol map (TOML [[symbol]] entries; default: analogLib).
+        #[arg(long)]
+        map: Option<PathBuf>,
+        /// Virtuoso user units per schematic grid point.
+        #[arg(long, default_value_t = 0.1875)]
+        scale: f64,
+        /// Replace existing schematics and layouts.
+        #[arg(long)]
+        overwrite: bool,
+    },
     /// Simulate a cell with its saved simulation setup.
     Sim {
         project: PathBuf,
@@ -876,6 +898,50 @@ fn run(cli: Cli) -> Result<(), String> {
                 for w in &imp.imported.warnings {
                     eprintln!("warning: {w}");
                 }
+            }
+            p.save().map_err(|e| e.to_string())?;
+        }
+        Cmd::DumpSkill { out } => match out {
+            Some(f) => {
+                std::fs::write(&f, ics_core::virtuoso_dump::DUMP_SKILL).map_err(|e| format!("{}: {e}", f.display()))?;
+                eprintln!("wrote {}", f.display());
+            }
+            None => print!("{}", ics_core::virtuoso_dump::DUMP_SKILL),
+        },
+        Cmd::ImportVirtuoso { project, dump, map, scale, overwrite } => {
+            let mut p = Project::open(&project).map_err(|e| e.to_string())?;
+            let text = std::fs::read_to_string(&dump).map_err(|e| format!("{}: {e}", dump.display()))?;
+            let d = ics_core::virtuoso_dump::Dump::parse(&text).map_err(|e| format!("{}: {e}", dump.display()))?;
+            let m = match &map {
+                Some(f) => ics_core::cadence::SymbolMap::from_toml(
+                    &std::fs::read_to_string(f).map_err(|e| format!("{}: {e}", f.display()))?,
+                )
+                .map_err(|e| format!("{}: {e}", f.display()))?,
+                None => ics_core::cadence::SymbolMap::analog_lib(),
+            };
+            let imp = ics_core::virtuoso_dump::import_dump(&d, &p.tech, &m, scale)?;
+            let mut warnings = imp.warnings.clone();
+            let done = ics_core::virtuoso_dump::apply(&mut p, &imp, overwrite, &mut warnings)?;
+            for a in &done {
+                let c = imp.cells.iter().find(|c| c.cell == a.cell).expect("imported");
+                let mut views = vec![];
+                if a.schematic {
+                    views.push(format!(
+                        "schematic ({} device(s){})",
+                        c.devices,
+                        if c.placed { ", Virtuoso placement" } else { "" }
+                    ));
+                }
+                if a.layout {
+                    let l = c.layout.as_ref().expect("has a layout");
+                    views.push(format!("layout ({} shape(s), {} instance(s))", l.shapes.len(), l.instances.len()));
+                }
+                if !views.is_empty() {
+                    println!("{}: {}", a.cell, views.join(", "));
+                }
+            }
+            for w in &warnings {
+                eprintln!("warning: {w}");
             }
             p.save().map_err(|e| e.to_string())?;
         }

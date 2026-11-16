@@ -170,9 +170,57 @@ Virtuoso through the text formats Virtuoso writes and reads itself:
   IC Studio's own **CDL** netlist (`ics netlist --format cdl`) also goes the other way
   through Virtuoso's CDL import.
 
+### Whole libraries: the Virtuoso dump
+
+CDL carries connectivity only. To bring schematics *and* layouts over together, run a small
+SKILL script inside Virtuoso that writes the library as text, then import that file:
+
+1. Save the script with **File > Export > Virtuoso dump script (icsDump.il)...** (or
+   `ics dump-skill -o icsDump.il`).
+2. In the Virtuoso CIW:
+
+   ```skill
+   load("icsDump.il")
+   icsDumpLib("myLib" "/tmp/myLib.icsdump")                          ; every cell
+   icsDumpLib("myLib" "/tmp/amp.icsdump" ?cells list("amp" "bias"))  ; some cells
+   icsDumpLib("myLib" "/tmp/sch.icsdump" ?views list("schematic"))   ; schematics only
+   ```
+
+3. In IC Studio: **File > Import > Virtuoso library dump...** (or
+   `ics import-virtuoso <project> /tmp/myLib.icsdump [--map virtuoso_symbols.toml] [--scale S] [--overwrite]`,
+   MCP `import_virtuoso`).
+
+What comes over:
+
+- **Schematics**: each one becomes a cell. Instances are matched to IC Studio devices by
+  the same symbol map as the SKILL export, read in reverse (analogLib by default). Their
+  parameters are the instance's CDF values, so defaults the instance does not override are
+  included. The net on each terminal comes from Virtuoso's own connectivity. An instance of
+  another dumped schematic is a subcircuit: it is flattened with instance paths, as in the
+  CDL import (`MI0/M0`). `pPar("wp")` takes the parent's value, or the cell's CDF default.
+  A schematic with no subcircuits keeps the Virtuoso placement and orientation, at `--scale`
+  user units per grid point, as long as that gives the same connectivity. Otherwise its
+  devices are laid out in rows, and a warning says so. Pin, supply and `basic` symbols are
+  not imported as devices, because their nets are already on the terminals. Iterated
+  instances (`I0<0:3>`) are skipped with a warning.
+- **Layouts**: rectangles, polygons, paths (`path` and `pathSeg`), labels, instances and
+  mosaics (as arrays). Layer-purpose pairs map to technology layers. A purpose other than
+  `drawing` looks for `metal1.pin` / `metal1_pin` first; `pin`, `net`, `label` and
+  `boundary` purposes then fall back to the layer itself. Shapes on unknown layers are
+  counted and skipped. Masters from other libraries (standard cells, PDK devices) come in as
+  cells of their own libraries. Each PCell variant becomes a fixed cell named `<cell>_pc<n>`.
+  Load the PDK's technology (`.tf`, `display.drf`, layer map) first, so the layers and the
+  database units match.
+
+Existing schematics and layouts are kept unless you pass `--overwrite`.
+
 The CDL import is tested on hierarchical auCdl-style netlists and on CDL round trips of the
-demo cells. The SKILL script was checked for syntax with IC Studio's SKILL reader; it has not
-yet been run in a Virtuoso session.
+demo cells. The dump reader is tested on dumps in the script's format. The layout half of
+the script (`icsDumpLay`) is also run by IC Studio's SKILL interpreter on the demo layouts,
+and the result reads back as the same shapes and instances. Neither the SKILL export nor
+the dump script has been run in a Virtuoso session yet. The schematic half uses
+`cdfGetInstCDF`, `instTerms` and `terminals`, which the built-in interpreter does not
+emulate.
 
 ## Operating point annotation
 

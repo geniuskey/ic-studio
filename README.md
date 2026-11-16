@@ -72,6 +72,9 @@ Linux needs the usual windowing libraries:
 - Virtuoso schematics: import hierarchical CDL netlists (auCdl, `ics import-cdl`) and export
   schematics as SKILL scripts that recreate them with analogLib or PDK symbols
   (`ics export-skill`)
+- Virtuoso libraries: a SKILL dump script (`ics dump-skill`) writes schematics and layouts
+  from inside Virtuoso, and `ics import-virtuoso` reads them, with placement, CDF parameters,
+  hierarchy, layout masters and PCell variants
 - Cadence Virtuoso conventions: default bindkeys and two-click commands in the layout
   editor, a Virtuoso or conventional mouse profile, and Cadence SKILL (`.il`) scripts with an
   interactive CIW prompt
@@ -386,7 +389,8 @@ fit for production use, including the optics of image sensors.
 2. **Fit into existing flows**: Done: Virtuoso technology files (`.tf`, `display.drf`, layer
    map), sign-off results from runs made elsewhere (Calibre, KLayout, netgen), DSPF
    post-layout netlists, Spectre / CDL netlists; Virtuoso schematics in as hierarchical CDL
-   (auCdl) and out as SKILL scripts that rebuild them. Next: OpenAccess databases directly.
+   (auCdl) and out as SKILL scripts that rebuild them; whole libraries (schematics and layouts)
+   through a SKILL dump run inside Virtuoso. Next: run both scripts in a Virtuoso session.
 3. **Image sensor pixels**: Done: a pixel stack (microlens, colour filter, dielectrics, metal
    grid, anti-reflection films, silicon) with ray and thin-film optics giving QE, crosstalk
    at a chief ray angle and the photocurrent of the pixel circuit (`ics pixel`, **Pixel

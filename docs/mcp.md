@@ -80,6 +80,7 @@ The server has 40 tools:
 | `correlate_silicon` | Compare measured curves (CSV) with the simulation; fit model, instance or design parameters |
 | `import_cdl` | Import a hierarchical CDL netlist (Virtuoso auCdl) as a cell's flat schematic |
 | `export_skill_schematic` | A schematic as a SKILL script that recreates it in Virtuoso (analogLib or mapped PDK symbols) |
+| `import_virtuoso` | Import a Virtuoso library dump (icsDump.il): schematics and layouts with their masters |
 | `process_cross_section` | Process emulation: material stacks, doped layers (type, depth, peak, sheet resistance) and junction depths along a cut through the layout after a process flow; optional SVG |
 | `process_data` | WAT / PCM data against the process spec: capability, control alarms, corner coverage, correlated parameters |
 | `extract_mismatch` | Mismatch from matched pairs: Pelgrom Avt / Abeta per device with standard errors (`apply` stores them in the technology for Monte Carlo) |

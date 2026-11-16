@@ -77,6 +77,7 @@ npx skills add geniuskey/ic-studio
 | `correlate_silicon` | 측정 곡선(CSV)과 시뮬레이션 비교, 모델·인스턴스·설계 파라미터 피팅 |
 | `import_cdl` | 계층 CDL 넷리스트(Virtuoso auCdl)를 셀의 평탄한 회로도로 가져오기 |
 | `export_skill_schematic` | 회로도를 Virtuoso에서 다시 만드는 SKILL 스크립트(analogLib 또는 매핑한 PDK 심볼) |
+| `import_virtuoso` | Virtuoso 라이브러리 덤프(icsDump.il) 가져오기: 마스터를 포함한 회로도와 레이아웃 |
 | `process_cross_section` | 공정 에뮬레이션: 공정 흐름 후 레이아웃 컷의 재료 스택, 도핑된 층(형, 깊이, 최대 농도, 면저항)과 접합 깊이, 선택적으로 SVG |
 | `process_data` | WAT / PCM 데이터와 공정 사양 비교: 공정 능력, 관리 경보, 코너 포함 여부, 상관된 파라미터 |
 | `extract_mismatch` | 매칭 쌍에서 미스매치: 소자별 Pelgrom Avt / Abeta와 표준오차(`apply`는 Monte Carlo용으로 테크놀로지에 저장) |
