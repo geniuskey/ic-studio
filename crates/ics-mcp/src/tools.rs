@@ -515,6 +515,35 @@ fn num_prop(d: &str) -> Value {
 
 const NOT_SAVED: &str = "Changes stay in memory until save_project is called.";
 
+/// A cell's simulation with its saved setup.
+pub struct CellSim {
+    pub results: SimResults,
+    pub deck: String,
+    /// Netlister warnings.
+    pub warnings: Vec<String>,
+    /// Summary of the parasitics included (post-layout).
+    pub parasitics: Option<String>,
+}
+
+/// Simulate cell `r` with its saved analyses, with its layout parasitics when `parasitics` or
+/// the setup asks for them; `backend` replaces the setup's.
+pub fn simulate_cell(p: &Project, r: &CellRef, parasitics: bool, backend: Option<Backend>) -> Result<CellSim, String> {
+    let c = p.cell(r).ok_or_else(|| format!("no cell {r}"))?;
+    let sch = c.schematic.as_ref().ok_or("cell has no schematic view")?;
+    let nl = ics_core::netlist::netlist_for(sch, &p.tech, &c.sim.corner);
+    let mut deck = nl.deck(&r.to_string(), &c.sim);
+    let mut summary = None;
+    if parasitics || c.sim.parasitics {
+        let pl = ics_core::pex::post_layout(p, r)?;
+        deck = pl.apply(&deck);
+        summary = Some(pl.summary);
+    }
+    let opts = sim_options(Some(p), backend.unwrap_or(c.sim.backend));
+    let analyses: Vec<_> = c.sim.enabled().cloned().collect();
+    let results = ics_sim::simulate(&deck, &analyses, &opts).map_err(|e| e.to_string())?;
+    Ok(CellSim { results, deck, warnings: nl.warnings, parasitics: summary })
+}
+
 pub fn definitions() -> Vec<Value> {
     let cell = cell_prop;
     let edit_cell = || json!({"type": "string", "description": "Target cell name or 'lib/cell'. Created (in library 'work' unless a lib is given) if it does not exist; a layout view is added if missing."});
@@ -1063,6 +1092,22 @@ pub fn definitions() -> Vec<Value> {
 }
 
 impl State {
+    /// State around a project (scripting: the Python API).
+    pub fn with_project(project: Project) -> Self {
+        Self { project: Some(project), ..Default::default() }
+    }
+
+    /// The open project.
+    pub fn current(&self) -> Option<&Project> {
+        self.project.as_ref()
+    }
+
+    /// The open project, to change it directly (marks it as changed).
+    pub fn current_mut(&mut self) -> Option<&mut Project> {
+        self.dirty = true;
+        self.project.as_mut()
+    }
+
     /// State around the project open in the desktop app (live mode).
     pub fn in_gui(project: Option<Project>, dirty: bool) -> Self {
         Self { project, dirty, in_gui: true, verified: None }
@@ -1509,23 +1554,11 @@ impl State {
 
     fn simulate(&self, a: &Args) -> Result<Value, String> {
         let (p, r) = self.cell_arg(a)?;
-        let c = p.cell(&r).expect("resolved");
-        let sch = c.schematic.as_ref().ok_or("cell has no schematic view")?;
-        let nl = ics_core::netlist::netlist_for(sch, &p.tech, &c.sim.corner);
-        let mut deck = nl.deck(&r.to_string(), &c.sim);
-        let mut parasitics = None;
-        if a.opt_bool("parasitics")?.unwrap_or(false) || c.sim.parasitics {
-            let pl = ics_core::pex::post_layout(p, &r)?;
-            deck = pl.apply(&deck);
-            parasitics = Some(pl.summary);
-        }
-        let opts = sim_options(Some(p), backend(a)?.unwrap_or(c.sim.backend));
-        let analyses: Vec<_> = c.sim.enabled().cloned().collect();
-        let res = ics_sim::simulate(&deck, &analyses, &opts).map_err(|e| e.to_string())?;
-        let mut out = results_json(&res);
+        let sim = simulate_cell(p, &r, a.opt_bool("parasitics")?.unwrap_or(false), backend(a)?)?;
+        let mut out = results_json(&sim.results);
         out["cell"] = json!(r.to_string());
-        out["netlist_warnings"] = json!(nl.warnings);
-        if let Some(s) = parasitics {
+        out["netlist_warnings"] = json!(sim.warnings);
+        if let Some(s) = sim.parasitics {
             out["parasitics"] = json!(s);
         }
         Ok(out)

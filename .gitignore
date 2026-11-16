@@ -4,3 +4,8 @@
 /examples/
 
 .env
+
+# Python extension
+python/target/
+__pycache__/
+*.so

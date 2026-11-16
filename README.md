@@ -339,6 +339,21 @@ appear immediately and can be undone, DRC / LVS / simulation results open in the
 and the status bar shows "MCP live". Without a running app, or with `ICS_MCP_STANDALONE=1`, the server works on its
 own in-memory project.
 
+## Python API
+
+`pip install ./python` builds the `icstudio` package (PyO3, needs Rust). It runs the same
+tools in-process, and `simulate` returns full waveforms as NumPy arrays:
+
+```python
+import icstudio
+p = icstudio.Project.open("myproj")
+r = p.simulate("rc_lowpass")                 # {"ac": {"vectors": {"v(out)": complex array, ...}}}
+print(p.drc("cmos_inverter")["violations"], p.verify()["status"])
+p.call("route", cell="cmos_inverter")        # any MCP tool by name
+```
+
+See [Python API](https://pages.euiyun.com/ic-studio/python.html).
+
 ## Architecture
 
 ```
@@ -357,11 +372,12 @@ crates/
               fill_view · opc_view · gen_view · net_view · hier_view · ciw
   ics-cli     `ics` command line and `ics mcp`
   ics-mcp     MCP tools, stdio server and live-mode bridge (library)
+  python/     `icstudio` Python package (PyO3, built by maturin; outside the workspace)
 ```
 
 Design decisions:
 
-- **The core is UI-free.** The GUI, the CLI and the MCP server are clients of the same
+- **The core is UI-free.** The GUI, the CLI, the MCP server and Python are clients of the same
   `ics-core` / `ics-sim` API.
 - **Commands are the single path for user actions**, which keeps the app scriptable.
 - **One database for schematic and layout.** Instance names tie schematic devices to
@@ -408,7 +424,7 @@ fit for production use, including the optics of image sensors.
    variation and mismatch extracted from silicon and drawn by Monte Carlo and yield
    prediction.
 
-Also: Python API (PyO3), non-Manhattan DRC and extraction, resistor / capacitor definitions
+Also: non-Manhattan DRC and extraction, resistor / capacitor definitions
 in the bundled PDKs.
 
 ## Acknowledgements

@@ -39,6 +39,7 @@
 
 - [Command line](cli.md)
 - [MCP server for AI agents](mcp.md)
+- [Python API](python.md)
 
 # Reference
 

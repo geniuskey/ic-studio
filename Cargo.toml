@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
+# The Python extension (python/) is built by maturin on its own.
+exclude = ["python"]
 default-members = ["crates/ics-studio"]
 
 [workspace.package]
