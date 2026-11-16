@@ -15,19 +15,19 @@ IC Studio는 이미지센서 픽셀의 스택(마이크로렌즈, 컬러 필터,
   전류원에 쓰려면 `--set PROJECT CELL I1 --color Gr`. 엄밀한 솔버는 `--method rcwa [--harmonics 11]`.
 
 `pixels/`에 예제 스택이 있습니다: 후면 조사(BSI) 1.4 µm 픽셀, 금속 3층의 전면 조사(FSI) 2.8 µm 픽셀, 레이아웃에서
-읽는 데모 3T 픽셀.
+읽는 데모 4T 픽셀.
 
 ## 레이아웃에서 가져오기
 
 스택은 픽셀 셀의 레이아웃에서 피치, 금속 패턴, 포토다이오드를 가져올 수 있습니다. `[layout]`에 `cell`과 `boundary`
 (픽셀 틀, 피치가 여기서 정해짐), 층의 `pattern = { material = "al", layout = "metal1" }`, 포토다이오드의
-`layout = "active not interact poly"`(게이트 없는 확산)처럼 씁니다. `layout`에는 테크놀로지 레이어나 DRC 덱 문법의
+`layout = "active wide 1"`(폭 1 µm 이상인 확산)처럼 씁니다. `layout`에는 테크놀로지 레이어나 DRC 덱 문법의
 파생 레이어 식(`and`, `not`, `interact`, `inside`, `size` 등)을 씁니다. 도형은 픽셀 틀로 잘라 모든 픽셀에
 반복하며, `rects = [[x0, y0, x1, y1], ...]`(픽셀 모서리 기준 µm)로 직접 줄 수도 있습니다. 포토다이오드 면적은 가로
 수집 범위를 제한하고, 그 옆에서 흡수된 빛은 손실로 보고합니다. `[microlens]`의 `center = "photodiode"`는 렌즈를
 포토다이오드 중심 위로 옮깁니다(또는 `offset = [dx, dy]`).
 
-- CLI: `ics pixel pixels/aps3t_fsi.toml --project <project> --lux 100`
+- CLI: `ics pixel pixels/aps4t_fsi.toml --project <project> --lux 100`
 - GUI: Pixel Optics 창의 **Demo pixel (layout)**이 열린 프로젝트를 읽습니다. 평면도에 패턴, 포토다이오드, 렌즈가
   표시됩니다.
 
@@ -42,7 +42,7 @@ IC Studio는 이미지센서 픽셀의 스택(마이크로렌즈, 컬러 필터,
 generic180에는 기본으로 있음). 그러면 픽셀 셀의 스택이 PDK와 레이아웃만으로 정해집니다: 유전체 층, 레이아웃
 레이어에서 온 각 층의 금속, 포토다이오드 면적, 컬러 필터, 평탄화층, 마이크로렌즈, 실리콘의 캐리어 확산.
 
-- CLI: `ics pixel --project <project> --cell aps3t --lux 100`. `--emit-stack`은 만든 스택을 출력하므로 고쳐서 쓸 수
+- CLI: `ics pixel --project <project> --cell aps4t --lux 100`. `--emit-stack`은 만든 스택을 출력하므로 고쳐서 쓸 수
   있습니다.
 - GUI: Pixel Optics 창의 **From PDK**(또는 명령 팔레트의 **Pixel stack of the open cell from the PDK cross
   section**)가 열린 셀의 스택을 편집기에 씁니다.

@@ -911,7 +911,7 @@ impl CrossSection {
                 lv("metal 3", "sio2", 0.6, Some(("metal3", "al")), false),
                 lv("passivation", "si3n4", 0.5, None, false),
             ],
-            photodiode: Some(PhotodiodeDef { layer: "active not interact poly".into(), top: 0.1, bottom: 3.0 }),
+            photodiode: Some(PhotodiodeDef { layer: "active wide 1".into(), top: 0.1, bottom: 3.0 }),
             pixel: Some(PixelOptics { color_filter: 0.9, planarisation: 0.4, microlens_height: 2.5, center_on_photodiode: true }),
             silicon: Some(SiliconDef { diffusion_length: 20.0, epi: 5.0 }),
         }
@@ -1139,9 +1139,9 @@ mod tests {
 
     #[test]
     fn cross_section_gives_a_pixel_stack() {
-        let t = Tech::generic().cross_section.unwrap().pixel_stack_toml("generic180", "aps3t", Some("boundary")).unwrap();
+        let t = Tech::generic().cross_section.unwrap().pixel_stack_toml("generic180", "aps4t", Some("boundary")).unwrap();
         let v: toml::Value = toml::from_str(&t).unwrap();
-        assert_eq!(v["layout"]["cell"].as_str(), Some("aps3t"));
+        assert_eq!(v["layout"]["cell"].as_str(), Some("aps4t"));
         let layers = v["layers"].as_array().unwrap();
         // Planarisation and colour filter first, then the back end from the top down.
         let names: Vec<&str> = layers.iter().map(|l| l["name"].as_str().unwrap()).collect();
@@ -1149,7 +1149,7 @@ mod tests {
         assert_eq!(*names.last().unwrap(), "PMD");
         assert_eq!(layers.iter().filter(|l| l.get("pattern").is_some()).count(), 3);
         assert_eq!(v["arc"].as_array().unwrap().len(), 1);
-        assert_eq!(v["photodiode"]["layout"].as_str(), Some("active not interact poly"));
+        assert_eq!(v["photodiode"]["layout"].as_str(), Some("active wide 1"));
         assert_eq!(v["microlens"]["center"].as_str(), Some("photodiode"));
         // Films above other levels are rejected.
         let mut bad = CrossSection::generic180();

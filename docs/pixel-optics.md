@@ -18,7 +18,7 @@ straight into the pixel circuit's simulation.
   current source. `--method rcwa [--harmonics 11]` selects the rigorous solver.
 
 Example stacks ship in `pixels/`: a back-side illuminated 1.4 µm pixel, a front-side
-illuminated 2.8 µm pixel with three metal levels, and the demo 3T pixel read from its layout.
+illuminated 2.8 µm pixel with three metal levels, and the demo 4T pixel read from its layout.
 
 ## From the layout
 
@@ -26,7 +26,7 @@ A stack can take its pitch, metal patterns and photodiode from a pixel cell's la
 
 ```toml
 [layout]
-cell = "aps3t"
+cell = "aps4t"
 boundary = "boundary"                 # the pixel frame; the pitch follows from it
 
 [microlens]
@@ -42,7 +42,7 @@ pattern = { material = "al", layout = "metal1" }
 [photodiode]
 top = 0.1
 bottom = 3.0
-layout = "active not interact poly"   # diffusion without a gate
+layout = "active wide 1"   # the diffusion at least 1 µm wide (not the transistors)
 ```
 
 `layout` takes a technology layer or a derived-layer expression of the DRC deck syntax
@@ -52,7 +52,7 @@ repeated in every pixel. Patterns can also be written directly as
 collection laterally; light absorbed beside it is reported as lost. `center = "photodiode"`
 shifts each microlens over the photodiode's centre.
 
-- CLI: `ics pixel pixels/aps3t_fsi.toml --project <project> --lux 100`
+- CLI: `ics pixel pixels/aps4t_fsi.toml --project <project> --lux 100`
 - GUI: **Demo pixel (layout)** in the Pixel Optics window reads the open project. The plan
   view shows the patterns, the photodiode and the lens.
 
@@ -69,7 +69,7 @@ then follows from the PDK and the layout alone: the dielectric levels, the metal
 level from their layout layers, the photodiode area, the colour filter, planarisation and
 microlens, and the carrier diffusion in the silicon.
 
-- CLI: `ics pixel --project <project> --cell aps3t --lux 100`, or `--emit-stack` to print the
+- CLI: `ics pixel --project <project> --cell aps4t --lux 100`, or `--emit-stack` to print the
   generated stack and edit it.
 - GUI: **From PDK** in the Pixel Optics window (or **Pixel stack of the open cell from the PDK
   cross section** in the command palette) writes the open cell's stack into the editor.

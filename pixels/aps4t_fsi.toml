@@ -1,15 +1,15 @@
-# The demo 3T pixel (work/aps3t, 10.2 µm, generic 180 nm process) as a front-side illuminated
+# The demo 4T pixel (work/aps4t, 5.6 µm, generic 180 nm process) as a front-side illuminated
 # pixel: the metal lines over it and the photodiode come from its layout.
-#   ics pixel pixels/aps3t_fsi.toml --project <demo project> --lux 100
-name = "aps3t FSI"
+#   ics pixel pixels/aps4t_fsi.toml --project <demo project> --lux 100
+name = "aps4t FSI"
 
 [layout]
-cell = "aps3t"
+cell = "aps4t"
 boundary = "boundary"           # the pixel frame; the pitch follows from it
 
 [microlens]
 height = 2.5
-center = "photodiode"           # sit over the off-centre photodiode (try without it)
+center = "photodiode"           # sit over the photodiode, below the transistors (try without it)
 
 [[layers]]
 name = "planarisation"
@@ -66,4 +66,4 @@ thickness = 0.06
 [photodiode]
 top = 0.1
 bottom = 3.0
-layout = "active not interact poly"   # diffusion without a gate
+layout = "active wide 1"   # the diffusion at least 1 µm wide

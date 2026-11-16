@@ -785,28 +785,41 @@ pub fn ota5t(p: &mut Project) -> Cell {
     full_flow_cell("ota5t", "5-transistor OTA: NMOS pair, PMOS mirror load (DRC / LVS clean)", s, r.finish(), sim)
 }
 
-/// 6T SRAM bit cell pitch: abutting cells share word lines, rails and bit lines.
-const SRAM_X: (i64, i64) = (-400, 7600);
-const SRAM_Y: (i64, i64) = (-1000, 6800);
-const SRAM_T: Tracks = Tracks { wn: 1000, wp: 1000, mid: 3 };
+/// Thin-cell 6T SRAM bit cell (dbu): the lithography-friendly layout of 90 nm and later
+/// processes. Diffusions run vertically (N | P P | N, the PMOS in a central nwell), every gate is
+/// a straight horizontal poly on one of two tracks, and the cell is point-symmetric about its
+/// centre: the left half (pass gate PG1, pull-down PD1, pull-up PU1) rotated by 180° is the
+/// right half. The array mirrors cells in x and y so neighbours share the contacts on the cell
+/// edges (bit line, supply, ground) and the word-line poly contacts.
+const SRAM_W: i64 = 4620;
+const SRAM_H: i64 = 1840;
+/// x of the left NMOS diffusion (bit line), the left PMOS diffusion and the left ground line.
+const SRAM_XA: i64 = 640;
+const SRAM_XB: i64 = 1960;
+const SRAM_XG: i64 = 1300;
+/// y of the lower gate track; the upper track is at `SRAM_H - SRAM_LO`, the storage nodes at
+/// `SRAM_H / 2`.
+const SRAM_LO: i64 = 400;
 const SRAM_ROWS: i64 = 8;
 const SRAM_COLS: i64 = 8;
 
-/// 6T SRAM bit cell: cross-coupled inverters (P1/N1, P2/N2) and access devices A1, A2. Word
-/// line and rails run horizontally on metal2 edge to edge, the bit lines vertically on metal3.
+/// 6T SRAM bit cell: cross-coupled inverters (P1/N1, P2/N2) and access devices A1, A2, drawn as
+/// a thin cell (see [`SRAM_W`]). Bit lines, supply and ground run vertically on metal2, the word
+/// line and the ground rails (on both cell edges) horizontally on metal3.
 pub fn sram6t(p: &mut Project) -> Cell {
     let o = Orient::default();
     let mut s = Schematic::default();
+    // Pull-down 0.6 µm, pass gate and pull-up 0.42 µm: cell ratio 1.4 for read stability.
     let devices = [
-        (DeviceKind::Nmos, (0, 10), ["bl", "wl", "q"]),
-        (DeviceKind::Pmos, (8, 4), ["q", "qb", "vdd"]),
-        (DeviceKind::Nmos, (8, 10), ["q", "qb", "gnd"]),
-        (DeviceKind::Pmos, (16, 4), ["qb", "q", "vdd"]),
-        (DeviceKind::Nmos, (16, 10), ["qb", "q", "gnd"]),
-        (DeviceKind::Nmos, (24, 10), ["blb", "wl", "qb"]),
+        (DeviceKind::Nmos, (0, 10), "420n", ["bl", "wl", "q"]),
+        (DeviceKind::Pmos, (8, 4), "420n", ["q", "qb", "vdd"]),
+        (DeviceKind::Nmos, (8, 10), "600n", ["q", "qb", "gnd"]),
+        (DeviceKind::Pmos, (16, 4), "420n", ["qb", "q", "vdd"]),
+        (DeviceKind::Nmos, (16, 10), "600n", ["qb", "q", "gnd"]),
+        (DeviceKind::Nmos, (24, 10), "420n", ["blb", "wl", "qb"]),
     ];
-    for (kind, at, nets) in devices {
-        let id = mos(&mut s, kind, at, false, "1u", "180n", None);
+    for (kind, at, w, nets) in devices {
+        let id = mos(&mut s, kind, at, false, w, "180n", None);
         let pins = s.instance(id).expect("instance").pin_positions();
         for (pin, net) in ["d", "g", "s"].into_iter().zip(nets) {
             let at = pins.iter().find(|(n, _)| *n == pin).expect("MOS pin").1;
@@ -830,112 +843,141 @@ pub fn sram6t(p: &mut Project) -> Cell {
     let mut sim = sim(&["tran"]);
     set_tran(&mut sim, "10p", "8n");
 
-    let (t, (x0, x1), (y0, y1)) = (SRAM_T, SRAM_X, SRAM_Y);
+    let (w, h, m) = (SRAM_W, SRAM_H, SRAM_H / 2);
+    let (xa, xb, xg, lo) = (SRAM_XA, SRAM_XB, SRAM_XG, SRAM_LO);
+    let (xd, hi, xv) = (w - xb, h - lo, w / 2);
     let mut r = Router::new(&p.tech);
-    place_columns(&mut r, p, t, GATE_COL, &[("", NW, "A1", NW), ("P1", NW, "N1", NW), ("P2", NW, "N2", NW), ("", NW, "A2", NW)]);
-    let (m2, m3) = (r.layer("metal2"), r.layer("metal3"));
-    let h = WIRE / 2;
-
-    r.tap("A1", "G", t.mid(0));
-    r.tap("A2", "G", t.mid(0));
-    r.lay.add_rect(m2, x0, t.mid(0) - h, x1, t.mid(0) + h);
-    r.label("wl", (x0 + 200, t.mid(0)));
-
-    for (track, access, gates, drains, net) in
-        [(1, "A1", ("N2", "P2"), ("N1", "P1"), "q"), (2, "A2", ("N1", "P1"), ("N2", "P2"), "qb")]
-    {
-        let y = t.mid(track);
-        let a = r.centre_tap(access, "S");
-        let g = r.tap(gates.0, "G", y);
-        r.tap(gates.1, "G", y);
-        r.route(&[a, (a.0, y), g]);
-        let nd = r.centre_tap(drains.0, "D");
-        let pd = r.centre_tap(drains.1, "D");
-        let joint = (nd.0, y);
-        r.route(&[nd, joint]);
-        r.route(&[joint, pd]);
-        r.label(net, joint);
+    let l = |name: &str| p.tech.layer_index(name).expect("generic layer");
+    let (active, poly, m1, m2, m3) = (l("active"), l("poly"), l("metal1"), l("metal2"), l("metal3"));
+    let (nwell, nplus, pplus, boundary) = (l("nwell"), l("nplus"), l("pplus"), l("boundary"));
+    // The left half; each shape and via is drawn again rotated by 180° about the centre.
+    let half = [
+        (active, IRect::new(xa - 300, -210, xa + 300, m)),       // PD1 (W 0.6)
+        (active, IRect::new(xa - 210, m, xa + 210, h + 210)),    // PG1 (W 0.42)
+        (active, IRect::new(xb - 210, -210, xb + 210, m + 210)), // PU1
+        (poly, IRect::new(xa - 520, lo - 90, xd, lo + 90)),      // inverter 1 gate, to its contact at qb
+        (poly, IRect::new(0, hi - 90, xa + 430, hi + 90)),       // PG1 gate, word-line contact shared
+        (m1, IRect::new(xa, -170, xg, 170)),                     // ground
+        (m1, IRect::new(xa, m - 170, xb, m + 170)),              // q
+        (m1, IRect::new(xb - 170, m, xb + 170, hi)),             // q to the inverter 2 gate
+        (m1, IRect::new(-170, m, 170, hi)),                      // word line
+        (m2, IRect::new(xa - 150, 0, xa + 150, h)),              // bit line
+        (m2, IRect::new(xg - 150, 0, xg + 150, h)),              // ground
+        (m2, IRect::new(xb, -190, xv, 190)),                     // supply jog
+        (nplus, IRect::new(0, -390, xb - 640, h + 390)),
+    ];
+    let vias: [(&'static str, (i64, i64)); 14] = [
+        ("contact", (xa, 0)),
+        ("contact", (xa, m)),
+        ("contact", (xa, h)),
+        ("contact", (xb, 0)),
+        ("contact", (xb, m)),
+        ("polycon", (0, hi)),
+        ("polycon", (xd, lo)),
+        ("via1", (0, m)),
+        ("via2", (0, m)),
+        ("via1", (xa, h)),
+        ("via1", (xb, 0)),
+        ("via1", (xg, 0)),
+        ("via2", (xg, 0)),
+        ("via2", (xg, h)),
+    ];
+    for (layer, b) in half {
+        r.lay.add(layer, Geometry::Rect(b));
+        r.lay.add(layer, Geometry::Rect(IRect::new(w - b.x1, h - b.y1, w - b.x0, h - b.y0)));
     }
-
-    for (dev, net) in [("A1", "bl"), ("A2", "blb")] {
-        let d = r.centre_tap(dev, "D");
-        r.via("via2", d);
-        r.lay.add_rect(m3, d.0 - h, y0, d.0 + h, y1);
-        r.label(net, d);
+    for (name, (x, y)) in vias {
+        r.via(name, (x, y));
+        r.via(name, (w - x, h - y));
     }
-
-    for (net, y, taps) in [("vdd", t.top(0), [("P1", "S"), ("P2", "S")]), ("gnd", t.bottom(0), [("N1", "S"), ("N2", "S")])] {
-        for (dev, pin) in taps {
-            r.tap(dev, pin, y);
-        }
-        r.lay.add_rect(m2, x0, y - h, x1, y + h);
-        r.label(net, (x0 + 200, y));
+    r.lay.add_rect(nwell, xb - 640, -640, xd + 640, h + 640);
+    r.lay.add_rect(pplus, xb - 640, -390, xd + 640, h + 390);
+    r.lay.add_rect(m2, xv - 150, 0, xv + 150, h);
+    for y in [0, m, h] {
+        r.lay.add_rect(m3, 0, y - 190, w, y + 190);
     }
-
-    r.nwell = r.nwell.map(|n| IRect::new(x0, n.y0, x1, n.y1));
-    let boundary = r.layer("boundary");
-    r.lay.add_rect(boundary, x0, y0, x1, y1);
-    full_flow_cell("sram6t", "6T SRAM bit cell, abutting pitch for arrays (DRC / LVS clean)", s, r.finish(), sim)
+    let q = (m + hi) / 2;
+    for (net, at) in [
+        ("q", (xb, q)),
+        ("qb", (xd, h - q)),
+        ("bl", (xa, 460)),
+        ("blb", (w - xa, h - 460)),
+        ("wl", (xv, m)),
+        ("vdd", (xv, 460)),
+        ("gnd", (xv, 0)),
+    ] {
+        r.label(net, at);
+    }
+    r.lay.add_rect(boundary, 0, 0, w, h);
+    full_flow_cell("sram6t", "6T SRAM thin cell, 4.62 x 1.84 µm, mirrored for arrays (DRC / LVS clean)", s, r.finish(), sim)
 }
 
-/// 8 x 8 array of `sram6t` with labelled word lines and bit lines and strapped supplies.
+/// 8 x 8 array of `sram6t`, mirrored in x and y (four AREFs of 2 x 2 pitch) so neighbours share
+/// edge contacts: labelled word lines and bit lines, the ground mesh and a supply rail joining
+/// the supply columns.
 pub fn sram_array(tech: &Tech, lib: &str) -> Cell {
-    let (t, (x0, x1), (y0, y1)) = (SRAM_T, SRAM_X, SRAM_Y);
-    let (pitch_x, pitch_y) = (x1 - x0, y1 - y0);
+    let (w, h) = (SRAM_W, SRAM_H);
     let mut r = Router::new(tech);
-    r.lay.add_instance(
-        CellRef::new(lib, "sram6t"),
-        Trans::new(0, 0),
-        Some(ArraySpec { cols: SRAM_COLS as u32, rows: SRAM_ROWS as u32, col: (pitch_x, 0), row: (0, pitch_y) }),
-    );
-    let last = (SRAM_ROWS - 1) * pitch_y;
-    for (net, strap, y) in [("gnd", x0 - 1300, t.bottom(0)), ("vdd", x0 - 500, t.top(0))] {
-        for row in 0..SRAM_ROWS {
-            let at = (strap, y + row * pitch_y);
-            r.route(&[at, (x0, at.1)]);
-            r.via("via2", at);
-        }
-        r.route(&[(strap, y), (strap, y + last)]);
-        r.label(net, (strap, y));
+    let spec = Some(ArraySpec { cols: (SRAM_COLS / 2) as u32, rows: (SRAM_ROWS / 2) as u32, col: (2 * w, 0), row: (0, 2 * h) });
+    for t in
+        [Trans::new(0, 0), Trans::with(2 * w, 0, 2, true), Trans::with(0, 2 * h, 0, true), Trans::with(2 * w, 2 * h, 2, false)]
+    {
+        r.lay.add_instance(CellRef::new(lib, "sram6t"), t, spec);
     }
-    for row in 0..SRAM_ROWS {
-        r.label(&format!("wl{row}"), (x0 + 200, t.mid(0) + row * pitch_y));
-    }
-    let drain = crate::pcell::mos_columns(tech, NW.1, 1).expect("MOS columns")[1];
+    let (m2, m3) = (r.layer("metal2"), r.layer("metal3"));
+    let rail = -800;
     for col in 0..SRAM_COLS {
-        let x = col * pitch_x + drain;
-        r.label(&format!("bl{col}"), (x, y0 + 100));
-        r.label(&format!("blb{col}"), (x + 3 * GATE_COL, y0 + 100));
+        let x = col * w + w / 2;
+        r.lay.add_rect(m2, x - 150, rail, x + 150, 0);
+        r.via("via2", (x, rail));
+        let (bl, blb) = if col % 2 == 0 { (SRAM_XA, w - SRAM_XA) } else { (w - SRAM_XA, SRAM_XA) };
+        r.label(&format!("bl{col}"), (col * w + bl, 460));
+        r.label(&format!("blb{col}"), (col * w + blb, 460));
+    }
+    r.lay.add_rect(m3, w / 2 - 190, rail - 190, (SRAM_COLS - 1) * w + w / 2 + 190, rail + 190);
+    r.label("vdd", (w / 2, rail));
+    r.label("gnd", (SRAM_XG, 460));
+    for row in 0..SRAM_ROWS {
+        r.label(&format!("wl{row}"), (w / 2, row * h + h / 2));
     }
     let boundary = r.layer("boundary");
-    r.lay.add_rect(boundary, x0 - 2000, y0, x0 + SRAM_COLS * pitch_x, y0 + SRAM_ROWS * pitch_y);
-    layout_cell("sram_array", "8 x 8 array of 6T SRAM bit cells (AREF)", r.finish())
+    r.lay.add_rect(boundary, 0, rail - 400, SRAM_COLS * w, SRAM_ROWS * h);
+    layout_cell("sram_array", "8 x 8 array of 6T SRAM thin cells, mirrored AREFs (37 x 15 µm)", r.finish())
 }
 
-/// 3T pixel pitch: abutting pixels share the reset / select lines, the supply and the column line.
-const PIX_X: (i64, i64) = (-3700, 6500);
-const PIX_Y: (i64, i64) = (-1000, 9200);
-const PIX_T: Tracks = Tracks { wn: 1000, wp: 0, mid: 3 };
-const PIX_COL: i64 = 2400;
-const PIX_SF: (i64, i64) = (1000, 500);
-/// n+ / p-substrate photodiode diffusion, merged with the reset source (`as` / `ps` of RST).
-const PIX_PD: IRect = IRect { x0: -3300, y0: -400, x1: -900, y1: 8400 };
+/// 4T pixel pitch (dbu): 5.6 µm, a common pixel size of 0.18 µm image sensor processes.
+const PIX: i64 = 5600;
+/// Photodiode: n+ / p-substrate diffusion below the transistor strip, 41 % fill factor.
+const PIX_PD: IRect = IRect { x0: 500, y0: 200, x1: 5250, y1: 2900 };
+/// y of the transistor strip (column contact, SEL, SF, supply contact, RST, floating diffusion).
+const PIX_STRIP: i64 = 4100;
 const PIX_ROWS: i64 = 8;
 const PIX_COLS: i64 = 8;
 
-/// 3T active pixel (image sensor): reset RST, source follower SF and row select SEL over an
-/// n+ / p-substrate photodiode. The schematic models the photodiode by its photocurrent; the
-/// integrating node `pd` is the SF gate. Reset and select run horizontally on metal2 edge to
-/// edge, the column line vertically on metal3.
-pub fn aps3t(p: &mut Project) -> Cell {
+/// 4T active pixel (image sensor): transfer gate TX from the photodiode to the floating
+/// diffusion `fd`, reset RST, source follower SF and row select SEL. The photodiode fills the
+/// lower part of the pixel; TX sits on a neck of diffusion at its top edge, and the other three
+/// transistors share one diffusion strip above it (SEL and SF in series, SF and RST sharing the
+/// supply contact). The schematic models the photodiode by its photocurrent and its junction
+/// (`as` / `ps` of TX). Row lines TX, SEL and RST run horizontally on metal2, the supply on
+/// metal3 over the transistors, and the column line vertically on metal1 at the pixel edge.
+pub fn aps4t(p: &mut Project) -> Cell {
     let o = Orient::default();
     let mut s = Schematic::default();
-    let devices =
-        [((0, 10), "180n", ["vdd", "rst", "pd"]), ((8, 10), "500n", ["vdd", "pd", "x"]), ((16, 10), "180n", ["col", "sel", "x"])];
+    let devices = [
+        ((0, 10), "400n", ["fd", "tx", "pd"]),
+        ((8, 10), "180n", ["vdd", "rst", "fd"]),
+        ((16, 10), "350n", ["vdd", "fd", "x"]),
+        ((24, 10), "180n", ["col", "sel", "x"]),
+    ];
     for (k, (at, l, nets)) in devices.into_iter().enumerate() {
-        let id = mos(&mut s, DeviceKind::Nmos, at, false, "1u", l, None);
+        let id = mos(&mut s, DeviceKind::Nmos, at, false, "420n", l, None);
         if k == 0 {
-            set(&mut s, id, &[("as", "21p"), ("ps", "22u")]);
+            let (a, pe) = (PIX_PD.width() * PIX_PD.height(), 2 * (PIX_PD.width() + PIX_PD.height()));
+            set(&mut s, id, &[("as", &format!("{}p", a as f64 / 1e6)), ("ps", &format!("{}u", pe as f64 / 1e3))]);
+        } else if k == 1 {
+            // The floating diffusion with its metal: a few fF, so the reset edge kicks it little.
+            set(&mut s, id, &[("as", "3p"), ("ps", "8u")]);
         }
         let pins = s.instance(id).expect("instance").pin_positions();
         for (pin, net) in ["d", "g", "s"].into_iter().zip(nets) {
@@ -947,10 +989,13 @@ pub fn aps3t(p: &mut Project) -> Cell {
             }
         }
     }
-    source(&mut s, (-24, 8), "vdd", &[("dc", "1.8")]);
-    source(&mut s, (-18, 8), "rst", &[("dc", "1.8"), ("tran", "PULSE(1.8 0 50n 1n 1n 400n 600n)")]);
+    // Reset photodiode and floating diffusion (TX and RST high), integrate, release the reset
+    // (reset level on the column), then transfer the charge (signal level).
+    source(&mut s, (-30, 8), "vdd", &[("dc", "1.8")]);
+    source(&mut s, (-24, 8), "rst", &[("dc", "1.8"), ("tran", "PULSE(1.8 0 300n 1n 1n 400n 800n)")]);
+    source(&mut s, (-18, 8), "tx", &[("dc", "1.8"), ("tran", "PULSE(1.8 0 50n 1n 1n 350n 800n)")]);
     source(&mut s, (-12, 8), "sel", &[("dc", "1.8")]);
-    for (x, net, i) in [(24, "pd", "30n"), (30, "col", "2u")] {
+    for (x, net, i) in [(32, "pd", "10n"), (38, "col", "2u")] {
         let id = s.add_instance(DeviceKind::ISource, Pt::new(x, 8), o);
         set(&mut s, id, &[("dc", i)]);
         s.add_label(net, Pt::new(x, 6));
@@ -959,82 +1004,89 @@ pub fn aps3t(p: &mut Project) -> Cell {
     let mut sim = sim(&["tran"]);
     set_tran(&mut sim, "1n", "600n");
 
-    let (t, (x0, x1), (y0, y1)) = (PIX_T, PIX_X, PIX_Y);
     let mut r = Router::new(&p.tech);
-    place_columns(&mut r, p, t, PIX_COL, &[("", NW, "RST", NW), ("", NW, "SF", PIX_SF), ("", NW, "SEL", NW)]);
-    let (m1, m2, m3) = (r.layer("metal1"), r.layer("metal2"), r.layer("metal3"));
-    let h = WIRE / 2;
-
-    for (dev, track, net) in [("RST", 0, "rst"), ("SEL", 1, "sel")] {
-        let y = t.mid(track);
-        r.tap(dev, "G", y);
-        r.lay.add_rect(m2, x0, y - h, x1, y + h);
-        r.label(net, (x0 + 200, y));
+    let l = |name: &str| p.tech.layer_index(name).expect("generic layer");
+    let (active, poly, m1, m2, m3) = (l("active"), l("poly"), l("metal1"), l("metal2"), l("metal3"));
+    let (nplus, boundary) = (l("nplus"), l("boundary"));
+    let y = PIX_STRIP;
+    let rows = [("tx", y - 870), ("sel", y + 620), ("rst", y + 1240)];
+    for (layer, (x0, y0, x1, y1)) in [
+        (active, (290, y - 210, 2810, y + 210)),    // transistor strip
+        (active, (2390, PIX_PD.y1, 2810, y + 210)), // neck: TX channel and floating diffusion
+        (poly, (770, y - 430, 950, y + 580)),       // SEL
+        (poly, (1190, y - 600, 1540, y + 430)),     // SF, gate contact below the strip
+        (poly, (2080, y - 430, 2260, y + 600)),     // RST
+        (poly, (2170, y - 1070, 3200, y - 670)),    // TX, L 0.4 µm
+        (m1, (0, 0, 300, PIX)),                     // column line
+        (m1, (150, y - 170, 500, y + 170)),
+        (m1, (2430, y - 770, 2770, y)), // floating diffusion to the SF gate
+        (m1, (1230, y - 770, 2770, y - 430)),
+        (m1, (570, y + 580, 910, y + 620)),
+        (m1, (2000, y + 600, 2340, y + 1240)),
+        (m3, (0, y - 150, PIX, y + 150)), // supply, shielding the transistors
+        (nplus, (0, 0, PIX, PIX)),
+        (boundary, (0, 0, PIX, PIX)),
+    ] {
+        r.lay.add_rect(layer, x0, y0, x1, y1);
     }
-
-    let a = r.centre_tap("RST", "S");
-    let g = r.tap("SF", "G", t.mid(2));
-    r.route(&[a, (a.0, t.mid(2)), g]);
-    r.label("pd", g);
-
-    let sf = r.centre_tap("SF", "S");
-    let sel = r.centre_tap("SEL", "S");
-    r.route(&[sf, sel]);
-    r.label("x", sf);
-
-    let d = r.centre_tap("SEL", "D");
-    r.via("via2", d);
-    r.lay.add_rect(m3, d.0 - h, y0, d.0 + h, y1);
-    r.label("col", d);
-
-    let y = t.bottom(0);
-    r.tap("RST", "D", y);
-    r.tap("SF", "D", y);
-    r.lay.add_rect(m2, x0, y - h, x1, y + h);
-    r.label("vdd", (x0 + 200, y));
-
-    let (active, nplus) = (r.layer("active"), r.layer("nplus"));
-    let enc = p.tech.rules.implant_enc;
     r.lay.add(active, Geometry::Rect(PIX_PD));
-    r.lay.add_rect(nplus, PIX_PD.x0 - enc, PIX_PD.y0 - enc, PIX_PD.x1 + enc, PIX_PD.y1 + enc);
-    let contact = (PIX_PD.x1 - 300, a.1);
-    r.via("contact", contact);
-    r.lay.add_rect(m1, contact.0 - h, a.1 - h, a.0, a.1 + h);
-
-    let boundary = r.layer("boundary");
-    r.lay.add_rect(boundary, x0, y0, x1, y1);
-    full_flow_cell("aps3t", "3T active pixel with n+ / p-sub photodiode, abutting pitch (DRC / LVS clean)", s, r.finish(), sim)
+    for (name, at) in [
+        ("contact", (500, y)),
+        ("contact", (1810, y)),
+        ("contact", (2600, y)),
+        ("polycon", (740, y + 580)),
+        ("polycon", (1400, y - 600)),
+        ("polycon", (2170, y + 600)),
+        ("polycon", (3200, y - 870)),
+        ("via1", (1810, y)),
+        ("via2", (1810, y)),
+        ("via1", (740, y + 620)),
+        ("via1", (2170, y + 1240)),
+        ("via1", (3200, y - 870)),
+    ] {
+        r.via(name, at);
+    }
+    for (net, ry) in rows {
+        r.lay.add_rect(m2, 0, ry - 150, PIX, ry + 150);
+        r.label(net, (3800, ry));
+    }
+    for (net, at) in [("vdd", (3800, y)), ("col", (150, 1000)), ("fd", (2600, y - 600)), ("pd", (2800, 1500))] {
+        r.label(net, at);
+    }
+    full_flow_cell(
+        "aps4t",
+        "4T pixel, 5.6 µm pitch: photodiode with transfer gate, floating diffusion, RST / SF / SEL (DRC / LVS clean)",
+        s,
+        r.finish(),
+        sim,
+    )
 }
 
-/// 8 x 8 image sensor pixel array of `aps3t`: labelled reset / select rows and column lines.
+/// 8 x 8 image sensor array of `aps4t`: labelled TX / reset / select rows and column lines, and
+/// a supply strap joining the supply rows.
 pub fn pixel_array(tech: &Tech, lib: &str) -> Cell {
-    let (t, (x0, x1), (y0, y1)) = (PIX_T, PIX_X, PIX_Y);
-    let (pitch_x, pitch_y) = (x1 - x0, y1 - y0);
     let mut r = Router::new(tech);
     r.lay.add_instance(
-        CellRef::new(lib, "aps3t"),
+        CellRef::new(lib, "aps4t"),
         Trans::new(0, 0),
-        Some(ArraySpec { cols: PIX_COLS as u32, rows: PIX_ROWS as u32, col: (pitch_x, 0), row: (0, pitch_y) }),
+        Some(ArraySpec { cols: PIX_COLS as u32, rows: PIX_ROWS as u32, col: (PIX, 0), row: (0, PIX) }),
     );
-    let (strap, y) = (x0 - 500, t.bottom(0));
+    let m3 = r.layer("metal3");
+    let (strap, y) = (-500, PIX_STRIP);
     for row in 0..PIX_ROWS {
-        let at = (strap, y + row * pitch_y);
-        r.route(&[at, (x0, at.1)]);
-        r.via("via2", at);
+        r.lay.add_rect(m3, strap, y + row * PIX - 150, 0, y + row * PIX + 150);
+        for (net, dy) in [("tx", -870), ("sel", 620), ("rst", 1240)] {
+            r.label(&format!("{net}{row}"), (3800, y + dy + row * PIX));
+        }
     }
-    r.route(&[(strap, y), (strap, y + (PIX_ROWS - 1) * pitch_y)]);
+    r.lay.add_rect(m3, strap - 190, y - 150, strap + 190, y + (PIX_ROWS - 1) * PIX + 150);
     r.label("vdd", (strap, y));
-    for row in 0..PIX_ROWS {
-        r.label(&format!("rst{row}"), (x0 + 200, t.mid(0) + row * pitch_y));
-        r.label(&format!("sel{row}"), (x0 + 200, t.mid(1) + row * pitch_y));
-    }
-    let drain = 2 * PIX_COL + crate::pcell::mos_columns(tech, NW.1, 1).expect("MOS columns")[1];
     for col in 0..PIX_COLS {
-        r.label(&format!("col{col}"), (col * pitch_x + drain, y0 + 100));
+        r.label(&format!("col{col}"), (col * PIX + 150, 1000));
     }
     let boundary = r.layer("boundary");
-    r.lay.add_rect(boundary, x0 - 1000, y0, x0 + PIX_COLS * pitch_x, y0 + PIX_ROWS * pitch_y);
-    layout_cell("pixel_array", "8 x 8 image sensor array of 3T pixels (AREF)", r.finish())
+    r.lay.add_rect(boundary, -1000, 0, PIX_COLS * PIX, PIX_ROWS * PIX);
+    layout_cell("pixel_array", "8 x 8 image sensor array of 5.6 µm 4T pixels (AREF)", r.finish())
 }
 
 /// A cell whose layout is made by the automatic flow from a SPICE deck: the deck is imported as a
@@ -1124,7 +1176,7 @@ pub fn demo_project() -> Project {
     for c in [cmos_inverter(), rc_lowpass(), diode_clipper()].into_iter().chain(hier) {
         p.add_cell("work", c).expect("unique");
     }
-    for make in [nand2, nor2, ring_osc5, current_mirror, ota5t, sram6t, aps3t, full_adder, ota2s] {
+    for make in [nand2, nor2, ring_osc5, current_mirror, ota5t, sram6t, aps4t, full_adder, ota2s] {
         let c = make(&mut p);
         p.add_cell("work", c).expect("unique");
     }
@@ -1180,8 +1232,8 @@ pub const TOPICS: [Topic; 5] = [
         name: "memory_and_pixels",
         title: "Memory and pixels",
         summary: "SRAM and pixel arrays",
-        description: "6T SRAM and 3T pixel cells with 8 x 8 arrays (AREF), word / bit lines and supply straps",
-        cells: &["sram6t", "sram_array", "aps3t", "pixel_array"],
+        description: "6T SRAM thin cell and 4T pixel with 8 x 8 arrays (AREF), word / bit lines, row and column lines",
+        cells: &["sram6t", "sram_array", "aps4t", "pixel_array"],
     },
     Topic {
         name: "hierarchy",
@@ -1363,8 +1415,8 @@ mod flow_tests {
     }
 
     #[test]
-    fn aps3t_full_flow() {
-        full_flow("aps3t");
+    fn aps4t_full_flow() {
+        full_flow("aps4t");
     }
 
     #[test]
@@ -1375,8 +1427,8 @@ mod flow_tests {
         assert!(v.is_empty(), "{:?}", v.iter().take(10).map(|v| (&v.rule, v.marker)).collect::<Vec<_>>());
         let x = extract(lay, &p, &p.tech);
         assert!(x.warnings.is_empty(), "{:?}", x.warnings);
-        assert_eq!(x.devices.len() as i64, 3 * PIX_ROWS * PIX_COLS);
+        assert_eq!(x.devices.len() as i64, 4 * PIX_ROWS * PIX_COLS);
         let labelled = x.nets.iter().filter(|n| n.labelled).count() as i64;
-        assert_eq!(labelled, 1 + 2 * PIX_ROWS + PIX_COLS);
+        assert_eq!(labelled, 1 + 3 * PIX_ROWS + PIX_COLS);
     }
 }

@@ -27,7 +27,7 @@ unless `--force`) and `ics examples` lists them.
 | `getting_started` | `cmos_inverter`, `rc_lowpass`, `diode_clipper`, `devices` |
 | `analog` | `current_mirror`, `ota5t`, `ota2s` |
 | `digital` | `nand2`, `nor2`, `ring_osc5`, `full_adder` |
-| `memory_and_pixels` | `sram6t`, `sram_array`, `aps3t`, `pixel_array` |
+| `memory_and_pixels` | `sram6t`, `sram_array`, `aps4t`, `pixel_array` |
 | `hierarchy` | `inv_chain`, `inv_array`, `inv_tiles` |
 
 Each topic also contains the cells its layouts place, e.g. `cmos_inverter` in `hierarchy`
@@ -81,8 +81,8 @@ waveforms are the truth table.
 
 ### `sram_array`
 
-An 8 × 8 array of the 6T bit cell `sram6t`, with word lines, bit lines and supply
-straps. The bit cell itself is DRC and LVS clean and simulates a write and hold.
+An 8 × 8 array of the 6T thin cell `sram6t` (4.62 × 1.84 µm), mirrored in x and y so
+neighbouring cells share their edge contacts, with word lines, bit lines and a ground mesh. The bit cell itself is DRC and LVS clean and simulates a write and hold.
 
 </div>
 
@@ -92,8 +92,9 @@ straps. The bit cell itself is DRC and LVS clean and simulates a write and hold.
 
 ### `pixel_array`
 
-An 8 × 8 array of 3T image sensor pixels (`aps3t`: reset, source follower, row select
-over an n+ / p-substrate photodiode) with labelled rows and columns.
+An 8 × 8 array of 5.6 µm 4T image sensor pixels (`aps4t`: transfer gate, floating
+diffusion, reset, source follower and row select over an n+ / p-substrate photodiode) with
+labelled rows and columns.
 
 </div>
 
@@ -126,15 +127,15 @@ rendering keeps pan and zoom smooth.
 | `ota5t` | 5-transistor OTA: about 42 dB open-loop gain in AC |
 | `sram6t` | 6T SRAM bit cell, DRC and LVS clean: transient write and hold |
 | `sram_array` | 8 × 8 array of `sram6t` |
-| `aps3t` | 3T image sensor pixel, DRC and LVS clean: transient reset and integration |
-| `pixel_array` | 8 × 8 array of `aps3t` |
+| `aps4t` | 4T image sensor pixel, DRC and LVS clean: transient reset, integration and transfer |
+| `pixel_array` | 8 × 8 array of `aps4t` |
 | `inv_chain` | Four placed `cmos_inverter` instances |
 | `inv_array` | 16 × 8 array of inverters |
 | `inv_tiles` | 8 × 8 array of `inv_array`: 8,192 inverters, two levels of hierarchy |
 | `devices` | One instance of every PCell |
 
 Every cell with both a schematic and a layout (`full_adder`, `ota2s`, `nand2`, `nor2`,
-`ring_osc5`, `current_mirror`, `ota5t`, `sram6t`, `aps3t`) runs the whole flow:
+`ring_osc5`, `current_mirror`, `ota5t`, `sram6t`, `aps4t`) runs the whole flow:
 simulate, open the layout, run DRC and LVS, and simulate again with parasitics.
 
 ## Demo scripts

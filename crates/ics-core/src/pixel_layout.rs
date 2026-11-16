@@ -86,13 +86,14 @@ mod tests {
     #[test]
     fn demo_pixel() {
         let p = crate::examples::demo_project();
-        let px = PixelLayout::new(&p, &CellRef::new("work", "aps3t"), Some("boundary")).unwrap();
+        let px = PixelLayout::new(&p, &CellRef::new("work", "aps4t"), Some("boundary")).unwrap();
         let (w, h) = px.size_um();
-        assert!((w - 10.2).abs() < 1e-9 && (h - 10.2).abs() < 1e-9, "{w} x {h}");
-        // The photodiode is the diffusion without a gate: one 2.4 x 8.8 µm rectangle.
-        let pd = px.rects_um("active not interact poly").unwrap();
+        assert!((w - 5.6).abs() < 1e-9 && (h - 5.6).abs() < 1e-9, "{w} x {h}");
+        // The photodiode is the wide diffusion (the transfer-gate neck and the strip are narrower):
+        // one 4.75 x 2.7 µm rectangle.
+        let pd = px.rects_um("active wide 1").unwrap();
         let area: f64 = pd.iter().map(|r| (r[2] - r[0]) * (r[3] - r[1])).sum();
-        assert!((area - 2.4 * 8.8).abs() < 1e-6, "{pd:?}");
+        assert!((area - 4.75 * 2.7).abs() < 1e-6, "{pd:?}");
         assert!(pd.iter().all(|r| r[0] >= 0.0 && r[1] >= 0.0 && r[2] <= w && r[3] <= h));
         // Metal shapes come as disjoint rectangles inside the frame.
         let m2 = px.rects_um("metal2").unwrap();

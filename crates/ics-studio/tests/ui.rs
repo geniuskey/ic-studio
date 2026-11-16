@@ -499,10 +499,10 @@ fn waveform_calculator() {
 }
 
 /// Pixel Optics: the example BSI stack's colour responses, and its photocurrent written into
-/// the 3T pixel's current source.
+/// the 4T pixel's current source.
 #[test]
 fn pixel_optics() {
-    let mut h = app(demo_args("aps3t", "schematic", false));
+    let mut h = app(demo_args("aps4t", "schematic", false));
     settle(&mut h, "pixel optics");
     h.state_mut().command(Command::RunPixelOptics);
     h.run_steps(3);
@@ -513,7 +513,7 @@ fn pixel_optics() {
     let green = px.currents.unwrap()[1];
     h.state_mut().command(Command::ApplyPhotocurrent("I1".into(), 1));
     h.run_steps(2);
-    let cell = h.state().project().unwrap().cell(&ics_core::CellRef::new("work", "aps3t")).unwrap();
+    let cell = h.state().project().unwrap().cell(&ics_core::CellRef::new("work", "aps4t")).unwrap();
     let i1 = cell.schematic.as_ref().unwrap().instances.iter().find(|i| i.name == "I1").unwrap();
     let dc = ics_core::units::parse_spice(i1.param("dc")).unwrap();
     assert!((dc / green - 1.0).abs() < 1e-3, "{dc} vs {green}");
@@ -535,24 +535,24 @@ fn pixel_optics() {
     // The demo pixel itself: metals and photodiode from the open project's layout, with the
     // lens centred over the photodiode.
     h.state_mut().pixel_optics_mut().rcwa = false;
-    h.state_mut().pixel_optics_mut().text = include_str!("../../../pixels/aps3t_fsi.toml").to_string();
+    h.state_mut().pixel_optics_mut().text = include_str!("../../../pixels/aps4t_fsi.toml").to_string();
     h.state_mut().command(Command::RunPixelOptics);
     h.run_steps(3);
     let px = h.state().pixel_optics();
     let r = px.result.as_ref().unwrap().as_ref().unwrap();
     let st = px.stack.as_ref().unwrap();
-    assert!((st.pitch - 10.2).abs() < 1e-9 && st.photodiode.rects.len() == 1);
+    assert!((st.pitch - 5.6).abs() < 1e-9 && st.photodiode.rects.len() == 1);
     assert!(st.layers.iter().filter(|l| l.pattern.as_ref().is_some_and(|p| !p.rects.is_empty())).count() == 3);
-    assert!(st.microlens.as_ref().unwrap().offset[0] < -3.0, "lens over the photodiode");
+    assert!(st.microlens.as_ref().unwrap().offset[1] < -1.0, "lens over the photodiode, below the transistors");
     let g = r.qe[1][r.wavelengths.iter().position(|&l| (l - 0.53).abs() < 1e-9).unwrap()];
-    assert!((0.1..0.4).contains(&g), "{g}");
+    assert!((0.3..0.7).contains(&g), "{g}");
     shot(&mut h, "36_pixel_optics_layout");
     // The open cell's stack from the technology's cross section, with carrier diffusion.
     h.state_mut().command(Command::PixelStackFromPdk);
     h.state_mut().command(Command::RunPixelOptics);
     h.run_steps(3);
     let px = h.state().pixel_optics();
-    assert!(px.text.contains("cell = \"work/aps3t\""), "{}", px.text);
+    assert!(px.text.contains("cell = \"work/aps4t\""), "{}", px.text);
     let r = px.result.as_ref().unwrap().as_ref().unwrap();
     assert!(px.stack.as_ref().unwrap().silicon.is_some());
     assert!(r.crosstalk_electrical[1].iter().any(|&x| x > 0.0));
@@ -1441,7 +1441,7 @@ fn import_oasis() {
     settle(&mut h, "17_import_oasis");
 
     let console: Vec<String> = h.state().console_lines().map(str::to_string).collect();
-    assert!(console.iter().any(|l| l.starts_with("Imported 4 cell(s)") && l.contains("library 'pixels'")), "{console:?}");
+    assert!(console.iter().any(|l| l.starts_with("Imported 2 cell(s)") && l.contains("library 'pixels'")), "{console:?}");
     assert!(!console.iter().any(|l| l.contains("import failed")), "{console:?}");
     let p = h.state().project().unwrap();
     let lib = p.libraries.iter().find(|l| l.name == "pixels").expect("imported library");

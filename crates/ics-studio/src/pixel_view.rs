@@ -12,8 +12,8 @@ use crate::theme;
 
 /// The bundled example stack, shown until another is loaded.
 const EXAMPLE: &str = include_str!("../../../pixels/bsi_1p4um.toml");
-/// The demo 3T pixel read from the open project's layout.
-const LAYOUT_EXAMPLE: &str = include_str!("../../../pixels/aps3t_fsi.toml");
+/// The demo 4T pixel read from the open project's layout.
+const LAYOUT_EXAMPLE: &str = include_str!("../../../pixels/aps4t_fsi.toml");
 
 pub struct PixelOptics {
     pub open: bool,
@@ -214,7 +214,7 @@ impl PixelOptics {
                     }
                     if ui
                         .button("Demo pixel (layout)")
-                        .on_hover_text("The demo 3T pixel's metals and photodiode from the open project")
+                        .on_hover_text("The demo 4T pixel's metals and photodiode from the open project")
                         .clicked()
                     {
                         self.text = LAYOUT_EXAMPLE.to_string();
