@@ -1296,6 +1296,42 @@ fn layout_signoff() {
 }
 
 #[test]
+fn import_gds_with_virtuoso_layer_map() {
+    let dir = std::env::temp_dir().join(format!("ics-ui-layermap-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut wtech = ics_core::tech::Tech::generic();
+    wtech.layers[0].gds_layer = 222;
+    wtech.layers[0].gds_datatype = 0;
+    let mut l = ics_core::layout::Layout::default();
+    l.add(0, ics_core::layout::Geometry::Rect(ics_core::IRect::new(0, 0, 400, 200)));
+    let top = ics_core::project::CellRef::new("lib", "rx_top");
+    let gds = dir.join("rx.gds");
+    std::fs::write(&gds, ics_core::gds::write_gds("lib", &[(&top, &l)], &wtech)).unwrap();
+    let map = dir.join("tech.layermap");
+    std::fs::write(&map, "# layer purpose stream datatype\nRX drawing 222 0\nRX label 222 10\nRX exclude 222 5\n").unwrap();
+
+    let args = LaunchArgs { project: None, demo: true, workspace: Some("layout".into()), cell: None, run: false };
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1440.0, 900.0))
+        .with_pixels_per_point(1.0)
+        .wgpu()
+        .build_eframe(|cc| IcStudio::new(cc, args));
+    h.run_steps(4);
+    h.state_mut().command(Command::ImportGdsWithLayerMap(Some(gds), Some(map)));
+    h.run_steps(6);
+
+    let console: Vec<String> = h.state().console_lines().map(str::to_string).collect();
+    assert!(console.iter().any(|l| l.contains("added layer(s) RX, RX.exclude")), "{console:?}");
+    let p = h.state().project().unwrap();
+    let rx = p.tech.layer_index("RX").expect("RX layer added");
+    let lib = p.libraries.iter().find(|l| l.name == "rx").expect("imported library");
+    let shapes = &lib.cells[0].layout.as_ref().unwrap().shapes;
+    assert_eq!(shapes.iter().map(|s| s.layer).collect::<Vec<_>>(), [rx]);
+    assert_eq!(ics_core::stream_map::export_pairs(&p.tech)[rx], (222, 0));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn import_oasis() {
     let src = ics_core::examples::demo_project();
     let (top, _) = src.all_cells().find(|(_, c)| c.name == "pixel_array").unwrap();

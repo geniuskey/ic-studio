@@ -971,6 +971,7 @@ pub fn definitions() -> Vec<Value> {
             json!({
                 "path": {"type": "string", "description": "GDSII or OASIS file to read."},
                 "lib": {"type": "string", "description": "Library name (defaults to the file name; made unique)."},
+                "layermap": {"type": "string", "description": "Cadence Virtuoso layer map file (`RX drawing 2 0` per line) applied first: its rows join the technology's stream map and layers it names that the technology lacks are added."},
             }),
             &["path"],
         ),
@@ -2411,15 +2412,27 @@ impl State {
             Some(l) => l.to_string(),
             None => path.file_stem().map_or("gds".into(), |s| s.to_string_lossy().to_string()),
         };
+        let map = match a.opt_str("layermap")? {
+            Some(m) => Some(std::fs::read_to_string(m).map_err(|e| format!("{m}: {e}"))?),
+            None => None,
+        };
         let p = self.project_mut()?;
         let data = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut warnings = vec![];
+        let mut added_layers = vec![];
+        if let Some(text) = &map {
+            let r = ics_core::stream_map::apply_layer_map(&mut p.tech, text);
+            warnings.extend(r.warnings.into_iter().map(|w| format!("layer map: {w}")));
+            added_layers = r.added_layers;
+        }
         let imp = ics_core::gds::read_stream_with(
             &data,
             &p.tech,
             "gds",
             ics_core::gds::ReadOptions { use_stream_map: true, ..Default::default() },
         )?;
-        let (skipped, warnings) = (imp.skipped_unknown_layers, imp.warnings.clone());
+        let skipped = imp.skipped_unknown_layers;
+        warnings.extend(imp.warnings.iter().cloned());
         let (lib, tops) = p.add_gds_library(&hint, imp)?;
         let cells = p.libraries.iter().find(|l| l.name == lib).map_or(0, |l| l.cells.len());
         self.dirty = true;
@@ -2428,6 +2441,7 @@ impl State {
             "cells": cells,
             "top_cells": tops.iter().map(|t| t.to_string()).collect::<Vec<_>>(),
             "skipped_unknown_layer_shapes": skipped,
+            "added_layers": added_layers,
             "warnings": warnings,
         }))
     }

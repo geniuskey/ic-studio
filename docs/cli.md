@@ -29,7 +29,7 @@ it with `cargo build --release -p ics-cli` (binary `target/release/ics`) or run 
 | `ics mc <PROJECT> <CELL> --measure ANALYSIS:EXPR... [--runs N] [--seed S] [--avt V] [--abeta V] [--vto-sigma V] [--kp-sigma V] [--variation FILE] [--generic] [--parasitics] [--json]` | Monte Carlo on the built-in engine with process variation and Pelgrom mismatch |
 | `ics gds <PROJECT> <CELL> -o <FILE>` | Export the cell and every cell it places to GDSII, or to OASIS when `FILE` ends in `.oas` / `.oasis` |
 | `ics gds-info <FILE>` | Print hierarchy statistics and timings of a GDSII or OASIS file |
-| `ics import-gds <PROJECT> <FILE> [--lib NAME] [--skip-unknown-layers] [--json]` | Import a GDSII or OASIS file as a new library |
+| `ics import-gds <PROJECT> <FILE> [--lib NAME] [--skip-unknown-layers] [--json] [--layermap FILE]` | Import a GDSII or OASIS file as a new library |
 | `ics lef export <PROJECT> <CELL>... [-o FILE] [--obs detailed\|block\|none] [--class CLASS]` | Write LEF abstracts of cells with a technology header (stdout without `-o`) |
 | `ics lef import <PROJECT> <FILE> [--lib NAME]` | Import LEF macros as layout cells of a new library and save |
 | `ics def export <PROJECT> <CELL> [-o FILE] [--lef FILE]` | Write a top cell as DEF; `--lef` also writes the placed cells' abstracts |
@@ -133,7 +133,9 @@ ics mc demo ota5t --runs 200 --measure "op:v(out)" --measure "ac:bandwidth(v(out
   one GDS file in the project; `--json` stores one JSON folder per cell instead (editable,
   diff-friendly, larger). `ics lib-storage` converts an existing library between the two.
 - `ics gds` and `ics import-gds` apply the technology's
-  [stream layer map](tools.md#stream-layer-map) when it has one.
+  [stream layer map](tools.md#stream-layer-map) when it has one. `--layermap FILE` first
+  merges a Virtuoso layer map file (`RX drawing 2 0` per line) into it, adding the layers it
+  names that the technology lacks.
 - `ics gds-info` reads a GDS file without writing anything and prints the top cells with
   their sizes and the read / parse / index times.
 

@@ -94,7 +94,7 @@ The server has 40 tools:
 | `emir` | IR drop and electromigration of a net: worst drop and where, loads, highest current densities, EM violations |
 | `opc` | Optical proximity correction of a layer: EPE statistics without and with correction, mask area, worst fragments; `apply` writes the mask to `<layer>_opc`, replacing the previous one (the drawn layer is never changed) |
 | `load_pdk` | Replace the technology with a PDK file |
-| `export_gds`, `import_gds` | GDSII / OASIS export and import (import skips layers the technology lacks); both apply the technology's stream layer map |
+| `export_gds`, `import_gds` | GDSII / OASIS export and import (import skips layers the technology lacks); both apply the technology's stream layer map; `import_gds` takes an optional Virtuoso `layermap` file |
 | `export_lef`, `import_lef` | Write a cell's LEF abstract (`obs`: `detailed`, `block` or `none`; `class`), or import LEF macros as layout cells of a new library (see [LEF and DEF](layout.md#lef-and-def)) |
 | `export_def`, `import_def` | Write a top cell as DEF (optional `lef_path` for the placed cells' abstracts), or import a DEF as a new top cell |
 | `run_skill` | Run Cadence SKILL code (`code`) or a `.il` file (`file`); returns `output`, `value` and the `modified` cells |

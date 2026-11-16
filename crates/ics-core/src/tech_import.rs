@@ -316,6 +316,7 @@ pub fn from_lyp(xml: &str, name: &str) -> Result<Tech, String> {
             min_width: 0,
             min_spacing: 0,
             min_area: 0,
+            text_stream: None,
         });
     }
     if layers.is_empty() {

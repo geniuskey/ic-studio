@@ -120,7 +120,12 @@ impl StreamMapEditor {
                 self.rows = tech
                     .layers
                     .iter()
-                    .map(|l| StreamMapEntry { layer: l.name.clone(), stream_layer: l.gds_layer, datatype: l.gds_datatype })
+                    .map(|l| StreamMapEntry {
+                        layer: l.name.clone(),
+                        stream_layer: l.gds_layer,
+                        datatype: l.gds_datatype,
+                        text: false,
+                    })
                     .collect();
             }
             if ui.button("Clear").on_hover_text("No map: layers use their own stream numbers").clicked() {
@@ -145,11 +150,12 @@ impl StreamMapEditor {
     fn table(&mut self, ui: &mut egui::Ui, tech: &Tech, pal: &Palette) {
         let mut remove = None;
         egui::ScrollArea::vertical().id_salt("sm_rows").auto_shrink([false, false]).show(ui, |ui| {
-            egui::Grid::new("sm_grid").striped(true).num_columns(4).spacing([14.0, 4.0]).show(ui, |ui| {
+            egui::Grid::new("sm_grid").striped(true).num_columns(5).spacing([14.0, 4.0]).show(ui, |ui| {
                 let head = |ui: &mut egui::Ui, t: &str| ui.label(RichText::new(t).small().strong().color(pal.text_weak));
                 let hl = head(ui, "LAYER");
                 let hs = head(ui, "STREAM LAYER");
                 let hd = head(ui, "DATATYPE");
+                let ht = head(ui, "LABELS ONLY");
                 head(ui, "");
                 ui.end_row();
                 for (i, row) in self.rows.iter_mut().enumerate() {
@@ -168,6 +174,11 @@ impl StreamMapEditor {
                         .labelled_by(hl.id);
                     ui.add(egui::DragValue::new(&mut row.stream_layer).range(0..=u16::MAX)).labelled_by(hs.id);
                     ui.add(egui::DragValue::new(&mut row.datatype).range(0..=u16::MAX)).labelled_by(hd.id);
+                    ui.checkbox(&mut row.text, "")
+                        .on_hover_text(
+                            "Texts only (Virtuoso purpose label): read onto the layer, its labels written as this pair",
+                        )
+                        .labelled_by(ht.id);
                     if ui.small_button("Remove").clicked() {
                         remove = Some(i);
                     }
@@ -180,7 +191,7 @@ impl StreamMapEditor {
             ui.add_space(6.0);
             if ui.button("+ Row").clicked() {
                 let layer = tech.layers.first().map(|l| l.name.clone()).unwrap_or_default();
-                self.rows.push(StreamMapEntry { layer, stream_layer: 0, datatype: 0 });
+                self.rows.push(StreamMapEntry { layer, stream_layer: 0, datatype: 0, text: false });
             }
         });
         if let Some(i) = remove {

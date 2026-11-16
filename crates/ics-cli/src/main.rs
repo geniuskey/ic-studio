@@ -487,6 +487,10 @@ enum Cmd {
         /// Store the library as one JSON directory per cell instead of a GDS file.
         #[arg(long)]
         json: bool,
+        /// Virtuoso layer map file (`RX drawing 2 0` per line) applied before reading: its rows
+        /// join the technology's stream map and layers it names that the technology lacks are added.
+        #[arg(long)]
+        layermap: Option<PathBuf>,
     },
     /// Change how a library is stored on disk.
     LibStorage {
@@ -2368,9 +2372,20 @@ fn run(cli: Cli) -> Result<(), String> {
                 eprintln!("warning: {w}");
             }
         }
-        Cmd::ImportGds { project, file, lib, skip_unknown_layers, json } => {
+        Cmd::ImportGds { project, file, lib, skip_unknown_layers, json, layermap } => {
             let mut p = Project::open(&project).map_err(|e| e.to_string())?;
             let data = std::fs::read(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+            if let Some(m) = &layermap {
+                let text = std::fs::read_to_string(m).map_err(|e| format!("{}: {e}", m.display()))?;
+                let r = ics_core::stream_map::apply_layer_map(&mut p.tech, &text);
+                println!("layer map {}: {} row(s)", m.display(), r.rows);
+                if !r.added_layers.is_empty() {
+                    println!("added {} layer(s) from the layer map: {}", r.added_layers.len(), r.added_layers.join(", "));
+                }
+                for w in &r.warnings {
+                    eprintln!("warning: {}: {w}", m.display());
+                }
+            }
             let opts = ics_core::gds::ReadOptions { add_unknown_layers: !skip_unknown_layers, use_stream_map: true };
             let imp = ics_core::gds::read_stream_with(&data, &p.tech, "gds", opts)?;
             let (skipped, warnings) = (imp.skipped_unknown_layers, imp.warnings.clone());

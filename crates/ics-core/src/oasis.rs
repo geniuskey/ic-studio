@@ -243,6 +243,7 @@ fn cell_body(layout: &Layout, tech: &Tech, cell_ref: &dyn Fn(&CellRef) -> u64) -
                 w.sint(points[0].1);
             }
             Geometry::Label { text, at, .. } => {
+                let ld = l.text_stream.map_or(ld, |(g, d)| (u64::from(g), u64::from(d)));
                 let bits = layer_bits(&mut txt, ld);
                 w.uint(TEXT);
                 w.byte(0x58 | bits);
@@ -818,7 +819,9 @@ impl Reader<'_> {
         let offsets = if info & 0x04 != 0 { self.repetition(c)?.offsets() } else { vec![(0, 0)] };
         let text = self.m.text_string.clone().ok_or("TEXT without a string")?;
         let Some(ci) = self.cells.len().checked_sub(1) else { return Ok(()) };
-        let Some(layer) = self.layer(self.m.textlayer, self.m.texttype) else { return Ok(()) };
+        let Some(layer) = self.layers.get_text(self.m.textlayer as u16, self.m.texttype as u16, &mut self.out) else {
+            return Ok(());
+        };
         let (x, y) = self.m.text;
         for (dx, dy) in offsets {
             let at = (self.sc(x + dx), self.sc(y + dy));

@@ -380,14 +380,24 @@ stream layer / datatype to a technology layer:
   map to one layer; **(drop on import)** discards them.
 
 **Load map file...** reads a Virtuoso layer map (`layerName purpose streamLayer
-streamDatatype` per line, `#` comments); a purpose other than `drawing` names the layer
-`name.purpose`, `namepurpose` or `name_purpose`. **Save map file...** writes one, **From
+streamDatatype` per line, `#` comments). Purpose `drawing` names the layer `name`; other
+purposes (`pin`, `exclude`, `dummy`, `fill`, ...) name `name.purpose`, `namepurpose` or
+`name_purpose`. Purpose `label` (or `text`) does too, and otherwise becomes a **Labels only**
+row of `name` itself: texts on its numbers are read onto the drawn layer, so they name its
+nets in extraction and LVS, and the layer's labels are written back with those numbers. **Save map file...** writes one, **From
 technology** starts with one row per layer, **Clear** removes the map. Problems (unknown
 layers, a number pair mapped twice, two layers written as the same numbers) are listed
 above the table. **Apply** stores the map in `tech.json` (`stream_map`).
 
 The map applies to **File > Import / Export**, `ics gds`, `ics import-gds` and the MCP
 `import_gds` / `export_gds` tools. The project's own library files are not affected.
+
+**File > Import > GDSII / OASIS with Layer Map...** imports through a Virtuoso layer map
+file, as XStream In does with `-layerMap` (`ics import-gds --layermap FILE`, the MCP
+`import_gds` `layermap` argument). Each row (`RX drawing 2 0`) reads its stream numbers onto
+that layer and purpose as above; a layer the technology lacks is added with those numbers
+(`RX` for `drawing` and `label`, `RX.exclude` for `exclude`, and so on). The file's rows are put in front of the stream map, replacing rows for
+the same numbers, so later exports write the same numbers back.
 
 ## Dummy Fill
 

@@ -227,6 +227,7 @@ pub fn write_gds(lib_name: &str, cells: &[(&CellRef, &Layout)], tech: &Tech) -> 
                     w.rec(ENDEL, &[]);
                 }
                 Geometry::Label { text, at, size } => {
+                    let (layer, dt) = l.text_stream.map_or((layer, dt), |(g, d)| (g as i16, d as i16));
                     w.rec(TEXT, &[]);
                     w.i16s(LAYER, &[layer]);
                     w.i16s(TEXTTYPE, &[dt]);
@@ -565,7 +566,12 @@ pub fn read_gds_with(data: &[u8], tech: &Tech, lib: &str, opts: ReadOptions) -> 
                 if el.kind == NODE {
                     continue;
                 }
-                let Some(layer) = layers.get(el.layer, el.dt, &mut out) else { continue };
+                let layer = if el.kind == TEXT {
+                    layers.get_text(el.layer, el.dt, &mut out)
+                } else {
+                    layers.get(el.layer, el.dt, &mut out)
+                };
+                let Some(layer) = layer else { continue };
                 let geom = match el.kind {
                     BOUNDARY | BOX => {
                         let mut p: Vec<(i64, i64)> = pts().collect();
@@ -601,6 +607,8 @@ pub(crate) struct LayerMap {
     by_gds: HashMap<(u16, u16), usize>,
     /// Pairs the stream map drops.
     dropped: HashSet<(u16, u16)>,
+    /// Pairs the stream map's label rows read texts from.
+    text_by_gds: HashMap<(u16, u16), usize>,
     new_index: HashMap<(u16, u16), usize>,
     base: usize,
     add_unknown: bool,
@@ -613,7 +621,9 @@ impl LayerMap {
             by_gds.entry((l.gds_layer, l.gds_datatype)).or_insert(k);
         }
         let mut dropped = HashSet::new();
+        let mut text_by_gds = HashMap::new();
         if opts.use_stream_map {
+            text_by_gds = crate::stream_map::import_text_pairs(tech);
             for (pair, to) in crate::stream_map::import_pairs(tech) {
                 match to {
                     Some(k) => {
@@ -625,7 +635,22 @@ impl LayerMap {
                 }
             }
         }
-        Self { by_gds, dropped, new_index: HashMap::new(), base: tech.layers.len(), add_unknown: opts.add_unknown_layers }
+        Self {
+            by_gds,
+            dropped,
+            text_by_gds,
+            new_index: HashMap::new(),
+            base: tech.layers.len(),
+            add_unknown: opts.add_unknown_layers,
+        }
+    }
+
+    /// The layer of a text on `(layer, dt)`: a label row of the stream map, else [`Self::get`].
+    pub(crate) fn get_text(&mut self, layer: u16, dt: u16, out: &mut GdsImport) -> Option<usize> {
+        match self.text_by_gds.get(&(layer, dt)) {
+            Some(&k) => Some(k),
+            None => self.get(layer, dt, out),
+        }
     }
 
     /// The layer of a shape on `(layer, dt)`, or `None` (counted in `out`) when it is skipped.

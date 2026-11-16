@@ -384,6 +384,7 @@ pub fn from_techfile(tf: &str, drf: Option<&str>, layer_map: Option<&str>, name:
             min_width: rule("w").map_or(0, um),
             min_spacing: rule("s").map_or(0, um),
             min_area: rule("a").map_or(0, |a| (a * (dbu_per_um * dbu_per_um) as f64).round() as i64),
+            text_stream: None,
         });
     }
     if drf.is_some() {
@@ -400,7 +401,7 @@ pub fn from_techfile(tf: &str, drf: Option<&str>, layer_map: Option<&str>, name:
             let (entries, mut notes) = crate::stream_map::parse(map, &tech);
             warnings.append(&mut notes);
             for l in &mut tech.layers {
-                if let Some(e) = entries.iter().find(|e| e.layer.eq_ignore_ascii_case(&l.name)) {
+                if let Some(e) = entries.iter().find(|e| !e.text && e.layer.eq_ignore_ascii_case(&l.name)) {
                     l.gds_layer = e.stream_layer;
                     l.gds_datatype = e.datatype;
                 }

@@ -177,6 +177,11 @@ pub enum Command {
     RouteFlylines,
     /// Import a GDSII or OASIS file (detected from its contents); `None` asks for the file.
     ImportGds(Option<PathBuf>),
+    /// Import a GDSII or OASIS file through a Cadence Virtuoso layer map file (`RX drawing 2 0`
+    /// per line), as XStream In does: the map's rows join the technology's stream map and the
+    /// layers it names that the technology lacks are added. Takes the stream file and the map;
+    /// `None` asks for it.
+    ImportGdsWithLayerMap(Option<PathBuf>, Option<PathBuf>),
     /// Export the active cell's LEF abstract (`false`) or DEF placement (`true`).
     ExportLefDef(bool),
     /// Import a LEF file's macros as a new library (`false`) or a DEF file as a new top cell
@@ -1069,7 +1074,18 @@ impl IcStudio {
             Command::ExportLibraryGds => self.export_stream(true, StreamFormat::Gds),
             Command::ExportOasis => self.export_stream(false, StreamFormat::Oasis),
             Command::ExportLibraryOasis => self.export_stream(true, StreamFormat::Oasis),
-            Command::ImportGds(path) => self.import_gds(path),
+            Command::ImportGds(path) => self.import_gds(path, None),
+            Command::ImportGdsWithLayerMap(path, map) => {
+                let Some(map) = map.or_else(|| {
+                    rfd::FileDialog::new()
+                        .set_title("Virtuoso layer map")
+                        .add_filter("Layer map", &["layermap", "map", "txt"])
+                        .pick_file()
+                }) else {
+                    return;
+                };
+                self.import_gds(path, Some(map))
+            }
             Command::ExportLefDef(def) => self.export_lef_def(def),
             Command::ImportLefDef(def, path) => self.import_lef_def(def, path),
             Command::ImportTech => self.import_tech(),
@@ -1867,8 +1883,10 @@ impl IcStudio {
         }
     }
 
-    fn import_gds(&mut self, path: Option<PathBuf>) {
-        let Some(p) = self.project.as_mut() else { return };
+    fn import_gds(&mut self, path: Option<PathBuf>, layer_map: Option<PathBuf>) {
+        if self.project.is_none() {
+            return;
+        }
         let Some(path) = path.or_else(|| {
             rfd::FileDialog::new()
                 .add_filter("GDSII / OASIS", &["gds", "gds2", "gdsii", "oas", "oasis"])
@@ -1885,10 +1903,35 @@ impl IcStudio {
                 return;
             }
         };
+        let map_text = match layer_map.as_ref().map(std::fs::read_to_string).transpose() {
+            Ok(t) => t,
+            Err(e) => {
+                self.error(format!(
+                    "Cannot read {}: {e}",
+                    layer_map.as_ref().map_or_else(String::new, |m| m.display().to_string())
+                ));
+                return;
+            }
+        };
+        let Some(p) = self.project.as_mut() else { return };
         let t0 = Instant::now();
+        // The map is applied to a copy, kept only when the import succeeds.
+        let (mut mapped, mut map_info, mut map_warnings) = (None, None, vec![]);
+        if let (Some(text), Some(m)) = (&map_text, &layer_map) {
+            let mut tech = p.tech.clone();
+            let r = ics_core::stream_map::apply_layer_map(&mut tech, text);
+            let name = m.file_name().unwrap_or_default().to_string_lossy().to_string();
+            map_warnings.extend(r.warnings.into_iter().map(|w| format!("{name}: {w}")));
+            let mut info = format!("Layer map {name}: {} row(s) applied", r.rows);
+            if !r.added_layers.is_empty() {
+                info += &format!("; added layer(s) {}", r.added_layers.join(", "));
+            }
+            map_info = Some(info);
+            mapped = Some(tech);
+        }
         let opts = ics_core::gds::ReadOptions { add_unknown_layers: true, use_stream_map: true };
         let label = StreamFormat::detect(&data).label();
-        let imp = match ics_core::gds::read_stream_with(&data, &p.tech, "gds", opts) {
+        let imp = match ics_core::gds::read_stream_with(&data, mapped.as_ref().unwrap_or(&p.tech), "gds", opts) {
             Ok(imp) => imp,
             Err(e) => {
                 self.error(format!("{label} import failed: {e}"));
@@ -1900,6 +1943,7 @@ impl IcStudio {
         let warnings = imp.warnings.clone();
         let n = imp.cells.len();
         let stem = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+        let original = mapped.map(|t| std::mem::replace(&mut p.tech, t));
         match p.add_gds_library(&stem, imp) {
             Ok((lib, tops)) => {
                 self.hier.clear();
@@ -1909,6 +1953,12 @@ impl IcStudio {
                     path.display(),
                     t0.elapsed().as_secs_f64()
                 ));
+                if let Some(info) = map_info {
+                    self.info(info);
+                }
+                for w in map_warnings {
+                    self.warn(w);
+                }
                 for w in warnings {
                     self.warn(format!("{label}: {w}"));
                 }
@@ -1922,7 +1972,12 @@ impl IcStudio {
                     self.queue.push(Command::OpenCell(r, Some(Workspace::Layout)));
                 }
             }
-            Err(e) => self.error(format!("{label} import failed: {e}")),
+            Err(e) => {
+                if let Some(t) = original {
+                    p.tech = t;
+                }
+                self.error(format!("{label} import failed: {e}"))
+            }
         }
     }
 
@@ -2314,6 +2369,9 @@ impl IcStudio {
                 ui.menu_button("Import", |ui| {
                     if ui.add_enabled(has_project, egui::Button::new("GDSII / OASIS…")).clicked() {
                         q.push(Command::ImportGds(None));
+                    }
+                    if ui.add_enabled(has_project, egui::Button::new("GDSII / OASIS with Layer Map…")).clicked() {
+                        q.push(Command::ImportGdsWithLayerMap(None, None));
                     }
                     if ui.add_enabled(has_project, egui::Button::new("LEF abstracts…")).clicked() {
                         q.push(Command::ImportLefDef(false, None));
@@ -3466,6 +3524,7 @@ impl IcStudio {
             ("Export cell OASIS…".into(), "", Command::ExportOasis),
             ("Export library OASIS…".into(), "", Command::ExportLibraryOasis),
             ("Import GDSII / OASIS…".into(), "", Command::ImportGds(None)),
+            ("Import GDSII / OASIS with Virtuoso layer map…".into(), "", Command::ImportGdsWithLayerMap(None, None)),
             ("Export cell LEF abstract…".into(), "", Command::ExportLefDef(false)),
             ("Export cell DEF…".into(), "", Command::ExportLefDef(true)),
             ("Import LEF abstracts…".into(), "", Command::ImportLefDef(false, None)),

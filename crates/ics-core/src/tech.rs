@@ -36,6 +36,10 @@ pub struct LayerDef {
     /// Minimum area of a piece in dbu² (0 = unchecked).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub min_area: i64,
+    /// Stream pair the layer's text labels are written as when it differs from the shapes'
+    /// (a stream map row with purpose `label`; set by `stream_map::export_tech`, not stored).
+    #[serde(skip)]
+    pub text_stream: Option<(u16, u16)>,
 }
 
 fn is_zero(v: &i64) -> bool {
@@ -56,6 +60,7 @@ impl LayerDef {
             min_spacing: 0,
             routing: false,
             min_area: 0,
+            text_stream: None,
         }
     }
 }
@@ -558,6 +563,10 @@ pub struct StreamMapEntry {
     pub stream_layer: u16,
     #[serde(default)]
     pub datatype: u16,
+    /// The row carries the layer's text labels only (Virtuoso purpose `label` or `text`):
+    /// texts on the pair are read onto the layer, and its labels are written as the pair.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub text: bool,
 }
 
 impl Tech {
@@ -674,6 +683,7 @@ impl Tech {
             min_spacing: s,
             routing,
             min_area: 0,
+            text_stream: None,
         };
         let v = |name: &str, bottom: &str, cut: &str, top: &str, size: i64, space: i64, eb: i64, et: i64, ohms: f64, em: f64| {
             ViaDef {
