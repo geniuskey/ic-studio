@@ -76,6 +76,7 @@ The server has 40 tools:
 | `run_drc` | DRC with the technology deck |
 | `fix_drc` | Apply verified quick fixes to the cell's top-level geometry until nothing more can be fixed |
 | `compact` | Slide top-level items toward each direction until the rules stop them; constraints hold |
+| `verify` | Run the verification plan: per spec worst value, corner, margin and status, with changes and regressions against the latest saved run |
 | `predict_yield` | Monte Carlo yield prediction: simulated and predicted yield per condition, per spec Cpk, model Q² and sensitivities; `process` also draws the measured process variation |
 | `correlate_silicon` | Compare measured curves (CSV) with the simulation; fit model, instance or design parameters |
 | `import_cdl` | Import a hierarchical CDL netlist (Virtuoso auCdl) as a cell's flat schematic |

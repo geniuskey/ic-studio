@@ -13,7 +13,8 @@ back; the choice is remembered per tool. Every tool is also in the command palet
 | Design Copilot, AI Models | - | An AI agent working on the open project through the [MCP](mcp.md) tools; AI Models sets its provider, model and API key |
 | [Optimizer](#optimizer) | ADE GXL Optimization | Active cell's schematic and specs |
 | [Waveform Calculator](#waveform-calculator) | ViVA Calculator | Simulation results of the active cell |
-| [Corner / Sweep Manager](#corner--sweep-manager) | ADE Explorer / Assembler | Active cell's schematic |
+| [Corner / Sweep Manager](#corner--sweep-manager) | ADE Explorer | Active cell's schematic |
+| [Verification](simulation.md#verification-all-tests) | ADE Assembler | Every testbench cell with specs |
 | [Silicon Correlation](#silicon-correlation) | Model calibration / correlation to measurements | Active cell's schematic and measured data |
 | [Results Browser](#results-browser) | Results Browser | Earlier simulation runs of the active cell |
 | [Check Schematic](#check-schematic) | Check and Save | Active schematic |

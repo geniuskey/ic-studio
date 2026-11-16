@@ -122,6 +122,10 @@ pub enum Command {
     SweepManager,
     /// Run the active cell's corner / parametric sweep.
     RunSweep,
+    /// Open the Verification window (the project's tests, ADE Assembler style).
+    Verification,
+    /// Run every test of the verification plan.
+    RunVerification,
     /// Open the device-model Monte Carlo (process + mismatch) window on the active cell.
     MonteCarlo,
     /// Run the Monte Carlo window's setup on its cell.
@@ -579,6 +583,7 @@ pub struct IcStudio {
     pixel: PixelOptics,
     sweep: SweepManager,
     monte_carlo: crate::mc_view::MonteCarlo,
+    verification: crate::verify_view::Verification,
     silicon: crate::silicon_view::SiliconView,
     process: crate::process_view::ProcessView,
     process_data: crate::process_data_view::ProcessDataView,
@@ -647,6 +652,7 @@ impl IcStudio {
             pixel: PixelOptics::default(),
             sweep: SweepManager::default(),
             monte_carlo: Default::default(),
+            verification: Default::default(),
             silicon: Default::default(),
             process: Default::default(),
             process_data: Default::default(),
@@ -1002,6 +1008,11 @@ impl IcStudio {
                 _ => self.warn("Open a cell with a schematic to sweep".into()),
             },
             Command::RunSweep => self.run_sweep(ctx),
+            Command::Verification => {
+                let root = self.project.as_ref().and_then(|p| p.root.clone());
+                self.verification.show(root.as_deref());
+            }
+            Command::RunVerification => self.run_verification(ctx),
             Command::MonteCarlo => match (self.active.clone(), self.active_cell()) {
                 (Some(r), Some(c)) if c.schematic.is_some() => {
                     let setup = c.sim.montecarlo.clone();
@@ -1645,6 +1656,44 @@ impl IcStudio {
             }
         }
         Ok((deck, analyses))
+    }
+
+    fn run_verification(&mut self, ctx: &egui::Context) {
+        if self.verification.is_running() {
+            return self.warn("Verification is already running".into());
+        }
+        let Some(p) = self.project.as_ref() else { return };
+        let tests = p.settings.verification.resolve(p);
+        if tests.is_empty() {
+            return self.warn("No tests: give a cell specs in its Corner / Sweep Manager, or add cells to the plan".into());
+        }
+        let root = p.root.clone();
+        let snapshot = p.clone();
+        let opts = self.sim_options(ics_core::Backend::Auto);
+        if !self.verification.open {
+            self.verification.show(root.as_deref());
+        }
+        let names: Vec<&str> = tests.iter().map(|(n, _)| n.as_str()).collect();
+        self.info(format!("Verification: running {} test(s): {}", tests.len(), names.join(", ")));
+        self.verification.start(ctx, snapshot, tests, opts);
+    }
+
+    fn verification_window(&mut self, ctx: &egui::Context) {
+        let active = self.active.clone();
+        match self.verification.window(ctx, self.project.as_ref(), active.as_ref()) {
+            Some(crate::verify_view::VerifyAction::Plan(plan)) => {
+                if let Some(p) = self.project.as_mut() {
+                    p.settings.verification = plan;
+                    self.mark_dirty();
+                }
+            }
+            Some(crate::verify_view::VerifyAction::Run) => self.queue.push(Command::RunVerification),
+            None => {}
+        }
+    }
+
+    pub fn verification(&mut self) -> &mut crate::verify_view::Verification {
+        &mut self.verification
     }
 
     fn monte_carlo_window(&mut self, ctx: &egui::Context) {
@@ -2655,6 +2704,9 @@ impl IcStudio {
                 if ui.button("Corner / Sweep Manager…").clicked() {
                     q.push(Command::SweepManager);
                 }
+                if ui.button("Verification…").clicked() {
+                    q.push(Command::Verification);
+                }
                 if ui.button("Monte Carlo…").clicked() {
                     q.push(Command::MonteCarlo);
                 }
@@ -2710,6 +2762,9 @@ impl IcStudio {
                 }
                 if ui.button("Corner / Sweep Manager…").clicked() {
                     q.push(Command::SweepManager);
+                }
+                if ui.button("Verification…").clicked() {
+                    q.push(Command::Verification);
                 }
                 if ui.button("Monte Carlo…").clicked() {
                     q.push(Command::MonteCarlo);
@@ -3435,6 +3490,7 @@ impl IcStudio {
                             ("Sweep...", "Corner and parametric sweeps", Command::SweepManager),
                             ("Monte Carlo...", "Process and mismatch statistics", Command::MonteCarlo),
                             ("Optimizer...", "Size devices to meet specs", Command::Optimizer),
+                            ("Verify...", "Run every test of the project and check its specs", Command::Verification),
                         ] {
                             if ui.small_button(label).on_hover_text(hint).clicked() {
                                 tool = Some(cmd);
@@ -3740,6 +3796,8 @@ impl IcStudio {
             ("Run pixel optics model".into(), "", Command::RunPixelOptics),
             ("Pixel stack of the open cell from the PDK cross section".into(), "", Command::PixelStackFromPdk),
             ("Corner / sweep manager".into(), "", Command::SweepManager),
+            ("Verification (all tests)".into(), "", Command::Verification),
+            ("Run verification".into(), "", Command::RunVerification),
             ("Monte Carlo (process and mismatch of device models)".into(), "", Command::MonteCarlo),
             ("Run Monte Carlo".into(), "", Command::RunMonteCarlo),
             ("Silicon correlation (measured curves, model fitting)".into(), "", Command::SiliconCorrelation),
@@ -4782,6 +4840,7 @@ impl IcStudio {
             || self.copilot.busy()
             || self.optimizer.is_running()
             || self.monte_carlo.is_running()
+            || self.verification.is_running()
     }
 
     fn rule_designer_window(&mut self, ctx: &egui::Context) {
@@ -5338,6 +5397,9 @@ impl eframe::App for IcStudio {
         if let Some((ok, m)) = self.monte_carlo.poll() {
             if ok { self.ok(m) } else { self.warn(m) }
         }
+        if let Some((ok, m)) = self.verification.poll() {
+            if ok { self.ok(m) } else { self.warn(m) }
+        }
         if let Some((ok, m)) = self.silicon.poll() {
             if ok { self.ok(m) } else { self.warn(m) }
         }
@@ -5451,6 +5513,7 @@ impl eframe::App for IcStudio {
         }
         self.sweep_window(&ctx);
         self.monte_carlo_window(&ctx);
+        self.verification_window(&ctx);
         self.silicon_window(&ctx);
         self.process_window(&ctx);
         self.process_data_window(&ctx);

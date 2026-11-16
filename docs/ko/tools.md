@@ -13,7 +13,8 @@
 | Design Copilot, AI Models | - | [MCP](mcp.md) 도구로 열린 프로젝트를 다루는 AI 에이전트. AI Models에서 제공자, 모델, API 키를 설정 |
 | [Optimizer](#optimizer) | ADE GXL Optimization | 활성 셀의 회로도와 스펙 |
 | [Waveform Calculator](#waveform-calculator) | ViVA Calculator | 활성 셀의 시뮬레이션 결과 |
-| [Corner / Sweep Manager](#corner--sweep-manager) | ADE Explorer / Assembler | 활성 셀의 회로도 |
+| [Corner / Sweep Manager](#corner--sweep-manager) | ADE Explorer | 활성 셀의 회로도 |
+| [Verification](simulation.md#검증전체-테스트) | ADE Assembler | 스펙이 있는 모든 testbench 셀 |
 | [Silicon Correlation](#silicon-correlation) | 측정 데이터와의 모델 보정 / 상관 | 활성 셀의 회로도와 측정 데이터 |
 | [Results Browser](#results-browser) | Results Browser | 활성 셀의 이전 시뮬레이션 실행 |
 | [Check Schematic](#check-schematic) | Check and Save | 활성 회로도 |

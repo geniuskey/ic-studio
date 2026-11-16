@@ -73,6 +73,7 @@ npx skills add geniuskey/ic-studio
 | `run_drc` | 테크놀로지 덱으로 DRC |
 | `fix_drc` | 더 고칠 것이 없을 때까지 셀의 최상위 지오메트리에 검증된 빠른 수정 적용 |
 | `compact` | 최상위 항목을 각 방향으로 룰에 막힐 때까지 밀기. 제약 조건 유지 |
+| `verify` | 검증 계획 실행: 스펙별 worst 값, 코너, 마진, 상태와 최근 저장 실행 대비 변경·regression |
 | `predict_yield` | 몬테카를로 수율 예측: 조건별 시뮬레이션·예측 수율, 스펙별 Cpk, 모델 Q², 민감도. `process`는 측정 공정 변동도 뽑음 |
 | `correlate_silicon` | 측정 곡선(CSV)과 시뮬레이션 비교, 모델·인스턴스·설계 파라미터 피팅 |
 | `import_cdl` | 계층 CDL 넷리스트(Virtuoso auCdl)를 셀의 평탄한 회로도로 가져오기 |

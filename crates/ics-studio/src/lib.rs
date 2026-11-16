@@ -33,6 +33,7 @@ pub mod sweep_view;
 pub mod theme;
 pub mod tutorial;
 pub mod update;
+pub mod verify_view;
 
 /// Command line: `ics-studio [PROJECT_DIR] [--demo] [--workspace home|schematic|simulation|layout] [--run]`
 pub struct LaunchArgs {

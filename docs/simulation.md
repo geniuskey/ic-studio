@@ -120,8 +120,33 @@ the schematic (see [Schematic](schematic.md#operating-point-annotation)).
 - **Tools > Results Browser** keeps earlier runs for comparison, for example the schematic
   against the post-layout simulation.
 
-The **Sweep...**, **Monte Carlo...** and **Optimizer...** buttons at the top of the setup
-panel open these tools for the active cell.
+The **Sweep...**, **Monte Carlo...**, **Optimizer...** and **Verify...** buttons at the top
+of the setup panel open these tools.
+
+### Verification (all tests)
+
+The Corner / Sweep Manager works on one cell. **Tools > Verification...** runs all of them
+together, as ADE Assembler does. Each *test* is a testbench cell whose sweep setup has specs.
+The project's plan lists the tests. Without a plan, every cell with specs is a test. **Add
+work/ota5t** starts a plan from the active cell, and the check box next to each test turns
+it on or off.
+
+**Run all tests** runs every point of every test: corners, temperatures, swept values and
+Monte Carlo runs. Each spec then gets one row:
+
+| Column | Meaning |
+| --- | --- |
+| Limits | `>= min`, `<= max` or `min .. max` |
+| Worst | the value nearest a limit (hover: the corner it occurs at); a spec without limits shows its range |
+| Margin | distance of the worst value to its nearest limit, negative when outside |
+| Pass | points within the limits / all points |
+| Status | `pass`, `FAIL`, `error` (some points not measured) or `info` (no limits) |
+| Before | the comparison with an earlier run: `same`, `was pass` (a regression, in red), `new` |
+
+Every run is saved in `results/verify/` in the project. **Compare with** picks the run to
+compare against; by default it is the latest saved run. **Failures only** hides passing
+specs. The command line runs the same plan (`ics verify`), so it fits continuous
+integration. See [Command line](cli.md#verification).
 
 ### Monte Carlo window
 

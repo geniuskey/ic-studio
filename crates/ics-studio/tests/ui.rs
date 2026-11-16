@@ -568,6 +568,7 @@ fn sweep_manager() {
     {
         let sw = h.state_mut().sweep_manager();
         assert!(sw.open);
+        sw.setup = Default::default();
         sw.setup.temps = "-40 125".into();
         sw.setup.vars.push(ics_core::sweep::SweepVar { name: "R1.r".into(), values: "1k 2k 4k".into() });
         sw.setup.specs.push(ics_core::sweep::Spec {
@@ -592,6 +593,40 @@ fn sweep_manager() {
     h.state_mut().sweep_manager().setup.specs[0].name = "bandwidth".into();
     h.run_steps(4);
     shot(&mut h, "33_sweep_manager");
+}
+
+/// Verification: the demo's tests (every cell with specs) run together; a failing limit shows
+/// as a regression against the saved run.
+#[test]
+fn verification_window() {
+    let dir = std::env::temp_dir().join(format!("ics-ui-verify-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut h = app(demo_args("ota5t", "simulation", false));
+    h.state_mut().project_mut().unwrap().save_as(&dir).unwrap();
+    h.state_mut().command(Command::Verification);
+    h.run_steps(2);
+    assert!(h.state_mut().verification().open);
+    h.state_mut().command(Command::RunVerification);
+    h.run_steps(2);
+    settle(&mut h, "verification");
+    let run = h.state_mut().verification().run.clone().unwrap();
+    let names: Vec<&str> = run.tests.iter().map(|t| t.name.as_str()).collect();
+    assert!(names.contains(&"ota5t") && names.contains(&"rc_lowpass"), "{names:?}");
+    assert_eq!(run.status(), ics_core::verify::Status::Pass, "{run:?}");
+    assert_eq!(ics_core::verify::list_history(&dir).len(), 1);
+    // Tighten the OTA gain: the rerun fails and is compared with the first run.
+    {
+        let p = h.state_mut().project_mut().unwrap();
+        let c = p.cell_mut(&ics_core::CellRef::new("work", "ota5t")).unwrap();
+        c.sim.sweep.specs[0].min = "40".into();
+    }
+    h.state_mut().command(Command::RunVerification);
+    h.run_steps(2);
+    settle(&mut h, "verification rerun");
+    assert!(h.state().console_lines().any(|l| l.contains("1 regression(s)")), "no regression reported");
+    h.run_steps(4);
+    shot(&mut h, "36_verification");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Layer Display editor: a stipple bitmap and line style edited for metal1 are applied to the
@@ -725,6 +760,7 @@ fn monte_carlo_sweep() {
     h.run_steps(2);
     {
         let sw = h.state_mut().sweep_manager();
+        sw.setup = Default::default();
         sw.setup.monte_carlo.runs = 40;
         sw.setup.monte_carlo.seed = 3;
         sw.setup.monte_carlo.vars.push(ics_core::sweep::McVar {

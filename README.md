@@ -178,6 +178,9 @@ Linux needs the usual windowing libraries:
 - Corner / sweep manager: model corners × temperatures × parameters and Monte Carlo
   (process and mismatch), run in parallel, specs with limits, statistics, yield,
   histograms, overlaid waveforms and an HTML datasheet
+- Verification (ADE Assembler style): every testbench of the project run together, each
+  spec summarised by its worst corner and margin, runs kept as history and compared for
+  regressions; `ics verify` exits non-zero on a failure and writes JUnit XML for CI
 - Yield prediction: a response-surface model of every spec over the Monte Carlo inputs,
   sampled 10⁵ times per condition, gives the predicted yield, Cpk and each varied
   parameter's share of the spread (`ics yield`, MCP `predict_yield`)
@@ -309,8 +312,8 @@ use `target/release/ics` when it exists (otherwise `cargo run --release -p ics-c
 ## MCP server (AI agents)
 
 `ics mcp` exposes an IC Studio project to AI agents over the Model Context Protocol
-(stdio). Its 34 tools cover projects and PDKs, schematics from SPICE netlists, netlisting
-and simulation, layout editing (rects, paths, labels, instances, PCells, schematic-driven
+(stdio). Its 50 tools cover projects and PDKs, schematics from SPICE netlists, Virtuoso
+CDL and library dumps, netlisting and simulation, verification and yield, layout editing (rects, paths, labels, instances, PCells, schematic-driven
 placement, flylines, routing), DRC with quick fixes, compaction, layout compare, the
 optimizer, layout by example, extraction, LVS, sign-off runsets, parasitics, GDSII / OASIS
 import and export, and SKILL scripts. Coordinates are in µm; edits stay in memory until
@@ -344,12 +347,13 @@ crates/
               geom · schematic · connectivity · netlist · layout · hier (indices, LOD)
               region / polybool (Booleans) · pcell · gds · oasis · stream_map · tech · tech_import
               drc · rule_design · extract · lvs · sdl (schematic-driven layout) · route
-              matching · layout_gen · fill · opc · pex · sch_check · sweep · skill
+              matching · layout_gen · fill · opc · pex · sch_check · sweep · verify · skill
+              cadence (CDL, SKILL out) · virtuoso (tech files) · virtuoso_dump (library import)
               project storage · examples
   ics-sim     SPICE parser, MNA engine, ngspice backend, waveform calculator, results
   ics-studio  desktop app (eframe/egui on wgpu)
               app (shell, commands) · schematic_view · sim_view · layout_view (edit, verify)
-              tool windows: calc_view · sweep_view · rule_designer · stream_map_view
+              tool windows: calc_view · sweep_view · verify_view · rule_designer · stream_map_view
               fill_view · opc_view · gen_view · net_view · hier_view · ciw
   ics-cli     `ics` command line and `ics mcp`
   ics-mcp     MCP tools, stdio server and live-mode bridge (library)

@@ -119,6 +119,9 @@ pub struct ProjectSettings {
     /// Path to the ngspice executable (defaults to `ngspice` on PATH).
     #[serde(default)]
     pub ngspice_path: Option<String>,
+    /// Verification plan: the tests run together (`ics verify`, the Verification window).
+    #[serde(default, skip_serializing_if = "crate::verify::VerifyPlan::is_empty")]
+    pub verification: crate::verify::VerifyPlan,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

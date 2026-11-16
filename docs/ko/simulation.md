@@ -117,8 +117,31 @@ ngspice 경로는 **Settings**에서 지정합니다([설치](install.md#ngspice
 - **Tools > Results Browser**는 이전 실행 결과를 보관해 비교할 수 있게 합니다. 예를 들어
   회로도 시뮬레이션과 포스트 레이아웃 시뮬레이션을 비교할 수 있습니다.
 
-설정 패널 상단의 **Sweep...**, **Monte Carlo...**, **Optimizer...** 버튼은 활성 셀에 대해 이
+설정 패널 상단의 **Sweep...**, **Monte Carlo...**, **Optimizer...**, **Verify...** 버튼은 이
 도구들을 엽니다.
+
+### 검증(전체 테스트)
+
+Corner / Sweep Manager는 셀 하나를 다룹니다. **Tools > Verification...**은 ADE Assembler처럼 그런 셀들을
+한꺼번에 실행합니다. *테스트*는 sweep 설정에 스펙이 있는 testbench 셀입니다. 프로젝트의 계획(plan)에 테스트
+목록이 있고, 계획이 없으면 스펙이 있는 모든 셀이 테스트가 됩니다. **Add work/ota5t**는 활성 셀로 계획을
+시작하고, 테스트 옆 체크박스로 켜고 끕니다.
+
+**Run all tests**는 모든 테스트의 모든 점(코너, 온도, 스윕 값, 몬테카를로 실행)을 돌립니다. 그 결과 스펙마다
+한 행이 생깁니다.
+
+| 열 | 의미 |
+| --- | --- |
+| Limits | `>= min`, `<= max`, `min .. max` |
+| Worst | 한계에 가장 가까운 값(마우스를 올리면 그 코너). 한계가 없는 스펙은 범위 |
+| Margin | worst 값과 가장 가까운 한계 사이의 거리. 벗어나면 음수 |
+| Pass | 한계 안의 점 수 / 전체 점 수 |
+| Status | `pass`, `FAIL`, `error`(측정 못 한 점이 있음), `info`(한계 없음) |
+| Before | 이전 실행과의 비교: `same`, `was pass`(빨간색, regression), `new` |
+
+실행 결과는 매번 프로젝트의 `results/verify/`에 저장됩니다. **Compare with**에서 비교할 실행을 고르며, 기본값은
+가장 최근에 저장된 실행입니다. **Failures only**를 켜면 통과한 스펙을 숨깁니다. 명령줄의 `ics verify`도 같은
+계획을 실행하므로 CI에 쓸 수 있습니다. [명령줄](cli.md#검증)을 참고하십시오.
 
 ### Monte Carlo 창
 

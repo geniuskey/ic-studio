@@ -255,6 +255,35 @@ enum Cmd {
         #[arg(long)]
         against: Option<PathBuf>,
     },
+    /// Run the project's verification plan (ADE Assembler style): every test's corner / sweep /
+    /// Monte Carlo setup (`sim.sweep`), each spec summarised over its points (worst value,
+    /// margin, pass count). Without a plan, every cell with specs is a test. The run is saved
+    /// in results/verify/ and compared with the previous one. Non-zero exit on a failing or
+    /// unmeasurable spec.
+    Verify {
+        project: PathBuf,
+        /// Run only these tests (names or cells; repeatable).
+        #[arg(long)]
+        test: Vec<String>,
+        /// Add a cell to the plan as a test (repeatable), save the project and exit.
+        #[arg(long)]
+        add: Vec<String>,
+        /// List the tests and exit.
+        #[arg(long)]
+        list: bool,
+        /// Write JUnit XML (for CI test reports).
+        #[arg(long)]
+        junit: Option<PathBuf>,
+        /// Compare with this saved run instead of the latest one.
+        #[arg(long)]
+        against: Option<PathBuf>,
+        /// Do not save the run in the history.
+        #[arg(long)]
+        no_history: bool,
+        /// Print the run as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Run the cell's corner / Monte Carlo setup (`sim.sweep`) and predict the yield of each
     /// condition from a surrogate model of every spec, with the sensitivity of each spec to the
     /// varied parameters. Non-zero exit when a predicted yield is below `--target`.
@@ -1417,6 +1446,148 @@ fn run(cli: Cli) -> Result<(), String> {
                 return Err(format!("{r} differs from {what}"));
             }
             println!("{r}: no layout differences against {what}");
+        }
+        Cmd::Verify { project, test, add, list, junit, against, no_history, json } => {
+            use ics_core::verify::{self, Status, TestDef};
+            let mut p = Project::open(&project).map_err(|e| e.to_string())?;
+            if !add.is_empty() {
+                for a in &add {
+                    let r = resolve(&p, a)?;
+                    if p.settings.verification.tests.iter().any(|t| verify::find_cell(&p, &t.cell).as_ref() == Some(&r)) {
+                        return Err(format!("{r} is already a test"));
+                    }
+                    if p.settings.verification.tests.is_empty() {
+                        // Keep the tests that ran by default.
+                        let defaults = verify::default_tests(&p);
+                        p.settings.verification.tests = defaults.iter().map(|(_, r)| TestDef::new(&r.to_string())).collect();
+                    }
+                    if !p.settings.verification.tests.iter().any(|t| t.cell == r.to_string()) {
+                        p.settings.verification.tests.push(TestDef::new(&r.to_string()));
+                    }
+                    println!("added {r}");
+                }
+                p.save().map_err(|e| e.to_string())?;
+                return Ok(());
+            }
+            let mut tests = p.settings.verification.resolve(&p);
+            if list {
+                if p.settings.verification.is_empty() {
+                    println!("no plan: every cell with specs is a test");
+                }
+                for (n, r) in &tests {
+                    let c = p.cell(r).unwrap();
+                    println!("{n:<20} {r:<28} {} spec(s)", c.sim.sweep.specs.len());
+                }
+                for t in p.settings.verification.tests.iter().filter(|t| !t.enabled) {
+                    println!("{:<20} {:<28} (disabled)", t.display_name(), t.cell);
+                }
+                return Ok(());
+            }
+            if !test.is_empty() {
+                tests.retain(|(n, r)| test.iter().any(|t| t == n || *t == r.to_string() || *t == r.cell));
+            }
+            if tests.is_empty() {
+                return Err("no tests: give cells specs in their sweep setup, or add tests with --add".into());
+            }
+            let mut opts = SimOptions::default();
+            if let Some(exe) = &p.settings.ngspice_path {
+                opts.ngspice_exe = exe.clone();
+            }
+            let progress = |name: &str, done: usize, total: usize| {
+                if !json && (done.is_multiple_of(50) || done == total) {
+                    eprintln!("{name}: {done}/{total} point(s)");
+                }
+            };
+            let run = ics_sim::verify::run(&p, &tests, &opts, &progress);
+            let root = p.root.clone();
+            let before = match (&against, &root) {
+                (Some(f), _) => Some((f.clone(), verify::load_run(f)?)),
+                (None, Some(r)) => verify::list_history(r).pop().and_then(|f| verify::load_run(&f).ok().map(|b| (f, b))),
+                _ => None,
+            };
+            let changes = before.as_ref().map(|(_, b)| run.compare(b)).unwrap_or_default();
+            if json {
+                let mut v = serde_json::to_value(&run).map_err(|e| e.to_string())?;
+                v["status"] = serde_json::json!(run.status().label());
+                v["changes"] = changes
+                    .iter()
+                    .map(|c| {
+                        serde_json::json!({"test": c.test, "spec": c.spec, "before": c.before.map(|s| s.label()),
+                            "after": c.after.label(), "worst_before": c.worst_before, "worst_after": c.worst_after,
+                            "regression": c.is_regression()})
+                    })
+                    .collect();
+                println!("{v}");
+            } else {
+                println!("verify {}: {} test(s)", run.time, run.tests.len());
+                for t in &run.tests {
+                    println!("{} ({}): {} point(s), {:.1} s", t.name, t.cell, t.points.len(), t.seconds);
+                    if let Some(e) = &t.error {
+                        println!("  ERROR {e}");
+                    }
+                    for n in &t.notes {
+                        println!("  note: {n}");
+                    }
+                    let w = t.specs.iter().map(|s| s.name.len()).max().unwrap_or(4);
+                    for s in &t.specs {
+                        let at = s.worst_point.and_then(|k| t.points.get(k)).map_or(String::new(), |p| format!(" at {p}"));
+                        let detail = match s.status() {
+                            Status::Info => {
+                                format!("range {} .. {}", verify::fmt(s.range.map(|r| r.0)), verify::fmt(s.range.map(|r| r.1)))
+                            }
+                            _ if s.worst.is_some() => {
+                                format!("worst {} (margin {}){at}", verify::fmt(s.worst), verify::fmt(s.margin))
+                            }
+                            _ => format!("{} point(s) not measured: {}", s.errors, s.first_error),
+                        };
+                        let mut line = format!(
+                            "  {:<5} {:<w$}  {:<14} {detail}  {}/{}",
+                            s.status().label(),
+                            s.name,
+                            s.limits(),
+                            s.passed,
+                            s.values.len()
+                        );
+                        if s.errors > 0 && s.worst.is_some() {
+                            line += &format!(", {} not measured", s.errors);
+                        }
+                        println!("{line}");
+                    }
+                }
+                if let Some((f, _)) = &before {
+                    let name = f.file_name().map_or(String::new(), |n| n.to_string_lossy().to_string());
+                    if changes.is_empty() {
+                        println!("no changes since {name}");
+                    } else {
+                        println!("changes since {name}:");
+                        for c in &changes {
+                            println!(
+                                "  {} {}: {} -> {} (worst {} -> {}){}",
+                                c.test,
+                                c.spec,
+                                c.before.map_or("new", |s| s.label()),
+                                c.after.label(),
+                                verify::fmt(c.worst_before),
+                                verify::fmt(c.worst_after),
+                                if c.is_regression() { "  REGRESSION" } else { "" }
+                            );
+                        }
+                    }
+                }
+                let n = run.counts();
+                println!("{}: {} pass, {} fail, {} error, {} info", run.status().label(), n.pass, n.fail, n.error, n.info);
+            }
+            if let Some(f) = &junit {
+                std::fs::write(f, run.junit()).map_err(|e| format!("{}: {e}", f.display()))?;
+                eprintln!("wrote {}", f.display());
+            }
+            if !no_history && let Some(r) = &root {
+                let f = verify::save_history(r, &run)?;
+                eprintln!("saved {}", f.display());
+            }
+            if matches!(run.status(), Status::Fail | Status::Error) {
+                std::process::exit(1);
+            }
         }
         Cmd::Yield { project, cell, runs, samples, target, process, json } => {
             let mut p = Project::open(&project).map_err(|e| e.to_string())?;

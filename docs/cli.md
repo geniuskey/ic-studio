@@ -49,6 +49,7 @@ it with `cargo build --release -p ics-cli` (binary `target/release/ics`) or run 
 | `ics route <PROJECT> <CELL> [--place]` | Route flylines and save; exit 1 if nets stay unrouted |
 | `ics compact <PROJECT> <CELL> [--dir left,down] [--no-infer]` | Compact the layout toward the given directions and save |
 | `ics diff <PROJECT> <CELL> [--rev REV \| --against DIR]` | Compare the layout with a git revision (default `HEAD`) or another project; exit 1 if they differ |
+| `ics verify <PROJECT> [--test NAME]... [--junit FILE] [--against RUN] [--no-history] [--json]` | Run the verification plan (every test's corners, sweeps and Monte Carlo), summarise each spec, compare with the previous run; `--add CELL` adds a test, `--list` lists them; exit 1 on a failing or unmeasured spec |
 | `ics yield <PROJECT> <CELL> [--runs N] [--samples N] [--target Y] [--process] [--json]` | Run the cell's Monte Carlo sweep setup and predict the yield of every condition with each spec's sensitivities (`--process` also draws the technology's measured process variation); exit 1 below `--target` |
 | `ics correlate <PROJECT> <CELL> [--data CSV] [--x COL] [--analysis A] [--trace COL=EXPR[@BIAS]]... [--param TARGET=MIN:MAX[:log]]... [--log] [--fit] [--write-models FILE] [--apply] [--save] [--json]` | Compare measured curves with the simulation and fit model, instance or design parameters to them |
 | `ics import-cdl <PROJECT> <CDL> [--top NAME] [--cell LIB/CELL] [--all] [--overwrite]` | Import a hierarchical CDL netlist (Virtuoso auCdl) as a flat schematic (see [Virtuoso](schematic.md#exchanging-schematics-with-virtuoso)) |
@@ -171,6 +172,31 @@ ics mc demo ota5t --runs 200 --measure "op:v(out)" --measure "ac:bandwidth(v(out
 the best values and spec results on stdout (`--json`: one object with `passed`,
 `evaluations`, `vars` and `specs`). `--post-layout` places, routes and extracts every
 candidate first; `--apply` writes the best values into the schematic and saves.
+
+### Verification
+
+`ics verify` runs the project's verification plan (see
+[Verification](simulation.md#verification-all-tests)). Without a plan, every cell with specs
+is a test:
+
+```text
+$ ics verify myproj
+verify 2026-11-16T13:37:55Z: 1 test(s)
+ota5t (work/ota5t): 3 point(s), 0.0 s
+  FAIL  gain_db  >= 40          worst 37.96 (margin -2.037) at 125°C  2/3
+  pass  ugf      >= 100meg      worst 5.358G (margin 5.258G) at -40°C  3/3
+  pass  pm       >= 45          worst 93.73 (margin 48.73) at -40°C  3/3
+changes since 20261116-133722.json:
+  ota5t gain_db: pass -> FAIL (worst 37.96 -> 37.96)  REGRESSION
+FAIL: 2 pass, 1 fail, 0 error, 0 info
+```
+
+Each run is saved in `results/verify/` (`--no-history` skips this). It is compared with the
+latest saved run, or with `--against FILE`. `--junit report.xml` writes JUnit XML, which CI
+systems show as test results: one suite per test and one case per spec. The exit code is 1
+when a spec fails or cannot be measured. `--add work/ota5t` adds a test to the plan, which is
+stored in `ic-studio.json`. `--list` shows the tests, and `--test NAME` runs only some of
+them.
 
 ### Yield prediction
 

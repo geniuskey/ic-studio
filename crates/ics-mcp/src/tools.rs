@@ -797,6 +797,15 @@ pub fn definitions() -> Vec<Value> {
             &["cell"],
         ),
         tool(
+            "verify",
+            "Run the project's verification plan (ADE Assembler style): every test (a cell whose sweep setup has specs; without a plan every such cell) over its corners, temperatures, swept values and Monte Carlo runs. Per spec: limits, worst value and the point it occurs at, margin to the nearest limit (negative: outside), passing points and status (pass, FAIL, error, info). Compared with the latest saved run of the project (results/verify), listing changed specs and regressions; with save: true the run is added to that history.",
+            json!({
+                "tests": {"type": "array", "items": {"type": "string"}, "description": "Run only these tests (names or cells)."},
+                "save": {"type": "boolean", "description": "Save the run in the project's history (default false)."}
+            }),
+            &[],
+        ),
+        tool(
             "predict_yield",
             &format!(
                 "Monte Carlo yield prediction: simulate the cell's sweep setup (corners, temperatures, Monte Carlo runs with random parameter variation), fit a response-surface model of every spec over the random inputs and sample it 10^5 times per condition. Returns per condition the simulated yield with its 95% confidence interval, the predicted yield, and per spec mean, sigma, Cpk, the model's leave-one-out Q2 (trust it above about 0.9) and each varied parameter's share of the spec's variance. Given specs / vars / runs / temps replace the cell's saved ones. {NOT_SAVED}"
@@ -1114,6 +1123,7 @@ impl State {
             "process_cross_section" => self.process_cross_section(a),
             "correlate_silicon" => self.correlate_silicon(a),
             "predict_yield" => self.predict_yield(a),
+            "verify" => self.verify(a),
             "extract" => self.extract(a),
             "run_lvs" => self.run_lvs(a),
             "run_signoff" => self.run_signoff(a),
@@ -1357,6 +1367,61 @@ impl State {
             })
             .collect();
         Ok(json!({"cells": cells, "warnings": warnings}))
+    }
+
+    fn verify(&mut self, a: &Args) -> Result<Value, String> {
+        use ics_core::verify;
+        let p = self.project()?;
+        let mut tests = p.settings.verification.resolve(p);
+        if let Some(only) = a.0.get("tests").and_then(Value::as_array) {
+            let only: Vec<&str> = only.iter().filter_map(Value::as_str).collect();
+            tests.retain(|(n, r)| only.iter().any(|t| *t == n || *t == r.to_string() || *t == r.cell));
+        }
+        if tests.is_empty() {
+            return Err("no tests: give cells specs in their sweep setup (sim.sweep.specs)".into());
+        }
+        let mut opts = ics_sim::SimOptions::default();
+        if let Some(exe) = &p.settings.ngspice_path {
+            opts.ngspice_exe = exe.clone();
+        }
+        let run = ics_sim::verify::run(p, &tests, &opts, &|_, _, _| {});
+        let root = p.root.clone();
+        let before = root.as_deref().and_then(|r| verify::list_history(r).pop()).and_then(|f| verify::load_run(&f).ok());
+        let changes: Vec<Value> = before
+            .as_ref()
+            .map(|b| run.compare(b))
+            .unwrap_or_default()
+            .iter()
+            .map(|c| {
+                json!({"test": c.test, "spec": c.spec, "before": c.before.map(|s| s.label()), "after": c.after.label(),
+                       "worst_before": c.worst_before, "worst_after": c.worst_after, "regression": c.is_regression()})
+            })
+            .collect();
+        let saved = match (a.opt_bool("save")?.unwrap_or(false), &root) {
+            (true, Some(r)) => Some(verify::save_history(r, &run)?.display().to_string()),
+            _ => None,
+        };
+        let n = run.counts();
+        let tests: Vec<Value> = run
+            .tests
+            .iter()
+            .map(|t| {
+                let specs: Vec<Value> = t
+                    .specs
+                    .iter()
+                    .map(|s| {
+                        json!({"name": s.name, "limits": s.limits(), "status": s.status().label(), "worst": s.worst,
+                               "at": s.worst_point.and_then(|k| t.points.get(k)), "margin": s.margin, "range": s.range,
+                               "passed": s.passed, "points": s.values.len(), "errors": s.errors,
+                               "first_error": (!s.first_error.is_empty()).then_some(&s.first_error)})
+                    })
+                    .collect();
+                json!({"name": t.name, "cell": t.cell, "status": t.status().label(), "points": t.points.len(),
+                       "error": t.error, "specs": specs})
+            })
+            .collect();
+        Ok(json!({"status": run.status().label(), "pass": n.pass, "fail": n.fail, "error": n.error, "info": n.info,
+                  "tests": tests, "changes": changes, "saved": saved}))
     }
 
     fn export_skill_schematic(&mut self, a: &Args) -> Result<Value, String> {

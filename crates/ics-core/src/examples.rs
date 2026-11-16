@@ -53,6 +53,27 @@ pub fn rc_lowpass() -> Cell {
         *tstep = "20n".into();
         *tstop = "20u".into();
     }
+    // Verification: the bandwidth over a ±10 % spread of R1 and C1.
+    sim.sweep.vars = vec![
+        crate::sweep::SweepVar { name: "R1.r".into(), values: "900 1k 1.1k".into() },
+        crate::sweep::SweepVar { name: "C1.c".into(), values: "0.9n 1n 1.1n".into() },
+    ];
+    sim.sweep.specs = vec![
+        crate::sweep::Spec {
+            name: "bw".into(),
+            analysis: "ac".into(),
+            expr: "bandwidth(v(out), 3)".into(),
+            min: "120k".into(),
+            max: "200k".into(),
+        },
+        crate::sweep::Spec {
+            name: "rise".into(),
+            analysis: "tran".into(),
+            expr: "delay(v(in), 0.5, v(out), 0.5)".into(),
+            min: "".into(),
+            max: "1.5u".into(),
+        },
+    ];
     Cell {
         name: "rc_lowpass".into(),
         description: "First-order RC low-pass filter (fc ≈ 159 kHz)".into(),
@@ -717,6 +738,21 @@ pub fn ota5t(p: &mut Project) -> Cell {
         *fstart = "1k".into();
         *fstop = "10g".into();
     }
+
+    // Verification: gain, unity-gain frequency and phase margin from -40 to 125 °C.
+    sim.sweep.temps = "-40 27 125".into();
+    let spec = |name: &str, expr: &str, min: &str, max: &str| crate::sweep::Spec {
+        name: name.into(),
+        analysis: "ac".into(),
+        expr: expr.into(),
+        min: min.into(),
+        max: max.into(),
+    };
+    sim.sweep.specs = vec![
+        spec("gain_db", "max(db(v(out)))", "30", ""),
+        spec("ugf", "ugf(v(out))", "100meg", ""),
+        spec("pm", "phasemargin(v(out))", "45", ""),
+    ];
 
     let (n, pw, tail) = ((2000, 500), (4000, 500), (2000, 1000));
     let t = Tracks { wn: n.0, wp: pw.0, mid: 2 };

@@ -49,6 +49,7 @@
 | `ics route <PROJECT> <CELL> [--place]` | 플라이라인을 배선하고 저장. 배선되지 않은 넷이 남으면 1로 종료 |
 | `ics compact <PROJECT> <CELL> [--dir left,down] [--no-infer]` | 지정한 방향으로 레이아웃을 압축하고 저장 |
 | `ics diff <PROJECT> <CELL> [--rev REV \| --against DIR]` | 레이아웃을 git 리비전(기본 `HEAD`) 또는 다른 프로젝트와 비교. 다르면 1로 종료 |
+| `ics verify <PROJECT> [--test NAME]... [--junit FILE] [--against RUN] [--no-history] [--json]` | 검증 계획 실행(모든 테스트의 코너, 스윕, 몬테카를로), 스펙별 요약, 이전 실행과 비교. `--add CELL`은 테스트 추가, `--list`는 목록. 실패하거나 측정 못 한 스펙이 있으면 1로 종료 |
 | `ics yield <PROJECT> <CELL> [--runs N] [--samples N] [--target Y] [--process] [--json]` | 셀의 몬테카를로 스윕 설정을 실행하고 조건별 수율과 스펙별 민감도를 예측(`--process`는 테크놀로지의 측정 공정 변동도 뽑음). `--target` 미만이면 1로 종료 |
 | `ics correlate <PROJECT> <CELL> [--data CSV] [--x COL] [--analysis A] [--trace COL=EXPR[@BIAS]]... [--param TARGET=MIN:MAX[:log]]... [--log] [--fit] [--write-models FILE] [--apply] [--save] [--json]` | 측정 곡선과 시뮬레이션 비교, 모델·인스턴스·설계 파라미터 피팅 |
 | `ics import-cdl <PROJECT> <CDL> [--top NAME] [--cell LIB/CELL] [--all] [--overwrite]` | 계층 CDL 넷리스트(Virtuoso auCdl)를 평탄한 회로도로 가져오기([Virtuoso](schematic.md#virtuoso와-회로도-주고받기) 참고) |
@@ -157,6 +158,15 @@ ics mc demo ota5t --runs 200 --measure "op:v(out)" --measure "ac:bandwidth(v(out
 변수(`sim.optimize`)를 사용합니다. 각 평가는 stderr에, 최적 값과 스펙 결과는 stdout에 출력합니다
 (`--json`: `passed`, `evaluations`, `vars`, `specs`를 가진 객체 하나). `--post-layout`은 모든 후보를
 먼저 배치, 배선, 추출합니다. `--apply`는 최적 값을 회로도에 쓰고 저장합니다.
+
+### 검증
+
+`ics verify`는 프로젝트의 검증 계획을 실행합니다([검증](simulation.md#검증전체-테스트) 참고). 계획이 없으면 스펙이
+있는 모든 셀이 테스트입니다. 실행 결과는 매번 `results/verify/`에 저장되고(`--no-history`로 끔), 가장 최근에
+저장된 실행 또는 `--against FILE`과 비교됩니다. `--junit report.xml`은 CI가 테스트 결과로 보여 주는 JUnit XML을
+씁니다(테스트마다 suite 하나, 스펙마다 case 하나). 실패하거나 측정 못 한 스펙이 있으면 1로 종료합니다. `--add
+work/ota5t`는 테스트를 계획에 추가하고(`ic-studio.json`에 저장), `--list`는 테스트 목록을 보여 주고, `--test
+NAME`은 일부만 실행합니다.
 
 ### 수율 예측
 

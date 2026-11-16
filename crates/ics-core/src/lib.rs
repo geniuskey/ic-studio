@@ -56,6 +56,7 @@ pub mod sweep;
 pub mod tech;
 pub mod tech_import;
 pub mod units;
+pub mod verify;
 pub mod virtuoso;
 pub mod virtuoso_dump;
 

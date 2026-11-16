@@ -121,6 +121,7 @@ mod tests {
             a.enabled = a.analysis.kind_name() == "ac";
         }
         let s = &mut c.sim.sweep;
+        *s = Default::default();
         s.specs = vec![Spec {
             name: "bw".into(),
             analysis: "ac".into(),

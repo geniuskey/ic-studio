@@ -22,6 +22,7 @@ pub mod optimize;
 pub mod results;
 pub mod silicon;
 pub mod sweep;
+pub mod verify;
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;

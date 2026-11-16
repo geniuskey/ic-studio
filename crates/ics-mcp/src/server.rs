@@ -230,6 +230,7 @@ mod tests {
             "fix_drc",
             "compact",
             "optimize",
+            "verify",
             "predict_yield",
             "correlate_silicon",
             "process_cross_section",
@@ -370,6 +371,13 @@ mod tests {
         let sk = call(&mut s, "export_skill_schematic", json!({"cell": "work/buf"})).unwrap();
         let il = sk["script"].as_str().unwrap();
         assert!(il.contains("\"MI0/M1\"") && il.contains("analogLib"), "{il}");
+        let dump = "(\"icsdump\" 1 \"v\")\n(\"sch\" \"v\" \"rc\")\n(\"term\" \"a\" \"input\")\n\
+                    (\"inst\" \"R0\" \"analogLib\" \"res\" \"symbol\" (0 0) \"R0\" 1 ((\"r\" \"2k\")) ((\"PLUS\" \"a\") (\"MINUS\" \"gnd!\")))\n(\"end\")\n";
+        let vi = call(&mut s, "import_virtuoso", json!({"dump": dump})).unwrap();
+        assert_eq!(vi["cells"][0]["cell"], "v/rc", "{vi}");
+        assert_eq!(vi["cells"][0]["devices"], 1, "{vi}");
+        let v = call(&mut s, "verify", json!({"tests": ["rc_lowpass"]})).unwrap();
+        assert_eq!((v["status"].as_str(), v["pass"].as_u64()), (Some("pass"), Some(2)), "{v}");
 
         let drc = call(&mut s, "run_drc", json!({"cell": "cmos_inverter"})).unwrap();
         assert!(drc["rules_run"].as_u64().unwrap() > 0, "{drc}");
