@@ -38,6 +38,7 @@ pub enum LayAction {
     EditInPlace,
     Return,
     HierarchyTree,
+    UsedLayersOnly,
     MarkNet,
     LayerTap,
     Gravity,
@@ -106,6 +107,7 @@ impl LayAction {
             LayAction::Descend => "Descend Edit",
             LayAction::EditInPlace => "Edit In Place",
             LayAction::HierarchyTree => "Hierarchy Tree",
+            LayAction::UsedLayersOnly => "Show Used Layers Only",
             LayAction::Return => "Return",
             LayAction::MarkNet => "Mark Net",
             LayAction::LayerTap => "Layer Tap",
@@ -164,6 +166,7 @@ impl LayAction {
             LayAction::FlipY => "",
             LayAction::EditInPlace => "x",
             LayAction::HierarchyTree => "Shift+T",
+            LayAction::UsedLayersOnly => "",
             LayAction::Descend => "Shift+X",
             LayAction::Return => "Shift+B",
             LayAction::MarkNet => "Shift+N",
@@ -256,6 +259,8 @@ impl LayAction {
                 None,
                 Some(LayAction::AllLevels),
                 Some(LayAction::TopLevel),
+                None,
+                Some(LayAction::UsedLayersOnly),
             ],
         ),
         (
@@ -392,6 +397,13 @@ impl LayoutEditor {
             LayAction::Descend => self.descend(l, cx, at, tol, false),
             LayAction::EditInPlace => self.descend(l, cx, at, tol, true),
             LayAction::HierarchyTree => self.show_tree = !self.show_tree,
+            LayAction::UsedLayersOnly => {
+                self.used_layers_only = !self.used_layers_only;
+                self.note(
+                    true,
+                    if self.used_layers_only { "Layer palette: used layers only" } else { "Layer palette: all layers" },
+                );
+            }
             LayAction::Return => self.requests.push(LayRequest::Return),
             LayAction::MarkNet => {
                 self.verify.pick_nets = !self.verify.pick_nets;

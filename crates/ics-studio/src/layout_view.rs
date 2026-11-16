@@ -215,6 +215,8 @@ pub struct LayoutEditor {
     pub selectable: Vec<bool>,
     pub inst_selectable: bool,
     layer_filter: String,
+    /// Layer palette lists only layers with shapes in the cell's hierarchy (plus the active one).
+    pub used_layers_only: bool,
     /// Measurements kept on screen until Shift+K.
     pub rulers: Vec<((i64, i64), (i64, i64))>,
     /// Snap spacing in dbu (0 = technology grid).
@@ -303,6 +305,7 @@ impl Default for LayoutEditor {
             selectable: vec![],
             inst_selectable: true,
             layer_filter: String::new(),
+            used_layers_only: false,
             rulers: vec![],
             snap: 0,
             gravity: true,
@@ -2529,11 +2532,21 @@ impl LayoutEditor {
             ui.add(egui::TextEdit::singleline(&mut self.layer_filter).hint_text("layer name").desired_width(f32::INFINITY))
                 .labelled_by(fl.id);
         });
-        ui.checkbox(&mut self.inst_selectable, "Instances selectable");
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut self.inst_selectable, "Instances selectable");
+            ui.checkbox(&mut self.used_layers_only, "Used only")
+                .on_hover_text("Hide layers with no shapes in this cell or the cells placed in it");
+        });
         let filter = self.layer_filter.trim().to_lowercase();
+        let used = self.used_layers_only.then(|| cx.hier.get_for(cx.cell, l, cx.src));
+        let mut hidden = 0;
         egui::ScrollArea::vertical().id_salt("layers").show(ui, |ui| {
             for (i, def) in tech.layers.iter().enumerate() {
                 if !filter.is_empty() && !def.name.to_lowercase().contains(&filter) {
+                    continue;
+                }
+                if used.as_ref().is_some_and(|u| !u.uses_layer(i)) && i != self.active_layer {
+                    hidden += 1;
                     continue;
                 }
                 let active = i == self.active_layer;
@@ -2604,6 +2617,9 @@ impl LayoutEditor {
                         ui.close();
                     }
                 });
+            }
+            if hidden > 0 {
+                ui.label(egui::RichText::new(format!("{hidden} unused layers hidden")).small().color(pal.text_weak));
             }
         });
         open

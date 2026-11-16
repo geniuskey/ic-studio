@@ -141,6 +141,28 @@ fn layout_workspace() {
     scenario("06_layout", true, Some("cmos_inverter"), "layout", false);
 }
 
+/// The layer palette can hide layers with no shapes in the cell's hierarchy.
+#[test]
+fn layout_used_layers_only() {
+    use egui_kittest::kittest::Queryable;
+    use ics_studio::layout_view::LayAction;
+    let args = LaunchArgs {
+        project: None,
+        demo: true,
+        workspace: Some("layout".into()),
+        cell: Some("cmos_inverter".into()),
+        run: false,
+    };
+    let mut h = app(args);
+    let r = h.state().active_ref().cloned().unwrap();
+    h.state_mut().command(Command::Lay(LayAction::UsedLayersOnly));
+    h.run_steps(4);
+    assert!(h.state().layout_editor(&r).expect("editor").used_layers_only);
+    assert!(h.query_all_by_label_contains("unused layers hidden").next().is_some(), "unused layers are listed");
+    settle(&mut h, "layout_used_layers");
+    shot(&mut h, "layout_used_layers");
+}
+
 #[test]
 fn layout_hierarchy() {
     scenario("08_layout_hierarchy", true, Some("inv_chain"), "layout", false);

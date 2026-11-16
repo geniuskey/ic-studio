@@ -69,6 +69,8 @@ pub struct CellIndex {
     pub children: Vec<CellRef>,
     /// Deepest instance nesting below this cell (0 for a leaf).
     pub height: u32,
+    /// Per layer: the flattened hierarchy has at least one shape on it.
+    used_layers: Vec<bool>,
     layers: Vec<Vec<Bucket>>,
     /// Instances bucketed by [sprite_key] of their element size.
     insts: Vec<Bucket>,
@@ -103,6 +105,11 @@ impl CellIndex {
     /// Child cell extent for instance `i` of the indexed layout.
     pub fn child_bbox(&self, i: usize) -> Option<IRect> {
         self.child_bbox.get(i).copied().flatten()
+    }
+
+    /// The cell or anything placed in it has a shape on `layer`.
+    pub fn uses_layer(&self, layer: usize) -> bool {
+        self.used_layers.get(layer).copied().unwrap_or(false)
     }
 
     /// Indices into `layout.shapes` on `layer` whose bbox intersects `area`.
@@ -191,6 +198,7 @@ impl Hier {
         let inst_buckets = layout.instances.len() >= DENSE_MIN_ELEMENTS as usize;
         let mut child_bbox = vec![];
         let mut children: Vec<CellRef> = vec![];
+        let mut used_layers: Vec<bool> = per_layer.iter().map(|m| !m.is_empty()).collect();
         for (i, inst) in layout.instances.iter().enumerate() {
             if !children.contains(&inst.cell) {
                 children.push(inst.cell.clone());
@@ -200,6 +208,12 @@ impl Hier {
             child_bbox.push(cb);
             if let Some(c) = &child {
                 height = height.max(c.height + 1);
+                if used_layers.len() < c.used_layers.len() {
+                    used_layers.resize(c.used_layers.len(), false);
+                }
+                for (u, &cu) in used_layers.iter_mut().zip(&c.used_layers) {
+                    *u |= cu;
+                }
             }
             elements += inst.count();
             let mut key = i32::MAX;
@@ -227,6 +241,7 @@ impl Hier {
             flat_shapes: flat,
             children,
             height,
+            used_layers,
             layers: per_layer
                 .into_iter()
                 .map(|m| m.into_iter().map(|(key, v)| Bucket { key, tree: RTree::bulk_load(v) }).collect())
@@ -940,6 +955,18 @@ mod tests {
         assert_eq!(idx.bbox, Some(IRect::new(-50, -50, 1000 + 99 * 500, 100 + 99 * 500)));
         assert_eq!(idx.flat_shapes, 1 + 10_000);
         assert_eq!(flatten(m.layout(&top).unwrap(), &m, 10).len(), 10_001);
+    }
+
+    #[test]
+    fn used_layers_include_children() {
+        let (m, leaf, top) = lib();
+        let mut h = Hier::default();
+        let idx = h.get(&top, &m).unwrap();
+        assert!(!idx.uses_layer(0));
+        assert!(idx.uses_layer(1), "layer of the placed leaf");
+        assert!(idx.uses_layer(2));
+        assert!(!idx.uses_layer(99));
+        assert!(!h.get(&leaf, &m).unwrap().uses_layer(2));
     }
 
     #[test]
