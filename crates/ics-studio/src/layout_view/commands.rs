@@ -31,6 +31,8 @@ pub enum LayAction {
     EditorOptions,
     PartialSelect,
     Merge,
+    ConvertToPolygon,
+    Chamfer,
     Rotate,
     FlipX,
     FlipY,
@@ -88,6 +90,9 @@ impl LayAction {
             LayAction::Tool(LayTool::Instance) => "Instance",
             LayAction::Tool(LayTool::Chop) => "Chop",
             LayAction::Tool(LayTool::Ruler) => "Ruler",
+            LayAction::Tool(LayTool::Split) => "Split",
+            LayAction::ConvertToPolygon => "Convert to Polygon",
+            LayAction::Chamfer => "Chamfer Corners",
             LayAction::Undo => "Undo",
             LayAction::Redo => "Redo",
             LayAction::Delete => "Delete",
@@ -161,6 +166,7 @@ impl LayAction {
             LayAction::EditorOptions => "Shift+E",
             LayAction::PartialSelect => "F4",
             LayAction::Merge => "Shift+M",
+            LayAction::ConvertToPolygon | LayAction::Chamfer => "",
             LayAction::Rotate => "Shift+O",
             LayAction::FlipX => "Ctrl+J",
             LayAction::FlipY => "",
@@ -232,7 +238,10 @@ impl LayAction {
                 Some(LayAction::Paste),
                 None,
                 Some(LayAction::Tool(LayTool::Chop)),
+                Some(LayAction::Tool(LayTool::Split)),
                 Some(LayAction::Merge),
+                Some(LayAction::ConvertToPolygon),
+                Some(LayAction::Chamfer),
                 Some(LayAction::Rotate),
                 Some(LayAction::FlipX),
                 Some(LayAction::FlipY),
@@ -391,6 +400,8 @@ impl LayoutEditor {
                 self.note(true, m);
             }
             LayAction::Merge => return self.merge_selection(l),
+            LayAction::ConvertToPolygon => return self.convert_to_polygon(l, cx),
+            LayAction::Chamfer => return self.chamfer_selection(l, cx),
             LayAction::Rotate => return self.transform_selection(l, cx, 0),
             LayAction::FlipX => return self.transform_selection(l, cx, 1),
             LayAction::FlipY => return self.transform_selection(l, cx, 2),
@@ -432,7 +443,14 @@ impl LayoutEditor {
             }
             LayAction::AllLevels => self.max_depth = 32,
             LayAction::TopLevel => self.max_depth = 0,
-            LayAction::ClearRulers => self.rulers.clear(),
+            LayAction::ClearRulers => {
+                if l.rulers.is_empty() {
+                    return false;
+                }
+                self.history.push(l);
+                l.rulers.clear();
+                return true;
+            }
             LayAction::LiveDrc => {
                 self.live.enabled = !self.live.enabled;
                 self.live.reset();
@@ -712,6 +730,7 @@ impl LayoutEditor {
                 LayTool::Via => "Place via (drag: area)",
                 LayTool::Instance => "Place instance",
                 LayTool::Ruler => "Ruler point",
+                LayTool::Split => "Cut line point",
             }
         };
         let r = match self.tool {
@@ -799,8 +818,10 @@ impl LayoutEditor {
                     });
                     theme::section(ui, "Show");
                     ui.checkbox(&mut self.show_flylines, "Flylines (unrouted schematic connections)");
-                    if ui.button("Clear all rulers").clicked() {
-                        self.rulers.clear();
+                    if ui.add_enabled(!l.rulers.is_empty(), egui::Button::new("Clear all rulers")).clicked() {
+                        self.history.push(l);
+                        l.rulers.clear();
+                        changed = true;
                     }
                 });
             rects.extend(shown.map(|r| r.response.rect));

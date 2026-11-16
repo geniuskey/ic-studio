@@ -1463,6 +1463,59 @@ fn shapes_of(h: &Harness<'_, IcStudio>, cell: &str) -> Vec<ics_core::Shape> {
     p.cell(&ics_core::CellRef::new("work", cell)).unwrap().layout.as_ref().unwrap().shapes.clone()
 }
 
+/// Split (Shift+S) cuts the shapes a line crosses; Convert to Polygon and Chamfer Corners
+/// reshape the selection.
+#[test]
+fn layout_split_convert_chamfer() {
+    use ics_studio::layout_view::LayAction;
+    let dir = std::env::temp_dir().join(format!("ics-ui-split-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut p = ics_core::examples::demo_project();
+    let (m1, m2) = (p.tech.layer_index("metal1").unwrap(), p.tech.layer_index("metal2").unwrap());
+    let mut l = ics_core::Layout::default();
+    l.add_rect(m1, 0, 0, 10_000, 4_000);
+    l.add(m2, ics_core::Geometry::Path { points: vec![(0, 8_000), (10_000, 8_000)], width: 500 });
+    let mut cell = ics_core::Cell::new("scratch");
+    cell.layout = Some(l);
+    let r = p.add_cell("work", cell).unwrap();
+    p.save_as(&dir).unwrap();
+    let mut h = open_layout(&dir, "scratch");
+    let key = |h: &mut Harness<'_, IcStudio>, m: egui::Modifiers, k: egui::Key| {
+        h.key_press_modifiers(m, k);
+        h.run_steps(2);
+    };
+    h.hover_at(egui::pos2(870.0, 450.0));
+    h.run_steps(2);
+    key(&mut h, egui::Modifiers::NONE, egui::Key::F);
+    // A vertical cut line through the middle of the fitted view crosses both shapes.
+    key(&mut h, egui::Modifiers::SHIFT, egui::Key::S);
+    click(&mut h, egui::pos2(870.0, 205.0));
+    click(&mut h, egui::pos2(870.0, 705.0));
+    let s = shapes_of(&h, "scratch");
+    assert_eq!(s.len(), 4, "both shapes split in two: {s:?}");
+    assert_eq!(s.iter().filter(|s| s.layer == m1).count(), 2);
+    let area: i64 = s.iter().filter(|s| s.layer == m1).map(|s| s.bbox().width() * s.bbox().height()).sum();
+    assert_eq!(area, 40_000_000, "the pieces keep the area");
+
+    key(&mut h, egui::Modifiers::COMMAND, egui::Key::A);
+    h.state_mut().command(Command::Lay(LayAction::ConvertToPolygon));
+    h.run_steps(2);
+    let s = shapes_of(&h, "scratch");
+    assert!(s.iter().all(|s| matches!(&s.geom, ics_core::Geometry::Polygon { points } if points.len() == 4)), "{s:?}");
+    h.state_mut().command(Command::Lay(LayAction::Chamfer));
+    h.run_steps(2);
+    let s = shapes_of(&h, "scratch");
+    assert!(s.iter().all(|s| matches!(&s.geom, ics_core::Geometry::Polygon { points } if points.len() == 8)), "{s:?}");
+    key(&mut h, egui::Modifiers::NONE, egui::Key::U);
+    assert!(
+        shapes_of(&h, "scratch").iter().all(|s| matches!(&s.geom, ics_core::Geometry::Polygon { points } if points.len() == 4))
+    );
+    key(&mut h, egui::Modifiers::SHIFT, egui::Key::U);
+    let _ = r;
+    shot(&mut h, "37_layout_split_chamfer");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Virtuoso-style commands on an empty cell: two-click rectangle, move by reference point,
 /// yank / paste, chop, wire with a layer change, persistent ruler, zoom box and previous view.
 #[test]
@@ -1538,7 +1591,12 @@ fn layout_virtuoso_commands() {
     key(&mut h, none, egui::Key::K);
     click(&mut h, egui::pos2(560.0, 220.0));
     click(&mut h, egui::pos2(1000.0, 220.0));
-    assert_eq!(h.state().layout_editor(&r).unwrap().rulers.len(), 1, "ruler stays on screen");
+    let rulers = |h: &Harness<'_, IcStudio>| h.state().project().unwrap().cell(&r).unwrap().layout.as_ref().unwrap().rulers.len();
+    assert_eq!(rulers(&h), 1, "the ruler is kept with the cell");
+    key(&mut h, none, egui::Key::U);
+    assert_eq!(rulers(&h), 0, "undo removes the ruler");
+    key(&mut h, egui::Modifiers::SHIFT, egui::Key::U);
+    assert_eq!(rulers(&h), 1, "redo brings it back");
 
     // Layer tap picks the layer of the shape under the cursor.
     let m1 = h.state().project().unwrap().tech.layer_index("metal1").unwrap();
@@ -1710,7 +1768,7 @@ fn layout_virtuoso_stretch_and_forms() {
     key(&mut h, egui::Modifiers::SHIFT, egui::Key::E);
     key(&mut h, none, egui::Key::Escape);
     key(&mut h, none, egui::Key::F4);
-    drag(&mut h, egui::PointerButton::Primary, pos(900.0, 180.0), pos(1100.0, 700.0));
+    drag(&mut h, egui::PointerButton::Primary, pos(900.0, 205.0), pos(1100.0, 700.0));
     assert!(!h.state().layout_editor(&r).unwrap().part.is_empty(), "a box picks vertices in partial select");
     h.hover_at(pos(800.0, 300.0));
     h.step();

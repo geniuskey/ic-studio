@@ -562,6 +562,94 @@ impl LayoutEditor {
         done > 0
     }
 
+    /// Split (Shift+S): cut the selected shapes, or the shapes the line crosses, along the line
+    /// through `a` and `b`.
+    pub(super) fn split(&mut self, l: &mut Layout, cx: &mut LayCtx, a: (i64, i64), b: (i64, i64)) -> bool {
+        let sel_shapes = l.shapes.iter().any(|s| self.selection.contains(&s.id));
+        let pick = self.pickable();
+        let mut cuts: Vec<(Shape, Vec<Geometry>)> = vec![];
+        for s in l.shapes.iter().filter(|s| !matches!(s.geom, Geometry::Label { .. })) {
+            let take = if sel_shapes {
+                self.selection.contains(&s.id)
+            } else {
+                pick.get(s.layer).copied().unwrap_or(false) && ics_core::reshape::segment_hits(s.bbox(), a, b)
+            };
+            if take && let Some(parts) = ics_core::reshape::split(&s.geom, a, b) {
+                cuts.push((s.clone(), parts));
+            }
+        }
+        if cuts.is_empty() {
+            self.note(false, "Split: the line does not cut a shape");
+            return false;
+        }
+        self.history.push(l);
+        let mut sel = BTreeSet::new();
+        let done = cuts.len();
+        for (s, parts) in cuts {
+            l.remove(s.id);
+            self.selection.remove(&s.id);
+            for g in parts {
+                sel.insert(l.add(s.layer, g));
+            }
+        }
+        if sel_shapes {
+            self.selection.extend(sel);
+        }
+        cx.touched();
+        self.note(true, format!("Split {done} shape(s)"));
+        true
+    }
+
+    /// Replace the selected shapes by `f` of each (`None` keeps a shape). Returns how many
+    /// changed.
+    fn reshape_selection(&mut self, l: &mut Layout, f: impl Fn(&Geometry) -> Option<Vec<Geometry>>) -> usize {
+        let todo: Vec<(Shape, Vec<Geometry>)> = l
+            .shapes
+            .iter()
+            .filter(|s| self.selection.contains(&s.id))
+            .filter_map(|s| f(&s.geom).map(|g| (s.clone(), g)))
+            .collect();
+        if todo.is_empty() {
+            return 0;
+        }
+        self.history.push(l);
+        for (s, gs) in &todo {
+            l.remove(s.id);
+            self.selection.remove(&s.id);
+            for g in gs {
+                let id = l.add(s.layer, g.clone());
+                self.selection.insert(id);
+            }
+        }
+        todo.len()
+    }
+
+    /// Convert to Polygon: the selected paths and rectangles become polygons.
+    pub(super) fn convert_to_polygon(&mut self, l: &mut Layout, cx: &mut LayCtx) -> bool {
+        let n = self.reshape_selection(l, ics_core::reshape::to_polygon);
+        if n == 0 {
+            self.note(false, "Convert to Polygon: select paths or rectangles");
+            return false;
+        }
+        cx.touched();
+        self.note(true, format!("Converted {n} shape(s) to polygons"));
+        true
+    }
+
+    /// Modify Corner: chamfer the convex corners of the selected rectangles and polygons.
+    pub(super) fn chamfer_selection(&mut self, l: &mut Layout, cx: &mut LayCtx) -> bool {
+        let g = cx.tech.grid.max(1);
+        let c = ((self.ed.chamfer_um * cx.tech.dbu_per_um as f64 / g as f64).round() as i64 * g).max(0);
+        let n = self.reshape_selection(l, |geom| ics_core::reshape::chamfer(geom, c).map(|x| vec![x]));
+        if n == 0 {
+            self.note(false, "Chamfer: select rectangles or polygons with convex corners");
+            return false;
+        }
+        cx.touched();
+        self.note(true, format!("Chamfered {n} shape(s) by {} µm", c as f64 / cx.tech.dbu_per_um as f64));
+        true
+    }
+
     /// Align or distribute the selected items within their common extent, as seen on screen.
     pub(super) fn align(&mut self, l: &mut Layout, cx: &mut LayCtx, op: AlignOp) -> bool {
         let o = self.view.orient;

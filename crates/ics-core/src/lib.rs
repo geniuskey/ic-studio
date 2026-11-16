@@ -39,6 +39,7 @@ pub mod process;
 pub mod process_data;
 pub mod project;
 pub mod region;
+pub mod reshape;
 pub mod route;
 pub mod rule_design;
 pub mod sch_check;

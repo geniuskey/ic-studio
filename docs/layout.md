@@ -19,7 +19,7 @@ the layout commands; every item shows its bindkey, and the command palette lists
 - **Left panel**: **Hierarchy** (drawn levels and the tree of placed cells), **Layers**,
   and the options of the current tool.
 - **Toolbar**: undo / redo, the tools (**Select**, **Stretch**, **Move**, **Copy**, **Rectangle**,
-  **Polygon**, **Path**, **Label**, **Via**, **Instance**, **Chop**, **Ruler**), fit,
+  **Polygon**, **Path**, **Label**, **Via**, **Instance**, **Chop**, **Split**, **Ruler**), fit,
   **Zoom box**, **Prev view**, **Grid**, **Snap**, **Gravity**, **DRD**, **Constraints**,
   **Magnet**, **Live DRC**, **Flylines**, and **GDS** to export the cell.
 - **Status bar**: `X` / `Y` of the cursor; while a command is in progress `dX`, `dY` and
@@ -64,7 +64,8 @@ Keys act on the canvas only while the mouse is over it.
 | Via | `O` | Pick a via in the left panel; click for one cut, drag to fill an area |
 | Instance | `I` | Pick a cell or PCell in the left panel, click to place |
 | Chop | `Shift+C` | Drag or click a box; it is cut out of the selected shapes (or of every selectable shape it touches) |
-| Ruler | `K` | Drag or click two points; rulers stay until `Shift+K` |
+| Split | `Shift+S` | Click two points of a line; it cuts the selected shapes (or every selectable shape it crosses) in two along the line |
+| Ruler | `K` | Drag or click two points. Rulers are saved with the cell (as in a Virtuoso cellview), can be undone, and stay until `Shift+K` |
 
 While drawing a polygon or path, `Backspace` removes the last point and `Esc` cancels.
 
@@ -113,7 +114,7 @@ While drawing a polygon or path, `Backspace` removes the last point and `Esc` ca
 | Copy | `C`, click a reference point, then click destinations (each click places another copy, `Esc` ends); rotate / flip as for Move |
 | Stretch | `S`, click an edge or vertex, click the destination; with a partial selection, click a reference point, then the destination; or drag a box over several edges (see below) |
 | Yank / paste | `y` or `Ctrl+C` copies the selection (`Ctrl+X` cuts it); `Shift+Y` or `Ctrl+V` attaches it to the cursor, click to place. The clipboard also works between cells |
-| Merge / chop | `Shift+M` / `Shift+C` |
+| Merge / chop / split | `Shift+M` / `Shift+C` / `Shift+S` |
 | Reshape | With one shape selected, drag a vertex handle (square) or an edge handle (round); Manhattan shapes stay Manhattan |
 | Rotate 90° / flip | `Shift+O`, or **Rotate 90°**, **Flip X**, **Flip Y** |
 | Deselect all | `Ctrl+D` |
@@ -153,6 +154,11 @@ The **Edit** section of the right panel (shown when something is selected) also 
 - **Make cell**: move the selection into a new cell and place an instance of it.
 - **Merge**: union the selected shapes per layer.
 - **Size** with **Apply**: grow (positive µm) or shrink (negative) the selected shapes.
+- **Chamfer** with **Apply** (**Edit > Chamfer Corners**): cut every convex corner of the
+  selected rectangles and polygons at 45°, by the given length along both edges (at most
+  half an edge). Inner corners stay.
+- **To polygon** (**Edit > Convert to Polygon**): the selected paths and rectangles become
+  polygons, for example to reshape a path's outline vertex by vertex.
 - **Align** (two or more items): align left, centre or right edges, bottom, centre or top
   edges; **Space X** / **Space Y** spread three or more items with equal gaps.
 

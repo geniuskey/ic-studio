@@ -489,6 +489,7 @@ const SHORTCUTS: &[ShortcutGroup] = &[
             ("W / Shift+W", "Previous, next view"),
             ("F", "Fit"),
             ("Shift+K", "Clear rulers"),
+            ("Shift+S", "Split shapes along a line"),
             ("Shift+F / Mod+F", "All levels, top level only"),
             ("0 … 8, 9", "Drawn hierarchy depth, 9 = all"),
             ("Right-to-left box", "Select everything the box touches"),

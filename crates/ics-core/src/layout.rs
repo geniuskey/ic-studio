@@ -358,6 +358,10 @@ pub struct Layout {
     /// Placement constraints between this cell's items (symmetry, alignment, fixed).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub constraints: Vec<crate::constraints::Constraint>,
+    /// Measurement rulers (start and end, dbu), kept with the cell as Virtuoso keeps them in
+    /// the cellview. Not written to GDSII.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rulers: Vec<((i64, i64), (i64, i64))>,
 }
 
 impl Layout {

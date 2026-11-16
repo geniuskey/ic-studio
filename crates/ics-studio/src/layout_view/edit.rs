@@ -358,6 +358,8 @@ impl LayerOp {
 /// Persistent state of the operation panels.
 pub struct EditState {
     pub size_um: f64,
+    /// Chamfer of Modify Corner (µm).
+    pub chamfer_um: f64,
     pub op: LayerOp,
     pub op_a: usize,
     pub op_b: usize,
@@ -373,6 +375,7 @@ impl Default for EditState {
     fn default() -> Self {
         Self {
             size_um: 0.1,
+            chamfer_um: 0.2,
             op: LayerOp::Not,
             op_a: 0,
             op_b: 1,
@@ -590,6 +593,19 @@ impl LayoutEditor {
                 if ui.button("Apply").on_hover_text("Grow (positive) or shrink (negative) the selected shapes").clicked() {
                     let d = (self.ed.size_um * cx.tech.dbu_per_um as f64).round() as i64;
                     changed |= self.rewrite_selection(l, d);
+                }
+            });
+            ui.horizontal_wrapped(|ui| {
+                let lb = ui.label("Chamfer");
+                ui.add(
+                    egui::DragValue::new(&mut self.ed.chamfer_um).speed(0.01).range(0.0..=1000.0).max_decimals(3).suffix(" µm"),
+                )
+                .labelled_by(lb.id);
+                if ui.button("Apply").on_hover_text("Cut the convex corners of the selected shapes at 45°").clicked() {
+                    changed |= self.chamfer_selection(l, cx);
+                }
+                if ui.button("To polygon").on_hover_text("Convert the selected paths and rectangles to polygons").clicked() {
+                    changed |= self.convert_to_polygon(l, cx);
                 }
             });
         }

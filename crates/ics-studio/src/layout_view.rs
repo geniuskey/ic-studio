@@ -41,11 +41,12 @@ pub enum LayTool {
     Via,
     Instance,
     Chop,
+    Split,
     Ruler,
 }
 
 impl LayTool {
-    pub const ALL: [LayTool; 12] = [
+    pub const ALL: [LayTool; 13] = [
         LayTool::Select,
         LayTool::Stretch,
         LayTool::Move,
@@ -57,6 +58,7 @@ impl LayTool {
         LayTool::Via,
         LayTool::Instance,
         LayTool::Chop,
+        LayTool::Split,
         LayTool::Ruler,
     ];
 
@@ -73,6 +75,7 @@ impl LayTool {
             LayTool::Via => "Via",
             LayTool::Instance => "Instance",
             LayTool::Chop => "Chop",
+            LayTool::Split => "Split",
             LayTool::Ruler => "Ruler",
         }
     }
@@ -90,13 +93,14 @@ impl LayTool {
             LayTool::Via => "o",
             LayTool::Instance => "i",
             LayTool::Chop => "Shift+C",
+            LayTool::Split => "Shift+S",
             LayTool::Ruler => "k",
         }
     }
 
     /// Tools that take a box: drag it, or click two corners.
     fn takes_box(self) -> bool {
-        matches!(self, LayTool::Rect | LayTool::Via | LayTool::Chop | LayTool::Ruler)
+        matches!(self, LayTool::Rect | LayTool::Via | LayTool::Chop | LayTool::Split | LayTool::Ruler)
     }
 }
 
@@ -217,8 +221,6 @@ pub struct LayoutEditor {
     layer_filter: String,
     /// Layer palette lists only layers with shapes in the cell's hierarchy (plus the active one).
     pub used_layers_only: bool,
-    /// Measurements kept on screen until Shift+K.
-    pub rulers: Vec<((i64, i64), (i64, i64))>,
     /// Snap spacing in dbu (0 = technology grid).
     pub snap: i64,
     /// Snap the cursor to nearby vertices and edges.
@@ -306,7 +308,6 @@ impl Default for LayoutEditor {
             inst_selectable: true,
             layer_filter: String::new(),
             used_layers_only: false,
-            rulers: vec![],
             snap: 0,
             gravity: true,
             snapped: None,
@@ -1087,6 +1088,8 @@ impl LayoutEditor {
             LayTool::Via => "Via: click for one cut, drag to fill an area".into(),
             LayTool::Chop if second => "Chop: click the opposite corner".into(),
             LayTool::Chop => "Chop: box to cut out of the selected shapes (or any shape under it)".into(),
+            LayTool::Split if second => "Split: click the end of the cut line".into(),
+            LayTool::Split => "Split: click two points of a line across the selected shapes (or any shape it crosses)".into(),
             LayTool::Ruler if second => "Ruler: click the end point".into(),
             LayTool::Ruler => "Ruler: click two points · Shift+K clears rulers".into(),
             LayTool::Path if self.path_pts.is_empty() => "Path: click the start point · +/- change metal".into(),
@@ -1362,6 +1365,7 @@ impl LayoutEditor {
             } else if m.shift {
                 match k {
                     Key::C => Some(LayAction::Tool(LayTool::Chop)),
+                    Key::S => Some(LayAction::Tool(LayTool::Split)),
                     Key::P => Some(LayAction::Tool(LayTool::Polygon)),
                     Key::M => Some(LayAction::Merge),
                     Key::K => Some(LayAction::ClearRulers),
@@ -1573,11 +1577,14 @@ impl LayoutEditor {
         }
         let flat = r.width() == 0 || r.height() == 0;
         match self.tool {
+            LayTool::Split => self.split(l, cx, a, b),
             LayTool::Ruler => {
-                if a != b {
-                    self.rulers.push((a, b));
+                if a == b {
+                    return false;
                 }
-                false
+                self.history.push(l);
+                l.rulers.push((a, b));
+                true
             }
             _ if flat => false,
             LayTool::Rect => {
@@ -2038,7 +2045,7 @@ impl LayoutEditor {
                         cx.touched();
                     }
                 }
-                LayTool::Rect | LayTool::Via | LayTool::Chop | LayTool::Ruler => {}
+                LayTool::Rect | LayTool::Via | LayTool::Chop | LayTool::Split | LayTool::Ruler => {}
             }
         }
 
@@ -2321,11 +2328,18 @@ impl LayoutEditor {
                         painter.text(dims_at, Align2::LEFT_TOP, dims, FontId::monospace(11.0), pal.text);
                     }
                     LayTool::Ruler => draw_ruler(&painter, &self.view, rect, &pal, tech, start, c),
+                    LayTool::Split => {
+                        let (pa, pb) = (
+                            self.view.to_screen(rect, start.0 as f64, start.1 as f64),
+                            self.view.to_screen(rect, c.0 as f64, c.1 as f64),
+                        );
+                        painter.line_segment([pa, pb], Stroke::new(2.0, pal.danger));
+                    }
                     _ => {}
                 }
             }
         }
-        for (a, b) in &self.rulers {
+        for (a, b) in &l.rulers {
             draw_ruler(&painter, &self.view, rect, &pal, tech, *a, *b);
         }
         if self.tool == LayTool::Instance

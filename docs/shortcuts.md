@@ -78,7 +78,7 @@ Layout keys follow the Cadence Virtuoso (IC6) default bindkeys.
 | `R` | Rectangle (drag or two clicks) |
 | `Shift+P` / `P` | Polygon / path |
 | `L` / `O` / `I` / `K` | Label / via / instance / ruler |
-| `Shift+C` / `Shift+M` | Chop / merge |
+| `Shift+C` / `Shift+M` / `Shift+S` | Chop / merge / split |
 | `Shift+O` | Rotate the selection 90° (or what is being moved) |
 | `+` / `-` while drawing a path | Drop a via and continue on the metal above / below |
 | `u` / `Shift+U` | Undo / redo (`Ctrl+Z` / `Ctrl+Y` also work) |
