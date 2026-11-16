@@ -1113,7 +1113,7 @@ impl LayoutEditor {
             LayTool::Ruler => "Ruler: click two points · Shift+K clears rulers".into(),
             LayTool::Path if self.path_pts.is_empty() => "Path: click the start point · +/- change metal".into(),
             LayTool::Path => "Path: click points · +/- change metal with a via · Enter finishes".into(),
-            LayTool::Polygon => "Polygon: click vertices (Shift: any angle) · Enter closes".into(),
+            LayTool::Polygon => "Polygon: click vertices, snapped to 0/45/90° (Shift: any angle) · Enter closes".into(),
             LayTool::Label => format!("Label '{}': click to place", self.label_text.trim()),
             LayTool::Instance => "Instance: click to place".into(),
         };
@@ -1997,7 +1997,7 @@ impl LayoutEditor {
                 LayTool::Polygon => {
                     if let Some(c) = self.cursor {
                         if resp.clicked() {
-                            let p = edit::constrain(self.poly_pts.last().copied(), c, shift);
+                            let p = edit::constrain(self.poly_pts.last().copied(), c, shift, self.snap_step(tech));
                             if self.poly_pts.last() != Some(&p) {
                                 self.poly_pts.push(p);
                             }
@@ -2297,7 +2297,7 @@ impl LayoutEditor {
         if !self.poly_pts.is_empty() {
             let mut pts: Vec<Pos2> = self.poly_pts.iter().map(|p| self.view.to_screen(rect, p.0 as f64, p.1 as f64)).collect();
             if let Some(c) = self.cursor {
-                let p = edit::constrain(self.poly_pts.last().copied(), c, shift);
+                let p = edit::constrain(self.poly_pts.last().copied(), c, shift, self.snap_step(tech));
                 pts.push(self.view.to_screen(rect, p.0 as f64, p.1 as f64));
             }
             edit::draw_polygon_preview(&painter, &pts, layer_color(&tech.layers[self.active_layer], pal.dark));

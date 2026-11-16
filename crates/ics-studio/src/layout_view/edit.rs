@@ -304,7 +304,15 @@ pub(super) fn nearest_handle(g: &Geometry, p: (i64, i64), tol: i64) -> Option<Ha
         .map(|(i, _)| Handle::Edge(i))
 }
 
-/// Closed polygon from clicked points; a final corner is added to keep Manhattan outlines Manhattan.
+fn is_octilinear(pts: &[(i64, i64)]) -> bool {
+    pts.windows(2).all(|w| {
+        let (dx, dy) = ((w[1].0 - w[0].0).abs(), (w[1].1 - w[0].1).abs());
+        dx == 0 || dy == 0 || dx == dy
+    })
+}
+
+/// Closed polygon from clicked points. When the outline so far is Manhattan (or 0/45/90°), a
+/// final corner is added so the closing edge keeps to those angles.
 pub(super) fn finish_polygon(pts: &[(i64, i64)]) -> Option<Geometry> {
     let mut pts = pts.to_vec();
     if pts.len() >= 2 && is_manhattan(&pts, false) {
@@ -315,21 +323,43 @@ pub(super) fn finish_polygon(pts: &[(i64, i64)]) -> Option<Geometry> {
             let corner = if second.1 == first.1 { (first.0, last.1) } else { (last.0, first.1) };
             pts.push(corner);
         }
+    } else if pts.len() >= 2 && is_octilinear(&pts) {
+        let (first, second, last) = (pts[0], pts[1], *pts.last()?);
+        let (dx, dy) = (first.0 - last.0, first.1 - last.1);
+        if dx != 0 && dy != 0 && dx.abs() != dy.abs() {
+            let m = dx.abs().min(dy.abs());
+            let diag = (m * dx.signum(), m * dy.signum());
+            // Diagonal first, then straight on; or straight first, then the diagonal.
+            let a = (last.0 + diag.0, last.1 + diag.1);
+            let b = (first.0 - diag.0, first.1 - diag.1);
+            // The last edge must not run back over the first one.
+            let dir = |p: (i64, i64), q: (i64, i64)| ((q.0 - p.0).signum(), (q.1 - p.1).signum());
+            let back = |c: (i64, i64)| {
+                let (f, e) = (dir(c, first), dir(first, second));
+                f == (-e.0, -e.1)
+            };
+            pts.push(if back(a) { b } else { a });
+        }
     }
     polygon_geometry(pts)
 }
 
-/// Snap a polygon point: Manhattan relative to the previous point unless `free`.
-pub(super) fn constrain(prev: Option<(i64, i64)>, c: (i64, i64), free: bool) -> (i64, i64) {
-    match prev {
-        Some(p) if !free => {
-            if (c.0 - p.0).abs() >= (c.1 - p.1).abs() {
-                (c.0, p.1)
-            } else {
-                (p.0, c.1)
-            }
-        }
-        _ => c,
+/// Snap a polygon point to the nearest 0°/45°/90° direction from the previous point, unless
+/// `free`. Diagonal points stay on the `step` grid.
+pub(super) fn constrain(prev: Option<(i64, i64)>, c: (i64, i64), free: bool, step: i64) -> (i64, i64) {
+    let Some(p) = prev.filter(|_| !free) else { return c };
+    let (dx, dy) = (c.0 - p.0, c.1 - p.1);
+    let (ax, ay) = (dx.abs() as f64, dy.abs() as f64);
+    // tan(22.5°): the boundary between an axis direction and the diagonal.
+    const T: f64 = 0.414_213_562;
+    if ay <= ax * T {
+        (c.0, p.1)
+    } else if ax <= ay * T {
+        (p.0, c.1)
+    } else {
+        let g = step.max(1);
+        let k = ((ax + ay) / 2.0 / g as f64).round() as i64 * g;
+        (p.0 + k * dx.signum(), p.1 + k * dy.signum())
     }
 }
 
@@ -828,6 +858,27 @@ mod tests {
             stretch_points(&p, &[2].into(), (0, 50)),
             Geometry::Path { points: vec![(0, 0), (100, 0), (100, 150)], width: 10 }
         );
+    }
+
+    #[test]
+    fn polygon_points_snap_to_45_degrees() {
+        let p = Some((0, 0));
+        assert_eq!(constrain(p, (100, 30), false, 10), (100, 0));
+        assert_eq!(constrain(p, (-30, 100), false, 10), (0, 100));
+        assert_eq!(constrain(p, (100, 60), false, 10), (80, 80));
+        assert_eq!(constrain(p, (-90, 100), false, 10), (-100, 100));
+        assert_eq!(constrain(p, (100, -70), false, 10), (90, -90));
+        assert_eq!(constrain(p, (100, 60), true, 10), (100, 60));
+        assert_eq!(constrain(None, (100, 60), false, 10), (100, 60));
+    }
+
+    #[test]
+    fn polygon_tool_closes_at_45_degrees() {
+        let g = finish_polygon(&[(0, 0), (100, 0), (150, 50), (150, 120)]).unwrap();
+        let Geometry::Polygon { points } = g else { panic!("expected polygon") };
+        let mut closed = points.clone();
+        closed.push(points[0]);
+        assert!(is_octilinear(&closed), "{points:?}");
     }
 
     #[test]
