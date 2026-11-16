@@ -45,12 +45,17 @@ pub fn tool_window<R>(
         })
     } else {
         let mut shown = true;
+        // Open inside the work area, against its right edge: the Explorer, the editor's left
+        // panel (analyses, layers) and the console stay visible beside a narrower window.
+        let area = work_area(ctx).unwrap_or_else(|| ctx.content_rect());
+        let gap = 8.0;
+        let room = (area.size() - egui::vec2(2.0 * gap, 2.0 * gap)).max(egui::vec2(360.0, 300.0));
         let resp = egui::Window::new(title)
             .id(egui::Id::unique(("tool_window", id)))
             .open(&mut shown)
-            .default_size(size)
-            .pivot(egui::Align2::CENTER_CENTER)
-            .default_pos(ctx.content_rect().center())
+            .default_size(egui::vec2(size[0], size[1]).min(room))
+            .pivot(egui::Align2::RIGHT_TOP)
+            .default_pos(area.right_top() + egui::vec2(-gap, gap))
             .resizable(true)
             .show(ctx, |ui| add.take().map(|f| f(ui)));
         *open &= shown;
@@ -62,6 +67,20 @@ pub fn tool_window<R>(
         ctx.data_mut(|d| d.insert_persisted(key, !popped));
     }
     r
+}
+
+fn work_area_id() -> egui::Id {
+    egui::Id::unique("ics_tool_work_area")
+}
+
+/// Records the area tool windows open in: the editor area, between the side panels and above
+/// the console. Called by the app each frame before the tool windows show.
+pub fn set_work_area(ctx: &egui::Context, rect: egui::Rect) {
+    ctx.data_mut(|d| d.insert_temp(work_area_id(), rect));
+}
+
+fn work_area(ctx: &egui::Context) -> Option<egui::Rect> {
+    ctx.data(|d| d.get_temp(work_area_id()))
 }
 
 /// Paints a pop-out button in the window's title bar, just left of the close button.

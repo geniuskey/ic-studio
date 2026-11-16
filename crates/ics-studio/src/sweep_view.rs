@@ -292,7 +292,13 @@ impl SweepManager {
                 });
                 return;
             }
-            egui::Panel::bottom("sw_plot").resizable(true).default_size(300.0).show(ui, |ui| self.overlay(ui, &pal));
+            // At least a usable plot: the point table above scrolls instead.
+            let max = (ui.available_height() * 0.7).max(220.0);
+            egui::Panel::bottom("sw_plot")
+                .resizable(true)
+                .default_size(300.0)
+                .size_range(220.0..=max)
+                .show(ui, |ui| self.overlay(ui, &pal));
             if self.is_monte_carlo() && !self.run_specs.is_empty() {
                 egui::Panel::top("sw_stats")
                     .resizable(true)

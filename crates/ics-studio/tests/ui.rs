@@ -1218,7 +1218,8 @@ fn frames_while_busy(h: &mut Harness<'_, IcStudio>) -> (usize, Duration) {
 /// the editor when it is done.
 #[test]
 fn verification_in_background() {
-    let (dir, big) = big_project("verify");
+    // Not "verify": verification_window uses that temp directory.
+    let (dir, big) = big_project("verify-bg");
     let mut h = open_layout(&dir, "big");
     let t = std::time::Instant::now();
     h.state_mut().command(Command::RunDrc);
@@ -2639,7 +2640,7 @@ fn layout_context_menu() {
     use ics_studio::layout_view::LayAction;
     let mut h = app(demo_args("cmos_inverter", "layout", false));
     h.run_steps(4);
-    let p = egui::pos2(700.0, 650.0);
+    let p = egui::pos2(580.0, 450.0);
     right_click(&mut h, p);
     shot(&mut h, "lay_context_empty");
     assert_eq!(h.query_all_by_label("Create").count(), 2, "empty-space menu should offer Create (besides the menu bar)");
@@ -2687,7 +2688,7 @@ fn layout_stretch_pcell() {
     h.run_steps(2);
     key(&mut h, egui::Key::G);
     key(&mut h, egui::Key::R);
-    let (s0, s1) = (egui::pos2(540.0, 160.0), egui::pos2(580.0, 200.0));
+    let (s0, s1) = (egui::pos2(530.0, 160.0), egui::pos2(650.0, 280.0));
     click(&mut h, s0);
     click(&mut h, s1);
     let r = shapes_of(&h, "scratch")[0].bbox();

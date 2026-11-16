@@ -281,6 +281,8 @@ struct Settings {
     llm: crate::llm::LlmSettings,
     /// App version that last wrote the example projects to the documents folder.
     examples_version: String,
+    /// The console panel was open when the app last quit. Closed on first start; errors open it.
+    console: bool,
 }
 
 impl Default for Settings {
@@ -295,6 +297,7 @@ impl Default for Settings {
             check_updates: true,
             llm: Default::default(),
             examples_version: String::new(),
+            console: false,
         }
     }
 }
@@ -649,7 +652,7 @@ impl IcStudio {
             log: vec![],
             started: Instant::now(),
             flash: None,
-            show_console: true,
+            show_console: settings.console,
             bottom_tab: BottomTab::Console,
             queue: vec![],
             dialog: None,
@@ -5606,6 +5609,7 @@ impl eframe::App for IcStudio {
                 .show(ui, |ui| self.console(ui));
         }
         egui::CentralPanel::default().frame(egui::Frame::new().fill(pal.bg_panel)).show(ui, |ui| {
+            crate::float::set_work_area(ui.ctx(), ui.max_rect());
             if self.workspace != Workspace::Home && !self.tabs.is_empty() {
                 egui::Panel::top("tabs")
                     .frame(egui::Frame::new().fill(pal.bg_sidebar).inner_margin(egui::Margin {
@@ -5676,6 +5680,7 @@ impl eframe::App for IcStudio {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        self.settings.console = self.show_console;
         if let Ok(s) = serde_json::to_string(&self.settings) {
             storage.set_string(SETTINGS_KEY, s);
         }
