@@ -103,6 +103,10 @@ pub enum Reply {
 
 enum Event {
     Entry(Entry),
+    /// A piece of the answer text being streamed.
+    Delta(String),
+    /// The streamed model turn is complete; its entries follow.
+    TurnEnd,
     Todos(Vec<Todo>),
     Done(Vec<Value>, Option<Wait>),
 }
@@ -113,6 +117,8 @@ pub struct Copilot {
     pub log: Vec<Entry>,
     pub todos: Vec<Todo>,
     pub input: String,
+    /// The answer text streaming in for the current model turn.
+    pub streaming: String,
     /// Set when the user asks for the AI Models settings window.
     pub open_settings: bool,
     /// Investigate and plan with read-only tools; edits wait for an approved plan.
@@ -134,6 +140,7 @@ impl Default for Copilot {
             log: vec![],
             todos: vec![],
             input: String::new(),
+            streaming: String::new(),
             open_settings: false,
             plan_mode: false,
             history: vec![],
@@ -225,7 +232,9 @@ fn system_prompt(context: &str, plan_mode: bool) -> String {
          call more than twice. If you are stuck, say so and ask the user.\n\
          5. Finish with a short report: what changed, the verified numbers, and anything left open.\n\n\
          Do not call save_project unless the user asks to save; edits stay in the window, where the user can undo \
-         them. Write plain text without Markdown (plain '-' and numbered lists are fine).\n\n\
+         them. Keep formatting light: plain sentences, '-' or numbered lists, **bold** for key numbers, `inline \
+         code` for cell, net and device names, and fenced code blocks (```spice ... ```) for netlists, SPICE decks or \
+         anything else the user may want to copy. No tables or headings.\n\n\
          Language: write every sentence (the notes before tool calls, questions, plans, the task list and the report) \
          in the language of the user's latest message; if it is Korean, write Korean throughout.\n\n\
          {mode}\n\n{context}"
@@ -333,8 +342,16 @@ impl Run {
                 "contents": self.history,
                 "tools": [{"functionDeclarations": decl}],
             });
-            let res = match self.llm.generate(&req) {
+            let (events, wake, cancel) = (self.events.clone(), self.wake.clone(), self.cancel.clone());
+            let res = self.llm.stream(&req, &mut |t| {
+                let _ = events.send(Event::Delta(t.to_string()));
+                wake.request_repaint();
+                !cancel.load(Ordering::Relaxed)
+            });
+            self.send(Event::TurnEnd);
+            let res = match res {
                 Ok(r) => r,
+                Err(_) if self.cancelled() => break,
                 Err(e) => {
                     self.send(Event::Entry(Entry::Error(e)));
                     break;
@@ -524,6 +541,8 @@ impl Copilot {
         for e in rx.try_iter() {
             match e {
                 Event::Entry(x) => self.log.push(x),
+                Event::Delta(t) => self.streaming.push_str(&t),
+                Event::TurnEnd => self.streaming.clear(),
                 Event::Todos(t) => self.todos = t,
                 Event::Done(h, w) => done = Some((h, w)),
             }
@@ -533,6 +552,7 @@ impl Copilot {
             self.wait = w;
             self.events = None;
             self.calls = None;
+            self.streaming.clear();
         }
     }
 
@@ -551,22 +571,187 @@ impl Copilot {
             .id_salt("copilot_todos")
             .default_open(true)
             .show(ui, |ui| {
-                for t in &self.todos {
-                    let text = match t.status {
-                        TodoStatus::Completed => egui::RichText::new(format!("[x] {}", t.content)).strikethrough().weak(),
-                        TodoStatus::InProgress => egui::RichText::new(format!("[>] {}", t.content)).strong().color(pal.accent),
-                        TodoStatus::Pending => egui::RichText::new(format!("[ ] {}", t.content)),
-                    };
-                    ui.label(text);
-                }
+                egui::ScrollArea::vertical().id_salt("copilot_todo_list").max_height(140.0).show(ui, |ui| {
+                    for t in &self.todos {
+                        let text = match t.status {
+                            TodoStatus::Completed => egui::RichText::new(format!("[x] {}", t.content)).strikethrough().weak(),
+                            TodoStatus::InProgress => {
+                                egui::RichText::new(format!("[>] {}", t.content)).strong().color(pal.accent)
+                            }
+                            TodoStatus::Pending => egui::RichText::new(format!("[ ] {}", t.content)),
+                        };
+                        ui.label(text);
+                    }
+                });
             });
+    }
+
+    /// The conversation as plain text, for "Copy all".
+    pub fn transcript(&self) -> String {
+        let mut out = vec![];
+        for e in &self.log {
+            out.push(match e {
+                Entry::User(t) => format!("You: {t}"),
+                Entry::Assistant(t) => format!("Copilot: {t}"),
+                Entry::Tool { name, args, result, error } => {
+                    format!("> {name} {args}\n{}{result}", if *error { "error: " } else { "" })
+                }
+                Entry::Question { text, options } => {
+                    let o: String = options.iter().map(|o| format!("\n- {o}")).collect();
+                    format!("Question: {text}{o}")
+                }
+                Entry::Plan(t) => format!("Plan:\n{t}"),
+                Entry::Notice(t) => t.clone(),
+                Entry::Error(t) => format!("Error: {t}"),
+            });
+        }
+        out.join("\n\n")
+    }
+
+    /// A message in a card, with a copy button on its header line.
+    fn card(
+        ui: &mut egui::Ui,
+        id: egui::Id,
+        title: &str,
+        fill: egui::Color32,
+        accent: egui::Color32,
+        copy: &str,
+        add: impl FnOnce(&mut egui::Ui),
+    ) {
+        egui::Frame::new().fill(fill).corner_radius(6).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(title).small().strong().color(accent));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    crate::chat::copy_button(ui, id.with("copy"), "Copy", copy);
+                });
+            });
+            add(ui);
+        });
+    }
+
+    fn entry(&self, ui: &mut egui::Ui, k: usize, e: &Entry, pal: &crate::theme::Palette) {
+        let id = egui::Id::unique("copilot_entry").with(k);
+        match e {
+            Entry::User(t) => {
+                Self::card(ui, id, "You", pal.accent.gamma_multiply(0.14), pal.accent, t, |ui| {
+                    ui.add(egui::Label::new(egui::RichText::new(t).color(pal.text_strong)).wrap());
+                });
+            }
+            Entry::Assistant(t) => {
+                Self::card(ui, id, "Copilot", egui::Color32::TRANSPARENT, pal.text_weak, t, |ui| {
+                    crate::chat::markdown(ui, id, t, pal);
+                });
+            }
+            Entry::Tool { name, args, result, error } => {
+                let color = if *error { pal.danger } else { pal.text_weak };
+                let a: String = args.chars().take(80).collect();
+                let a = if a.len() < args.len() { format!("{a}…") } else { a };
+                let head = egui::RichText::new(format!("{name} {a}")).monospace().small().color(color);
+                egui::CollapsingHeader::new(head).id_salt(id).show(ui, |ui| {
+                    let pretty = |s: &str| {
+                        serde_json::from_str::<Value>(s)
+                            .ok()
+                            .and_then(|v| serde_json::to_string_pretty(&v).ok())
+                            .unwrap_or(s.into())
+                    };
+                    crate::chat::code_block(ui, id.with("args"), "arguments", &pretty(args), pal);
+                    crate::chat::code_block(ui, id.with("result"), if *error { "error" } else { "result" }, &pretty(result), pal);
+                });
+            }
+            Entry::Question { text, options } => {
+                Self::card(ui, id, "Question", pal.accent.gamma_multiply(0.08), pal.accent, text, |ui| {
+                    crate::chat::markdown(ui, id, text, pal);
+                    for o in options {
+                        ui.label(egui::RichText::new(format!("- {o}")).color(pal.text_weak));
+                    }
+                });
+            }
+            Entry::Plan(t) => {
+                Self::card(ui, id, "Plan", pal.accent.gamma_multiply(0.08), pal.accent, t, |ui| {
+                    crate::chat::markdown(ui, id, t, pal);
+                });
+            }
+            Entry::Notice(t) => {
+                ui.add(egui::Label::new(egui::RichText::new(t).italics().color(pal.warning)).wrap());
+            }
+            Entry::Error(t) => {
+                Self::card(ui, id, "Error", pal.danger.gamma_multiply(0.12), pal.danger, t, |ui| {
+                    ui.add(egui::Label::new(egui::RichText::new(t).color(pal.danger)).wrap());
+                });
+            }
+        }
+    }
+
+    /// The message box and the controls above it. Returns what the user sends.
+    fn composer(&mut self, ui: &mut egui::Ui, busy: bool, waiting: Option<WaitKind>) -> Option<Reply> {
+        let mut send = None;
+        match waiting.filter(|_| !busy) {
+            Some(WaitKind::Answer) => {
+                let options = match self.log.iter().rev().find(|e| matches!(e, Entry::Question { .. })) {
+                    Some(Entry::Question { options, .. }) => options.clone(),
+                    _ => vec![],
+                };
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new("Answer:").weak());
+                    for o in options {
+                        if ui.button(&o).clicked() {
+                            send = Some(Reply::Text(o));
+                        }
+                    }
+                });
+            }
+            Some(WaitKind::Approval) => {
+                ui.horizontal(|ui| {
+                    if ui.button("Approve plan").clicked() {
+                        send = Some(Reply::Approve);
+                    }
+                    ui.label(egui::RichText::new("or type changes below").weak());
+                });
+            }
+            None => {}
+        }
+        ui.horizontal(|ui| {
+            let l = ui.label(match waiting {
+                Some(WaitKind::Answer) => "Answer",
+                Some(WaitKind::Approval) => "Revise",
+                None => "Ask",
+            });
+            let w = (ui.available_width() - 64.0).max(80.0);
+            let shift_enter = egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter);
+            let r = egui::ScrollArea::vertical()
+                .id_salt("copilot_input_scroll")
+                .max_height(160.0)
+                .max_width(w)
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.input)
+                            .id_salt("copilot_input")
+                            .desired_rows(2)
+                            .desired_width(w - 14.0)
+                            .return_key(shift_enter)
+                            .hint_text("Enter to send, Shift+Enter for a new line"),
+                    )
+                })
+                .inner;
+            let r = r.labelled_by(l.id);
+            let enter = r.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift);
+            if (ui.add_enabled(!busy, egui::Button::new("Send")).clicked() || enter) && !busy {
+                let t = std::mem::take(&mut self.input).trim().to_string();
+                if !t.is_empty() {
+                    send = Some(Reply::Text(t));
+                }
+                r.request_focus();
+            }
+        });
+        send
     }
 
     /// The chat window. Returns what the user sends.
     pub fn window(&mut self, ctx: &egui::Context, llm: &LlmSettings) -> Option<Reply> {
         let mut open = self.open;
         let mut send = None;
-        crate::float::tool_window(ctx, "copilot", "Copilot", [480.0, 600.0], &mut open, |ui| {
+        crate::float::tool_window(ctx, "copilot", "Copilot", [480.0, 640.0], &mut open, |ui| {
             let busy = self.busy();
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(llm.describe()).weak());
@@ -580,6 +765,9 @@ impl Copilot {
                 if ui.add_enabled(!busy, egui::Button::new("Clear")).clicked() {
                     self.clear();
                 }
+                if !self.log.is_empty() {
+                    crate::chat::copy_button_with(ui, egui::Id::unique("copilot_copy_all"), "Copy all", || self.transcript());
+                }
                 if busy && ui.button("Stop").clicked() {
                     self.stop();
                 }
@@ -591,113 +779,52 @@ impl Copilot {
                 ui.separator();
             }
             let waiting = self.waiting();
-            let reserve = if waiting.is_some() { 110.0 } else { 70.0 };
-            egui::ScrollArea::vertical().stick_to_bottom(true).max_height(ui.available_height() - reserve).show(ui, |ui| {
-                if self.log.is_empty() {
-                    ui.label(
+            egui::Panel::bottom(egui::Id::unique("copilot_composer"))
+                .resizable(false)
+                .frame(egui::Frame::new().inner_margin(egui::Margin { top: 6, ..Default::default() }))
+                .show(ui, |ui| send = self.composer(ui, busy, waiting));
+            egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| self.log_view(ui, busy, &pal));
+        });
+        self.open = open;
+        send
+    }
+
+    fn log_view(&self, ui: &mut egui::Ui, busy: bool, pal: &crate::theme::Palette) {
+        egui::ScrollArea::vertical().id_salt("copilot_log").auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
+            // Drags on the gaps between messages select nothing, but must not move the window.
+            let _ = ui.interact(ui.clip_rect(), ui.scope_id().with("log_bg"), egui::Sense::drag());
+            ui.spacing_mut().item_spacing.y = 6.0;
+            if self.log.is_empty() {
+                ui.add(
+                    egui::Label::new(
                         egui::RichText::new(
                             "Ask for a design task, e.g. \"place and route nand2, then fix DRC and run LVS\" or \
                              \"size the OTA for 60 dB gain and check the phase margin\". Turn on Plan mode to review \
                              a plan before anything is edited.",
                         )
                         .weak(),
-                    );
-                }
-                for e in &self.log {
-                    match e {
-                        Entry::User(t) => {
-                            ui.label(egui::RichText::new(format!("You: {t}")).strong());
-                        }
-                        Entry::Assistant(t) => {
-                            ui.label(t.replace("**", "").replace('`', ""));
-                        }
-                        Entry::Tool { name, args, result, error } => {
-                            let color = if *error { pal.danger } else { pal.text_weak };
-                            let a: String = args.chars().take(120).collect();
-                            let a = if a.len() < args.len() { format!("{a}…") } else { a };
-                            let short: String = result.chars().take(160).collect();
-                            ui.label(egui::RichText::new(format!("> {name} {a}")).monospace().small().color(color))
-                                .on_hover_text(args);
-                            ui.label(egui::RichText::new(short).monospace().small().weak()).on_hover_text(result);
-                        }
-                        Entry::Question { text, options } => {
-                            egui::Frame::group(ui.style()).show(ui, |ui| {
-                                ui.label(egui::RichText::new("Question").small().color(pal.accent));
-                                ui.label(text);
-                                for o in options {
-                                    ui.label(egui::RichText::new(format!("- {o}")).weak());
-                                }
-                            });
-                        }
-                        Entry::Plan(t) => {
-                            egui::Frame::group(ui.style()).show(ui, |ui| {
-                                ui.label(egui::RichText::new("Plan").small().color(pal.accent));
-                                ui.label(t.replace("**", "").replace('`', ""));
-                            });
-                        }
-                        Entry::Notice(t) => {
-                            ui.label(egui::RichText::new(t).italics().color(pal.warning));
-                        }
-                        Entry::Error(t) => {
-                            ui.label(egui::RichText::new(t).color(pal.danger));
-                        }
-                    }
-                    ui.add_space(4.0);
-                }
-                if busy {
-                    ui.horizontal(|ui| {
-                        ui.add(egui::Spinner::new());
-                        let now = self.todos.iter().find(|t| t.status == TodoStatus::InProgress);
-                        ui.label(now.map_or("Working…".to_string(), |t| format!("{}…", t.content)));
-                    });
-                }
-            });
-            ui.separator();
-            match waiting.filter(|_| !busy) {
-                Some(WaitKind::Answer) => {
-                    let options = match self.log.iter().rev().find(|e| matches!(e, Entry::Question { .. })) {
-                        Some(Entry::Question { options, .. }) => options.clone(),
-                        _ => vec![],
-                    };
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(egui::RichText::new("Answer:").weak());
-                        for o in options {
-                            if ui.button(&o).clicked() {
-                                send = Some(Reply::Text(o));
-                            }
-                        }
-                    });
-                }
-                Some(WaitKind::Approval) => {
-                    ui.horizontal(|ui| {
-                        if ui.button("Approve plan").clicked() {
-                            send = Some(Reply::Approve);
-                        }
-                        ui.label(egui::RichText::new("or type changes below").weak());
-                    });
-                }
-                None => {}
+                    )
+                    .wrap(),
+                );
             }
-            ui.horizontal(|ui| {
-                let l = ui.label(match waiting {
-                    Some(WaitKind::Answer) => "Answer",
-                    Some(WaitKind::Approval) => "Revise",
-                    None => "Ask",
+            for (k, e) in self.log.iter().enumerate() {
+                self.entry(ui, k, e, pal);
+            }
+            if !self.streaming.trim().is_empty() {
+                let id = egui::Id::unique("copilot_streaming");
+                Self::card(ui, id, "Copilot", egui::Color32::TRANSPARENT, pal.text_weak, &self.streaming, |ui| {
+                    crate::chat::markdown(ui, id, &self.streaming, pal);
                 });
-                let r =
-                    ui.add(egui::TextEdit::multiline(&mut self.input).desired_rows(2).desired_width(ui.available_width() - 60.0));
-                let r = r.labelled_by(l.id);
-                let enter = r.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift);
-                if (ui.add_enabled(!busy, egui::Button::new("Send")).clicked() || enter) && !busy {
-                    let t = std::mem::take(&mut self.input).trim().to_string();
-                    if !t.is_empty() {
-                        send = Some(Reply::Text(t));
-                    }
-                }
-            });
+            }
+            if busy {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Spinner::new());
+                    let now = self.todos.iter().find(|t| t.status == TodoStatus::InProgress);
+                    ui.label(egui::RichText::new(now.map_or("Working…".to_string(), |t| format!("{}…", t.content))).weak());
+                });
+            }
+            crate::chat::drag_autoscroll(ui);
         });
-        self.open = open;
-        send
     }
 }
 

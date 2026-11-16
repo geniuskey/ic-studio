@@ -4,6 +4,7 @@ pub mod app;
 pub mod app_icon;
 pub mod calc_view;
 pub mod canvas;
+pub mod chat;
 pub mod ciw;
 pub mod copilot;
 pub mod display_view;

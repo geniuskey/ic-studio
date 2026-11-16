@@ -916,6 +916,8 @@ fn glyph_coverage() {
         include_str!("../src/sim_view.rs"),
         include_str!("../src/rule_designer.rs"),
         include_str!("../src/ciw.rs"),
+        include_str!("../src/copilot.rs"),
+        include_str!("../src/chat.rs"),
         include_str!("../src/calc_view.rs"),
         include_str!("../src/sweep_view.rs"),
         include_str!("../src/mc_view.rs"),
@@ -1975,6 +1977,99 @@ fn copilot_plan_mode_agent() {
     assert_eq!(answer[1]["functionResponse"]["response"]["answer"], "M2");
     assert!(seen[0]["systemInstruction"].to_string().contains("PLAN MODE is on"));
     assert!(!seen[2]["systemInstruction"].to_string().contains("PLAN MODE is on"));
+}
+
+/// A model that streams its answer in two halves, holding the second until released.
+struct Streamy {
+    release: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+const STREAMED: &str =
+    "The **netlist** of `rc_lowpass`:\n\n```spice\nR1 in out 1k\nC1 out 0 10n\n```\nBandwidth is about 16 kHz.";
+
+impl ics_studio::copilot::Llm for Streamy {
+    fn generate(&mut self, _: &serde_json::Value) -> Result<serde_json::Value, String> {
+        unreachable!("the copilot streams")
+    }
+
+    fn stream(&mut self, _: &serde_json::Value, on_text: &mut dyn FnMut(&str) -> bool) -> Result<serde_json::Value, String> {
+        let (a, b) = STREAMED.split_at(60);
+        on_text(a);
+        while !self.release.load(std::sync::atomic::Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        on_text(b);
+        Ok(serde_json::json!({"candidates": [{"content": {"role": "model", "parts": [{"text": STREAMED}]}}]}))
+    }
+}
+
+/// The copilot chat: the answer shows while it streams, code blocks get a copy button, and a
+/// long message keeps the input box and Send button inside the window.
+#[test]
+fn copilot_chat_streams_and_keeps_input_visible() {
+    use egui_kittest::kittest::Queryable;
+    use ics_studio::copilot::Entry;
+    let mut h = app(demo_args("rc_lowpass", "schematic", false));
+    let release = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let r2 = release.clone();
+    h.state_mut().copilot_mut().set_llm(Box::new(move |_, _| Ok(Box::new(Streamy { release: r2.clone() }))));
+    h.state_mut().command(Command::CopilotAsk("Show the netlist".into()));
+    let t = std::time::Instant::now();
+    while h.state_mut().copilot_mut().streaming.is_empty() && t.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(5));
+        h.step();
+    }
+    h.run_steps(2);
+    let cp = h.state_mut().copilot_mut();
+    assert!(cp.busy());
+    assert_eq!(cp.streaming, &STREAMED[..60]);
+    assert!(!cp.log.iter().any(|e| matches!(e, Entry::Assistant(_))));
+    shot(&mut h, "50_copilot_streaming");
+    release.store(true, std::sync::atomic::Ordering::Relaxed);
+    settle(&mut h, "stream");
+    let cp = h.state_mut().copilot_mut();
+    assert!(cp.streaming.is_empty());
+    assert_eq!(cp.log.last(), Some(&Entry::Assistant(STREAMED.into())));
+    // One copy button per message (question, answer) and one on the code block, plus "Copy all".
+    assert!(h.get_all_by_label("Copy").count() >= 3);
+    h.get_by_label("Copy all");
+
+    h.state_mut().copilot_mut().input = (1..=40).map(|k| format!("line {k} of a long request")).collect::<Vec<_>>().join("\n");
+    h.run_steps(3);
+    let send = h.get_by_label("Send").rect();
+    let input = h.get_by_label("Ask").rect();
+    // The 640 px window sits centred in the 900 px screen: everything stays above its bottom edge.
+    assert!(send.max.y < 780.0, "Send {send:?} pushed out");
+    // The box scrolls inside its own area, so its top stays on screen above Send.
+    assert!(input.min.y < send.min.y && send.min.y - input.min.y < 200.0, "input {input:?} grew past the window");
+    shot(&mut h, "51_copilot_chat");
+
+    // Dragging a text selection above the log scrolls it up.
+    for k in 0..40 {
+        h.state_mut().copilot_mut().log.push(Entry::Notice(format!("note {k}")));
+    }
+    h.run_steps(3);
+    let before = h.get_by_label("note 30").rect();
+    let at = before.center();
+    let pos = |p: egui::Pos2| egui::Event::PointerMoved(p);
+    let button = |p: egui::Pos2, pressed: bool| egui::Event::PointerButton {
+        pos: p,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Default::default(),
+    };
+    h.event(pos(at));
+    h.event(button(at, true));
+    h.step();
+    let above = egui::pos2(at.x, 60.0);
+    for _ in 0..20 {
+        h.event(pos(above));
+        h.step();
+    }
+    h.event(button(above, false));
+    h.run_steps(2);
+    let after = h.get_by_label("note 30").rect();
+    assert!(after.min.y > before.min.y + 50.0, "no autoscroll: {before:?} -> {after:?}");
 }
 
 /// Layout by example: a renamed copy of the NAND2 circuit is placed like the demo NAND2 layout

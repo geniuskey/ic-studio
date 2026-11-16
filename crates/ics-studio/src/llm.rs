@@ -17,7 +17,25 @@ use serde_json::{Value, json};
 /// One `generateContent` round trip: Gemini request JSON in, Gemini response JSON out.
 pub trait Llm: Send {
     fn generate(&mut self, request: &Value) -> Result<Value, String>;
+
+    /// Like [`Llm::generate`], but hands each piece of answer text to `on_text` as it arrives.
+    /// `on_text` returns false to abort the request. The default streams nothing until the
+    /// whole answer is in.
+    fn stream(&mut self, request: &Value, on_text: &mut dyn FnMut(&str) -> bool) -> Result<Value, String> {
+        let r = self.generate(request)?;
+        for p in r["candidates"][0]["content"]["parts"].as_array().into_iter().flatten() {
+            if let Some(t) = p["text"].as_str().filter(|_| p["thought"] != true)
+                && !on_text(t)
+            {
+                return Err(CANCELLED.into());
+            }
+        }
+        Ok(r)
+    }
 }
+
+/// The error a stream aborted by its `on_text` callback returns.
+pub const CANCELLED: &str = "cancelled";
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum Provider {
@@ -207,8 +225,26 @@ struct Http {
     headers: Vec<(String, String)>,
 }
 
+/// The message of a provider's error body.
+fn error_message(body: &Value) -> String {
+    body["error"]["message"]
+        .as_str()
+        .or(body["error"].as_str())
+        .or(body["message"].as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| body.to_string().chars().take(300).collect())
+}
+
+/// What a streaming POST got back.
+enum Streamed {
+    /// Every server-sent event's `data` was handed to the callback.
+    Events,
+    /// The server answered with plain JSON instead of an event stream.
+    Json(Value),
+}
+
 impl Http {
-    fn post(&self, url: &str, auth: &[(&str, String)], body: &Value) -> Result<Value, String> {
+    fn send(&self, url: &str, auth: &[(&str, String)], body: &Value) -> Result<ureq::http::Response<ureq::Body>, String> {
         let mut req = ureq::post(url);
         for (k, v) in auth.iter().filter(|(_, v)| !v.is_empty()) {
             req = req.header(*k, v);
@@ -219,18 +255,260 @@ impl Http {
         let mut res =
             req.config().http_status_as_error(false).build().send_json(body).map_err(|e| format!("request failed: {e}"))?;
         let status = res.status();
-        let text = res.body_mut().read_to_string().map_err(|e| format!("bad response: {e}"))?;
-        let body: Value = serde_json::from_str(&text).unwrap_or(Value::String(text));
         if !status.is_success() {
-            let msg = body["error"]["message"]
-                .as_str()
-                .or(body["error"].as_str())
-                .or(body["message"].as_str())
-                .map(str::to_string)
-                .unwrap_or_else(|| body.to_string().chars().take(300).collect());
-            return Err(format!("{} {}: {msg}", self.provider.name(), status.as_u16()));
+            let text = res.body_mut().read_to_string().map_err(|e| format!("bad response: {e}"))?;
+            let body: Value = serde_json::from_str(&text).unwrap_or(Value::String(text));
+            return Err(format!("{} {}: {}", self.provider.name(), status.as_u16(), error_message(&body)));
         }
-        Ok(body)
+        Ok(res)
+    }
+
+    fn post(&self, url: &str, auth: &[(&str, String)], body: &Value) -> Result<Value, String> {
+        let mut res = self.send(url, auth, body)?;
+        let text = res.body_mut().read_to_string().map_err(|e| format!("bad response: {e}"))?;
+        Ok(serde_json::from_str(&text).unwrap_or(Value::String(text)))
+    }
+
+    /// POST and read the answer as server-sent events, handing each event's JSON `data` to
+    /// `on_event`, which returns false to stop reading.
+    fn post_stream(
+        &self,
+        url: &str,
+        auth: &[(&str, String)],
+        body: &Value,
+        on_event: &mut dyn FnMut(Value) -> Result<bool, String>,
+    ) -> Result<Streamed, String> {
+        let mut res = self.send(url, auth, body)?;
+        let sse =
+            res.headers().get("content-type").and_then(|v| v.to_str().ok()).is_some_and(|t| t.contains("text/event-stream"));
+        if !sse {
+            let text = res.body_mut().read_to_string().map_err(|e| format!("bad response: {e}"))?;
+            return Ok(Streamed::Json(serde_json::from_str(&text).unwrap_or(Value::String(text))));
+        }
+        let reader = std::io::BufReader::new(res.body_mut().as_reader());
+        read_sse(reader, on_event)?;
+        Ok(Streamed::Events)
+    }
+}
+
+/// Read server-sent events, handing each event's `data` (parsed as JSON) to `on_event`.
+fn read_sse(reader: impl std::io::BufRead, on_event: &mut dyn FnMut(Value) -> Result<bool, String>) -> Result<(), String> {
+    let mut data = String::new();
+    let mut flush = |data: &mut String| -> Result<bool, String> {
+        let d = std::mem::take(data);
+        let d = d.trim();
+        if d.is_empty() || d == "[DONE]" {
+            return Ok(true);
+        }
+        match serde_json::from_str::<Value>(d) {
+            Ok(v) => on_event(v),
+            Err(_) => Ok(true),
+        }
+    };
+    for line in reader.lines() {
+        let line = line.map_err(|e| format!("the stream broke off: {e}"))?;
+        let line = line.trim_end_matches('\r');
+        if line.is_empty() {
+            if !flush(&mut data)? {
+                return Ok(());
+            }
+        } else if let Some(d) = line.strip_prefix("data:") {
+            if !data.is_empty() {
+                data.push('\n');
+            }
+            data.push_str(d.strip_prefix(' ').unwrap_or(d));
+        }
+    }
+    flush(&mut data)?;
+    Ok(())
+}
+
+/// Turn a stream abort into the cancel error, else run the event handler.
+fn keep(on_text: &mut dyn FnMut(&str) -> bool, t: &str) -> Result<bool, String> {
+    if t.is_empty() || on_text(t) { Ok(true) } else { Err(CANCELLED.into()) }
+}
+
+/// Gemini stream chunks into one `generateContent` answer: consecutive text pieces merge.
+#[derive(Default)]
+struct GeminiAcc {
+    parts: Vec<Value>,
+    finish: Value,
+}
+
+impl GeminiAcc {
+    fn chunk(&mut self, v: &Value, on_text: &mut dyn FnMut(&str) -> bool) -> Result<bool, String> {
+        if v.get("error").is_some() {
+            return Err(format!("Google Gemini: {}", error_message(v)));
+        }
+        let c = &v["candidates"][0];
+        if let Some(f) = c.get("finishReason") {
+            self.finish = f.clone();
+        }
+        for p in c["content"]["parts"].as_array().into_iter().flatten() {
+            if let Some(t) = p["text"].as_str() {
+                if p["thought"] != true {
+                    keep(on_text, t)?;
+                }
+                if let Some(last) = self.parts.last_mut()
+                    && last["text"].is_string()
+                    && last["thought"] == p["thought"]
+                    && last.get("thoughtSignature").is_none()
+                {
+                    let joined = format!("{}{t}", last["text"].as_str().unwrap_or_default());
+                    last["text"] = joined.into();
+                    if let Some(sig) = p.get("thoughtSignature") {
+                        last["thoughtSignature"] = sig.clone();
+                    }
+                    continue;
+                }
+            }
+            self.parts.push(p.clone());
+        }
+        Ok(true)
+    }
+
+    fn finish(mut self) -> Value {
+        self.parts.retain(|p| !(p["text"].as_str().is_some_and(|t| t.is_empty()) && p.get("thoughtSignature").is_none()));
+        json!({"candidates": [{"content": {"role": "model", "parts": self.parts}, "finishReason": self.finish}]})
+    }
+}
+
+/// OpenAI chat-completion chunks into one `chat.completion` message.
+#[derive(Default)]
+struct OpenAiAcc {
+    content: String,
+    refusal: String,
+    calls: Vec<Value>,
+    finish: Value,
+}
+
+impl OpenAiAcc {
+    fn chunk(&mut self, v: &Value, on_text: &mut dyn FnMut(&str) -> bool) -> Result<bool, String> {
+        if v.get("error").is_some() {
+            return Err(error_message(v));
+        }
+        let c = &v["choices"][0];
+        if !c["finish_reason"].is_null() {
+            self.finish = c["finish_reason"].clone();
+        }
+        let d = &c["delta"];
+        if let Some(t) = d["content"].as_str() {
+            keep(on_text, t)?;
+            self.content.push_str(t);
+        }
+        if let Some(t) = d["refusal"].as_str() {
+            self.refusal.push_str(t);
+        }
+        for tc in d["tool_calls"].as_array().into_iter().flatten() {
+            let i = tc["index"].as_u64().map(|i| i as usize).unwrap_or(self.calls.len());
+            while self.calls.len() <= i {
+                self.calls.push(json!({"id": "", "type": "function", "function": {"name": "", "arguments": ""}}));
+            }
+            let call = &mut self.calls[i];
+            if let Some(id) = tc["id"].as_str().filter(|s| !s.is_empty()) {
+                call["id"] = id.into();
+            }
+            for k in ["name", "arguments"] {
+                if let Some(piece) = tc["function"][k].as_str() {
+                    let joined = format!("{}{piece}", call["function"][k].as_str().unwrap_or_default());
+                    call["function"][k] = joined.into();
+                }
+            }
+        }
+        Ok(true)
+    }
+
+    fn finish(self) -> Value {
+        let mut msg =
+            json!({"role": "assistant", "content": if self.content.is_empty() { Value::Null } else { self.content.into() }});
+        if !self.calls.is_empty() {
+            msg["tool_calls"] = self.calls.into();
+        }
+        if !self.refusal.is_empty() {
+            msg["refusal"] = self.refusal.into();
+        }
+        json!({"choices": [{"message": msg, "finish_reason": self.finish}]})
+    }
+}
+
+/// Claude message stream events into one Messages API response.
+#[derive(Default)]
+struct ClaudeAcc {
+    content: Vec<Value>,
+    /// The partial JSON of each tool_use block's input.
+    inputs: Vec<String>,
+    stop: Value,
+    stop_details: Value,
+}
+
+impl ClaudeAcc {
+    fn event(&mut self, v: &Value, on_text: &mut dyn FnMut(&str) -> bool) -> Result<bool, String> {
+        let at = v["index"].as_u64().map(|i| i as usize).unwrap_or(0);
+        match v["type"].as_str().unwrap_or_default() {
+            "error" => return Err(format!("Anthropic Claude: {}", error_message(v))),
+            "content_block_start" => {
+                while self.content.len() <= at {
+                    self.content.push(Value::Null);
+                    self.inputs.push(String::new());
+                }
+                self.content[at] = v["content_block"].clone();
+            }
+            "content_block_delta" => {
+                let Some(b) = self.content.get_mut(at) else { return Ok(true) };
+                let d = &v["delta"];
+                let append = |b: &mut Value, k: &str, piece: &str| {
+                    let joined = format!("{}{piece}", b[k].as_str().unwrap_or_default());
+                    b[k] = joined.into();
+                };
+                match d["type"].as_str().unwrap_or_default() {
+                    "text_delta" => {
+                        let t = d["text"].as_str().unwrap_or_default();
+                        append(b, "text", t);
+                        keep(on_text, t)?;
+                    }
+                    "thinking_delta" => append(b, "thinking", d["thinking"].as_str().unwrap_or_default()),
+                    "signature_delta" => b["signature"] = d["signature"].clone(),
+                    "input_json_delta" => self.inputs[at].push_str(d["partial_json"].as_str().unwrap_or_default()),
+                    "citations_delta" => {
+                        if !b["citations"].is_array() {
+                            b["citations"] = json!([]);
+                        }
+                        if let Some(c) = b["citations"].as_array_mut() {
+                            c.push(d["citation"].clone());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            "content_block_stop" => {
+                if let Some(b) = self.content.get_mut(at)
+                    && b.get("input").is_some()
+                {
+                    let raw = self.inputs[at].trim();
+                    if !raw.is_empty() {
+                        b["input"] = serde_json::from_str(raw).unwrap_or_else(|_| json!({}));
+                    } else if !b["input"].is_object() {
+                        b["input"] = json!({});
+                    }
+                }
+            }
+            "message_delta" => {
+                if let Some(s) = v["delta"].get("stop_reason") {
+                    self.stop = s.clone();
+                }
+                if let Some(s) = v["delta"].get("stop_details") {
+                    self.stop_details = s.clone();
+                }
+            }
+            "message_stop" => return Ok(false),
+            _ => {}
+        }
+        Ok(true)
+    }
+
+    fn finish(self) -> Value {
+        let content: Vec<Value> = self.content.into_iter().filter(|b| !b.is_null()).collect();
+        json!({"content": content, "stop_reason": self.stop, "stop_details": self.stop_details})
     }
 }
 
@@ -252,6 +530,63 @@ impl Llm for Http {
                 let body = to_claude(request, &self.model);
                 let auth = [("x-api-key", self.key.clone()), ("anthropic-version", "2026-10-21".to_string())];
                 from_claude(&self.post(&url, &auth, &body)?)
+            }
+        }
+    }
+
+    fn stream(&mut self, request: &Value, on_text: &mut dyn FnMut(&str) -> bool) -> Result<Value, String> {
+        match self.provider {
+            Provider::Gemini => {
+                let url = format!("{}/models/{}:streamGenerateContent?alt=sse", self.base, self.model);
+                let mut acc = GeminiAcc::default();
+                let auth = [("x-goog-api-key", self.key.clone())];
+                match self.post_stream(&url, &auth, &to_gemini(request), &mut |v| acc.chunk(&v, on_text))? {
+                    Streamed::Events => Ok(acc.finish()),
+                    // A plain answer is a list of chunks (or one answer) when the proxy ignores `alt=sse`.
+                    Streamed::Json(v) => {
+                        let mut acc = GeminiAcc::default();
+                        for c in v.as_array().cloned().unwrap_or_else(|| vec![v]) {
+                            acc.chunk(&c, on_text)?;
+                        }
+                        Ok(acc.finish())
+                    }
+                }
+            }
+            Provider::OpenAi | Provider::Compatible => {
+                let url = format!("{}/chat/completions", self.base);
+                let mut body = to_openai(request, &self.model, self.provider.tag());
+                body["stream"] = true.into();
+                let auth = if self.key.is_empty() { String::new() } else { format!("Bearer {}", self.key) };
+                let mut acc = OpenAiAcc::default();
+                let res = match self.post_stream(&url, &[("Authorization", auth)], &body, &mut |v| acc.chunk(&v, on_text))? {
+                    Streamed::Events => acc.finish(),
+                    Streamed::Json(v) => {
+                        if let Some(t) = v["choices"][0]["message"]["content"].as_str() {
+                            keep(on_text, t)?;
+                        }
+                        v
+                    }
+                };
+                from_openai(&res, self.provider.tag())
+            }
+            Provider::Claude => {
+                let url = format!("{}/v1/messages", self.base);
+                let mut body = to_claude(request, &self.model);
+                body["stream"] = true.into();
+                let auth = [("x-api-key", self.key.clone()), ("anthropic-version", "2026-10-21".to_string())];
+                let mut acc = ClaudeAcc::default();
+                let res = match self.post_stream(&url, &auth, &body, &mut |v| acc.event(&v, on_text))? {
+                    Streamed::Events => acc.finish(),
+                    Streamed::Json(v) => {
+                        for b in v["content"].as_array().into_iter().flatten() {
+                            if let Some(t) = b["text"].as_str() {
+                                keep(on_text, t)?;
+                            }
+                        }
+                        v
+                    }
+                };
+                from_claude(&res)
             }
         }
     }
@@ -731,5 +1066,88 @@ mod tests {
         assert!(from_claude(&json!({"stop_reason": "refusal", "content": []})).is_err());
         let r = from_claude(&json!({"stop_reason": "end_turn", "content": [{"type": "text", "text": "OK"}]})).unwrap();
         assert_eq!(r["candidates"][0]["content"]["parts"][0]["text"], "OK");
+    }
+
+    /// Run `sse` through the stream reader into `acc`, collecting the streamed text.
+    fn feed(sse: &str, mut handle: impl FnMut(Value, &mut dyn FnMut(&str) -> bool) -> Result<bool, String>) -> String {
+        let mut text = String::new();
+        read_sse(sse.as_bytes(), &mut |v| {
+            handle(v, &mut |t| {
+                text.push_str(t);
+                true
+            })
+        })
+        .unwrap();
+        text
+    }
+
+    #[test]
+    fn claude_stream_assembles_blocks() {
+        let sse = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{}}\n\n\
+            data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n\
+            data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"hm\"}}\n\n\
+            data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig\"}}\n\n\
+            data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\
+            data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"Run\"}}\n\n\
+            data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"ning.\"}}\n\n\
+            data: {\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"run_drc\",\"input\":{}}}\n\n\
+            data: {\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"cell\\\":\"}}\n\n\
+            data: {\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"a\\\"}\"}}\n\n\
+            data: {\"type\":\"content_block_stop\",\"index\":2}\n\n\
+            data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"}}\n\n\
+            data: {\"type\":\"message_stop\"}\n\n";
+        let mut acc = ClaudeAcc::default();
+        let text = feed(sse, |v, f| acc.event(&v, f));
+        assert_eq!(text, "Running.");
+        let r = from_claude(&acc.finish()).unwrap();
+        let parts = &r["candidates"][0]["content"]["parts"];
+        assert_eq!(parts[0]["text"], "Running.");
+        assert_eq!(parts[1]["functionCall"]["args"]["cell"], "a");
+        assert_eq!(parts[2]["raw"]["message"][0]["signature"], "sig");
+        assert_eq!(parts[2]["raw"]["message"][0]["thinking"], "hm");
+        assert_eq!(r["candidates"][0]["finishReason"], "tool_use");
+    }
+
+    #[test]
+    fn openai_stream_joins_tool_call_pieces() {
+        let sse = "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"Hi \"}}]}\r\n\r\n\
+            data: {\"choices\":[{\"delta\":{\"content\":\"there\"}}]}\n\n\
+            data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"run_drc\",\"arguments\":\"{\\\"ce\"}}]}}]}\n\n\
+            data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"ll\\\":\\\"b\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n\
+            data: [DONE]\n\n";
+        let mut acc = OpenAiAcc::default();
+        let text = feed(sse, |v, f| acc.chunk(&v, f));
+        assert_eq!(text, "Hi there");
+        let r = from_openai(&acc.finish(), "openai").unwrap();
+        let parts = &r["candidates"][0]["content"]["parts"];
+        assert_eq!(parts[0]["text"], "Hi there");
+        assert_eq!(parts[1]["functionCall"]["id"], "c1");
+        assert_eq!(parts[1]["functionCall"]["args"]["cell"], "b");
+    }
+
+    #[test]
+    fn gemini_stream_merges_text_and_keeps_signatures() {
+        let sse = "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"think\",\"thought\":true}]}}]}\n\n\
+            data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hel\"}]}}]}\n\n\
+            data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"lo\"}]}}]}\n\n\
+            data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"run_drc\",\"args\":{}},\"thoughtSignature\":\"s\"}]},\"finishReason\":\"STOP\"}]}\n\n";
+        let mut acc = GeminiAcc::default();
+        let text = feed(sse, |v, f| acc.chunk(&v, f));
+        assert_eq!(text, "Hello");
+        let r = acc.finish();
+        let parts = r["candidates"][0]["content"]["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[1]["text"], "Hello");
+        assert_eq!(parts[2]["thoughtSignature"], "s");
+        assert_eq!(r["candidates"][0]["finishReason"], "STOP");
+    }
+
+    #[test]
+    fn stream_abort_is_cancelled() {
+        let mut acc = OpenAiAcc::default();
+        let r = read_sse("data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n".as_bytes(), &mut |v| {
+            acc.chunk(&v, &mut |_| false)
+        });
+        assert_eq!(r, Err(CANCELLED.to_string()));
     }
 }
