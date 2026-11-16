@@ -9,15 +9,17 @@
 //! - Rules: single-layer `minWidth`, `minSpacing` and `minArea` from `spacings` in
 //!   `constraintGroups` (the `foundry` group) or from `physicalRules` / `spacingRules`.
 //! - Display: the layer-purpose's `techDisplays` packet, looked up in the display resource file
-//!   (`drDefinePacket`), gives the fill colour (`drDefineColor`) and, from its stipple bitmap
-//!   (`drDefineStipple`), the closest fill style.
+//!   (`drDefinePacket`), gives the fill and outline colours (`drDefineColor`), the stipple bitmap
+//!   (`drDefineStipple`, kept exactly, with the closest built-in fill style as a fallback), the
+//!   outline line style (`drDefineLineStyle`) and the fill style (`outline`, `solid`, `X`,
+//!   `stipple`, `outlineStipple`).
 //! - Stream numbers: from the layer map when one is given (it also becomes the technology's
 //!   stream map), otherwise the layer number with datatype 0 for `drawing` and the purpose
 //!   number for other purposes.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::tech::{FillStyle, LayerDef, Tech, auto_color};
+use crate::tech::{FillStyle, LayerDef, LineStyle, Stipple, Tech, auto_color, closest_fill};
 
 /// A SKILL list or atom.
 #[derive(Debug, Clone, PartialEq)]
@@ -142,51 +144,18 @@ fn parse(text: &str) -> Result<Sx, String> {
     Ok(Sx::List(stack.pop().unwrap()))
 }
 
-/// Fill style closest to a stipple bitmap (rows of 0 / 1).
-fn stipple_style(rows: &[Vec<u8>]) -> FillStyle {
-    let h = rows.len();
-    let w = rows.iter().map(Vec::len).max().unwrap_or(0);
-    if h == 0 || w == 0 {
-        return FillStyle::Solid;
-    }
-    let at = |r: usize, c: usize| rows[r % h].get(c % w).copied().unwrap_or(0) == 1;
-    let on: usize = (0..h).flat_map(|r| (0..w).map(move |c| (r, c))).filter(|&(r, c)| at(r, c)).count();
-    let density = on as f64 / (h * w) as f64;
-    if density == 0.0 {
-        return FillStyle::Outline;
-    }
-    if density > 0.9 {
-        return FillStyle::Solid;
-    }
-    // How often a set bit continues down-right ('\' on screen), down-left ('/'), right and down.
-    let (mut back, mut fwd, mut right, mut down) = (0, 0, 0, 0);
-    for r in 0..h {
-        for c in 0..w {
-            if at(r, c) {
-                back += at(r + 1, c + 1) as usize;
-                fwd += at(r + 1, c + w - 1) as usize;
-                right += at(r, c + 1) as usize;
-                down += at(r + 1, c) as usize;
-            }
-        }
-    }
-    let f = |n: usize| n as f64 / on as f64;
-    let (back, fwd, right, down) = (f(back), f(fwd), f(right), f(down));
-    if back > 0.6 && fwd < 0.3 {
-        FillStyle::BackHatch
-    } else if fwd > 0.6 && back < 0.3 {
-        FillStyle::Hatch
-    } else if back + fwd > 0.9 || (right > 0.6 && down > 0.6) {
-        FillStyle::Cross
-    } else if right > 0.6 || down > 0.6 {
-        FillStyle::Hatch
-    } else {
-        FillStyle::Dots
-    }
+/// A display packet: fill and outline colours, fill style, the exact stipple and the line style.
+#[derive(Debug, Clone, PartialEq)]
+struct Packet {
+    fill: [u8; 3],
+    outline: [u8; 3],
+    style: FillStyle,
+    stipple: Option<Stipple>,
+    line: LineStyle,
 }
 
-/// Display packets of a display resource file: packet name -> (colour, fill).
-fn read_drf(drf: &Sx, warnings: &mut Vec<String>) -> HashMap<String, ([u8; 3], FillStyle)> {
+/// Display packets of a display resource file by name.
+fn read_drf(drf: &Sx, warnings: &mut Vec<String>) -> HashMap<String, Packet> {
     let mut colors: HashMap<String, [u8; 3]> = HashMap::new();
     for def in drf.all("drDefineColor") {
         for e in &def.items()[1..] {
@@ -198,33 +167,86 @@ fn read_drf(drf: &Sx, warnings: &mut Vec<String>) -> HashMap<String, ([u8; 3], F
             }
         }
     }
-    let mut stipples: HashMap<String, FillStyle> = HashMap::new();
+    let mut stipples: HashMap<String, (FillStyle, Option<Stipple>)> = HashMap::new();
     for def in drf.all("drDefineStipple") {
         for e in &def.items()[1..] {
             let it = e.items();
             if let (Some(name), Some(Sx::List(rows))) = (it.get(1).and_then(Sx::atom), it.get(2)) {
                 let bits: Vec<Vec<u8>> =
                     rows.iter().map(|r| r.strings().iter().filter_map(|b| b.parse::<u8>().ok()).collect()).collect();
-                stipples.insert(name.to_string(), stipple_style(&bits));
+                stipples.insert(name.to_string(), (closest_fill(&bits), Stipple::from_bits(&bits)));
             }
         }
     }
+    // ( display name size (pattern bits) )
+    let mut lines: HashMap<String, LineStyle> = HashMap::new();
+    for def in drf.all("drDefineLineStyle") {
+        for e in &def.items()[1..] {
+            let it = e.items();
+            if let (Some(name), Some(size)) = (it.get(1).and_then(Sx::atom), it.get(2).and_then(Sx::atom)) {
+                let bits: Vec<u8> = match it.get(3) {
+                    Some(Sx::List(p)) => p.iter().filter_map(|b| b.atom()?.parse::<u8>().ok()).collect(),
+                    _ => vec![],
+                };
+                lines.insert(name.to_string(), LineStyle::from_pattern(size.parse().unwrap_or(1), &bits));
+            }
+        }
+    }
+    let line_of = |name: &str| {
+        lines.get(name).copied().unwrap_or_else(|| match name.to_ascii_lowercase().as_str() {
+            "dashed" | "longdash" => LineStyle::Dashed,
+            "dots" | "dotted" => LineStyle::Dotted,
+            "dashdot" => LineStyle::DashDot,
+            "shortdash" => LineStyle::ShortDash,
+            "doubledash" => LineStyle::DoubleDash,
+            "thickline" | "thick" => LineStyle::Thick,
+            "hidden" | "none" => LineStyle::None,
+            _ => LineStyle::Solid,
+        })
+    };
     let mut packets = HashMap::new();
     for def in drf.all("drDefinePacket") {
         for e in &def.items()[1..] {
             let s = e.strings();
             // ( display packet stipple lineStyle fillColor outlineColor [fillStyle] )
-            if let [_, packet, stipple, _line, fill, ..] = s.as_slice() {
-                let Some(color) = colors.get(fill) else {
+            if let [_, packet, stipple, line, fill, rest @ ..] = s.as_slice() {
+                let Some(&color) = colors.get(fill) else {
                     warnings.push(format!("display packet {packet}: unknown colour '{fill}'"));
                     continue;
                 };
-                let style = match s.get(6).map(String::as_str) {
+                let outline = rest.first().and_then(|o| colors.get(o)).copied().unwrap_or(color);
+                let (pattern_style, bitmap) = stipples.get(stipple).cloned().unwrap_or_else(|| {
+                    // The stock stipple names of the default display file.
+                    let builtin = match stipple.to_ascii_lowercase().as_str() {
+                        "solid" => FillStyle::Solid,
+                        "blank" | "none" => FillStyle::Outline,
+                        "slash" => FillStyle::Hatch,
+                        "backslash" => FillStyle::BackHatch,
+                        "x" | "cross" => FillStyle::CrossHatch,
+                        "hline" => FillStyle::HLine,
+                        "vline" => FillStyle::VLine,
+                        "grid" => FillStyle::Grid,
+                        "checker" => FillStyle::Checker,
+                        "brick" => FillStyle::Brick,
+                        "hzigzag" | "vzigzag" => FillStyle::ZigZag,
+                        "dot1" | "dot2" => FillStyle::SparseDots,
+                        _ => FillStyle::Dots,
+                    };
+                    (builtin, None)
+                });
+                let mut line = line_of(line);
+                let style = match rest.get(1).map(String::as_str) {
                     Some("outline") => FillStyle::Outline,
                     Some("solid") => FillStyle::Solid,
-                    _ => stipples.get(stipple).copied().unwrap_or(FillStyle::Hatch),
+                    Some("X") | Some("x") => FillStyle::Cross,
+                    Some("stipple") => {
+                        line = LineStyle::None;
+                        pattern_style
+                    }
+                    _ => pattern_style,
                 };
-                packets.insert(packet.clone(), (*color, style));
+                let stipple = bitmap.filter(|_| style.is_stipple());
+                packets.insert(packet.clone(), Packet { fill: color, outline, style, stipple, line });
             }
         }
     }
@@ -365,13 +387,15 @@ pub fn from_techfile(tf: &str, drf: Option<&str>, layer_map: Option<&str>, name:
     for (k, (l, p)) in pairs.iter().enumerate() {
         let name = if p == "drawing" { l.clone() } else { format!("{l}.{p}") };
         let packet = display.get(&(l.clone(), p.clone()));
-        let (color, fill) = match packet.and_then(|pk| packets.get(pk)) {
-            Some(&(c, f)) => (c, f),
+        let pk = match packet.and_then(|pk| packets.get(pk)) {
+            Some(pk) => pk.clone(),
             None => {
                 let [r, g, b, _] = auto_color(k);
-                ([r, g, b], if p == "drawing" { FillStyle::Hatch } else { FillStyle::Outline })
+                let style = if p == "drawing" { FillStyle::Hatch } else { FillStyle::Outline };
+                Packet { fill: [r, g, b], outline: [r, g, b], style, stipple: None, line: LineStyle::Solid }
             }
         };
+        let color = pk.fill;
         let drawing = p == "drawing";
         let rule = |kind| if drawing { rules.get(&(l.clone(), kind)).copied() } else { None };
         layers.push(LayerDef {
@@ -380,7 +404,10 @@ pub fn from_techfile(tf: &str, drf: Option<&str>, layer_map: Option<&str>, name:
             gds_layer: layer_no[l],
             gds_datatype: if drawing { 0 } else { purpose_no.get(p).copied().unwrap_or(0) % 256 },
             color: [color[0], color[1], color[2], 160],
-            fill,
+            fill: pk.style,
+            stipple: pk.stipple,
+            outline: (pk.outline != pk.fill).then_some(pk.outline),
+            line: pk.line,
             min_width: rule("w").map_or(0, um),
             min_spacing: rule("s").map_or(0, um),
             min_area: rule("a").map_or(0, |a| (a * (dbu_per_um * dbu_per_um) as f64).round() as i64),
@@ -451,6 +478,7 @@ layerDefinitions(
     ( Metal1 drawing )
     ( Metal1 pin )
     ( Via1 drawing )
+    ( Via1 pin )
     ( Ghost drawing )
   )
   techDisplays(
@@ -459,6 +487,7 @@ layerDefinitions(
     ( Metal1 drawing metal1  t t t t t )
     ( Metal1 pin     m1pin   t t t t t )
     ( Via1   drawing via1    t t t t t )
+    ( Via1   pin     via1pin t t t t t )
   )
 )
 constraintGroups(
@@ -480,6 +509,12 @@ drDefineColor(
   ( display red    255 0 0 )
   ( display blue   0 0 255 )
   ( display green  0 204 102 )
+  ( display white  255 255 255 )
+)
+drDefineLineStyle(
+  ( display solid     1 (1 1 1) )
+  ( display dashed    1 (1 1 1 1 0 0) )
+  ( display thickLine 3 (1 1 1) )
 )
 drDefineStipple(
   ( display solid ( (1 1 1 1) (1 1 1 1) (1 1 1 1) (1 1 1 1) ) )
@@ -493,6 +528,8 @@ drDefinePacket(
   ( display metal1 solid solid blue  blue )
   ( display m1pin  cross solid blue  blue outlineStipple )
   ( display via1   dots  solid green green )
+  ( display via1pin dots dashed white green X )
+  ( display nwell  dots  dashed green green stipple )
 )
 "#;
 
@@ -500,7 +537,7 @@ drDefinePacket(
     fn reads_layers_units_rules_and_display() {
         let (t, w) = from_techfile(TF, Some(DRF), None, "demo").unwrap();
         let names: Vec<&str> = t.layers.iter().map(|l| l.name.as_str()).collect();
-        assert_eq!(names, ["Poly", "Metal1", "Metal1.pin", "Via1"]);
+        assert_eq!(names, ["Poly", "Metal1", "Metal1.pin", "Via1", "Via1.pin"]);
         assert_eq!((t.dbu_per_um, t.grid), (2000, 10));
         let m1 = &t.layers[1];
         assert_eq!((m1.gds_layer, m1.gds_datatype, m1.min_width, m1.min_spacing, m1.min_area), (30, 0, 180, 200, 168000));
@@ -508,8 +545,18 @@ drDefinePacket(
         assert_eq!((t.layers[0].min_width, t.layers[0].fill), (100, FillStyle::BackHatch));
         assert_eq!(&m1.color[..3], &[0, 0, 255]);
         assert_eq!(m1.fill, FillStyle::Solid);
-        assert_eq!((t.layers[2].gds_datatype, t.layers[2].fill), (251, FillStyle::Cross));
+        assert_eq!(m1.stipple, None, "solid needs no bitmap");
+        let diag = Stipple { rows: vec!["1000".into(), "0100".into(), "0010".into(), "0001".into()] };
+        assert_eq!(t.layers[0].stipple.as_ref(), Some(&diag), "the bitmap is kept exactly");
+        assert_eq!(t.layers[0].pattern(), Some(diag));
+        assert_eq!((t.layers[2].gds_datatype, t.layers[2].fill), (251, FillStyle::Checker));
         assert_eq!(t.layers[3].fill, FillStyle::Dots);
+        let vp = &t.layers[4];
+        assert_eq!(
+            (vp.fill, vp.line, vp.color[..3].to_vec(), vp.outline),
+            (FillStyle::Cross, LineStyle::Dashed, vec![255, 255, 255], Some([0, 204, 102]))
+        );
+        assert_eq!((vp.stipple.as_ref(), vp.pattern()), (None, None), "X draws no stipple");
         assert!(w.iter().any(|w| w.contains("no layer map")), "{w:?}");
     }
 
@@ -534,8 +581,27 @@ drDefinePacket(
 
     #[test]
     fn stipple_classification() {
-        let s = |rows: &[&[u8]]| stipple_style(&rows.iter().map(|r| r.to_vec()).collect::<Vec<_>>());
+        let s = |rows: &[&[u8]]| closest_fill(&rows.iter().map(|r| r.to_vec()).collect::<Vec<_>>());
         assert_eq!(s(&[&[0, 0], &[0, 0]]), FillStyle::Outline);
         assert_eq!(s(&[&[0, 0, 0, 1], &[0, 0, 1, 0], &[0, 1, 0, 0], &[1, 0, 0, 0]]), FillStyle::Hatch);
+        assert_eq!(s(&[&[1, 1, 1, 1], &[0, 0, 0, 0]]), FillStyle::HLine);
+        assert_eq!(s(&[&[1, 0], &[1, 0]]), FillStyle::VLine);
+        assert_eq!(s(&[&[1, 0], &[0, 1]]), FillStyle::Checker);
+        // Every built-in bitmap classifies as itself.
+        for f in FillStyle::ALL.into_iter().filter(|f| f.is_stipple()) {
+            let rows: Vec<Vec<u8>> =
+                f.bitmap().unwrap().rows.iter().map(|r| r.bytes().map(|b| (b == b'1') as u8).collect()).collect();
+            assert_eq!(closest_fill(&rows), f, "{f:?}");
+        }
+    }
+
+    #[test]
+    fn line_styles_from_patterns() {
+        assert_eq!(LineStyle::from_pattern(1, &[1, 1, 1]), LineStyle::Solid);
+        assert_eq!(LineStyle::from_pattern(3, &[1, 1, 1]), LineStyle::Thick);
+        assert_eq!(LineStyle::from_pattern(1, &[0, 0]), LineStyle::None);
+        for l in LineStyle::ALL.into_iter().filter(|l| !l.pattern().is_empty()) {
+            assert_eq!(LineStyle::from_pattern(1, l.pattern()), l);
+        }
     }
 }

@@ -17,7 +17,11 @@
 //! area = 0.0                   # µm², optional minimum area
 //! routing = false              # optional
 //! color = "#4cc85a"            # optional, "#rrggbb" or "#rrggbbaa"
-//! fill = "hatch"               # optional: solid hatch backhatch cross dots outline
+//! fill = "hatch"               # optional: solid outline cross (X) hatch backhatch crosshatch
+//!                              #   hline vline grid dots sparsedots checker brick zigzag
+//! stipple = ["1000", "0100"]   # optional custom stipple bitmap (rows of 0 / 1)
+//! outline = "#ffffff"          # optional outline colour, default the fill colour
+//! line = "dashed"              # optional: solid dashed shortdash dotted dashdot doubledash thick none
 //!
 //! [roles]                      # which layers / vias play the device roles (see LayerRoles)
 //! diffusion = ["diff", "tap"]
@@ -118,8 +122,8 @@ use serde::Deserialize;
 
 use crate::signoff::Runset;
 use crate::tech::{
-    CapDef, DeviceRules, FillStyle, LayerCap, LayerDef, LayerRoles, LengthUnit, ModelLib, MosDef, PcellLayer, PinLabel, ResDef,
-    Tech, ViaDef,
+    CapDef, DeviceRules, FillStyle, LayerCap, LayerDef, LayerRoles, LengthUnit, LineStyle, ModelLib, MosDef, PcellLayer,
+    PinLabel, ResDef, Stipple, Tech, ViaDef,
 };
 use crate::tech_import::{apply_lyt, from_lyp};
 
@@ -178,6 +182,9 @@ struct LayerEntry {
     routing: Option<bool>,
     color: Option<String>,
     fill: Option<FillStyle>,
+    stipple: Option<Vec<String>>,
+    outline: Option<String>,
+    line: Option<LineStyle>,
 }
 
 #[derive(Deserialize)]
@@ -317,6 +324,19 @@ pub fn parse(text: &str, base: &Path, env: &dyn Fn(&str) -> Option<String>) -> R
         }
         if let Some(fill) = e.fill {
             l.fill = fill;
+        }
+        if let Some(rows) = &e.stipple {
+            if rows.is_empty() || rows.iter().any(|r| r.is_empty() || r.bytes().any(|b| b != b'0' && b != b'1')) {
+                return Err(format!("layer '{}': a stipple is rows of 0 and 1", e.name));
+            }
+            l.stipple = Some(Stipple { rows: rows.clone() });
+        }
+        if let Some(c) = &e.outline {
+            let [r, g, b, _] = parse_color(c).ok_or_else(|| format!("layer '{}': bad outline colour '{c}'", e.name))?;
+            l.outline = Some([r, g, b]);
+        }
+        if let Some(line) = e.line {
+            l.line = line;
         }
     }
     if tech.layers.is_empty() {
@@ -591,6 +611,18 @@ mod tests {
         assert_eq!(parse_color("#102030"), Some([16, 32, 48, crate::tech_import::ALPHA]));
         assert_eq!(parse_color("#10203040"), Some([16, 32, 48, 64]));
         assert_eq!(parse_color("102030"), None);
+    }
+
+    #[test]
+    fn display_packet_fields() {
+        let env = |_: &str| None;
+        let text = "name = \"t\"\ngrid = 0.005\n[[layer]]\nname = \"m1\"\ngds = 34\nfill = \"backslash\"\n\
+                    stipple = [\"10\", \"01\"]\noutline = \"#ffffff\"\nline = \"dashed\"\n";
+        let l = parse(text, Path::new("."), &env).unwrap().tech.layers.remove(0);
+        assert_eq!((l.fill, l.line, l.outline), (FillStyle::BackHatch, LineStyle::Dashed, Some([255, 255, 255])));
+        assert_eq!(l.pattern().map(|s| s.rows), Some(vec!["10".to_string(), "01".to_string()]));
+        let bad = text.replace("\"01\"", "\"0x\"");
+        assert!(parse(&bad, Path::new("."), &env).unwrap_err().contains("rows of 0 and 1"));
     }
 
     #[test]

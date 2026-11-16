@@ -39,6 +39,13 @@ the layout commands; every item shows its bindkey, and the command palette lists
   cells can be picked.
 - Each row shows the fill pattern, the name and the GDS `layer/datatype`. Hover a row to
   see its minimum width and spacing.
+- Layers are drawn like Virtuoso display packets: a stipple in the fill colour, window
+  anchored, with an outline in the outline colour and line style (see
+  [Technology](technology.md)). Double-click a row, or right-click it and choose **Edit
+  display...**, to open the **Layer Display** editor (also **Tools > Layer Display...**). It is
+  the counterpart of Virtuoso's Display Resource Editor: per layer, the fill and outline
+  colours, the fill style, a stipple bitmap you can paint bit by bit (up to 32 × 32) and the
+  line style, with a live preview. **Apply** stores the edits in the technology.
 
 ## Drawing
 

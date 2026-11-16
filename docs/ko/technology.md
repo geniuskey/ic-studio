@@ -54,7 +54,15 @@ metal1), `via1`, `via2`.
 }
 ```
 
-- `fill`: `solid`, `hatch`, `backhatch`, `cross`, `dots`, `outline` 중 하나.
+- 표시는 Cadence Virtuoso 디스플레이 패킷 방식을 따릅니다. 도형은 레이어 색의 스티플 비트맵으로
+  그려지며, 비트 하나가 화면 포인트 하나이고 창 기준으로 고정되어 이웃하거나 겹친 도형의 패턴이
+  맞물립니다. 외곽선은 외곽선 색과 선 스타일로 그립니다. Virtuoso처럼 스티플 픽셀은 불투명합니다.
+  - `fill`: `solid`, `outline`, `cross`(Virtuoso 채움 스타일 X: 외곽선과 두 대각선, 컷 레이어용) 또는
+    스티플 `hatch`(`/`), `backhatch`(`\`), `crosshatch`, `hline`, `vline`, `grid`, `dots`,
+    `sparsedots`, `checker`, `brick`, `zigzag`.
+  - `stipple`(선택): 스티플 채움에 쓰는 사용자 비트맵. `0` / `1` 행, 예: `["1000", "0100", "0010", "0001"]`.
+  - `outline`(선택): 외곽선 색 `[r, g, b]`. 기본값은 채움 색.
+  - `line`(선택): `solid`, `dashed`, `shortdash`, `dotted`, `dashdot`, `doubledash`, `thick`, `none`.
 - `min_width`, `min_spacing`: dbu 단위. 0이면 검사하지 않습니다. `min_area`(선택): dbu² 단위.
   PCell 콘택 판과 라우터 비아 패드가 이 값에 도달하도록 커집니다.
 - `routing`: 배선 레이어는 넷 라벨을 담고 추출과 라우터에서 사용됩니다.
@@ -204,7 +212,7 @@ length_unit = "um"   # 모델이 W / L을 µm로 받음
 |---|---|
 | `name`, `dbu_per_um`, `grid` | 테크놀로지 이름, 데이터베이스 단위, 스냅 그리드(µm) |
 | `lyp`, `lyt` | 레이어와 색상을 제공하는 KLayout 파일(선택) |
-| `[[layer]]` | `name`, `gds`, `datatype`, `width`, `space`, `area`(µm²), `routing`, `color`(`#rrggbb`), `fill`. 레이어를 추가하거나 `.lyp`에서 온 레이어에 룰을 설정 |
+| `[[layer]]` | `name`, `gds`, `datatype`, `width`, `space`, `area`(µm²), `routing`, `color`(`#rrggbb`), `fill`, `stipple`, `outline`, `line`. 레이어를 추가하거나 `.lyp`에서 온 레이어에 룰을 설정 |
 | `[roles]` | `diffusion`(리스트), `tap`, `poly`, `nwell`, `nimplant`(공정이 n+ 임플란트를 그리지 않으면 비움: n+는 `pimplant` 밖의 확산), `pimplant`, `diff_contact`, `poly_contact`(비아 이름), `label` |
 | `[rules]` | `gate_contact_space`, `poly_endcap`, `implant_enc`, `nwell_enc`, `marker_enc`(확산 둘레의 소자 마커 레이어), `bend_corner`(꺾인 게이트의 모서리 스퀘어 중 W에 포함하는 비율, 0~1, 기본값 1. [PCell](pcells.md#추출이-인식하는-소자-형상) 참고) |
 | `[[pin_label]]` | 도전 레이어의 넷 라벨 레이어: `layer`, `label`(예: `Metal1`과 `Metal1.text`). 라우팅은 이름 붙은 넷의 라벨을 여기에 두고, 추출은 여기의 라벨을 그 레이어 넷의 이름으로 읽음 |
@@ -291,8 +299,10 @@ IC Studio는 KLayout 레이어 속성(`.lyp`)과, 선택적으로 KLayout 테크
 
 - 구체적인 `layer/datatype` 소스가 있는 모든 레이어 항목이 레이어가 됩니다. 이름은 항목 이름에서
   가져옵니다(공백은 `_`, 중복은 `_2`, `_3` 등).
-- 색상은 채우기 또는 테두리 색에서 가져오고, KLayout 디더 패턴은 가장 가까운 채우기 스타일로
-  매핑됩니다.
+- 색상은 채우기 또는 테두리 색에서 가져옵니다(테두리 색이 다르면 외곽선 색이 됩니다). 디더
+  패턴은 기본(`I0`–`I46`)이든 사용자 정의든 정확한 스티플 비트맵으로 보존됩니다. 선 스타일(기본
+  또는 사용자 정의)과 테두리 폭이 외곽선 선 스타일을 정하며(폭 0이면 외곽선 없음), 빈 패턴의
+  `xfill`은 X 채움이 됩니다.
 - `poly`, `li`, `met1`, `metal2`, `m3` 같은 이름의 레이어는 배선 레이어로 표시됩니다.
 - `.lyt`에서: 테크놀로지 이름, 데이터베이스 단위, 기본 그리드.
 
@@ -318,8 +328,9 @@ ics import-tech myproj mytech.tf --drf display.drf --layermap mytech.layermap
 - 단위: µm당 데이터베이스 단위는 `viewTypeUnits`(`maskLayout`), 그리드는 `mfgGridResolution`.
 - 룰: drawing 퍼포스의 단일 레이어 `minWidth`, `minSpacing`, `minArea`(`foundry` 제약 그룹 또는
   `physicalRules`).
-- 표시: `.drf`에서 레이어-퍼포스의 `techDisplays` 패킷이 채움 색을, 그 스티플 비트맵이 가장 가까운
-  채움 스타일(solid, hatch, cross, dots, outline)을 정합니다.
+- 표시: `.drf`에서 레이어-퍼포스의 `techDisplays` 패킷이 채움 색과 외곽선 색, 스티플 비트맵(그대로
+  보존), 선 스타일(`drDefineLineStyle`), 채움 스타일(`outline`, `solid`, `X`, `stipple`,
+  `outlineStipple`)을 정하므로 레이어가 Virtuoso에서와 같은 모습으로 보입니다.
 - 스트림 번호: 레이어 맵에서 가져오며 맵은 테크놀로지의 스트림 맵이 됩니다. 맵이 없으면 레이어
   번호와 `drawing`의 datatype 0을 쓰고 추정임을 알립니다.
 

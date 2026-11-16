@@ -2,16 +2,352 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+/// How a layer's shapes are filled, after the fill styles of Cadence Virtuoso display packets:
+/// no fill, solid, an X from corner to corner, or a stipple bitmap drawn in the fill colour
+/// (one bit per screen point, anchored to the window so neighbouring shapes line up).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum FillStyle {
     #[default]
     Solid,
+    /// `/` lines (Virtuoso `slash`).
+    #[serde(alias = "slash")]
     Hatch,
+    /// `\` lines (Virtuoso `backSlash`).
+    #[serde(alias = "backslash")]
     BackHatch,
+    /// Outline with an X from corner to corner (Virtuoso fill style `X`, used for cuts).
+    #[serde(alias = "x")]
     Cross,
+    /// Staggered dots (Virtuoso `dots`).
     Dots,
+    /// No fill, outline only.
     Outline,
+    /// Horizontal lines (Virtuoso `hLine`).
+    HLine,
+    /// Vertical lines (Virtuoso `vLine`).
+    VLine,
+    /// Horizontal and vertical lines (Virtuoso `grid`).
+    Grid,
+    /// Both diagonals (Virtuoso `x` stipple).
+    CrossHatch,
+    /// One-point checkerboard, a 50 % screen (Virtuoso `checker`).
+    Checker,
+    /// Brick wall (Virtuoso `brick`).
+    Brick,
+    /// Horizontal zigzag (Virtuoso `hZigZag`).
+    ZigZag,
+    /// Widely spaced dots (Virtuoso `dot1`).
+    SparseDots,
+}
+
+impl FillStyle {
+    pub const ALL: [FillStyle; 14] = [
+        FillStyle::Solid,
+        FillStyle::Outline,
+        FillStyle::Cross,
+        FillStyle::Hatch,
+        FillStyle::BackHatch,
+        FillStyle::CrossHatch,
+        FillStyle::HLine,
+        FillStyle::VLine,
+        FillStyle::Grid,
+        FillStyle::Dots,
+        FillStyle::SparseDots,
+        FillStyle::Checker,
+        FillStyle::Brick,
+        FillStyle::ZigZag,
+    ];
+
+    /// Whether the style draws a stipple pattern (everything but solid, outline and X).
+    pub fn is_stipple(self) -> bool {
+        !matches!(self, FillStyle::Solid | FillStyle::Outline | FillStyle::Cross)
+    }
+
+    /// The built-in stipple bitmap of a stipple style (rows top to bottom, `1` = set).
+    pub fn bitmap(self) -> Option<Stipple> {
+        let rows: &[&str] = match self {
+            FillStyle::Solid | FillStyle::Outline | FillStyle::Cross => return None,
+            FillStyle::Hatch => &["00000001", "00000010", "00000100", "00001000", "00010000", "00100000", "01000000", "10000000"],
+            FillStyle::BackHatch => {
+                &["10000000", "01000000", "00100000", "00010000", "00001000", "00000100", "00000010", "00000001"]
+            }
+            FillStyle::CrossHatch => {
+                &["10000001", "01000010", "00100100", "00011000", "00011000", "00100100", "01000010", "10000001"]
+            }
+            FillStyle::HLine => &["1111", "0000", "0000", "0000"],
+            FillStyle::VLine => &["1000", "1000", "1000", "1000"],
+            FillStyle::Grid => &["11111111", "10000000", "10000000", "10000000", "10000000", "10000000", "10000000", "10000000"],
+            FillStyle::Dots => &["1000", "0000", "0010", "0000"],
+            FillStyle::SparseDots => {
+                &["10000000", "00000000", "00000000", "00000000", "00001000", "00000000", "00000000", "00000000"]
+            }
+            FillStyle::Checker => &["10", "01"],
+            FillStyle::Brick => &["11111111", "10000000", "10000000", "10000000", "11111111", "00001000", "00001000", "00001000"],
+            FillStyle::ZigZag => {
+                &["10000000", "01000001", "00100010", "00010100", "00001000", "00000000", "00000000", "00000000"]
+            }
+        };
+        Some(Stipple { rows: rows.iter().map(|r| r.to_string()).collect() })
+    }
+
+    /// Lower-case name as written in technology files.
+    pub fn name(self) -> &'static str {
+        match self {
+            FillStyle::Solid => "solid",
+            FillStyle::Hatch => "hatch",
+            FillStyle::BackHatch => "backhatch",
+            FillStyle::Cross => "cross",
+            FillStyle::Dots => "dots",
+            FillStyle::Outline => "outline",
+            FillStyle::HLine => "hline",
+            FillStyle::VLine => "vline",
+            FillStyle::Grid => "grid",
+            FillStyle::CrossHatch => "crosshatch",
+            FillStyle::Checker => "checker",
+            FillStyle::Brick => "brick",
+            FillStyle::ZigZag => "zigzag",
+            FillStyle::SparseDots => "sparsedots",
+        }
+    }
+}
+
+/// A stipple bitmap, as in a Virtuoso display resource file (`drDefineStipple`): rows from top
+/// to bottom of `0` / `1`, repeated over the shape. Short rows are padded with `0`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Stipple {
+    pub rows: Vec<String>,
+}
+
+impl Stipple {
+    /// From rows of 0 / 1 values; `None` when empty.
+    pub fn from_bits(rows: &[Vec<u8>]) -> Option<Stipple> {
+        let s = Stipple { rows: rows.iter().map(|r| r.iter().map(|&b| if b == 1 { '1' } else { '0' }).collect()).collect() };
+        (s.width() > 0 && s.height() > 0).then_some(s)
+    }
+
+    pub fn width(&self) -> usize {
+        self.rows.iter().map(String::len).max().unwrap_or(0)
+    }
+
+    pub fn height(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Bit at column `x`, row `y` (both wrap around).
+    pub fn bit(&self, x: usize, y: usize) -> bool {
+        let (w, h) = (self.width(), self.height());
+        if w == 0 || h == 0 {
+            return false;
+        }
+        self.rows[y % h].as_bytes().get(x % w) == Some(&b'1')
+    }
+
+    /// The 0 / 1 rows of the bitmap, padded to its width.
+    pub fn bits(&self) -> Vec<Vec<u8>> {
+        (0..self.height()).map(|y| (0..self.width()).map(|x| self.bit(x, y) as u8).collect()).collect()
+    }
+
+    /// The built-in fill style that looks most like this bitmap.
+    pub fn closest_fill(&self) -> FillStyle {
+        closest_fill(&self.bits())
+    }
+
+    /// Share of set bits (0 to 1).
+    pub fn density(&self) -> f64 {
+        let (w, h) = (self.width(), self.height());
+        if w * h == 0 {
+            return 0.0;
+        }
+        self.rows.iter().map(|r| r.bytes().filter(|&b| b == b'1').count()).sum::<usize>() as f64 / (w * h) as f64
+    }
+}
+
+/// Fill style closest to a stipple bitmap (rows of 0 / 1).
+pub fn closest_fill(rows: &[Vec<u8>]) -> FillStyle {
+    let h = rows.len();
+    let w = rows.iter().map(Vec::len).max().unwrap_or(0);
+    if h == 0 || w == 0 {
+        return FillStyle::Solid;
+    }
+    let at = |r: usize, c: usize| rows[r % h].get(c % w).copied().unwrap_or(0) == 1;
+    let on: usize = (0..h).flat_map(|r| (0..w).map(move |c| (r, c))).filter(|&(r, c)| at(r, c)).count();
+    let density = on as f64 / (h * w) as f64;
+    if density == 0.0 {
+        return FillStyle::Outline;
+    }
+    if density > 0.9 {
+        return FillStyle::Solid;
+    }
+    if let Some(f) = FillStyle::ALL.into_iter().find(|f| f.bitmap().is_some_and(|b| same_tiling(rows, &b))) {
+        return f;
+    }
+    // How often a set bit continues down-right ('\' on screen), down-left ('/'), right and down.
+    let (mut back, mut fwd, mut right, mut down) = (0, 0, 0, 0);
+    for r in 0..h {
+        for c in 0..w {
+            if at(r, c) {
+                back += at(r + 1, c + 1) as usize;
+                fwd += at(r + 1, c + w - 1) as usize;
+                right += at(r, c + 1) as usize;
+                down += at(r + 1, c) as usize;
+            }
+        }
+    }
+    let f = |n: usize| n as f64 / on as f64;
+    let (back, fwd, right, down) = (f(back), f(fwd), f(right), f(down));
+    let full_row = (0..h).any(|r| (0..w).all(|c| at(r, c)));
+    let full_col = (0..w).any(|c| (0..h).all(|r| at(r, c)));
+    let off_rows = (0..h).any(|r| !(0..w).all(|c| at(r, c)) && (0..w).any(|c| at(r, c)));
+    if full_row && full_col {
+        FillStyle::Grid
+    } else if full_row {
+        if off_rows { FillStyle::Brick } else { FillStyle::HLine }
+    } else if full_col {
+        FillStyle::VLine
+    } else if back > 0.6 && fwd < 0.3 {
+        FillStyle::BackHatch
+    } else if fwd > 0.6 && back < 0.3 {
+        FillStyle::Hatch
+    } else if density >= 0.4 {
+        FillStyle::Checker
+    } else if back + fwd > 0.9 {
+        FillStyle::CrossHatch
+    } else if right > 0.6 {
+        FillStyle::HLine
+    } else if down > 0.6 {
+        FillStyle::VLine
+    } else if density < 0.05 {
+        FillStyle::SparseDots
+    } else {
+        FillStyle::Dots
+    }
+}
+
+/// Whether the bitmap `rows` is the built-in stipple `b`, tiled and shifted.
+fn same_tiling(rows: &[Vec<u8>], b: &Stipple) -> bool {
+    let (h, w) = (rows.len(), rows.iter().map(Vec::len).max().unwrap_or(0));
+    let (bw, bh) = (b.width(), b.height());
+    if w == 0 || h == 0 || bw == 0 || bh == 0 {
+        return false;
+    }
+    let lcm = |a: usize, b: usize| a / gcd(a, b) * b;
+    let (tw, th) = (lcm(w, bw), lcm(h, bh));
+    if tw * th > 4096 {
+        return false;
+    }
+    let at = |r: usize, c: usize| rows[r % h].get(c % w).copied().unwrap_or(0) == 1;
+    (0..bh).any(|dy| (0..bw).any(|dx| (0..th).all(|y| (0..tw).all(|x| at(y, x) == b.bit(x + dx, y + dy)))))
+}
+
+fn gcd(a: usize, b: usize) -> usize {
+    if b == 0 { a } else { gcd(b, a % b) }
+}
+
+/// Outline line style, after the Virtuoso display line styles (`drDefineLineStyle`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LineStyle {
+    #[default]
+    Solid,
+    Dashed,
+    #[serde(alias = "dots")]
+    Dotted,
+    DashDot,
+    ShortDash,
+    DoubleDash,
+    /// Solid, three points wide (Virtuoso `thickLine`).
+    #[serde(alias = "thickline")]
+    Thick,
+    /// No outline (Virtuoso `hidden`, or the fill style `stipple`).
+    #[serde(alias = "hidden")]
+    None,
+}
+
+impl LineStyle {
+    pub const ALL: [LineStyle; 8] = [
+        LineStyle::Solid,
+        LineStyle::Dashed,
+        LineStyle::ShortDash,
+        LineStyle::Dotted,
+        LineStyle::DashDot,
+        LineStyle::DoubleDash,
+        LineStyle::Thick,
+        LineStyle::None,
+    ];
+
+    /// Line width in screen points (0 for none).
+    pub fn width(self) -> f32 {
+        match self {
+            LineStyle::None => 0.0,
+            LineStyle::Thick => 3.0,
+            _ => 1.0,
+        }
+    }
+
+    /// Repeating on / off pattern along the line, one entry per screen point (empty = solid).
+    pub fn pattern(self) -> &'static [u8] {
+        match self {
+            LineStyle::Solid | LineStyle::Thick | LineStyle::None => &[],
+            LineStyle::Dashed => &[1, 1, 1, 1, 1, 1, 0, 0, 0],
+            LineStyle::ShortDash => &[1, 1, 1, 0, 0, 0],
+            LineStyle::Dotted => &[1, 0, 0],
+            LineStyle::DashDot => &[1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0],
+            LineStyle::DoubleDash => &[1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0],
+        }
+    }
+
+    /// Closest style to a Virtuoso line style: its width and on / off pattern.
+    pub fn from_pattern(width: u32, bits: &[u8]) -> LineStyle {
+        let on = bits.iter().filter(|&&b| b == 1).count();
+        if !bits.is_empty() && on == 0 {
+            return LineStyle::None;
+        }
+        if on == bits.len() {
+            return if width >= 2 { LineStyle::Thick } else { LineStyle::Solid };
+        }
+        // Lengths of the runs of set bits, taken cyclically from the first gap.
+        let start = bits.iter().position(|&b| b == 0).unwrap_or(0);
+        let mut runs = vec![];
+        let mut n = 0;
+        for i in 0..bits.len() {
+            if bits[(start + i) % bits.len()] == 1 {
+                n += 1;
+            } else if n > 0 {
+                runs.push(n);
+                n = 0;
+            }
+        }
+        if n > 0 {
+            runs.push(n);
+        }
+        let longest = runs.iter().copied().max().unwrap_or(0);
+        match runs.as_slice() {
+            [_, _, ..] if runs.iter().any(|&r| r <= 1) && longest > 1 => LineStyle::DashDot,
+            [_, _, ..] if runs.iter().all(|&r| r > 1) && runs.iter().any(|&r| r != longest) => LineStyle::DoubleDash,
+            _ if longest <= 1 => LineStyle::Dotted,
+            _ if longest <= 3 => LineStyle::ShortDash,
+            _ => LineStyle::Dashed,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            LineStyle::Solid => "solid",
+            LineStyle::Dashed => "dashed",
+            LineStyle::Dotted => "dotted",
+            LineStyle::DashDot => "dashdot",
+            LineStyle::ShortDash => "shortdash",
+            LineStyle::DoubleDash => "doubledash",
+            LineStyle::Thick => "thick",
+            LineStyle::None => "none",
+        }
+    }
+}
+
+fn is_default<T: Default + PartialEq>(v: &T) -> bool {
+    *v == T::default()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -24,6 +360,16 @@ pub struct LayerDef {
     pub color: [u8; 4],
     #[serde(default)]
     pub fill: FillStyle,
+    /// Stipple bitmap drawn in place of the fill style's built-in one (from a Virtuoso display
+    /// file, say); only used by stipple fill styles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stipple: Option<Stipple>,
+    /// Outline colour when it differs from the fill colour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outline: Option<[u8; 3]>,
+    /// Outline line style.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub line: LineStyle,
     /// Minimum width in database units (0 = unchecked).
     #[serde(default)]
     pub min_width: i64,
@@ -47,6 +393,21 @@ fn is_zero(v: &i64) -> bool {
 }
 
 impl LayerDef {
+    /// With the outline line style `line`.
+    pub fn line(mut self, line: LineStyle) -> LayerDef {
+        self.line = line;
+        self
+    }
+
+    /// The stipple pattern the layer is drawn with: its own bitmap or the fill style's
+    /// built-in one; `None` for solid, outline and X fills.
+    pub fn pattern(&self) -> Option<Stipple> {
+        if !self.fill.is_stipple() {
+            return None;
+        }
+        self.stipple.clone().filter(|s| s.width() > 0 && s.height() > 0).or_else(|| self.fill.bitmap())
+    }
+
     /// Placeholder for a GDS layer without a definition: named `L{layer}D{datatype}`,
     /// hatched, with the `k`-th colour of [`auto_color`].
     pub fn generated(gds_layer: u16, gds_datatype: u16, k: usize) -> LayerDef {
@@ -56,6 +417,9 @@ impl LayerDef {
             gds_datatype,
             color: auto_color(k),
             fill: FillStyle::Hatch,
+            stipple: None,
+            outline: None,
+            line: LineStyle::Solid,
             min_width: 0,
             min_spacing: 0,
             routing: false,
@@ -679,6 +1043,9 @@ impl Tech {
             gds_datatype: 0,
             color,
             fill,
+            stipple: None,
+            outline: None,
+            line: LineStyle::Solid,
             min_width: w,
             min_spacing: s,
             routing,
@@ -704,19 +1071,21 @@ impl Tech {
             dbu_per_um: 1000,
             grid: 10,
             layers: vec![
-                l("nwell", 1, [120, 200, 120, 70], FillStyle::Dots, 860, 1400, false),
-                l("active", 2, [70, 190, 90, 150], FillStyle::Hatch, 220, 280, false),
-                l("nplus", 3, [230, 120, 60, 60], FillStyle::Outline, 440, 440, false),
-                l("pplus", 4, [200, 160, 60, 60], FillStyle::Outline, 440, 440, false),
+                // Display packets in the manner of a Virtuoso display.drf: stipples drawn in the
+                // layer colour, X for cuts, dashed outlines for wells, implants and the boundary.
+                l("nwell", 1, [120, 200, 120, 70], FillStyle::SparseDots, 860, 1400, false).line(LineStyle::Dashed),
+                l("active", 2, [70, 190, 90, 150], FillStyle::Dots, 220, 280, false),
+                l("nplus", 3, [230, 120, 60, 60], FillStyle::Outline, 440, 440, false).line(LineStyle::ShortDash),
+                l("pplus", 4, [200, 160, 60, 60], FillStyle::Outline, 440, 440, false).line(LineStyle::DashDot),
                 l("poly", 5, [230, 60, 60, 170], FillStyle::BackHatch, 180, 240, true),
                 l("contact", 6, [235, 235, 235, 220], FillStyle::Cross, 220, 250, false),
                 l("metal1", 7, [80, 140, 250, 140], FillStyle::Hatch, 230, 230, true),
                 l("via1", 8, [250, 210, 80, 220], FillStyle::Cross, 260, 260, false),
                 l("metal2", 9, [210, 100, 230, 130], FillStyle::BackHatch, 280, 280, true),
                 l("via2", 10, [120, 230, 230, 220], FillStyle::Cross, 260, 260, false),
-                l("metal3", 11, [240, 170, 80, 120], FillStyle::Hatch, 280, 280, true),
+                l("metal3", 11, [240, 170, 80, 120], FillStyle::CrossHatch, 280, 280, true),
                 l("text", 63, [255, 255, 255, 255], FillStyle::Outline, 0, 0, false),
-                l("boundary", 62, [160, 160, 170, 255], FillStyle::Outline, 0, 0, false),
+                l("boundary", 62, [160, 160, 170, 255], FillStyle::Outline, 0, 0, false).line(LineStyle::Dashed),
             ],
             vias: vec![
                 v("contact", "active", "contact", "metal1", 220, 250, 100, 60, 10.0, 0.1e-3),

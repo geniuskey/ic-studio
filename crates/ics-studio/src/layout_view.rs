@@ -7,7 +7,7 @@ use ics_core::geom::IRect;
 use ics_core::hier::{self, CellIndex, Hier, LayoutSource, PLANE_EDGE, PLANE_FILL, PLANE_SMALL, Sprite, ViewQuery};
 use ics_core::layout::{ArraySpec, Geometry, Layout, Shape, Trans};
 use ics_core::project::{CellRef, Project};
-use ics_core::tech::{FillStyle, LayerDef, Tech};
+use ics_core::tech::{LayerDef, Tech};
 
 use crate::canvas::{View2D, nice_step};
 use crate::history::History;
@@ -18,12 +18,14 @@ mod commands;
 mod compare;
 mod edit;
 mod live;
+pub(crate) mod packet;
 mod smart;
 mod verify;
 pub use assist::Clip;
 pub use commands::{LayAction, Partial};
 pub use edit::LayRequest;
 use edit::{EditState, Handle};
+use packet::Packet;
 pub use verify::Verify;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -340,13 +342,7 @@ impl Default for LayoutEditor {
 /// contact / text, light gray boundary, yellows) are darkened to keep contrast.
 pub(crate) fn layer_color(def: &LayerDef, dark: bool) -> Color32 {
     let [r, g, b, _] = def.color;
-    if dark {
-        return Color32::from_rgb(r, g, b);
-    }
-    let luma = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
-    let k = (130.0 / luma.max(1.0)).min(1.0);
-    let f = |c: u8| (c as f32 * k).round() as u8;
-    Color32::from_rgb(f(r), f(g), f(b))
+    packet::display_color([r, g, b], dark)
 }
 
 pub fn um(dbu: i64, tech: &Tech) -> String {
@@ -355,71 +351,10 @@ pub fn um(dbu: i64, tech: &Tech) -> String {
     s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
-fn fill_alpha(def: &LayerDef) -> f32 {
-    let a = def.color[3] as f32 / 255.0;
-    let base = match def.fill {
-        FillStyle::Solid => 0.55,
-        FillStyle::Outline => 0.0,
-        _ => 0.18,
-    };
-    base * a
-}
-
-/// Fill a screen-space rect with the layer's stipple pattern (screen anchored so adjacent shapes line up).
+/// Draw a screen rect with the layer's display packet (stipple, outline, X).
 fn pattern_rect(painter: &egui::Painter, r: Rect, def: &LayerDef, emphasis: f32) {
-    let c = layer_color(def, painter.ctx().global_style().visuals.dark_mode);
-    let a = def.color[3] as f32 / 255.0;
-    let base_alpha = fill_alpha(def);
-    if base_alpha > 0.0 {
-        painter.rect_filled(r, 0.0, c.gamma_multiply(base_alpha * emphasis));
-    }
-    if r.width() < 3.0 || r.height() < 3.0 {
-        painter.rect_filled(r, 0.0, c.gamma_multiply(0.6 * emphasis));
-        return;
-    }
-    let clip = painter.with_clip_rect(r.intersect(painter.clip_rect()));
-    let stroke = Stroke::new(1.0, c.gamma_multiply((0.35 + 0.5 * a) * emphasis));
-    let sp = 8.0;
-    let diag = |forward: bool| {
-        // lines x - y = k*sp  (forward "/" uses x + y)
-        let (lo, hi) = if forward { (r.min.x + r.min.y, r.max.x + r.max.y) } else { (r.min.x - r.max.y, r.max.x - r.min.y) };
-        let mut k = (lo / sp).floor() * sp;
-        let mut n = 0;
-        while k <= hi && n < 4000 {
-            if forward {
-                clip.line_segment([Pos2::new(k - r.max.y, r.max.y), Pos2::new(k - r.min.y, r.min.y)], stroke);
-            } else {
-                clip.line_segment([Pos2::new(k + r.min.y, r.min.y), Pos2::new(k + r.max.y, r.max.y)], stroke);
-            }
-            k += sp;
-            n += 1;
-        }
-    };
-    match def.fill {
-        FillStyle::Hatch => diag(true),
-        FillStyle::BackHatch => diag(false),
-        FillStyle::Cross => {
-            clip.line_segment([r.left_top(), r.right_bottom()], stroke);
-            clip.line_segment([r.left_bottom(), r.right_top()], stroke);
-        }
-        FillStyle::Dots => {
-            let step = 6.0;
-            let mut y = (r.min.y / step).ceil() * step;
-            let mut n = 0;
-            while y < r.max.y && n < 20_000 {
-                let off = if ((y / step) as i64) % 2 == 0 { 0.0 } else { step / 2.0 };
-                let mut x = ((r.min.x - off) / step).ceil() * step + off;
-                while x < r.max.x && n < 20_000 {
-                    clip.circle_filled(Pos2::new(x, y), 0.8, stroke.color);
-                    x += step;
-                    n += 1;
-                }
-                y += step;
-            }
-        }
-        FillStyle::Solid | FillStyle::Outline => {}
-    }
-    painter.rect_stroke(r, 0.0, Stroke::new(1.0, c.gamma_multiply(emphasis)), StrokeKind::Inside);
+    let pk = Packet::new(painter.ctx(), def, painter.ctx().global_style().visuals.dark_mode);
+    painter.add(pk.rect_shape(r, emphasis));
 }
 
 /// Outline as four thin quads in a mesh (much cheaper than individual stroke shapes).
@@ -458,6 +393,8 @@ fn path_quads(points: &[(i64, i64)], width: i64) -> Vec<[(f64, f64); 4]> {
 /// Most labels and instance frames drawn per frame; beyond this they are skipped.
 const MAX_LABELS: usize = 400;
 const MAX_FRAMES: usize = 5_000;
+/// Most rectangles of coarse (rasterised) shape interiors drawn with the layer's stipple.
+const MAX_STIPPLE_QUADS: usize = 60_000;
 
 /// Coverage grid at 2 px resolution for shapes too small to draw individually, with a few
 /// planes drawn in different strengths. Marked cells are drawn as a texture (or merged runs),
@@ -649,44 +586,50 @@ impl Raster {
     /// Add the marked cells to `mesh` as rectangles (runs identical to the row above extend
     /// the rectangle started there), weakest plane first.
     fn emit(&self, mesh: &mut Mesh, colors: &[(usize, Color32)]) {
-        let cell = self.cell;
         for &(plane, color) in colors.iter().rev().filter(|(p, _)| !self.planes[*p].is_empty()) {
-            let quad = |mesh: &mut Mesh, (x0, x1, y0): (usize, usize, usize), y1: usize| {
-                let min = self.origin + Vec2::new(x0 as f32 * cell, y0 as f32 * cell);
-                mesh.add_colored_rect(
-                    Rect::from_min_size(min, Vec2::new((x1 - x0) as f32 * cell, (y1 - y0) as f32 * cell)),
-                    color,
-                );
-            };
-            let mut open: Vec<(usize, usize, usize)> = vec![];
-            for y in 0..=self.h {
-                let mut runs: Vec<(usize, usize)> = vec![];
-                if y < self.h {
-                    self.runs(plane, y, |a, b| runs.push((a, b)));
-                }
-                let mut next = Vec::with_capacity(runs.len());
-                let mut k = 0;
-                for (a, b) in runs {
-                    while k < open.len() && open[k].0 < a {
-                        quad(mesh, open[k], y);
-                        k += 1;
-                    }
-                    if k < open.len() && open[k].0 == a && open[k].1 == b {
-                        next.push(open[k]);
-                        k += 1;
-                    } else {
-                        if k < open.len() && open[k].0 == a {
-                            quad(mesh, open[k], y);
-                            k += 1;
-                        }
-                        next.push((a, b, y));
-                    }
-                }
-                for &o in &open[k..] {
-                    quad(mesh, o, y);
-                }
-                open = next;
+            self.rects(plane, |r| mesh.add_colored_rect(r, color));
+        }
+    }
+
+    /// The marked cells of `plane` as screen rectangles (runs identical to the row above extend
+    /// the rectangle started there).
+    fn rects(&self, plane: usize, mut f: impl FnMut(Rect)) {
+        if self.planes[plane].is_empty() {
+            return;
+        }
+        let cell = self.cell;
+        let mut quad = |(x0, x1, y0): (usize, usize, usize), y1: usize| {
+            let min = self.origin + Vec2::new(x0 as f32 * cell, y0 as f32 * cell);
+            f(Rect::from_min_size(min, Vec2::new((x1 - x0) as f32 * cell, (y1 - y0) as f32 * cell)));
+        };
+        let mut open: Vec<(usize, usize, usize)> = vec![];
+        for y in 0..=self.h {
+            let mut runs: Vec<(usize, usize)> = vec![];
+            if y < self.h {
+                self.runs(plane, y, |a, b| runs.push((a, b)));
             }
+            let mut next = Vec::with_capacity(runs.len());
+            let mut k = 0;
+            for (a, b) in runs {
+                while k < open.len() && open[k].0 < a {
+                    quad(open[k], y);
+                    k += 1;
+                }
+                if k < open.len() && open[k].0 == a && open[k].1 == b {
+                    next.push(open[k]);
+                    k += 1;
+                } else {
+                    if k < open.len() && open[k].0 == a {
+                        quad(open[k], y);
+                        k += 1;
+                    }
+                    next.push((a, b, y));
+                }
+            }
+            for &o in &open[k..] {
+                quad(o, y);
+            }
+            open = next;
         }
     }
 
@@ -788,7 +731,6 @@ pub fn draw_layout(
     let has_sel = o.selection.is_some_and(|s| !s.is_empty());
     let to_s = |x: f64, y: f64| view.to_screen(rect, x, y);
     let drawn = vis.count as u64 + vis.stamped;
-    let stipple = !o.thumbnail && drawn < 20_000;
     let thin = |g: &Geometry, t: &Trans| {
         let b = t.apply_rect(g.bbox());
         (b.width().min(b.height()) as f64 * view.scale) < 3.0
@@ -799,8 +741,9 @@ pub fn draw_layout(
         if !o.visible.get(li).copied().unwrap_or(true) {
             continue;
         }
-        let c = layer_color(def, pal.dark);
-        let fa = fill_alpha(def);
+        let pk = Packet::new(painter.ctx(), def, pal.dark);
+        let c = pk.fill;
+        let mut lp = pk.begin();
         let mesh_slot = painter.add(egui::Shape::Noop);
         let mut mesh = Mesh::default();
         let mut raster = Raster::new(rect, 3, Raster::CELL);
@@ -824,18 +767,8 @@ pub fn draw_layout(
                     }
                     if sr.width() < 3.0 || sr.height() < 3.0 {
                         raster.mark(PLANE_SMALL, sr);
-                    } else if stipple {
-                        pattern_rect(painter, sr, def, emphasis);
                     } else {
-                        let clipped = sr.intersect(rect.expand(2.0));
-                        if fa > 0.0 {
-                            mesh.add_colored_rect(clipped, c.gamma_multiply(fa.max(0.25) * emphasis));
-                        }
-                        if sr.width() >= 6.0 && sr.height() >= 6.0 {
-                            mesh_outline(&mut mesh, clipped, 1.0, c.gamma_multiply(emphasis));
-                        } else if fa == 0.0 {
-                            mesh.add_colored_rect(clipped, c.gamma_multiply(0.6 * emphasis));
-                        }
+                        lp.rect(sr.intersect(rect.expand(4.0)), emphasis);
                     }
                 }
                 Geometry::Polygon { .. } if thin(&p.shape.geom, &p.trans) => {
@@ -855,7 +788,7 @@ pub fn draw_layout(
                             to_s(x, y)
                         })
                         .collect();
-                    painter.add(egui::Shape::closed_line(pts, Stroke::new(1.2, c.gamma_multiply(emphasis))));
+                    lp.polygon(&pts, emphasis);
                 }
                 Geometry::Path { points, width } => {
                     for quad in path_quads(points, *width) {
@@ -866,11 +799,7 @@ pub fn draw_layout(
                                 to_s(x, y)
                             })
                             .collect();
-                        painter.add(egui::Shape::convex_polygon(
-                            pts,
-                            c.gamma_multiply(0.35 * emphasis),
-                            Stroke::new(1.0, c.gamma_multiply(emphasis)),
-                        ));
+                        lp.polygon(&pts, emphasis);
                     }
                     if !o.thumbnail && p.depth == 0 {
                         let center: Vec<Pos2> = points.iter().map(|q| to_s(q.0 as f64, q.1 as f64)).collect();
@@ -897,12 +826,31 @@ pub fn draw_layout(
                 }
             }
         }
-        let mut colors = vec![(PLANE_EDGE, c.gamma_multiply(0.8)), (PLANE_SMALL, c.gamma_multiply(0.7))];
-        if fa > 0.0 {
-            colors.push((PLANE_FILL, c.gamma_multiply(fa.max(0.25))));
+        let mut colors = vec![(PLANE_EDGE, pk.outline.gamma_multiply(0.8)), (PLANE_SMALL, c.gamma_multiply(0.7))];
+        if pk.density > 0.0 {
+            // Interiors of shapes too small or too many to draw one by one: the stipple over the
+            // covered cells, or (beyond a budget of rectangles) its average coverage.
+            let mut quads = vec![];
+            if pk.is_stipple() && !o.thumbnail {
+                raster.rects(PLANE_FILL, |r| quads.push(r));
+            }
+            if !quads.is_empty() && quads.len() <= MAX_STIPPLE_QUADS {
+                for r in quads {
+                    lp.fill_rect(r, 1.0);
+                }
+            } else {
+                colors.push((PLANE_FILL, c.gamma_multiply(pk.density.clamp(0.25, 1.0))));
+            }
         }
         raster.draw(painter, &mut mesh, raster_key(li), &colors);
-        painter.set(mesh_slot, egui::Shape::mesh(mesh));
+        let mut shapes = vec![];
+        if !lp.is_empty() {
+            shapes.push(lp.finish());
+        }
+        if !mesh.is_empty() {
+            shapes.push(egui::Shape::mesh(mesh));
+        }
+        painter.set(mesh_slot, egui::Shape::Vec(shapes));
     }
 
     // Instances shown as boxes (beyond the level limit, too small, or missing).
@@ -2643,10 +2591,19 @@ impl LayoutEditor {
                     self.active_layer = i;
                     self.visible[i] = true;
                 }
-                r.on_hover_text(format!(
-                    "{}  GDS {}/{}\nmin width {} nm · min spacing {} nm",
+                if r.double_clicked() {
+                    self.requests.push(LayRequest::EditLayerDisplay(def.name.clone()));
+                }
+                let r = r.on_hover_text(format!(
+                    "{}  GDS {}/{}\nmin width {} nm · min spacing {} nm\nDouble-click or right-click to edit its display",
                     def.name, def.gds_layer, def.gds_datatype, def.min_width, def.min_spacing
                 ));
+                r.context_menu(|ui| {
+                    if ui.button("Edit display…").clicked() {
+                        self.requests.push(LayRequest::EditLayerDisplay(def.name.clone()));
+                        ui.close();
+                    }
+                });
             }
         });
         open

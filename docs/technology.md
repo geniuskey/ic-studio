@@ -56,7 +56,18 @@ Layer:
 }
 ```
 
-- `fill`: `solid`, `hatch`, `backhatch`, `cross`, `dots` or `outline`.
+- Display, after Cadence Virtuoso display packets: shapes are drawn with a stipple bitmap in the
+  layer colour, one bit per screen point and anchored to the window (so the patterns of
+  neighbouring and overlapping shapes line up), with an outline in the outline colour and line
+  style. Stipple pixels are opaque, as in Virtuoso.
+  - `fill`: `solid`, `outline`, `cross` (Virtuoso fill style X: outline with both diagonals, for
+    cuts) or a stipple: `hatch` (`/`), `backhatch` (`\`), `crosshatch`, `hline`, `vline`, `grid`,
+    `dots`, `sparsedots`, `checker`, `brick` or `zigzag`.
+  - `stipple` (optional): a custom bitmap used by stipple fills, rows of `0` / `1`, e.g.
+    `["1000", "0100", "0010", "0001"]`.
+  - `outline` (optional): outline colour `[r, g, b]`, by default the fill colour.
+  - `line` (optional): `solid`, `dashed`, `shortdash`, `dotted`, `dashdot`, `doubledash`,
+    `thick` or `none`.
 - `min_width`, `min_spacing`: in dbu; 0 means not checked. `min_area` (optional): in dbu²; PCell
   contact plates and router via pads grow to reach it.
 - `routing`: a routing layer carries net labels and is used by extraction and the router.
@@ -216,7 +227,7 @@ The main sections:
 |---|---|
 | `name`, `dbu_per_um`, `grid` | Technology name, database unit, snap grid (µm) |
 | `lyp`, `lyt` | Optional KLayout files supplying layers and colours |
-| `[[layer]]` | `name`, `gds`, `datatype`, `width`, `space`, `area` (µm²), `routing`, `color` (`#rrggbb`), `fill`. Adds a layer, or sets rules on a layer from the `.lyp` |
+| `[[layer]]` | `name`, `gds`, `datatype`, `width`, `space`, `area` (µm²), `routing`, `color` (`#rrggbb`), `fill`, `stipple`, `outline`, `line`. Adds a layer, or sets rules on a layer from the `.lyp` |
 | `[roles]` | `diffusion` (list), `tap`, `poly`, `nwell`, `nimplant` (empty when the process draws no n+ implant: n+ is diffusion outside `pimplant`), `pimplant`, `diff_contact`, `poly_contact` (via names), `label` |
 | `[rules]` | `gate_contact_space`, `poly_endcap`, `implant_enc`, `nwell_enc`, `marker_enc` (device marker layers around the diffusion), `bend_corner` (share of a bent gate's corner squares counted in W, 0 to 1, default 1; see [PCells](pcells.md#device-shapes-extraction-understands)) |
 | `[[pin_label]]` | Net label layer of a conducting layer: `layer`, `label` (e.g. `Metal1` and `Metal1.text`). Routing labels named nets there, extraction reads labels there as names of that layer's nets |
@@ -305,8 +316,10 @@ What is imported:
 
 - Every layer entry with a concrete `layer/datatype` source becomes a layer. Its name
   comes from the entry's name (spaces become `_`, duplicates get `_2`, `_3`, ...).
-- Colours come from the fill or frame colour; KLayout dither patterns map to the nearest
-  fill style.
+- Colours come from the fill or frame colour (a different frame colour becomes the outline
+  colour). Dither patterns, stock (`I0`–`I46`) or custom, are kept as exact stipple bitmaps;
+  line styles (stock or custom) and the frame width give the outline line style (width 0 hides
+  it), and `xfill` on a hollow pattern is the X fill.
 - Layers named like `poly`, `li`, `met1`, `metal2`, `m3` are marked as routing layers.
 - From the `.lyt`: the technology name, the database unit and the default grid.
 
@@ -334,8 +347,10 @@ ics import-tech myproj mytech.tf --drf display.drf --layermap mytech.layermap
   `mfgGridResolution`.
 - Rules: single-layer `minWidth`, `minSpacing` and `minArea` from the `foundry` constraint
   group (or `physicalRules`), for drawing purposes.
-- Display: each layer-purpose's `techDisplays` packet in the `.drf` gives the fill colour,
-  and its stipple bitmap the nearest fill style (solid, hatch, cross, dots, outline).
+- Display: each layer-purpose's `techDisplays` packet in the `.drf` gives the fill and outline
+  colours, the stipple bitmap (kept exactly), the line style (`drDefineLineStyle`) and the fill
+  style (`outline`, `solid`, `X`, `stipple`, `outlineStipple`), so layers look as they do in
+  Virtuoso.
 - Stream numbers: from the layer map, which also becomes the technology's stream map;
   without one, the layer number with datatype 0 for `drawing` (reported as a guess).
 

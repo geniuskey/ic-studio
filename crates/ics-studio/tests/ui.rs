@@ -572,6 +572,34 @@ fn sweep_manager() {
     shot(&mut h, "33_sweep_manager");
 }
 
+/// Layer Display editor: a stipple bitmap and line style edited for metal1 are applied to the
+/// technology and drawn in the layout.
+#[test]
+fn layer_display_editor() {
+    use egui_kittest::kittest::Queryable;
+    use ics_core::tech::{FillStyle, LineStyle, Stipple};
+    let mut h = app(demo_args("cmos_inverter", "layout", false));
+    h.state_mut().command(Command::LayerDisplay(Some("metal1".into())));
+    h.run_steps(2);
+    let custom = Stipple { rows: vec!["1100".into(), "0110".into(), "0011".into(), "1001".into()] };
+    {
+        let l = h.state_mut().layer_display_editor().current().unwrap();
+        assert_eq!(l.name, "metal1");
+        l.fill = FillStyle::Grid;
+        l.stipple = Some(custom.clone());
+        l.line = LineStyle::Dashed;
+        l.outline = Some([255, 255, 255]);
+    }
+    h.run_steps(2);
+    h.get_by_label("Apply").click();
+    h.run_steps(3);
+    let tech = &h.state().project().unwrap().tech;
+    let m1 = &tech.layers[tech.layer_index("metal1").unwrap()];
+    assert_eq!((m1.fill, m1.line, m1.outline), (FillStyle::Grid, LineStyle::Dashed, Some([255, 255, 255])));
+    assert_eq!(m1.pattern(), Some(custom));
+    shot(&mut h, "49_layer_display");
+}
+
 /// Stream Layer Map: a map applied to the technology renumbers metal1 on export.
 #[test]
 fn stream_layer_map() {

@@ -6,6 +6,7 @@ pub mod calc_view;
 pub mod canvas;
 pub mod ciw;
 pub mod copilot;
+pub mod display_view;
 pub mod fill_view;
 pub mod float;
 pub mod gen_view;

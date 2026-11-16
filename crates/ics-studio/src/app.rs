@@ -16,6 +16,7 @@ use crate::calc_view::Calculator;
 use crate::canvas::Profile;
 use crate::canvas::View2D;
 use crate::ciw::{Ciw, CiwKind};
+use crate::display_view::DisplayEditor;
 use crate::fill_view::FillTool;
 use crate::gen_view::{GenAction, GenTab, LayoutGenerators};
 use crate::hier_view::{HierAction, HierBrowser};
@@ -168,6 +169,9 @@ pub enum Command {
     RuleDesigner,
     /// Open the Stream Layer Map editor (GDSII / OASIS layer numbers on import and export).
     StreamMap,
+    /// Open the Layer Display editor (fill colour, stipple, outline colour and line style per
+    /// layer, as Virtuoso display packets), on the named layer when given.
+    LayerDisplay(Option<String>),
     /// Open the Dummy Fill tool.
     DummyFill,
     /// Add dummy fill with the Dummy Fill tool's parameters to the active cell.
@@ -559,6 +563,7 @@ pub struct IcStudio {
     update_toast: Option<String>,
     optimizer: crate::optimizer_view::Optimizer,
     stream_map: StreamMapEditor,
+    display: DisplayEditor,
     fill: FillTool,
     opc: OpcTool,
     /// Mask layers OPC added to the technology (still there / taken out again by undo), so
@@ -628,6 +633,7 @@ impl IcStudio {
             update_toast: None,
             optimizer: Default::default(),
             stream_map: StreamMapEditor::default(),
+            display: DisplayEditor::default(),
             fill: FillTool::default(),
             opc: OpcTool::default(),
             opc_layers: Default::default(),
@@ -1095,6 +1101,10 @@ impl IcStudio {
             Command::RuleDesigner => match &self.project {
                 Some(p) => self.rule_designer.show(&p.tech),
                 None => self.rule_designer.show_standalone(),
+            },
+            Command::LayerDisplay(layer) => match &self.project {
+                Some(p) => self.display.show(&p.tech, layer.as_deref()),
+                None => self.warn("Open a project first".into()),
             },
             Command::StreamMap => match &self.project {
                 Some(p) => self.stream_map.show(&p.tech),
@@ -2682,6 +2692,9 @@ impl IcStudio {
                 if ui.add_enabled(has_project, egui::Button::new("Stream Layer Map…")).clicked() {
                     q.push(Command::StreamMap);
                 }
+                if ui.add_enabled(has_project, egui::Button::new("Layer Display…")).clicked() {
+                    q.push(Command::LayerDisplay(None));
+                }
                 if ui.add_enabled(has_project, egui::Button::new("Dummy Fill…")).clicked() {
                     q.push(Command::DummyFill);
                 }
@@ -3267,6 +3280,7 @@ impl IcStudio {
                             None => log.push((false, "Return: already at the top cell".into())),
                         },
                         LayRequest::OpenRuleDesigner => self.queue.push(Command::RuleDesigner),
+                        LayRequest::EditLayerDisplay(name) => self.queue.push(Command::LayerDisplay(Some(name))),
                         LayRequest::SetDeck(text) => {
                             project.tech.drc_deck = Some(text);
                             changed = true;
@@ -3656,6 +3670,7 @@ impl IcStudio {
             ("IR drop / EM analysis".into(), "", Command::IrDrop(None)),
             ("DRC rule designer".into(), "", Command::RuleDesigner),
             ("Stream layer map (GDSII / OASIS layer numbers)".into(), "", Command::StreamMap),
+            ("Layer display (fill, stipple, outline, line style)".into(), "", Command::LayerDisplay(None)),
             ("Dummy fill (metal density)".into(), "", Command::DummyFill),
             ("OPC (optical proximity correction)".into(), "", Command::Opc),
             ("Waveform calculator".into(), "", Command::Calculator),
@@ -4722,6 +4737,14 @@ impl IcStudio {
         }
     }
 
+    fn layer_display_window(&mut self, ctx: &egui::Context) {
+        let Some(layers) = self.display.window(ctx, self.project.as_ref()) else { return };
+        let Some(p) = self.project.as_mut() else { return };
+        let n = crate::display_view::apply_display(&mut p.tech, &layers);
+        self.mark_dirty();
+        self.ok(format!("Layer display: {n} layer(s) changed"));
+    }
+
     fn stream_map_window(&mut self, ctx: &egui::Context) {
         let Some(rows) = self.stream_map.window(ctx, self.project.as_ref()) else { return };
         let Some(p) = self.project.as_mut() else { return };
@@ -5076,6 +5099,10 @@ impl IcStudio {
         &mut self.fill
     }
 
+    pub fn layer_display_editor(&mut self) -> &mut DisplayEditor {
+        &mut self.display
+    }
+
     pub fn stream_map_editor(&mut self) -> &mut StreamMapEditor {
         &mut self.stream_map
     }
@@ -5338,6 +5365,7 @@ impl eframe::App for IcStudio {
         let dirs: Vec<PathBuf> = self.project.as_ref().and_then(|p| p.root.clone()).into_iter().collect();
         self.ai_models.window(&ctx, &mut self.settings.llm, &dirs);
         self.stream_map_window(&ctx);
+        self.layer_display_window(&ctx);
         self.fill_window(&ctx);
         self.opc_window(&ctx);
         let active = self.active.clone();

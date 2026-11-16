@@ -7,17 +7,21 @@
 //! - name: `<name>` without a trailing `L/D` (or ` - L/D`), else the name part of the source,
 //!   else `L{l}D{d}`. Whitespace becomes `_`; clashes (case-insensitive) get `_2`, `_3`, ...;
 //! - colour: `<fill-color>`, else `<frame-color>`, else the enclosing group's, else a generated
-//!   one; alpha is always [`ALPHA`];
-//! - fill: from the stock KLayout dither pattern (see [`fill_style`]); custom patterns hatch;
+//!   one; alpha is always [`ALPHA`]. A different `<frame-color>` becomes the outline colour;
+//! - fill: the exact bitmap of the stock (`I<n>`) or custom (`C<n>`, `<custom-dither-pattern>`)
+//!   dither pattern, with the closest built-in fill style (see [`dither`]); `<xfill>` on a hollow
+//!   pattern is the X fill;
+//! - outline: the stock (`I<n>`) or custom (`<custom-line-style>`) line style, and `<width>`
+//!   (0 hides the outline, 2 or more is thick);
 //! - `routing`: the name before any `.purpose` (none or `drawing`) is `poly`, `li`, or `poly`,
 //!   `li`, `m`, `met`, `metal` followed by digits (`met1`, `li1`, `Metal2`, `Poly2`);
 //! - no width / spacing rules, vias or capacitances; 1000 dbu per µm and a 5 dbu grid.
 //!
 //! `<visible>` has no counterpart in [`LayerDef`] and is ignored.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-use crate::tech::{FillStyle, LayerDef, Tech, auto_color};
+use crate::tech::{FillStyle, LayerDef, LineStyle, Stipple, Tech, auto_color};
 
 /// Display alpha of imported layers.
 pub const ALPHA: u8 = 160;
@@ -219,21 +223,146 @@ fn parse_color(s: &str) -> Option<[u8; 3]> {
     Some([(v >> 16) as u8, (v >> 8) as u8, v as u8])
 }
 
-/// Our fill for a KLayout dither pattern: `I0` solid, `I1` hollow, dotted / checkerboard / bubble
-/// patterns dots, left-hatched (and 22.5°/67.5° down) back-hatch, right-hatched (and up) hatch,
-/// cross-hatched / plus patterns cross. Everything else, including custom `C<n>`, hatches.
-pub fn fill_style(pattern: &str) -> FillStyle {
-    let Some(n) = pattern.trim().strip_prefix('I').and_then(|n| n.parse::<u32>().ok()) else {
-        return FillStyle::Hatch;
-    };
-    match n {
-        0 => FillStyle::Solid,
-        1 => FillStyle::Outline,
-        2 | 3 | 14 | 16 | 17 | 20 | 21 => FillStyle::Dots,
-        4..=7 | 26 | 28 => FillStyle::BackHatch,
-        12 | 13 | 15 | 18 | 24 | 30 => FillStyle::Cross,
-        _ => FillStyle::Hatch,
+/// KLayout's stock dither patterns `I0` to `I46` (rows top to bottom, `*` = set), from
+/// `layDitherPattern.cc`.
+const KLAYOUT_DITHER: [&[&str]; 47] = [
+    &["*"],
+    &["."],
+    &["*.", ".*"],
+    &["*...", "....", "..*.", "...."],
+    &["*...", ".*..", "..*.", "...*"],
+    &["*.......", ".*......", "..*.....", "...*....", "....*...", ".....*..", "......*.", ".......*"],
+    &["**..", ".**.", "..**", "*..*"],
+    &["**......", ".**.....", "..**....", "...**...", "....**..", ".....**.", "......**", "*......*"],
+    &["*...", "...*", "..*.", ".*.."],
+    &["*.......", ".......*", "......*.", ".....*..", "....*...", "...*....", "..*.....", ".*......"],
+    &["**..", "*..*", "..**", ".**."],
+    &["**......", "*......*", "......**", ".....**.", "....**..", "...**...", "..**....", ".**....."],
+    &["*...", ".*.*", "..*.", ".*.*"],
+    &["*.......", ".*.....*", "..*...*.", "...*.*..", "....*...", "...*.*..", "..*...*.", ".*.....*"],
+    &["**..", "**..", "..**", "..**"],
+    &["**......", "***....*", "..**..**", "...****.", "....**..", "...****.", "..**..**", "***....*"],
+    &["****....", "****....", "****....", "****....", "....****", "....****", "....****", "....****"],
+    &[".*...*..", "*.*.....", ".*...*..", "....*.*.", ".*...*..", "*.*.....", ".*...*..", "....*.*."],
+    &[".*...*..", "***.....", ".*...*..", "....***.", ".*...*..", "***.....", ".*...*..", "....***."],
+    &[".*......", "*.*.....", "****...*", "........", "....*...", "...*.*..", "..*****.", "........"],
+    &["****...*", "*.*.....", ".*......", "........", "..*****.", "...*.*..", "....*...", "........"],
+    &["..*...*.", "..*.....", "*****...", "..*.....", "..*...*.", "......*.", "*...****", "......*."],
+    &["........", "........", "*****...", "........", "........", "........", "*...****", "........"],
+    &["*......*", ".**.....", "...**...", ".....**.", "*......*", ".**.....", "...**...", ".....**."],
+    &["*......*", ".....**.", "...**...", ".**.....", "*......*", ".....**.", "...**...", ".**....."],
+    &["*...*...", ".*...*..", ".*...*..", "..*...*.", "..*...*.", "...*...*", "...*...*", "*...*..."],
+    &["...*...*", "..*...*.", "..*...*.", ".*...*..", ".*...*..", "*...*...", "*...*...", "...*...*"],
+    &["*......*", ".**..**.", "...**...", ".**..**.", "*......*", ".**..**.", "...**...", ".**..**."],
+    &["..*...*.", ".*.*.*.*", "*...*...", "........", "..*...*.", ".*.*.*.*", "*...*...", "........"],
+    &["..***...", ".*...*..", "*.....**", "........", "..***...", ".*...*..", "*.....**", "........"],
+    &["****.*.*", "**.****.", "*.**.***", "*****.*.", ".**.****", "**.***.*", ".****.**", "*.*.****"],
+    &["....*.*.", "..*....*", ".*..*...", ".....*.*", "*..*....", "..*...*.", "*....*..", ".*.*...."],
+    &["*.", "*."],
+    &[".*..", ".*..", ".*..", ".*.."],
+    &[".**.", ".**.", ".**.", ".**."],
+    &["...*....", "...*....", "...*....", "...*...."],
+    &["...**...", "...**...", "...**...", "...**..."],
+    &["**", ".."],
+    &["....", "****", "....", "...."],
+    &["....", "****", "****", "...."],
+    &["........", "........", "........", "********", "........", "........", "........", "........"],
+    &["........", "........", "........", "********", "********", "........", "........", "........"],
+    &["**", "*."],
+    &[".*..", "****", ".*..", ".*.."],
+    &[".**.", "****", "****", ".**."],
+    &["...*....", "...*....", "...*....", "********", "...*....", "...*....", "...*....", "...*...."],
+    &["...**...", "...**...", "...**...", "********", "********", "...**...", "...**...", "...**..."],
+];
+
+/// KLayout's stock line styles `I0` to `I7` (`*` = drawn), from `layLineStyles.cc`.
+const KLAYOUT_LINES: [&str; 8] = ["", "*.", "**..**", "***..**..***", "*..*", "**.*.*", "*****..*****", "***..*.*..**"];
+
+/// A `*` / `.` bitmap as a stipple.
+fn star_stipple(rows: &[&str]) -> Option<Stipple> {
+    let bits: Vec<Vec<u8>> = rows.iter().map(|r| r.trim().chars().map(|c| (c == '*') as u8).collect()).collect();
+    Stipple::from_bits(&bits)
+}
+
+/// Fill of a stipple bitmap: solid, outline, or the closest built-in style plus the exact
+/// bitmap (left out when it is the built-in one).
+fn fill_of(s: Stipple) -> (FillStyle, Option<Stipple>) {
+    let d = s.density();
+    if d == 0.0 {
+        return (FillStyle::Outline, None);
     }
+    if d == 1.0 {
+        return (FillStyle::Solid, None);
+    }
+    let f = s.closest_fill();
+    let same = f.bitmap().is_some_and(|b| b == s);
+    (f, (!same).then_some(s))
+}
+
+/// Our fill for a KLayout dither pattern: the stock pattern `I<n>`, or the custom pattern
+/// `C<n>` of `custom` (keyed by `<order>`). Unknown patterns hatch.
+pub fn dither(pattern: &str, custom: &HashMap<u32, Stipple>) -> (FillStyle, Option<Stipple>) {
+    let p = pattern.trim();
+    let num = |prefix: char| p.strip_prefix(prefix).and_then(|n| n.parse::<u32>().ok());
+    let s = match (num('I'), num('C')) {
+        (Some(n), _) => KLAYOUT_DITHER.get(n as usize).and_then(|rows| star_stipple(rows)),
+        (_, Some(n)) => custom.get(&n).cloned(),
+        _ => None,
+    };
+    s.map_or((FillStyle::Hatch, None), fill_of)
+}
+
+/// Fill style for a stock KLayout dither pattern (see [`dither`]).
+pub fn fill_style(pattern: &str) -> FillStyle {
+    dither(pattern, &HashMap::new()).0
+}
+
+/// Our line style for a KLayout line style (`I<n>` stock, `C<n>` from `custom`) and frame width.
+fn line_style(style: Option<&str>, width: Option<u32>, custom: &HashMap<u32, String>) -> LineStyle {
+    let width = width.unwrap_or(1);
+    if width == 0 {
+        return LineStyle::None;
+    }
+    let p = style.unwrap_or("").trim();
+    let num = |prefix: char| p.strip_prefix(prefix).and_then(|n| n.parse::<u32>().ok());
+    let pattern = match (num('I'), num('C')) {
+        (Some(n), _) => KLAYOUT_LINES.get(n as usize).map(|s| s.to_string()).unwrap_or_default(),
+        (_, Some(n)) => custom.get(&n).cloned().unwrap_or_default(),
+        _ => String::new(),
+    };
+    let bits: Vec<u8> = pattern.chars().map(|c| (c == '*') as u8).collect();
+    if bits.is_empty() {
+        return if width >= 2 { LineStyle::Thick } else { LineStyle::Solid };
+    }
+    LineStyle::from_pattern(width, &bits)
+}
+
+/// Custom dither patterns and line styles of a layer properties file, by `<order>`.
+fn customs(root: &Node) -> (HashMap<u32, Stipple>, HashMap<u32, String>) {
+    let mut dithers = HashMap::new();
+    let mut lines = HashMap::new();
+    let mut walk = vec![root];
+    while let Some(n) = walk.pop() {
+        for c in &n.children {
+            let order = |k: usize| c.child_text("order").and_then(|o| o.parse().ok()).unwrap_or(k as u32);
+            match c.name.as_str() {
+                "custom-dither-pattern" => {
+                    let rows: Vec<&str> =
+                        c.child("pattern").map(|p| p.children.iter().map(|l| l.text.trim()).collect()).unwrap_or_default();
+                    if let Some(s) = star_stipple(&rows) {
+                        dithers.insert(order(dithers.len()), s);
+                    }
+                }
+                "custom-line-style" => {
+                    if let Some(p) = c.child_text("pattern") {
+                        lines.insert(order(lines.len()), p.to_string());
+                    }
+                }
+                _ => walk.push(c),
+            }
+        }
+    }
+    (dithers, lines)
 }
 
 fn looks_routing(name: &str) -> bool {
@@ -249,7 +378,11 @@ fn looks_routing(name: &str) -> bool {
 #[derive(Clone, Default)]
 struct Style {
     color: Option<[u8; 3]>,
+    frame: Option<[u8; 3]>,
     pattern: Option<String>,
+    line: Option<String>,
+    width: Option<u32>,
+    xfill: bool,
 }
 
 struct Entry {
@@ -265,9 +398,14 @@ fn collect(node: &Node, inherited: &Style, out: &mut Vec<Entry>) {
             continue;
         }
         let color = |tag: &str| c.child_text(tag).and_then(parse_color);
+        let text = |tag: &str| c.child_text(tag).filter(|p| !p.is_empty()).map(str::to_string);
         let style = Style {
             color: color("fill-color").or_else(|| color("frame-color")).or(inherited.color),
-            pattern: c.child_text("dither-pattern").filter(|p| !p.is_empty()).map(str::to_string).or(inherited.pattern.clone()),
+            frame: color("frame-color").or(inherited.frame),
+            pattern: text("dither-pattern").or(inherited.pattern.clone()),
+            line: text("line-style").or(inherited.line.clone()),
+            width: c.child_text("width").and_then(|w| w.parse().ok()).or(inherited.width),
+            xfill: c.child_text("xfill").map_or(inherited.xfill, |x| x == "true"),
         };
         let (ld, src_name) = parse_source(c.child_text("source").unwrap_or_default());
         if let Some(ld) = ld
@@ -291,6 +429,7 @@ pub fn from_lyp(xml: &str, name: &str) -> Result<Tech, String> {
     }
     let mut entries = vec![];
     collect(&root, &Style::default(), &mut entries);
+    let (custom_dithers, custom_lines) = customs(&root);
     let mut seen_ld = HashSet::new();
     let mut used_names = HashSet::new();
     let mut layers = vec![];
@@ -306,13 +445,20 @@ pub fn from_lyp(xml: &str, name: &str) -> Result<Tech, String> {
         }
         let [r, g, b, _] = auto_color(layers.len());
         let [r, g, b] = e.style.color.unwrap_or([r, g, b]);
+        let (mut fill, stipple) = e.style.pattern.as_deref().map_or((FillStyle::Hatch, None), |p| dither(p, &custom_dithers));
+        if e.style.xfill && fill == FillStyle::Outline {
+            fill = FillStyle::Cross;
+        }
         layers.push(LayerDef {
             routing: looks_routing(&name),
             name,
             gds_layer: e.ld.0,
             gds_datatype: e.ld.1,
             color: [r, g, b, ALPHA],
-            fill: e.style.pattern.as_deref().map_or(FillStyle::Hatch, fill_style),
+            fill,
+            stipple,
+            outline: e.style.frame.filter(|f| *f != [r, g, b]),
+            line: line_style(e.style.line.as_deref(), e.style.width, &custom_lines),
             min_width: 0,
             min_spacing: 0,
             min_area: 0,
@@ -519,20 +665,51 @@ mod tests {
         assert_eq!(find(&t, "poly.drawing").fill, FillStyle::Hatch);
         assert_eq!(find(&t, "licon1.drawing").fill, FillStyle::Solid);
         let li = find(&t, "li1.drawing");
-        assert_eq!((li.color, li.fill), ([0xff, 0xcc, 0xff, ALPHA], FillStyle::Cross), "frame colour as fallback");
+        assert_eq!(
+            (li.color, li.fill, li.outline),
+            ([0xff, 0xcc, 0xff, ALPHA], FillStyle::CrossHatch, None),
+            "frame colour as fallback"
+        );
+        assert_eq!(
+            li.stipple.as_ref().map(|s| s.rows.clone()),
+            Some(vec!["1000".into(), "0101".into(), "0010".into(), "0101".into()])
+        );
         let m1 = find(&t, "met1.drawing");
         assert_eq!((m1.gds_layer, m1.gds_datatype, m1.color, m1.fill), (68, 20, [0x33, 0x66, 0xff, ALPHA], FillStyle::Hatch));
+        assert_eq!(m1.outline, Some([0, 0, 0xff]), "a different frame colour is the outline");
         let pin = find(&t, "met1.pin");
         assert_eq!((pin.color, pin.fill), ([0, 0, 0xff, ALPHA], FillStyle::Hatch), "colour inherited from the group");
         let label = find(&t, "met1.drawing_2");
-        assert_eq!((label.gds_datatype, label.fill), (5, FillStyle::Dots), "pattern inherited from the group");
-        assert_eq!(find(&t, "L69D20").fill, FillStyle::Cross);
+        assert_eq!((label.gds_datatype, label.fill), (5, FillStyle::Checker), "pattern inherited from the group");
+        assert_eq!(find(&t, "L69D20").fill, FillStyle::Checker);
+        assert_eq!(find(&t, "diff.drawing").stipple, None, "the built-in bitmap is not repeated");
         assert_eq!(find(&t, "met2.drawing").color, [0x12, 0x34, 0x56, ALPHA]);
         let routing: Vec<&str> = t.layers.iter().filter(|l| l.routing).map(|l| l.name.as_str()).collect();
         assert_eq!(routing, ["poly.drawing", "li1.drawing", "met1.drawing", "met2.drawing"]);
         assert!(t.layers.iter().all(|l| l.min_width == 0 && l.min_spacing == 0));
         assert_eq!(t.layer_by_gds(64, 20), Some(0), "duplicate layer/datatype entries are dropped");
         assert!(t.layer_by_gds(81, 4).is_none(), "invalid entries are skipped");
+    }
+
+    #[test]
+    fn lyp_custom_patterns_line_styles_and_xfill() {
+        let lyp = r##"<layer-properties>
+ <properties><fill-color>#ff0000</fill-color><dither-pattern>C1</dither-pattern><line-style>C1</line-style>
+  <source>1/0@1</source></properties>
+ <properties><fill-color>#00ff00</fill-color><dither-pattern>I1</dither-pattern><xfill>true</xfill><line-style>I2</line-style>
+  <source>2/0@1</source></properties>
+ <properties><fill-color>#0000ff</fill-color><dither-pattern>I4</dither-pattern><width>0</width><source>3/0@1</source></properties>
+ <properties><fill-color>#0000ff</fill-color><dither-pattern>I1</dither-pattern><width>3</width><source>4/0@1</source></properties>
+ <custom-dither-pattern><pattern><line>*.*.</line><line>....</line></pattern><order>1</order><name>mine</name></custom-dither-pattern>
+ <custom-line-style><pattern>*..</pattern><order>1</order><name>dots</name></custom-line-style>
+</layer-properties>"##;
+        let t = from_lyp(lyp, "x").unwrap();
+        let l = &t.layers;
+        assert_eq!(l[0].stipple.as_ref().map(|s| s.rows.clone()), Some(vec!["1010".into(), "0000".into()]));
+        assert_eq!((l[0].fill, l[0].line), (FillStyle::Dots, LineStyle::Dotted));
+        assert_eq!((l[1].fill, l[1].line), (FillStyle::Cross, LineStyle::Dashed));
+        assert_eq!((l[2].fill, l[2].line), (FillStyle::BackHatch, LineStyle::None));
+        assert_eq!((l[3].fill, l[3].line), (FillStyle::Outline, LineStyle::Thick));
     }
 
     #[test]
@@ -546,8 +723,9 @@ mod tests {
         assert_eq!(clean_name("met1.drawing - 68/20"), "met1.drawing");
         assert_eq!(clean_name("Metal 1 (34/0)"), "Metal_1");
         assert_eq!(clean_name("68/20"), "");
-        assert_eq!(fill_style("I27"), FillStyle::Hatch);
-        assert_eq!(fill_style("I28"), FillStyle::BackHatch);
+        assert_eq!(fill_style("I32"), FillStyle::VLine);
+        assert_eq!(fill_style("I39"), FillStyle::HLine);
+        assert_eq!(fill_style("I43"), FillStyle::Grid);
         assert_eq!(fill_style("C3"), FillStyle::Hatch);
         assert!(looks_routing("Metal2") && looks_routing("M1") && looks_routing("Poly2") && looks_routing("li1.drawing"));
         assert!(!looks_routing("met1.pin") && !looks_routing("mim") && !looks_routing("licon1"));

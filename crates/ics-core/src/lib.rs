@@ -63,4 +63,4 @@ pub use layout::{ArraySpec, CellInst, Geometry, Layout, Shape, Trans};
 pub use project::{Cell, CellRef, LibStorage, Library, Project, ViewKind};
 pub use schematic::{DeviceKind, Instance, NetLabel, SchObj, Schematic, Wire};
 pub use sim_setup::{Analysis, AnalysisEntry, Backend, SimSetup};
-pub use tech::{FillStyle, LayerDef, Tech};
+pub use tech::{FillStyle, LayerDef, LineStyle, Stipple, Tech};

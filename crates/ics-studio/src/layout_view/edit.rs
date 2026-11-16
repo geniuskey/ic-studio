@@ -50,6 +50,8 @@ pub enum LayRequest {
     SetDeck(String),
     /// Open the DRC Rule Designer window.
     OpenRuleDesigner,
+    /// Open the Layer Display editor on a layer.
+    EditLayerDisplay(String),
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
