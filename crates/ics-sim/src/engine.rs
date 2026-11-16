@@ -88,6 +88,9 @@ struct TranState {
     qdev_i: Vec<[f64; 4]>,
 }
 
+/// Consecutive sign flips of a branch current's second difference taken as trapezoidal ringing.
+const RING_FLIPS: usize = 8;
+
 #[derive(Clone, Copy)]
 enum Mode<'s> {
     /// `force`: nodes held at a voltage through a large conductance (`.ic`, `.nodeset`).
@@ -1187,6 +1190,8 @@ impl Engine {
         let mut steps = 0usize;
         // Accepted points since the last breakpoint, for the truncation error estimate.
         let mut hist: Vec<(f64, Vec<f64>)> = vec![(0.0, x.clone())];
+        // Recent branch currents, to detect trapezoidal ringing.
+        let mut ring: Vec<Vec<f64>> = vec![x[self.nn..].to_vec()];
         while t < tstop * (1.0 - 1e-12) {
             while bp_i < bps.len() && bps[bp_i] <= t * (1.0 + 1e-12) + 1e-30 {
                 bp_i += 1;
@@ -1266,6 +1271,10 @@ impl Engine {
             x = xn;
             self.push_point(&mut ds, Some(t), &x);
             steps += 1;
+            ring.push(x[self.nn..].to_vec());
+            if ring.len() > RING_FLIPS + 3 {
+                ring.remove(0);
+            }
             // Step control: the truncation error estimate sets the next step once three points
             // past a breakpoint exist; before that, and when Newton struggles, iteration counts do.
             let at_bp = (next_bp - t).abs() <= hmax * 1e-9;
@@ -1273,8 +1282,13 @@ impl Engine {
                 method = Integ::BackwardEuler;
                 h = hs.clamp(hmax * 1e-4, hmax / 20.0);
                 hist.clear();
+                ring.clear();
             } else {
-                method = Integ::Trapezoidal;
+                // A backward Euler step damps trapezoidal ringing in the branch currents.
+                method = if self.rings(&ring) { Integ::BackwardEuler } else { Integ::Trapezoidal };
+                if method == Integ::BackwardEuler {
+                    ring.clear();
+                }
                 h = match lte {
                     Some(r) => hs * (0.9 * r.max(1e-9).cbrt().recip()).min(2.0),
                     None if iters <= 4 => hs * 2.0,
@@ -1294,6 +1308,19 @@ impl Engine {
             }
         }
         Ok(ds)
+    }
+
+    /// Whether a branch current rings: its second differences over the accepted points `pts`
+    /// (branch currents only, oldest first) flip sign at every step and all exceed its truncation
+    /// error tolerance. An edge flips them once or twice; trapezoidal ringing keeps flipping.
+    fn rings(&self, pts: &[Vec<f64>]) -> bool {
+        let o = &self.c.options;
+        let Some(last) = pts.last() else { return false };
+        (0..last.len()).any(|i| {
+            let tol = o.trtol * (o.lte_reltol * last[i].abs() + o.abstol);
+            let d: Vec<f64> = pts.windows(3).map(|w| w[2][i] - 2.0 * w[1][i] + w[0][i]).collect();
+            d.len() > RING_FLIPS && d.windows(2).all(|p| p[0] * p[1] < 0.0) && d.iter().all(|v| v.abs() > tol)
+        })
     }
 
     /// Local truncation error of a trapezoidal step to `(tn, xn)` relative to its tolerance (above

@@ -183,3 +183,19 @@ fn builtin_matches_ngspice() {
     }
     assert!(failed.is_empty(), "{}", failed.join("\n"));
 }
+
+/// The built-in engine damps trapezoidal ringing: in the free-running BSIM4 ring the supply
+/// current's step-to-step alternation stays small instead of growing (no ngspice needed).
+#[test]
+fn ring_oscillator_supply_current_does_not_ring() {
+    let (_, deck, _) = suite().into_iter().find(|(n, ..)| *n == "bsim4_ring_osc").unwrap();
+    let opts = SimOptions { backend: ics_core::Backend::Builtin, ..Default::default() };
+    let r = ics_sim::simulate(&deck, &[], &opts).unwrap();
+    let ds = &r.datasets[0];
+    let i = &ds.vectors.iter().find(|v| v.name.eq_ignore_ascii_case("i(v1)")).unwrap().re;
+    let peak = i.iter().fold(0f64, |a, b| a.max(b.abs()));
+    // Alternation over the last nanosecond: the distance of each point from its neighbours' mean.
+    let tail = &i[i.len() * 2 / 3..];
+    let ring = tail.windows(3).map(|w| (w[1] - 0.5 * (w[0] + w[2])).abs()).fold(0f64, f64::max);
+    assert!(ring < 0.03 * peak, "ringing {ring:e} A of a {peak:e} A peak");
+}

@@ -139,7 +139,8 @@ fn absolute_includes(deck: &str, dir: &Path) -> String {
             Some(k) => {
                 let file = args[k].trim_matches(['"', '\'']);
                 let path = Path::new(file);
-                if path.is_relative() {
+                // A rooted path (`/abs`, `\abs`) is absolute for this purpose on Windows too.
+                if path.is_relative() && !path.has_root() {
                     let mut a: Vec<String> = args.iter().map(|s| s.to_string()).collect();
                     a[k] = format!("\"{}\"", dir.join(path).display());
                     out += &a.join(" ");
@@ -232,7 +233,10 @@ mod tests {
     #[test]
     fn relative_includes_become_absolute_for_ngspice() {
         let d = absolute_includes("* t\n.include models.sp\n.lib 'lib/x.lib' tt\n.inc /abs/y.sp\nR1 a 0 1\n", Path::new("/w"));
-        assert_eq!(d, "* t\n.include \"/w/models.sp\"\n.lib \"/w/lib/x.lib\" tt\n.inc /abs/y.sp\nR1 a 0 1\n");
+        // `Path::join` uses the platform separator (`\` on Windows).
+        let (m, x) = (Path::new("/w").join("models.sp"), Path::new("/w").join("lib/x.lib"));
+        let want = format!("* t\n.include \"{}\"\n.lib \"{}\" tt\n.inc /abs/y.sp\nR1 a 0 1\n", m.display(), x.display());
+        assert_eq!(d, want);
     }
 
     #[test]
