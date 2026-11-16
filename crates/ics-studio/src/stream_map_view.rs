@@ -66,11 +66,14 @@ impl StreamMapEditor {
             .frame(egui::Frame::new().fill(pal.bg_sidebar).inner_margin(egui::Margin::symmetric(10, 6)))
             .show(ui, |ui| apply = self.toolbar(ui, tech, &pal));
         let draft = self.draft(tech);
-        egui::Panel::right("sm_preview")
-            .resizable(true)
-            .default_size(280.0)
-            .frame(egui::Frame::new().fill(pal.bg_sidebar).inner_margin(8))
-            .show(ui, |ui| preview(ui, &draft, &pal));
+        theme::aside(
+            egui::Panel::right("sm_preview")
+                .resizable(true)
+                .default_size(280.0)
+                .frame(egui::Frame::new().fill(pal.bg_sidebar).inner_margin(8)),
+            ui,
+            |ui| preview(ui, &draft, &pal),
+        );
         egui::CentralPanel::default().frame(egui::Frame::new().fill(pal.bg_panel).inner_margin(12)).show(ui, |ui| {
             let problems = stream_map::problems(&draft);
             for p in &problems {

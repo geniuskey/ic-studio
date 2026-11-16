@@ -84,11 +84,13 @@ impl HierBrowser {
         let pal = theme::palette(ui.ctx());
         let u = usage(project);
         let mut action = None;
-        egui::Panel::left("hb_tree")
-            .resizable(true)
-            .default_size(380.0)
-            .frame(egui::Frame::new().fill(pal.bg_sidebar).inner_margin(8))
-            .show(ui, |ui| {
+        theme::aside(
+            egui::Panel::left("hb_tree")
+                .resizable(true)
+                .default_size(380.0)
+                .frame(egui::Frame::new().fill(pal.bg_sidebar).inner_margin(8)),
+            ui,
+            |ui| {
                 ui.label(RichText::new("Hierarchy Browser").strong().color(pal.text_strong));
                 let l = ui.label(RichText::new("Filter").small().color(pal.text_weak));
                 ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("cell name").desired_width(f32::INFINITY))
@@ -111,7 +113,8 @@ impl HierBrowser {
                         }
                     }
                 });
-            });
+            },
+        );
         egui::CentralPanel::default().frame(egui::Frame::new().fill(pal.bg_panel).inner_margin(12)).show(ui, |ui| {
             let Some(sel) = self.selected.clone() else {
                 ui.label(RichText::new("Select a cell in the tree.").color(pal.text_weak));

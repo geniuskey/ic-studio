@@ -753,12 +753,15 @@ impl RuleDesigner {
         egui::Panel::top("rd_toolbar")
             .frame(egui::Frame::new().fill(pal.bg_sidebar).inner_margin(egui::Margin::symmetric(10, 6)))
             .show(ui, |ui| act = self.toolbar(ui, active, tech, standalone, &pal));
-        egui::Panel::left("rd_list")
-            .resizable(true)
-            .default_size(290.0)
-            .size_range(220.0..=460.0)
-            .frame(egui::Frame::new().fill(pal.bg_sidebar).inner_margin(8))
-            .show(ui, |ui| self.rule_list(ui, tech, &pal));
+        theme::aside(
+            egui::Panel::left("rd_list")
+                .resizable(true)
+                .default_size(290.0)
+                .size_range(220.0..=460.0)
+                .frame(egui::Frame::new().fill(pal.bg_sidebar).inner_margin(8)),
+            ui,
+            |ui| self.rule_list(ui, tech, &pal),
+        );
         egui::CentralPanel::default().frame(egui::Frame::new().fill(pal.bg_panel).inner_margin(12)).show(ui, |ui| {
             ui.horizontal(|ui| {
                 let issues = self.findings.iter().filter(|f| f.severity != Severity::Info).count();

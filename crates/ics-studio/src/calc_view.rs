@@ -68,11 +68,14 @@ impl Calculator {
             let tab = sim.as_ref().map(|s| s.tab.clone()).unwrap_or_default();
             self.analysis = if analyses.contains(&tab) { tab } else { analyses.first().cloned().unwrap_or_default() };
         }
-        egui::Panel::left("calc_funcs")
-            .resizable(true)
-            .default_size(300.0)
-            .frame(egui::Frame::new().fill(pal.bg_sidebar).inner_margin(8))
-            .show(ui, |ui| self.palette(ui, sim.as_deref(), &pal));
+        theme::aside(
+            egui::Panel::left("calc_funcs")
+                .resizable(true)
+                .default_size(300.0)
+                .frame(egui::Frame::new().fill(pal.bg_sidebar).inner_margin(8)),
+            ui,
+            |ui| self.palette(ui, sim.as_deref(), &pal),
+        );
         egui::CentralPanel::default().frame(egui::Frame::new().fill(pal.bg_panel).inner_margin(12)).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Waveform Calculator").strong().color(pal.text_strong));

@@ -3254,10 +3254,10 @@ impl IcStudio {
                 let op = self.sims.get(&r).and_then(|s| s.op_annotation());
                 let ed = self.sch_eds.entry(r.clone()).or_default();
                 if let Some(sch) = cell.schematic.as_mut() {
-                    egui::Panel::left("sch_tools").resizable(true).default_size(220.0).show(ui, |ui| {
+                    theme::aside(egui::Panel::left("sch_tools").resizable(true).default_size(220.0), ui, |ui| {
                         egui::ScrollArea::vertical().show(ui, |ui| device_palette(ui, ed));
                     });
-                    egui::Panel::right("sch_inspector").resizable(true).default_size(250.0).show(ui, |ui| {
+                    theme::aside(egui::Panel::right("sch_inspector").resizable(true).default_size(250.0), ui, |ui| {
                         egui::ScrollArea::vertical().show(ui, |ui| changed |= ed.inspector(ui, sch));
                     });
                     egui::Panel::top("sch_toolbar").show(ui, |ui| {
@@ -3361,12 +3361,12 @@ impl IcStudio {
                     LayCtx { cell: &r, src, hier: &mut self.hier, tech: &tech, cells: &placeable, context: context.as_ref() };
                 let mut open: Option<CellRef> = None;
                 {
-                    egui::Panel::left("lay_tools").resizable(true).default_size(230.0).show(ui, |ui| {
+                    theme::aside(egui::Panel::left("lay_tools").resizable(true).default_size(230.0), ui, |ui| {
                         if let Some(o) = ed.layer_palette(ui, l, &mut cx) {
                             open = Some(o);
                         }
                     });
-                    egui::Panel::right("lay_inspector").resizable(true).default_size(250.0).show(ui, |ui| {
+                    theme::aside(egui::Panel::right("lay_inspector").resizable(true).default_size(250.0), ui, |ui| {
                         egui::ScrollArea::vertical().show(ui, |ui| {
                             let (c, o) = ed.inspector(ui, l, &mut cx);
                             changed |= c;
@@ -3595,7 +3595,7 @@ impl IcStudio {
                 let st = self.sims.entry(r.clone()).or_default();
                 let mut run = false;
                 let mut tool = None;
-                egui::Panel::left("sim_setup").resizable(true).default_size(270.0).show(ui, |ui| {
+                theme::aside(egui::Panel::left("sim_setup").resizable(true).default_size(270.0), ui, |ui| {
                     ui.add_space(4.0);
                     ui.horizontal_wrapped(|ui| {
                         for (label, hint, cmd) in [
@@ -3624,7 +3624,7 @@ impl IcStudio {
                     nl.deck(&r.to_string(), &cell.sim)
                 });
                 if let Some(deck) = deck {
-                    egui::Panel::right("sim_netlist").resizable(true).default_size(340.0).show(ui, |ui| {
+                    theme::aside(egui::Panel::right("sim_netlist").resizable(true).default_size(340.0), ui, |ui| {
                         theme::section(ui, "Netlist");
                         egui::ScrollArea::both().show(ui, |ui| {
                             ui.add(egui::Label::new(RichText::new(deck).monospace().size(11.5)).selectable(true));
@@ -5568,14 +5568,17 @@ impl eframe::App for IcStudio {
             .resizable(false)
             .frame(egui::Frame::new().fill(pal.bg_sidebar).stroke(Stroke::new(1.0, pal.border)))
             .show(ui, |ui| self.activity_bar(ui));
-        egui::Panel::left("explorer")
-            .resizable(true)
-            .default_size(230.0)
-            .size_range(160.0..=420.0)
-            .frame(egui::Frame::new().fill(pal.bg_sidebar).inner_margin(10))
-            .show(ui, |ui| {
+        theme::aside(
+            egui::Panel::left("explorer")
+                .resizable(true)
+                .default_size(230.0)
+                .size_range(160.0..=420.0)
+                .frame(egui::Frame::new().fill(pal.bg_sidebar).inner_margin(10)),
+            ui,
+            |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| self.explorer(ui));
-            });
+            },
+        );
         if self.show_console {
             egui::Panel::bottom("console")
                 .resizable(true)

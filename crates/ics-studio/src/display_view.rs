@@ -92,11 +92,14 @@ impl DisplayEditor {
         egui::Panel::top("ld_toolbar")
             .frame(egui::Frame::new().fill(pal.bg_sidebar).inner_margin(egui::Margin::symmetric(10, 6)))
             .show(ui, |ui| apply = self.toolbar(ui, tech, &pal));
-        egui::Panel::left("ld_layers")
-            .resizable(true)
-            .default_size(220.0)
-            .frame(egui::Frame::new().fill(pal.bg_sidebar).inner_margin(8))
-            .show(ui, |ui| self.layer_list(ui, &pal));
+        theme::aside(
+            egui::Panel::left("ld_layers")
+                .resizable(true)
+                .default_size(220.0)
+                .frame(egui::Frame::new().fill(pal.bg_sidebar).inner_margin(8)),
+            ui,
+            |ui| self.layer_list(ui, &pal),
+        );
         egui::CentralPanel::default().frame(egui::Frame::new().fill(pal.bg_panel).inner_margin(12)).show(ui, |ui| {
             egui::ScrollArea::vertical().id_salt("ld_packet").auto_shrink([false, false]).show(ui, |ui| self.packet(ui, &pal));
         });

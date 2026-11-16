@@ -204,6 +204,25 @@ pub fn section(ui: &mut egui::Ui, text: &str) {
     ui.add_space(2.0);
 }
 
+/// Shows a side panel ("aside") whose width changes only when the user drags its edge.
+///
+/// A plain egui side panel grows to fit its widest content and remembers that size, so the
+/// width jumps whenever the selection changes what the panel shows. Here the contents are laid
+/// out in, and clipped to, the panel's current width, which then never depends on the content.
+pub fn aside<R>(panel: egui::Panel, ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    panel
+        .resizable(true)
+        .show(ui, |ui| {
+            let rect = ui.available_rect_before_wrap();
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(*ui.layout()));
+            child.shrink_clip_rect(rect);
+            let r = add_contents(&mut child);
+            ui.advance_cursor_after_rect(rect);
+            r
+        })
+        .inner
+}
+
 /// Shortcut labels are written in macOS notation (`⇧⌘S`); other platforms get `Ctrl+Shift+S`.
 pub fn kbd(s: &str) -> String {
     if cfg!(target_os = "macos") {

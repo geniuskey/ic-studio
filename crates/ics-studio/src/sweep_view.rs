@@ -271,14 +271,17 @@ impl SweepManager {
                     }
                 });
             });
-        egui::Panel::left("sw_setup")
-            .resizable(true)
-            .default_size(430.0)
-            .size_range(320.0..=640.0)
-            .frame(egui::Frame::new().fill(pal.bg_sidebar).inner_margin(8))
-            .show(ui, |ui| {
+        theme::aside(
+            egui::Panel::left("sw_setup")
+                .resizable(true)
+                .default_size(430.0)
+                .size_range(320.0..=640.0)
+                .frame(egui::Frame::new().fill(pal.bg_sidebar).inner_margin(8)),
+            ui,
+            |ui| {
                 egui::ScrollArea::vertical().id_salt("sw_setup_scroll").show(ui, |ui| self.setup_ui(ui, project, &base, &pal));
-            });
+            },
+        );
         egui::CentralPanel::default().frame(egui::Frame::new().fill(pal.bg_panel).inner_margin(10)).show(ui, |ui| {
             if self.results.is_empty() {
                 ui.centered_and_justified(|ui| {

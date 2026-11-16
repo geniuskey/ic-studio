@@ -196,11 +196,13 @@ impl PixelOptics {
     fn ui(&mut self, ui: &mut egui::Ui) -> Option<PixelAction> {
         let pal = theme::palette(ui.ctx());
         let mut action = None;
-        egui::Panel::left("pixel_stack")
-            .resizable(true)
-            .default_size(360.0)
-            .frame(egui::Frame::new().fill(pal.bg_sidebar).inner_margin(8))
-            .show(ui, |ui| {
+        theme::aside(
+            egui::Panel::left("pixel_stack")
+                .resizable(true)
+                .default_size(360.0)
+                .frame(egui::Frame::new().fill(pal.bg_sidebar).inner_margin(8)),
+            ui,
+            |ui| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Pixel stack").strong().color(pal.text_strong));
                     if ui.button("Load…").clicked() {
@@ -231,7 +233,8 @@ impl PixelOptics {
                     ui.add(egui::TextEdit::multiline(&mut self.text).code_editor().desired_width(f32::INFINITY).desired_rows(30))
                         .labelled_by(l.id);
                 });
-            });
+            },
+        );
         egui::CentralPanel::default().frame(egui::Frame::new().fill(pal.bg_panel).inner_margin(12)).show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 let l = ui.label("Chief ray angle (deg)");

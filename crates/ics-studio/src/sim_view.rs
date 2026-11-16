@@ -750,7 +750,7 @@ pub fn results_panel(ui: &mut egui::Ui, state: &mut SimState) -> Option<String> 
     for (i, v) in d.signals().enumerate() {
         colors.insert(v.name.clone(), trace[i % trace.len()]);
     }
-    egui::Panel::right("signals").resizable(true).default_size(190.0).show(ui, |ui| {
+    theme::aside(egui::Panel::right("signals").resizable(true).default_size(190.0), ui, |ui| {
         theme::section(ui, "Signals");
         let fl = ui.label(RichText::new("Filter").small().color(pal.text_weak));
         ui.add(egui::TextEdit::singleline(&mut state.filter).hint_text("v(out)…").desired_width(f32::INFINITY))
