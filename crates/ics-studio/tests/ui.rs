@@ -2626,3 +2626,73 @@ fn layout_context_menu() {
     assert!(h.query_by_label_contains("shapes selected").is_some(), "selection menu should show a summary");
     assert!(h.query_by_label("Modify Shapes").is_some());
 }
+
+/// Stretch on a PCell instance changes its parameters: the top edge of a MOS sets W, its
+/// right edge L, and the opposite edge stays put.
+#[test]
+fn layout_stretch_pcell() {
+    use ics_core::pcell::PCell;
+    let dir = std::env::temp_dir().join(format!("ics-ui-stretch-pcell-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut p = ics_core::examples::demo_project();
+    let nmos = PCell::mos(false, 2000, 180, 1);
+    let cr = p.ensure_pcell(&nmos).unwrap();
+    let mut l = ics_core::Layout::default();
+    l.add_instance(cr, ics_core::layout::Trans::new(0, 0), None);
+    let mut cell = ics_core::Cell::new("scratch");
+    cell.layout = Some(l);
+    p.add_cell("work", cell).unwrap();
+    p.save_as(&dir).unwrap();
+    let mut h = open_layout(&dir, "scratch");
+    let key = |h: &mut Harness<'_, IcStudio>, k: egui::Key| {
+        h.key_press_modifiers(egui::Modifiers::NONE, k);
+        h.run_steps(2);
+    };
+    let tech = h.state().project().unwrap().tech.clone();
+    let inst = |h: &Harness<'_, IcStudio>| {
+        let p = h.state().project().unwrap();
+        let i = p.cell(&ics_core::CellRef::new("work", "scratch")).unwrap().layout.as_ref().unwrap().instances[0].clone();
+        let pc = p.cell(&i.cell).unwrap().pcell.clone().unwrap();
+        let b = i.trans.apply_rect(pc.generate(&p.tech).unwrap().shapes_bbox().unwrap());
+        (pc, b)
+    };
+    // Calibrate screen <-> world with a rectangle drawn away from the device, then undo it.
+    h.hover_at(egui::pos2(700.0, 450.0));
+    h.run_steps(2);
+    key(&mut h, egui::Key::G);
+    key(&mut h, egui::Key::R);
+    let (s0, s1) = (egui::pos2(540.0, 160.0), egui::pos2(580.0, 200.0));
+    click(&mut h, s0);
+    click(&mut h, s1);
+    let r = shapes_of(&h, "scratch")[0].bbox();
+    let k = r.width() as f32 / (s1.x - s0.x);
+    let to_screen = |x: i64, y: i64| egui::pos2(s0.x + (x - r.x0) as f32 / k, s0.y - (y - r.y1) as f32 / k);
+    key(&mut h, egui::Key::U);
+    assert!(shapes_of(&h, "scratch").is_empty());
+    key(&mut h, egui::Key::Escape);
+
+    let (pc0, b0) = inst(&h);
+    assert_eq!(pc0, nmos);
+    let top = to_screen((b0.x0 + b0.x1) / 2, b0.y1);
+    key(&mut h, egui::Key::S);
+    click(&mut h, top);
+    click(&mut h, top - egui::vec2(0.0, 40.0));
+    let (pc1, b1) = inst(&h);
+    let PCell::Mos { w, l, .. } = pc1.clone() else { panic!() };
+    let want = (40.0 * k) as i64;
+    assert!((w - 2000 - want).abs() <= 2 * tech.grid.max(10), "W grows by the drag: {pc1:?}, want +{want}");
+    assert_eq!(l, 180);
+    assert_eq!(b1.y0, b0.y0, "the bottom edge stays: {b0:?} -> {b1:?}");
+
+    let right = to_screen(b1.x1, (b1.y0 + b1.y1) / 2);
+    key(&mut h, egui::Key::S);
+    click(&mut h, right);
+    click(&mut h, right + egui::vec2(8.0, 0.0));
+    let (pc2, b2) = inst(&h);
+    let PCell::Mos { w: w2, l: l2, .. } = pc2.clone() else { panic!() };
+    assert_eq!(w2, w);
+    assert!(l2 > 180, "L grows: {pc2:?}");
+    assert_eq!(b2.x0, b1.x0, "the left edge stays: {b1:?} -> {b2:?}");
+    key(&mut h, egui::Key::U);
+    assert_eq!(inst(&h).0, pc1, "u undoes the stretch");
+}

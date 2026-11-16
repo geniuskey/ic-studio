@@ -703,6 +703,7 @@ impl LayoutEditor {
             && !self.zoom_box
             && self.xfer.is_none()
             && self.stretch.is_none()
+            && self.pstretch.is_none()
             && self.part_ref.is_none()
             && self.box_start.is_none()
             && self.path_pts.is_empty()

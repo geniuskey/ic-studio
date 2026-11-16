@@ -101,6 +101,25 @@ impl PCell {
         }
     }
 
+    /// Parameters after stretching the generated layout by `d` along its own x axis (`along_x`)
+    /// or y axis. MOS: y is W, x is L (shared by the fingers); poly resistor: x is W, y is L;
+    /// MOM capacitor: x is W, y is H; tap: y is its height. `None` when the axis has no
+    /// parameter or the size would not stay positive.
+    pub fn stretched(&self, along_x: bool, d: i64) -> Option<PCell> {
+        let add = |v: i64, d: i64| (v + d > 0).then_some(v + d);
+        let mut p = self.clone();
+        match &mut p {
+            PCell::Mos { w, .. } if !along_x => *w = add(*w, d)?,
+            PCell::Mos { l, fingers, .. } => *l = add(*l, d / (*fingers).max(1) as i64)?,
+            PCell::PolyRes { w, .. } | PCell::MomCap { w, .. } if along_x => *w = add(*w, d)?,
+            PCell::PolyRes { l, .. } => *l = add(*l, d)?,
+            PCell::MomCap { h, .. } => *h = add(*h, d)?,
+            PCell::Tap { w, .. } if !along_x => *w = add(*w, d)?,
+            PCell::Tap { .. } => return None,
+        }
+        (p != *self).then_some(p)
+    }
+
     /// Generate the layout (origin-relative), checking parameters against the technology.
     pub fn generate(&self, tech: &Tech) -> Result<Layout, String> {
         let mut lay = match *self {
@@ -532,6 +551,18 @@ fn gen_mom_cap(tech: &Tech, w: i64, h: i64) -> Result<Layout, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stretch_maps_axes_to_parameters() {
+        use super::PCell;
+        let m = PCell::mos(false, 1000, 180, 2);
+        assert_eq!(m.stretched(false, 500), Some(PCell::mos(false, 1500, 180, 2)));
+        assert_eq!(m.stretched(true, 100), Some(PCell::mos(false, 1000, 230, 2)));
+        assert_eq!(m.stretched(false, -1000), None);
+        assert_eq!(PCell::PolyRes { w: 400, l: 5000 }.stretched(false, -1000), Some(PCell::PolyRes { w: 400, l: 4000 }));
+        assert_eq!(PCell::MomCap { w: 5000, h: 5000 }.stretched(true, 10), Some(PCell::MomCap { w: 5010, h: 5000 }));
+        assert_eq!(PCell::Tap { well: true, w: 1000 }.stretched(true, 10), None);
+    }
+
     use super::*;
     use crate::drc::run_tech_deck;
     use crate::hier::NoCells;

@@ -3523,11 +3523,12 @@ impl IcStudio {
                             }
                             Err(e) => log.push((false, format!("PCell: {e}"))),
                         },
-                        LayRequest::SetPCell { inst, pcell } => match project.ensure_pcell(&pcell) {
+                        LayRequest::SetPCell { inst, pcell, trans } => match project.ensure_pcell(&pcell) {
                             Ok(cr) => {
                                 ed.history.push(&lay);
                                 if let Some(i) = lay.instance_mut(inst) {
                                     i.cell = cr;
+                                    i.trans = trans.unwrap_or(i.trans);
                                     touched = true;
                                 }
                             }

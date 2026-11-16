@@ -150,6 +150,18 @@ enum LDrag {
 }
 
 /// Everything the layout editor needs besides the layout being edited.
+/// A PCell instance being stretched: the edge of its box on `side` (outward unit vector) follows
+/// the cursor from `from`.
+#[derive(Debug, Clone)]
+struct PcellStretch {
+    inst: u64,
+    pcell: ics_core::pcell::PCell,
+    trans: Trans,
+    world: IRect,
+    side: (i64, i64),
+    from: (i64, i64),
+}
+
 pub struct LayCtx<'a> {
     pub cell: &'a CellRef,
     /// Resolves instances. The edited cell itself is not reachable through it.
@@ -264,6 +276,8 @@ pub struct LayoutEditor {
     xfer_t: Trans,
     /// Stretch in progress: shape, grabbed edge or vertex, reference point, original geometry.
     stretch: Option<(u64, Handle, (i64, i64), Geometry)>,
+    /// Stretch of a PCell instance in progress: its edge sets a parameter.
+    pstretch: Option<PcellStretch>,
     clip: Option<Clip>,
     /// Clipboard following the cursor until a click drops it.
     pub paste: Option<Clip>,
@@ -340,6 +354,7 @@ impl Default for LayoutEditor {
             xfer: None,
             xfer_t: Trans::IDENTITY,
             stretch: None,
+            pstretch: None,
             clip: None,
             paste: None,
             view_back: vec![],
@@ -1028,6 +1043,7 @@ impl LayoutEditor {
         self.xfer = None;
         self.xfer_t = Trans::IDENTITY;
         self.stretch = None;
+        self.pstretch = None;
         self.zoom_box = false;
         self.paste = None;
         self.part_ref = None;
@@ -1086,7 +1102,7 @@ impl LayoutEditor {
         }
         let s = match self.tool {
             LayTool::Select => return None,
-            LayTool::Stretch if self.stretch.is_some() || self.part_ref.is_some() => {
+            LayTool::Stretch if self.stretch.is_some() || self.pstretch.is_some() || self.part_ref.is_some() => {
                 "Stretch: click the destination · Esc cancels".into()
             }
             LayTool::Stretch if !self.part.is_empty() => "Stretch: click the reference point".into(),
@@ -1131,6 +1147,7 @@ impl LayoutEditor {
         self.xfer
             .or(self.part_ref)
             .or(self.stretch.as_ref().map(|s| s.2))
+            .or(self.pstretch.as_ref().map(|s| s.from))
             .or(self.box_start)
             .or(self.path_pts.last().copied())
             .or(self.poly_pts.last().copied())
@@ -1504,11 +1521,17 @@ impl LayoutEditor {
             self.paste = None;
             self.zoom_box = false;
             self.box_start = None;
-        } else if self.box_start.is_some() || self.xfer.is_some() || self.stretch.is_some() || self.part_ref.is_some() {
+        } else if self.box_start.is_some()
+            || self.xfer.is_some()
+            || self.stretch.is_some()
+            || self.pstretch.is_some()
+            || self.part_ref.is_some()
+        {
             self.box_start = None;
             self.xfer = None;
             self.xfer_t = Trans::IDENTITY;
             self.stretch = None;
+            self.pstretch = None;
             self.part_ref = None;
         } else if !self.path_pts.is_empty() || !self.poly_pts.is_empty() {
             self.path_pts.clear();
@@ -1666,16 +1689,99 @@ impl LayoutEditor {
             IRect::new(b.x0 - 3 * tol, b.y0 - 3 * tol, b.x1 + 3 * tol, b.y1 + 3 * tol).contains(p.0, p.1)
         };
         let sel = (self.selection.len() == 1).then(|| l.shape(*self.selection.first().unwrap())).flatten().filter(|s| near(s));
+        // A selected PCell instance wins over the shapes around it.
+        if sel.is_none()
+            && self.selection.len() == 1
+            && l.instance(*self.selection.first().unwrap()).is_some()
+            && self.begin_pcell_stretch(l, cx, &idx, p, tol)
+        {
+            return;
+        }
         let shape =
             sel.or_else(|| hits(l, &idx, &self.pickable(), false, p.0, p.1, 3 * tol).into_iter().find_map(|id| l.shape(id)));
         let Some((s, h)) = shape.and_then(|s| edit::nearest_handle(&s.geom, p, 3 * tol).map(|h| (s, h))) else {
+            if self.begin_pcell_stretch(l, cx, &idx, p, tol) {
+                return;
+            }
             if report {
-                self.note(false, "Stretch: no shape edge under the cursor");
+                self.note(false, "Stretch: no shape or PCell edge under the cursor");
             }
             return;
         };
         self.selection = [s.id].into();
         self.stretch = Some((s.id, h, p, s.geom.clone()));
+    }
+
+    /// Stretch on a PCell instance: grab the edge of its box nearest to `p`.
+    fn begin_pcell_stretch(&mut self, l: &Layout, cx: &mut LayCtx, idx: &CellIndex, p: (i64, i64), tol: i64) -> bool {
+        let sel = self.selection.first().filter(|_| self.selection.len() == 1).and_then(|id| l.instance(*id));
+        let under = || {
+            hits(l, idx, &vec![false; cx.tech.layers.len()], true, p.0, p.1, 3 * tol).into_iter().find_map(|id| l.instance(id))
+        };
+        let Some(inst) = sel.or_else(under) else { return false };
+        let Some(pcell) = cx.src.cell(&inst.cell).and_then(|c| c.pcell.clone()) else {
+            self.note(false, "Stretch: only PCell instances can be stretched; this is a fixed cell");
+            return true;
+        };
+        if inst.array.is_some() {
+            self.note(false, "Stretch: an arrayed PCell cannot be stretched");
+            return true;
+        }
+        let Some(child) = pcell.generate(cx.tech).ok().and_then(|g| g.shapes_bbox()) else { return false };
+        let b = inst.trans.apply_rect(child);
+        let reach = 3 * tol;
+        if !IRect::new(b.x0 - reach, b.y0 - reach, b.x1 + reach, b.y1 + reach).contains(p.0, p.1) {
+            return false;
+        }
+        // The nearest edge, as its outward direction.
+        let side = [
+            ((-1, 0), (p.0 - b.x0).abs()),
+            ((1, 0), (b.x1 - p.0).abs()),
+            ((0, -1), (p.1 - b.y0).abs()),
+            ((0, 1), (b.y1 - p.1).abs()),
+        ]
+        .into_iter()
+        .min_by_key(|s| s.1)
+        .map(|s| s.0)
+        .unwrap_or((1, 0));
+        let (id, trans) = (inst.id, inst.trans);
+        self.selection = [id].into();
+        self.pstretch = Some(PcellStretch { inst: id, pcell, trans, world: b, side, from: p });
+        true
+    }
+
+    /// The PCell parameters and placement for a stretch to `to`, keeping the opposite edge in place.
+    fn pcell_stretch_result(s: &PcellStretch, tech: &Tech, to: (i64, i64)) -> Option<(ics_core::pcell::PCell, Trans, IRect)> {
+        let g = tech.grid.max(1);
+        let grow = ((to.0 - s.from.0) * s.side.0 + (to.1 - s.from.1) * s.side.1) / g * g;
+        // Which axis of the cell runs along the dragged direction.
+        let local_x_is_world_x = s.trans.apply_vec((1, 0)).1 == 0;
+        let along_x = (s.side.1 == 0) == local_x_is_world_x;
+        let pcell = s.pcell.stretched(along_x, grow)?;
+        let child = pcell.generate(tech).ok()?.shapes_bbox()?;
+        let mut trans = s.trans;
+        let nb = trans.apply_rect(child);
+        let shift = match s.side {
+            (1, _) => (s.world.x0 - nb.x0, 0),
+            (-1, _) => (s.world.x1 - nb.x1, 0),
+            (_, 1) => (0, s.world.y0 - nb.y0),
+            _ => (0, s.world.y1 - nb.y1),
+        };
+        trans.x += shift.0;
+        trans.y += shift.1;
+        Some((pcell, trans, nb.translate(shift.0, shift.1)))
+    }
+
+    fn finish_pcell_stretch(&mut self, tech: &Tech, to: (i64, i64)) -> bool {
+        let Some(s) = self.pstretch.take() else { return false };
+        match Self::pcell_stretch_result(&s, tech, to) {
+            Some((pcell, trans, _)) => {
+                self.note(true, format!("Stretched to {}", pcell.summary(tech.dbu_per_um)));
+                self.requests.push(LayRequest::SetPCell { inst: s.inst, pcell, trans: Some(trans) });
+                true
+            }
+            None => false,
+        }
     }
 
     fn finish_stretch(&mut self, l: &mut Layout, to: (i64, i64)) -> bool {
@@ -1929,7 +2035,7 @@ impl LayoutEditor {
                     }
                 }
                 LayTool::Stretch => {
-                    if resp.drag_started_by(egui::PointerButton::Primary) && self.stretch.is_none() {
+                    if resp.drag_started_by(egui::PointerButton::Primary) && self.stretch.is_none() && self.pstretch.is_none() {
                         let snapped = self.snapped;
                         let p = self.pick_point(l, cx, self.view.to_world(rect, press()));
                         self.snapped = snapped;
@@ -1939,7 +2045,8 @@ impl LayoutEditor {
                         } else {
                             self.begin_stretch(l, cx, p, tol, false);
                             // Away from any edge, the drag is a box around the vertices to stretch.
-                            self.drag = Some(if self.stretch.is_some() { LDrag::Xfer } else { LDrag::Rubber { start: press() } });
+                            let grabbed = self.stretch.is_some() || self.pstretch.is_some();
+                            self.drag = Some(if grabbed { LDrag::Xfer } else { LDrag::Rubber { start: press() } });
                         }
                     }
                     if resp.clicked()
@@ -1961,6 +2068,8 @@ impl LayoutEditor {
                                 out.changed = true;
                                 cx.touched();
                             }
+                        } else if self.pstretch.is_some() {
+                            self.finish_pcell_stretch(cx.tech, c);
                         } else {
                             self.begin_stretch(l, cx, c, tol, true);
                         }
@@ -2112,6 +2221,10 @@ impl LayoutEditor {
                 }
                 Some(LDrag::Xfer) => {
                     let done = match self.cursor {
+                        Some(c) if self.tool == LayTool::Stretch && self.pstretch.is_some() => {
+                            self.finish_pcell_stretch(cx.tech, c);
+                            false
+                        }
                         Some(c) if self.tool == LayTool::Stretch => self.finish_stretch(l, c),
                         Some(c) => self.finish_xfer(l, c),
                         None => false,
@@ -2123,6 +2236,7 @@ impl LayoutEditor {
                     self.xfer = None;
                     self.xfer_t = Trans::IDENTITY;
                     self.stretch = None;
+                    self.pstretch = None;
                 }
                 Some(LDrag::Part { start }) => {
                     if let Some(c) = self.cursor
@@ -2259,6 +2373,14 @@ impl LayoutEditor {
                 let marks = assist::drd_marks(l, cx, &cands, &[*id].into(), true);
                 assist::draw_drd(&painter, &self.view, rect, &pal, &marks);
             }
+        }
+        if let (Some(s), Some(c)) = (&self.pstretch, self.cursor) {
+            let r = Self::pcell_stretch_result(s, cx.tech, c);
+            let b = r.as_ref().map_or(s.world, |r| r.2);
+            painter.rect_stroke(screen_rect(&self.view, rect, b), 0.0, Stroke::new(1.5, pal.warning), StrokeKind::Middle);
+            let txt = r.map_or_else(|| s.pcell.summary(cx.tech.dbu_per_um), |r| r.0.summary(cx.tech.dbu_per_um));
+            let at = self.view.to_screen(rect, c.0 as f64, c.1 as f64);
+            painter.text(at + Vec2::new(12.0, 12.0), Align2::LEFT_TOP, txt, FontId::monospace(11.0), pal.text);
         }
         // Paste preview.
         if let (Some(clip), Some(c)) = (&self.paste, self.cursor)
@@ -2840,7 +2962,7 @@ impl LayoutEditor {
                         ui.label(egui::RichText::new(e).small().color(pal.warning));
                     }
                     if ui.add_enabled(*edited != p && valid.is_ok(), egui::Button::new("Apply")).clicked() {
-                        self.requests.push(LayRequest::SetPCell { inst: id, pcell: edited.clone() });
+                        self.requests.push(LayRequest::SetPCell { inst: id, pcell: edited.clone(), trans: None });
                     }
                 }
             }

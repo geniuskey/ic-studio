@@ -38,9 +38,11 @@ pub enum LayRequest {
         trans: Trans,
         array: Option<ArraySpec>,
     },
+    /// New parameters for a PCell instance, and its new placement when that changes too.
     SetPCell {
         inst: u64,
         pcell: PCell,
+        trans: Option<Trans>,
     },
     MakeCell {
         ids: BTreeSet<u64>,
