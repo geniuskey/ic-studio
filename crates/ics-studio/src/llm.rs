@@ -354,7 +354,13 @@ fn to_openai(req: &Value, model: &str, tag: &str) -> Value {
         if c["role"] == "model" {
             let call_ids = ids.model_turn(turn, &parts);
             if let Some(m) = raw(&parts, tag) {
-                messages.push(m.clone());
+                // Servers answer tool calls with `"content": null`, but strict OpenAI-compatible
+                // proxies (litellm) reject null on the way back in: replay it as "".
+                let mut m = m.clone();
+                if !m["content"].is_string() && !m["content"].is_array() {
+                    m["content"] = "".into();
+                }
+                messages.push(m);
                 continue;
             }
             let text: String =
@@ -367,7 +373,7 @@ fn to_openai(req: &Value, model: &str, tag: &str) -> Value {
                     json!({"id": id, "type": "function", "function": {"name": f["name"], "arguments": f["args"].to_string()}})
                 })
                 .collect();
-            let mut m = json!({"role": "assistant", "content": if text.is_empty() { Value::Null } else { text.into() }});
+            let mut m = json!({"role": "assistant", "content": text});
             if !calls.is_empty() {
                 m["tool_calls"] = calls.into();
             }
@@ -673,6 +679,7 @@ mod tests {
         let m = b["messages"].as_array().unwrap();
         assert_eq!(m[0]["role"], "system");
         assert_eq!(m[2]["tool_calls"][1]["id"], "call_1_1");
+        assert_eq!(m[2]["content"], "Checking.");
         assert_eq!(m[2]["tool_calls"][0]["function"]["arguments"], "{\"cell\":\"a\"}");
         assert_eq!(m[3]["tool_call_id"], "call_1_0");
         assert_eq!(m[4]["tool_call_id"], "call_1_1");
@@ -688,6 +695,12 @@ mod tests {
         assert_eq!(parts[0]["functionCall"]["args"]["cell"], "b");
         assert_eq!(parts[0]["functionCall"]["id"], "x1");
         assert_eq!(parts[1]["raw"]["provider"], "openai");
+        // Replaying that turn must not send `"content": null` back (litellm rejects it).
+        let mut req = agent_request();
+        req["contents"][1] = r["candidates"][0]["content"].clone();
+        let b = to_openai(&req, "m", "openai");
+        assert_eq!(b["messages"][2]["content"], "");
+        assert_eq!(b["messages"][2]["tool_calls"][0]["id"], "x1");
     }
 
     #[test]
