@@ -315,26 +315,94 @@ impl LayAction {
         ),
     ];
 
-    /// The canvas pop-up menu (middle click, or right click with no command running).
-    const POPUP: &[Option<LayAction>] = &[
-        Some(LayAction::Tool(LayTool::Move)),
-        Some(LayAction::Tool(LayTool::Copy)),
-        Some(LayAction::Tool(LayTool::Stretch)),
-        Some(LayAction::Delete),
-        Some(LayAction::Properties),
-        None,
-        Some(LayAction::Rotate),
-        Some(LayAction::Merge),
-        Some(LayAction::Yank),
-        Some(LayAction::Paste),
-        None,
-        Some(LayAction::Descend),
-        Some(LayAction::EditInPlace),
-        Some(LayAction::Return),
-        None,
-        Some(LayAction::Fit),
-        Some(LayAction::PrevView),
+    /// The canvas pop-up menu over a selection (middle click, or right click with no command running).
+    const POPUP_SELECTION: &[PopupItem] = &[
+        PopupItem::A(LayAction::Tool(LayTool::Move)),
+        PopupItem::A(LayAction::Tool(LayTool::Copy)),
+        PopupItem::A(LayAction::Tool(LayTool::Stretch)),
+        PopupItem::A(LayAction::Properties),
+        PopupItem::Sep,
+        PopupItem::A(LayAction::Rotate),
+        PopupItem::A(LayAction::FlipX),
+        PopupItem::A(LayAction::FlipY),
+        PopupItem::Sub(
+            "Modify Shapes",
+            &[
+                LayAction::Merge,
+                LayAction::ConvertToPolygon,
+                LayAction::Chamfer,
+                LayAction::Tool(LayTool::Chop),
+                LayAction::Tool(LayTool::Split),
+            ],
+        ),
+        PopupItem::A(LayAction::Yank),
+        PopupItem::Sep,
+        PopupItem::Instances(&[LayAction::Descend, LayAction::EditInPlace]),
+        PopupItem::Sub(
+            "Constraints",
+            &[
+                LayAction::SymmetryV,
+                LayAction::SymmetryH,
+                LayAction::AlignLeft,
+                LayAction::AlignBottom,
+                LayAction::AlignCenterX,
+                LayAction::AlignCenterY,
+                LayAction::FixInPlace,
+                LayAction::ClearConstraints,
+            ],
+        ),
+        PopupItem::Sub(
+            "Compact",
+            &[LayAction::Compact, LayAction::CompactLeft, LayAction::CompactRight, LayAction::CompactDown, LayAction::CompactUp],
+        ),
+        PopupItem::Sep,
+        PopupItem::A(LayAction::Delete),
+        PopupItem::A(LayAction::DeselectAll),
     ];
+
+    /// The canvas pop-up menu over empty space.
+    const POPUP_EMPTY: &[PopupItem] = &[
+        PopupItem::Sub(
+            "Create",
+            &[
+                LayAction::Tool(LayTool::Rect),
+                LayAction::Tool(LayTool::Polygon),
+                LayAction::Tool(LayTool::Path),
+                LayAction::Tool(LayTool::Label),
+                LayAction::Tool(LayTool::Via),
+                LayAction::Tool(LayTool::Instance),
+                LayAction::Tool(LayTool::Ruler),
+            ],
+        ),
+        PopupItem::A(LayAction::Paste),
+        PopupItem::A(LayAction::SelectAll),
+        PopupItem::Sep,
+        PopupItem::A(LayAction::Undo),
+        PopupItem::A(LayAction::Redo),
+        PopupItem::Sep,
+        PopupItem::A(LayAction::Fit),
+        PopupItem::A(LayAction::ZoomBox),
+        PopupItem::A(LayAction::PrevView),
+        PopupItem::Sub(
+            "Display",
+            &[LayAction::AllLevels, LayAction::TopLevel, LayAction::UsedLayersOnly, LayAction::ClearRulers],
+        ),
+        PopupItem::Sep,
+        PopupItem::A(LayAction::Return),
+        PopupItem::A(LayAction::HierarchyTree),
+        PopupItem::Sep,
+        PopupItem::A(LayAction::DisplayOptions),
+        PopupItem::A(LayAction::EditorOptions),
+    ];
+}
+
+/// An entry of a canvas pop-up menu.
+enum PopupItem {
+    A(LayAction),
+    Sep,
+    Sub(&'static str, &'static [LayAction]),
+    /// Shown only when the selection holds an instance.
+    Instances(&'static [LayAction]),
 }
 
 /// Partial selection (F4, or a box in the Stretch command): outline vertices per shape, and
@@ -644,31 +712,66 @@ impl LayoutEditor {
     /// The canvas pop-up menu, Virtuoso style: middle click anywhere, right click with no command point pending.
     pub(super) fn popup_menu(&mut self, resp: &egui::Response, l: &Layout, cx: &mut LayCtx, at: Option<(i64, i64)>) {
         let open = resp.clicked_by(egui::PointerButton::Middle) || (resp.secondary_clicked() && self.idle());
-        if open
-            && self.selection.is_empty()
-            && let Some(p) = at
-        {
+        if open && let Some(p) = at {
+            // Right-clicking an unselected item selects it; empty space keeps the selection.
             let idx = cx.index(l);
             let tol = (5.0 / self.view.scale) as i64;
-            if let Some(id) = hits(l, &idx, &self.pickable(), self.inst_selectable, p.0, p.1, tol).first() {
+            if let Some(id) = hits(l, &idx, &self.pickable(), self.inst_selectable, p.0, p.1, tol).first()
+                && !self.selection.contains(id)
+            {
                 self.selection = [*id].into();
             }
         }
+        let n_inst = l.instances.iter().filter(|i| self.selection.contains(&i.id)).count();
+        let n_shapes = self.selection.len() - n_inst;
+        let enabled = |a: LayAction| match a {
+            LayAction::Paste => self.clip.is_some(),
+            LayAction::Undo => self.history.can_undo(),
+            LayAction::Redo => self.history.can_redo(),
+            _ => true,
+        };
         let mut picked = None;
+        let mut button = |ui: &mut egui::Ui, a: LayAction| {
+            if ui.add_enabled(enabled(a), egui::Button::new(a.name()).shortcut_text(a.key())).clicked() {
+                picked = Some(a);
+            }
+        };
+        let items = if self.selection.is_empty() { LayAction::POPUP_EMPTY } else { LayAction::POPUP_SELECTION };
         let shown = egui::Popup::menu(resp)
             .id(egui::Id::unique("lay_popup"))
             .open_memory(open.then_some(egui::SetOpenCommand::Bool(true)))
             .at_pointer_fixed()
             .show(|ui| {
-                for item in LayAction::POPUP {
-                    match item {
-                        Some(a) => {
-                            if ui.add(egui::Button::new(a.name()).shortcut_text(a.key())).clicked() {
-                                picked = Some(*a);
-                            }
+                ui.set_min_width(210.0);
+                if n_inst + n_shapes > 0 {
+                    let mut parts = vec![];
+                    for (c, what) in [(n_shapes, "shape"), (n_inst, "instance")] {
+                        if c > 0 {
+                            parts.push(format!("{c} {what}{}", if c == 1 { "" } else { "s" }));
                         }
-                        None => {
+                    }
+                    ui.label(egui::RichText::new(parts.join(", ") + " selected").small().strong());
+                    ui.separator();
+                }
+                for item in items {
+                    match item {
+                        PopupItem::A(a) => button(ui, *a),
+                        PopupItem::Sep => {
                             ui.separator();
+                        }
+                        PopupItem::Sub(name, acts) => {
+                            ui.menu_button(*name, |ui| {
+                                for a in *acts {
+                                    button(ui, *a);
+                                }
+                            });
+                        }
+                        PopupItem::Instances(acts) => {
+                            if n_inst > 0 {
+                                for a in *acts {
+                                    button(ui, *a);
+                                }
+                            }
                         }
                     }
                 }

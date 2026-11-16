@@ -2548,3 +2548,81 @@ fn explorer_library_context_menu() {
     h.key_press(egui::Key::Escape);
     h.run_steps(2);
 }
+
+fn right_click(h: &mut Harness<'_, IcStudio>, p: egui::Pos2) {
+    h.hover_at(p);
+    h.step();
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos: p,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: Default::default(),
+        });
+        h.step();
+    }
+    h.run_steps(2);
+}
+
+/// The schematic canvas pop-up menu: tools on empty space, edits on a selection.
+#[test]
+fn schematic_context_menu() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = app(demo_args("cmos_inverter", "schematic", false));
+    h.run_steps(4);
+    let r = h.state().active_ref().unwrap().clone();
+    let count = |h: &Harness<'_, IcStudio>| {
+        let p = h.state().project().unwrap();
+        p.cell(&r).unwrap().schematic.as_ref().unwrap().instances.len()
+    };
+    let before = count(&h);
+    // Far corner of the canvas: empty space.
+    let empty = egui::pos2(650.0, 650.0);
+    right_click(&mut h, empty);
+    shot(&mut h, "sch_context_empty");
+    assert!(h.query_by_label("Place Device").is_some(), "empty-space menu should offer the tools");
+    h.get_by_label_contains("Select All").click();
+    h.run_steps(3);
+    assert!(!h.state().schematic_editor(&r).unwrap().selection.is_empty());
+    right_click(&mut h, empty);
+    assert!(h.query_by_label_contains("Rotate 90°").is_some(), "selection menu should offer edits");
+    shot(&mut h, "sch_context_selection");
+    // The menu item, not the toolbar's "Duplicate selection" button above it.
+    h.get_all_by_label_contains("Duplicate").max_by(|a, b| a.rect().top().total_cmp(&b.rect().top())).unwrap().click();
+    h.run_steps(3);
+    assert_eq!(count(&h), before * 2, "duplicate should copy every instance");
+}
+
+/// Tab strip: Close Other Tabs from the command, the same one the tab menu sends.
+#[test]
+fn close_other_tabs() {
+    let mut h = app(demo_args("cmos_inverter", "schematic", false));
+    let r = h.state().active_ref().unwrap().clone();
+    h.state_mut().command(Command::CloseOtherTabs(r.clone()));
+    h.step();
+    assert_eq!(h.state().active_ref(), Some(&r));
+    h.state_mut().command(Command::CloseAllTabs);
+    h.step();
+    assert!(h.state().active_ref().is_none());
+}
+
+/// The layout canvas pop-up menu: Create on empty space, edits once something is selected.
+#[test]
+fn layout_context_menu() {
+    use egui_kittest::kittest::Queryable;
+    use ics_studio::layout_view::LayAction;
+    let mut h = app(demo_args("cmos_inverter", "layout", false));
+    h.run_steps(4);
+    let p = egui::pos2(700.0, 650.0);
+    right_click(&mut h, p);
+    shot(&mut h, "lay_context_empty");
+    assert_eq!(h.query_all_by_label("Create").count(), 2, "empty-space menu should offer Create (besides the menu bar)");
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    h.state_mut().command(Command::Lay(LayAction::SelectAll));
+    h.run_steps(3);
+    right_click(&mut h, p);
+    shot(&mut h, "lay_context_selection");
+    assert!(h.query_by_label_contains("shapes selected").is_some(), "selection menu should show a summary");
+    assert!(h.query_by_label("Modify Shapes").is_some());
+}

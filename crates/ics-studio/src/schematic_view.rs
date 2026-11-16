@@ -31,6 +31,94 @@ impl SchTool {
     }
 }
 
+/// A named schematic editor action, shared by the canvas pop-up menu, the command palette
+/// and `Command::Sch` (automation).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum SchAction {
+    Tool(SchTool),
+    Undo,
+    Redo,
+    Delete,
+    Rotate,
+    Mirror,
+    Duplicate,
+    SelectAll,
+    DeselectAll,
+    /// Select every wire and label of the selected wires' / labels' nets.
+    SelectNet,
+    Fit,
+    ToggleGrid,
+    ToggleWireBend,
+}
+
+impl SchAction {
+    pub const PALETTE: &[SchAction] = &[
+        SchAction::Tool(SchTool::Select),
+        SchAction::Tool(SchTool::Wire),
+        SchAction::Tool(SchTool::Label),
+        SchAction::Rotate,
+        SchAction::Mirror,
+        SchAction::Duplicate,
+        SchAction::Delete,
+        SchAction::SelectAll,
+        SchAction::DeselectAll,
+        SchAction::SelectNet,
+        SchAction::Fit,
+        SchAction::ToggleGrid,
+        SchAction::ToggleWireBend,
+    ];
+
+    pub fn name(self) -> String {
+        match self {
+            SchAction::Tool(SchTool::Select) => "Select Tool".into(),
+            SchAction::Tool(SchTool::Wire) => "Draw Wire".into(),
+            SchAction::Tool(SchTool::Label) => "Place Net Label".into(),
+            SchAction::Tool(SchTool::Place(k)) => k.label().into(),
+            SchAction::Undo => "Undo".into(),
+            SchAction::Redo => "Redo".into(),
+            SchAction::Delete => "Delete".into(),
+            SchAction::Rotate => "Rotate 90°".into(),
+            SchAction::Mirror => "Mirror".into(),
+            SchAction::Duplicate => "Duplicate".into(),
+            SchAction::SelectAll => "Select All".into(),
+            SchAction::DeselectAll => "Deselect All".into(),
+            SchAction::SelectNet => "Select Whole Net".into(),
+            SchAction::Fit => "Fit to Window".into(),
+            SchAction::ToggleGrid => "Toggle Grid".into(),
+            SchAction::ToggleWireBend => "Toggle Wire Bend (H/V first)".into(),
+        }
+    }
+
+    pub fn key(self) -> String {
+        match self {
+            SchAction::Tool(SchTool::Select) => "Esc".into(),
+            SchAction::Tool(SchTool::Wire) => "W".into(),
+            SchAction::Tool(SchTool::Label) => "T".into(),
+            SchAction::Tool(SchTool::Place(k)) => k.shortcut().map(|c| c.to_ascii_uppercase().to_string()).unwrap_or_default(),
+            SchAction::Undo => theme::kbd("⌘Z"),
+            SchAction::Redo => theme::kbd("⇧⌘Z"),
+            SchAction::Delete => "Del".into(),
+            SchAction::Rotate => "Space".into(),
+            SchAction::Mirror => "X".into(),
+            SchAction::Duplicate => theme::kbd("⌘D"),
+            SchAction::SelectAll => theme::kbd("⌘A"),
+            SchAction::DeselectAll => "Esc".into(),
+            SchAction::SelectNet => String::new(),
+            SchAction::Fit => "F".into(),
+            SchAction::ToggleGrid => String::new(),
+            SchAction::ToggleWireBend => "/".into(),
+        }
+    }
+}
+
+/// Something the schematic canvas asks the app to do (it cannot reach the app's command queue).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum SchRequest {
+    Simulate,
+    Check,
+    ExportNetlist,
+}
+
 enum Drag {
     Move { start: Pt, snapshot: Schematic, stretch: Vec<(u64, bool, bool)> },
     Rubber { start: Pos2 },
@@ -51,6 +139,8 @@ pub struct SchematicEditor {
     pub annotate_op: bool,
     pub show_grid: bool,
     conn_cache: Option<(Schematic, Connectivity)>,
+    /// Actions queued by menus and `Command::Sch`, run by the next canvas frame.
+    pub actions: Vec<SchAction>,
 }
 
 impl Default for SchematicEditor {
@@ -70,6 +160,7 @@ impl Default for SchematicEditor {
             annotate_op: true,
             show_grid: true,
             conn_cache: None,
+            actions: Vec::new(),
         }
     }
 }
@@ -369,6 +460,7 @@ fn connection_points(sch: &Schematic) -> Vec<Pt> {
 }
 
 pub struct SchOutput {
+    pub requests: Vec<SchRequest>,
     pub changed: bool,
 }
 
@@ -474,6 +566,157 @@ impl SchematicEditor {
             .collect();
     }
 
+    /// Select every wire and label on the nets of the selected wires and labels.
+    pub fn select_net(&mut self, sch: &Schematic) {
+        let conn = self.conn(sch).clone();
+        let mut nets: BTreeSet<String> = BTreeSet::new();
+        for o in &self.selection {
+            match o {
+                SchObj::Wire(id) => nets.extend(conn.wire_net.get(id).cloned()),
+                SchObj::Label(id) => nets.extend(sch.labels.iter().find(|l| l.id == *id).map(|l| l.name.clone())),
+                SchObj::Instance(_) => {}
+            }
+        }
+        for n in &nets {
+            for w in conn.net_wires.get(n).into_iter().flatten() {
+                self.selection.insert(SchObj::Wire(*w));
+            }
+            for l in sch.labels.iter().filter(|l| &l.name == n) {
+                self.selection.insert(SchObj::Label(l.id));
+            }
+        }
+    }
+
+    /// Run one named action. Returns true when the schematic changed.
+    pub fn apply(&mut self, a: SchAction, sch: &mut Schematic) -> bool {
+        match a {
+            SchAction::Tool(t) => self.set_tool(t),
+            SchAction::Undo => return self.undo(sch),
+            SchAction::Redo => return self.redo(sch),
+            SchAction::Delete => return self.delete_selection(sch),
+            SchAction::Rotate => return self.rotate_selection(sch, false),
+            SchAction::Mirror => return self.rotate_selection(sch, true),
+            SchAction::Duplicate => return self.duplicate_selection(sch),
+            SchAction::SelectAll => self.select_all(sch),
+            SchAction::DeselectAll => self.selection.clear(),
+            SchAction::SelectNet => self.select_net(sch),
+            SchAction::Fit => self.needs_fit = true,
+            SchAction::ToggleGrid => self.show_grid = !self.show_grid,
+            SchAction::ToggleWireBend => self.wire_hv = !self.wire_hv,
+        }
+        false
+    }
+
+    /// One-line description of the selection, for the pop-up menu header.
+    fn selection_summary(&mut self, sch: &Schematic) -> String {
+        if let [o] = self.selection.iter().copied().collect::<Vec<_>>()[..] {
+            return match o {
+                SchObj::Instance(id) => sch.instance(id).map_or_else(String::new, |i| format!("{} · {}", i.name, i.kind.label())),
+                SchObj::Wire(id) => match self.conn(sch).wire_net.get(&id) {
+                    Some(n) => format!("Wire · net {n}"),
+                    None => "Wire".into(),
+                },
+                SchObj::Label(id) => {
+                    sch.labels.iter().find(|l| l.id == id).map_or_else(String::new, |l| format!("Net label {}", l.name))
+                }
+            };
+        }
+        let n = |f: fn(&SchObj) -> bool| self.selection.iter().filter(|o| f(o)).count();
+        let (i, w, l) =
+            (n(|o| matches!(o, SchObj::Instance(_))), n(|o| matches!(o, SchObj::Wire(_))), n(|o| matches!(o, SchObj::Label(_))));
+        let mut parts = vec![];
+        for (c, what) in [(i, "instance"), (w, "wire"), (l, "label")] {
+            if c > 0 {
+                parts.push(format!("{c} {what}{}", if c == 1 { "" } else { "s" }));
+            }
+        }
+        parts.join(", ")
+    }
+
+    /// The canvas pop-up menu: right click with the Select tool (or an idle Wire tool).
+    /// Right-clicking an unselected object selects it first.
+    fn popup_menu(&mut self, resp: &egui::Response, sch: &Schematic, world: Option<(f64, f64)>, tol: f64) -> Vec<SchRequest> {
+        let idle = self.drag.is_none() && self.wire_start.is_none() && matches!(self.tool, SchTool::Select | SchTool::Wire);
+        let open = resp.secondary_clicked() && idle;
+        // Empty space keeps the selection, as in the layout editor; Esc clears it.
+        if open
+            && let Some(o) = world.and_then(|w| hit_test(sch, w, tol))
+            && !self.selection.contains(&o)
+        {
+            self.selection = [o].into();
+        }
+        let summary = if open || !self.selection.is_empty() { self.selection_summary(sch) } else { String::new() };
+        let has_inst = self.selection.iter().any(|o| matches!(o, SchObj::Instance(_)));
+        let has_net = self.selection.iter().any(|o| matches!(o, SchObj::Wire(_) | SchObj::Label(_)));
+        let (can_undo, can_redo) = (self.history.can_undo(), self.history.can_redo());
+        let (grid, hv) = (self.show_grid, self.wire_hv);
+        let selected = !self.selection.is_empty();
+        let mut picked: Option<SchAction> = None;
+        let mut requests = vec![];
+        let item = |ui: &mut egui::Ui, a: SchAction, enabled: bool, picked: &mut Option<SchAction>| {
+            if ui.add_enabled(enabled, egui::Button::new(a.name()).shortcut_text(a.key())).clicked() {
+                *picked = Some(a);
+            }
+        };
+        egui::Popup::menu(resp)
+            .id(egui::Id::unique("sch_popup"))
+            .open_memory(open.then_some(egui::SetOpenCommand::Bool(true)))
+            .at_pointer_fixed()
+            .show(|ui| {
+                ui.set_min_width(200.0);
+                if selected {
+                    ui.label(egui::RichText::new(&summary).small().strong());
+                    ui.separator();
+                    item(ui, SchAction::Rotate, has_inst, &mut picked);
+                    item(ui, SchAction::Mirror, has_inst, &mut picked);
+                    item(ui, SchAction::Duplicate, true, &mut picked);
+                    if has_net {
+                        item(ui, SchAction::SelectNet, true, &mut picked);
+                    }
+                    ui.separator();
+                    item(ui, SchAction::Delete, true, &mut picked);
+                    item(ui, SchAction::DeselectAll, true, &mut picked);
+                } else {
+                    item(ui, SchAction::Tool(SchTool::Wire), true, &mut picked);
+                    item(ui, SchAction::Tool(SchTool::Label), true, &mut picked);
+                    ui.menu_button("Place Device", |ui| {
+                        for k in DeviceKind::ALL {
+                            item(ui, SchAction::Tool(SchTool::Place(k)), true, &mut picked);
+                        }
+                    });
+                    ui.separator();
+                    item(ui, SchAction::Undo, can_undo, &mut picked);
+                    item(ui, SchAction::Redo, can_redo, &mut picked);
+                    item(ui, SchAction::SelectAll, !sch.is_empty(), &mut picked);
+                    ui.separator();
+                    item(ui, SchAction::Fit, true, &mut picked);
+                    let mut g = grid;
+                    if ui.checkbox(&mut g, "Show Grid").clicked() {
+                        picked = Some(SchAction::ToggleGrid);
+                    }
+                    let mut h = hv;
+                    if ui.checkbox(&mut h, "Wires Bend Horizontal First").on_hover_text("/").clicked() {
+                        picked = Some(SchAction::ToggleWireBend);
+                    }
+                    ui.separator();
+                    if ui.add(egui::Button::new("Run Simulation").shortcut_text("F5")).clicked() {
+                        requests.push(SchRequest::Simulate);
+                    }
+                    if ui.button("Check Schematic").clicked() {
+                        requests.push(SchRequest::Check);
+                    }
+                    if ui.button("Export Netlist…").clicked() {
+                        requests.push(SchRequest::ExportNetlist);
+                    }
+                }
+            });
+        if let Some(a) = picked {
+            self.actions.push(a);
+            resp.ctx.request_repaint();
+        }
+        requests
+    }
+
     fn snap(&self, w: (f64, f64)) -> Pt {
         Pt::new(w.0.round() as i32, w.1.round() as i32)
     }
@@ -543,6 +786,9 @@ impl SchematicEditor {
     pub fn canvas(&mut self, ui: &mut egui::Ui, sch: &mut Schematic, op: Option<&OpAnnotation>) -> SchOutput {
         let pal = theme::palette(ui.ctx());
         let mut changed = false;
+        for a in std::mem::take(&mut self.actions) {
+            changed |= self.apply(a, sch);
+        }
         let (resp, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
         let rect = resp.rect;
         painter.rect_filled(rect, 0.0, pal.bg_canvas);
@@ -566,6 +812,7 @@ impl SchematicEditor {
         let world = hover.map(|p| self.view.to_world(rect, p));
         self.cursor = world.map(|w| self.snap(w));
         let tol = (6.0 / self.view.scale).max(0.25);
+        let requests = self.popup_menu(&resp, sch, world, tol);
 
         match self.tool {
             SchTool::Select => changed |= self.select_tool(ui, &resp, rect, sch, world, tol),
@@ -719,7 +966,7 @@ impl SchematicEditor {
             painter.text(
                 rect.center(),
                 Align2::CENTER_CENTER,
-                "Empty schematic — pick a device from the library (or press R, C, V, N, P…) and click to place.\nW draws wires, T places net labels, scroll to zoom, right-drag to pan.",
+                "Empty schematic — pick a device from the library (or press R, C, V, N, P…) and click to place.\nW draws wires, T places net labels, right-click for a menu, scroll to zoom, right-drag to pan.",
                 FontId::proportional(14.0),
                 pal.text_weak,
             );
@@ -733,7 +980,7 @@ impl SchematicEditor {
         if resp.hovered() {
             ui.ctx().set_cursor_icon(cursor);
         }
-        SchOutput { changed }
+        SchOutput { changed, requests }
     }
 
     fn select_tool(
@@ -892,7 +1139,31 @@ impl SchematicEditor {
                 for n in conn.nets() {
                     let pins = conn.pin_nets.values().filter(|x| **x == n).count();
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(&n).monospace().color(if n == "0" { pal.text_weak } else { pal.wire }));
+                        let r = ui
+                            .add(
+                                egui::Label::new(egui::RichText::new(&n).monospace().color(if n == "0" {
+                                    pal.text_weak
+                                } else {
+                                    pal.wire
+                                }))
+                                .sense(egui::Sense::click()),
+                            )
+                            .on_hover_text("Click to select the net, right-click for more");
+                        let select = |ed: &mut Self| {
+                            ed.selection = conn.net_wires.get(&n).into_iter().flatten().map(|w| SchObj::Wire(*w)).collect();
+                            ed.selection.extend(sch.labels.iter().filter(|l| l.name == n).map(|l| SchObj::Label(l.id)));
+                        };
+                        if r.clicked() {
+                            select(self);
+                        }
+                        r.context_menu(|ui| {
+                            if ui.button("Select Net").clicked() {
+                                select(self);
+                            }
+                            if ui.button("Copy Net Name").clicked() {
+                                ui.ctx().copy_text(n.clone());
+                            }
+                        });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(egui::RichText::new(format!("{pins} pins")).small().color(pal.text_weak));
                         });
@@ -1139,6 +1410,7 @@ pub fn device_palette(ui: &mut egui::Ui, editor: &mut SchematicEditor) {
         ("⌘Z", "undo"),
         ("/", "wire corner direction"),
         ("F", "fit to window"),
+        ("Right-click", "context menu"),
     ] {
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(theme::kbd(k)).monospace().small().color(pal.accent));

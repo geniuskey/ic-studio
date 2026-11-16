@@ -775,13 +775,33 @@ pub fn results_panel(ui: &mut egui::Ui, state: &mut SimState) -> Option<String> 
                 ui.horizontal(|ui| {
                     let (r, p) = ui.allocate_painter(egui::vec2(10.0, 10.0), egui::Sense::hover());
                     p.rect_filled(r.rect, 2.0, if on { colors[&v.name] } else { pal.bg_hover });
-                    if ui.checkbox(&mut on, RichText::new(&v.name).monospace()).changed() {
+                    let r = ui.checkbox(&mut on, RichText::new(&v.name).monospace());
+                    if r.changed() {
                         if on {
                             sel.insert(v.name.clone());
                         } else {
                             sel.remove(&v.name);
                         }
                     }
+                    r.context_menu(|ui| {
+                        if ui.button("Plot Only This").clicked() {
+                            *sel = [v.name.clone()].into_iter().collect();
+                        }
+                        if ui.button(if sel.contains(&v.name) { "Hide" } else { "Show" }).clicked() && !sel.remove(&v.name) {
+                            sel.insert(v.name.clone());
+                        }
+                        let same_kind: Vec<String> = d.signals().filter(|x| x.kind == v.kind).map(|x| x.name.clone()).collect();
+                        if ui.button("Show All of This Kind").clicked() {
+                            sel.extend(same_kind);
+                        }
+                        if ui.button("Clear Plot").clicked() {
+                            sel.clear();
+                        }
+                        ui.separator();
+                        if ui.button("Copy Name").clicked() {
+                            ui.ctx().copy_text(v.name.clone());
+                        }
+                    });
                 });
             }
         });

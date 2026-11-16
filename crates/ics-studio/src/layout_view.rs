@@ -98,6 +98,25 @@ impl LayTool {
         }
     }
 
+    pub fn icon(self) -> crate::icons::Icon {
+        use crate::icons::Icon;
+        match self {
+            LayTool::Select => Icon::Pointer,
+            LayTool::Stretch => Icon::Stretch,
+            LayTool::Move => Icon::Move,
+            LayTool::Copy => Icon::Duplicate,
+            LayTool::Rect => Icon::Rectangle,
+            LayTool::Polygon => Icon::Polygon,
+            LayTool::Path => Icon::Path,
+            LayTool::Label => Icon::Text,
+            LayTool::Via => Icon::Via,
+            LayTool::Instance => Icon::Instance,
+            LayTool::Chop => Icon::Chop,
+            LayTool::Split => Icon::Split,
+            LayTool::Ruler => Icon::Ruler,
+        }
+    }
+
     /// Tools that take a box: drag it, or click two corners.
     fn takes_box(self) -> bool {
         matches!(self, LayTool::Rect | LayTool::Via | LayTool::Chop | LayTool::Split | LayTool::Ruler)
@@ -2626,9 +2645,39 @@ impl LayoutEditor {
                     def.name, def.gds_layer, def.gds_datatype, def.min_width, def.min_spacing
                 ));
                 r.context_menu(|ui| {
-                    if ui.button("Edit display…").clicked() {
+                    ui.label(
+                        egui::RichText::new(format!("{}  {}/{}", def.name, def.gds_layer, def.gds_datatype)).small().strong(),
+                    );
+                    ui.separator();
+                    if ui.add_enabled(!active, egui::Button::new("Make Active Layer")).clicked() {
+                        self.active_layer = i;
+                        self.visible[i] = true;
+                    }
+                    if ui.button(if self.visible[i] { "Hide" } else { "Show" }).clicked() {
+                        self.visible[i] = !self.visible[i];
+                    }
+                    if ui.button("Show Only This Layer").clicked() {
+                        self.visible.iter_mut().enumerate().for_each(|(j, v)| *v = j == i);
+                    }
+                    if ui.button("Show All Layers").clicked() {
+                        self.visible.iter_mut().for_each(|v| *v = true);
+                    }
+                    ui.separator();
+                    if ui.button(if self.selectable[i] { "Make Unselectable" } else { "Make Selectable" }).clicked() {
+                        self.selectable[i] = !self.selectable[i];
+                    }
+                    if ui.button("Only This Layer Selectable").clicked() {
+                        self.selectable.iter_mut().enumerate().for_each(|(j, v)| *v = j == i);
+                    }
+                    if ui.button("All Layers Selectable").clicked() {
+                        self.selectable.iter_mut().for_each(|v| *v = true);
+                    }
+                    ui.separator();
+                    if ui.button("Copy Layer Name").clicked() {
+                        ui.ctx().copy_text(def.name.clone());
+                    }
+                    if ui.button("Edit Display…").clicked() {
                         self.requests.push(LayRequest::EditLayerDisplay(def.name.clone()));
-                        ui.close();
                     }
                 });
             }

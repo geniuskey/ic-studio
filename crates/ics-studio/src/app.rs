@@ -27,7 +27,7 @@ use crate::net_view::{NetAction, NetBrowser};
 use crate::opc_view::OpcTool;
 use crate::pixel_view::{PixelAction, PixelOptics};
 use crate::rule_designer::{DesignerAction, RuleDesigner};
-use crate::schematic_view::{SchTool, SchematicEditor, device_palette};
+use crate::schematic_view::{SchAction, SchRequest, SchTool, SchematicEditor, device_palette};
 use crate::sim_view::{self, SimEvent, SimState};
 use crate::stream_map_view::StreamMapEditor;
 use crate::sweep_view::{SweepAction, SweepManager};
@@ -91,6 +91,9 @@ pub enum Command {
     NewCellDialog,
     OpenCell(CellRef, Option<Workspace>),
     CloseTab(CellRef),
+    /// Close every tab but this one.
+    CloseOtherTabs(CellRef),
+    CloseAllTabs,
     RenameCellDialog(CellRef),
     DeleteCellConfirm(CellRef),
     /// New cell dialog with the library preselected.
@@ -260,6 +263,8 @@ pub enum Command {
     CommandPalette,
     /// A layout editor action (Virtuoso menus and bindkeys) on the active layout.
     Lay(LayAction),
+    /// A schematic editor action on the active cell.
+    Sch(SchAction),
     Quit,
 }
 
@@ -927,6 +932,16 @@ impl IcStudio {
                     }
                 }
             }
+            Command::CloseOtherTabs(r) => {
+                self.tabs.retain(|t| *t == r);
+                if self.tabs.contains(&r) {
+                    self.active = Some(r);
+                }
+            }
+            Command::CloseAllTabs => {
+                self.tabs.clear();
+                self.active = None;
+            }
             Command::RenameCellDialog(r) => {
                 self.dialog = Some(Dialog::RenameCell { name: r.cell.clone(), cell: r, error: String::new() })
             }
@@ -1101,6 +1116,12 @@ impl IcStudio {
                 }
             }
             Command::Undo | Command::Redo | Command::Delete | Command::FitView => self.editor_command(cmd),
+            Command::Sch(a) => {
+                if let Some(r) = self.active.clone() {
+                    self.workspace = Workspace::Schematic;
+                    self.sch_eds.entry(r).or_default().actions.push(a);
+                }
+            }
             Command::Lay(a) => {
                 if let Some(r) = self.active.clone() {
                     self.workspace = Workspace::Layout;
@@ -3047,29 +3068,7 @@ impl IcStudio {
                                 self.selected_lib = None;
                                 self.queue.push(Command::OpenCell(r.clone(), None));
                             }
-                            resp.context_menu(|ui| {
-                                if ui.button("Open schematic").clicked() {
-                                    self.queue.push(if cell.schematic.is_some() {
-                                        Command::OpenCell(r.clone(), Some(Workspace::Schematic))
-                                    } else {
-                                        Command::CreateView(r.clone(), ViewKind::Schematic)
-                                    });
-                                }
-                                if ui.button("Open layout").clicked() {
-                                    self.queue.push(if cell.layout.is_some() {
-                                        Command::OpenCell(r.clone(), Some(Workspace::Layout))
-                                    } else {
-                                        Command::CreateView(r.clone(), ViewKind::Layout)
-                                    });
-                                }
-                                ui.separator();
-                                if ui.button("Rename…").clicked() {
-                                    self.queue.push(Command::RenameCellDialog(r.clone()));
-                                }
-                                if ui.button("Delete…").clicked() {
-                                    self.queue.push(Command::DeleteCellConfirm(r.clone()));
-                                }
-                            });
+                            let resp = Self::cell_menu(Some(p), &mut self.queue, &resp, &r, None);
                             if !cell.description.is_empty() {
                                 resp.on_hover_text(&cell.description);
                             }
@@ -3131,7 +3130,11 @@ impl IcStudio {
                             if resp.clicked() {
                                 self.queue.push(Command::OpenCell(t.clone(), None));
                             }
-                            resp.on_hover_text(t.to_string());
+                            if resp.middle_clicked() {
+                                self.queue.push(Command::CloseTab(t.clone()));
+                            }
+                            let resp = resp.on_hover_text(format!("{t}\nMiddle-click to close, right-click for more"));
+                            Self::cell_menu(self.project.as_ref(), &mut self.queue, &resp, &t, Some(self.tabs.len()));
                             if ui.add(egui::Button::new(RichText::new("×").color(pal.text_weak)).frame(false).small()).clicked()
                             {
                                 self.queue.push(Command::CloseTab(t.clone()));
@@ -3140,6 +3143,64 @@ impl IcStudio {
                     });
             }
         });
+    }
+
+    /// Right-click menu of a cell, shared by the explorer and the tab strip (`n_tabs` adds the tab items).
+    fn cell_menu(
+        p: Option<&Project>,
+        q: &mut Vec<Command>,
+        resp: &egui::Response,
+        r: &CellRef,
+        n_tabs: Option<usize>,
+    ) -> egui::Response {
+        let views: Vec<(ViewKind, bool)> = p.and_then(|p| p.cell(r)).map_or_else(Vec::new, |c| {
+            [ViewKind::Schematic, ViewKind::Simulation, ViewKind::Layout].into_iter().map(|vk| (vk, c.has_view(vk))).collect()
+        });
+        resp.context_menu(|ui| {
+            ui.label(RichText::new(r.to_string()).small().strong());
+            ui.separator();
+            for (vk, exists) in &views {
+                let ws = match vk {
+                    ViewKind::Schematic => Workspace::Schematic,
+                    ViewKind::Simulation => Workspace::Simulation,
+                    _ => Workspace::Layout,
+                };
+                let text = if *exists { format!("Open {}", vk.label()) } else { format!("Create {} view", vk.label()) };
+                if ui.button(text).clicked() {
+                    q.push(if *exists { Command::OpenCell(r.clone(), Some(ws)) } else { Command::CreateView(r.clone(), *vk) });
+                }
+            }
+            if views.iter().any(|(vk, e)| *vk == ViewKind::Schematic && *e) {
+                ui.separator();
+                if ui.add(egui::Button::new("Run Simulation").shortcut_text("F5")).clicked() {
+                    q.push(Command::OpenCell(r.clone(), None));
+                    q.push(Command::RunSimulation);
+                }
+            }
+            ui.separator();
+            if ui.button("Copy Name").clicked() {
+                ui.ctx().copy_text(r.to_string());
+            }
+            if ui.button("Rename…").clicked() {
+                q.push(Command::RenameCellDialog(r.clone()));
+            }
+            if ui.button("Delete…").clicked() {
+                q.push(Command::DeleteCellConfirm(r.clone()));
+            }
+            if let Some(n_tabs) = n_tabs {
+                ui.separator();
+                if ui.button("Close Tab").clicked() {
+                    q.push(Command::CloseTab(r.clone()));
+                }
+                if ui.add_enabled(n_tabs > 1, egui::Button::new("Close Other Tabs")).clicked() {
+                    q.push(Command::CloseOtherTabs(r.clone()));
+                }
+                if ui.button("Close All Tabs").clicked() {
+                    q.push(Command::CloseAllTabs);
+                }
+            }
+        });
+        resp.clone()
     }
 
     fn no_view_placeholder(&mut self, ui: &mut egui::Ui, r: &CellRef, vk: ViewKind) {
@@ -3201,40 +3262,59 @@ impl IcStudio {
                     });
                     egui::Panel::top("sch_toolbar").show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new(ed.tool.name()).strong().color(pal.schematic));
-                            ui.separator();
-                            if ui
-                                .add_enabled(ed.history.can_undo(), egui::Button::new("↶"))
-                                .on_hover_text(theme::kbd("Undo (⌘Z)"))
-                                .clicked()
-                            {
+                            ui.spacing_mut().item_spacing.x = 2.0;
+                            for (t, icon, tip) in [
+                                (SchTool::Select, Icon::Pointer, "Select (Esc)"),
+                                (SchTool::Wire, Icon::Wire, "Draw wire (W)"),
+                                (SchTool::Label, Icon::NetLabel, "Net label (T)"),
+                            ] {
+                                if icons::button(ui, icon, ed.tool == t, true, tip).clicked() {
+                                    ed.set_tool(t);
+                                }
+                            }
+                            icons::divider(ui);
+                            let tip = theme::kbd("Undo (⌘Z)");
+                            if icons::button(ui, Icon::Undo, false, ed.history.can_undo(), &tip).clicked() {
                                 changed |= ed.undo(sch);
                             }
-                            if ui
-                                .add_enabled(ed.history.can_redo(), egui::Button::new("↷"))
-                                .on_hover_text(theme::kbd("Redo (⇧⌘Z)"))
-                                .clicked()
-                            {
+                            let tip = theme::kbd("Redo (⇧⌘Z)");
+                            if icons::button(ui, Icon::Redo, false, ed.history.can_redo(), &tip).clicked() {
                                 changed |= ed.redo(sch);
                             }
-                            ui.separator();
-                            if ui.button("⟳").on_hover_text("Rotate selection (Space)").clicked() {
+                            icons::divider(ui);
+                            let any = !ed.selection.is_empty();
+                            let inst = ed.selection.iter().any(|o| matches!(o, SchObj::Instance(_)));
+                            if icons::button(ui, Icon::Rotate, false, inst, "Rotate selection (Space)").clicked() {
                                 changed |= ed.rotate_selection(sch, false);
                             }
-                            if ui.button("⇋").on_hover_text("Mirror selection (X)").clicked() {
+                            if icons::button(ui, Icon::Mirror, false, inst, "Mirror selection (X)").clicked() {
                                 changed |= ed.rotate_selection(sch, true);
                             }
-                            if ui.button("⎘").on_hover_text(theme::kbd("Duplicate selection (⌘D)")).clicked() {
+                            let tip = theme::kbd("Duplicate selection (⌘D)");
+                            if icons::button(ui, Icon::Duplicate, false, any, &tip).clicked() {
                                 changed |= ed.duplicate_selection(sch);
                             }
-                            if ui.button("⛶").on_hover_text("Fit to window (F)").clicked() {
+                            if icons::button(ui, Icon::Delete, false, any, "Delete selection (Del)").clicked() {
+                                changed |= ed.delete_selection(sch);
+                            }
+                            icons::divider(ui);
+                            if icons::button(ui, Icon::Fit, false, true, "Fit to window (F)").clicked() {
                                 ed.request_fit();
                             }
-                            ui.separator();
-                            ui.checkbox(&mut ed.show_grid, "Grid");
-
-                            ui.add_enabled(op.is_some(), egui::Checkbox::new(&mut ed.annotate_op, "Annotate OP"))
-                                .on_disabled_hover_text("Run an operating point simulation first");
+                            icons::toggle(ui, Icon::Grid, &mut ed.show_grid, "Show grid");
+                            if op.is_some() {
+                                icons::toggle(ui, Icon::Annotate, &mut ed.annotate_op, "Annotate operating point");
+                            } else {
+                                icons::button(
+                                    ui,
+                                    Icon::Annotate,
+                                    false,
+                                    false,
+                                    "Annotate operating point (run an OP simulation first)",
+                                );
+                            }
+                            icons::divider(ui);
+                            ui.label(RichText::new(ed.tool.name()).color(pal.schematic));
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 if ui.button(RichText::new("▶ Simulate").color(pal.simulation)).on_hover_text("F5").clicked() {
                                     self.queue.push(Command::RunSimulation);
@@ -3243,7 +3323,15 @@ impl IcStudio {
                         });
                     });
                     egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| {
-                        changed |= ed.canvas(ui, sch, op.as_ref()).changed;
+                        let out = ed.canvas(ui, sch, op.as_ref());
+                        changed |= out.changed;
+                        for req in out.requests {
+                            self.queue.push(match req {
+                                SchRequest::Simulate => Command::RunSimulation,
+                                SchRequest::Check => Command::CheckSchematic(false),
+                                SchRequest::ExportNetlist => Command::ExportNetlist,
+                            });
+                        }
                     });
                 } else {
                     egui::CentralPanel::default()
@@ -3287,72 +3375,95 @@ impl IcStudio {
                     });
                     egui::Panel::top("lay_toolbar").show(ui, |ui| {
                         ui.horizontal_wrapped(|ui| {
-                            ui.label(RichText::new(ed.tool.name()).strong().color(pal.layout));
-                            ui.label(RichText::new(format!("on {}", tech.layers[ed.active_layer].name)).color(pal.text_weak));
-                            ui.separator();
-                            let undo = ui
-                                .add_enabled(ed.history.can_undo(), egui::Button::new("↶"))
-                                .on_hover_text(theme::kbd("Undo (⌘Z)"));
-                            let redo = ui
-                                .add_enabled(ed.history.can_redo(), egui::Button::new("↷"))
-                                .on_hover_text(theme::kbd("Redo (⇧⌘Z)"));
+                            ui.spacing_mut().item_spacing.x = 2.0;
+                            let tip = theme::kbd("Undo (u / ⌘Z)");
+                            let undo = icons::button(ui, Icon::Undo, false, ed.history.can_undo(), &tip);
+                            let tip = theme::kbd("Redo (Shift+U / ⇧⌘Z)");
+                            let redo = icons::button(ui, Icon::Redo, false, ed.history.can_redo(), &tip);
                             if (undo.clicked() && ed.undo(l)) || (redo.clicked() && ed.redo(l)) {
                                 changed = true;
                                 cx.hier.invalidate(&r);
                             }
-                            ui.separator();
-                            for t in LayTool::ALL {
-                                if ui
-                                    .selectable_label(ed.tool == t, t.name())
-                                    .on_hover_text(format!("{} ({})", t.name(), t.key()))
+                            icons::divider(ui);
+                            for (i, t) in LayTool::ALL.into_iter().enumerate() {
+                                // Groups: select / edit / create / modify / measure.
+                                if [1, 4, 10, 12].contains(&i) {
+                                    icons::divider(ui);
+                                }
+                                if icons::button(ui, t.icon(), ed.tool == t, true, &format!("{} ({})", t.name(), t.key()))
                                     .clicked()
                                 {
                                     ed.set_tool(t);
                                 }
                             }
-                            ui.separator();
-                            if ui.button("⛶").on_hover_text("Fit to window (F)").clicked() {
+                            icons::divider(ui);
+                            if icons::button(ui, Icon::Fit, false, true, "Fit to window (F)").clicked() {
                                 ed.request_fit();
                             }
-                            if ui.button("Zoom box").on_hover_text("Drag or click a box to zoom into (Z)").clicked() {
-                                ed.arm_zoom_box();
-                            }
-                            if ui
-                                .add_enabled(ed.can_step_view(true), egui::Button::new("Prev view"))
-                                .on_hover_text("Previous view (W)")
+                            if icons::button(ui, Icon::ZoomBox, false, true, "Zoom box: drag or click a box to zoom into (Z)")
                                 .clicked()
                             {
+                                ed.arm_zoom_box();
+                            }
+                            if icons::button(ui, Icon::PrevView, false, ed.can_step_view(true), "Previous view (W)").clicked() {
                                 ed.step_view(true);
                             }
-                            ui.separator();
-                            ui.checkbox(&mut ed.show_grid, "Grid");
-                            ed.snap_control(ui, &tech);
-                            ui.checkbox(&mut ed.gravity, "Gravity").on_hover_text("Snap the cursor to nearby vertices and edges");
-                            ui.checkbox(&mut ed.drd, "DRD").on_hover_text(
+                            icons::divider(ui);
+                            icons::toggle(ui, Icon::Grid, &mut ed.show_grid, "Show grid");
+                            icons::toggle(
+                                ui,
+                                Icon::Gravity,
+                                &mut ed.gravity,
+                                "Gravity: snap the cursor to nearby vertices and edges (G)",
+                            );
+                            icons::toggle(
+                                ui,
+                                Icon::Drd,
+                                &mut ed.drd,
                                 "Design-rule-driven editing: show spacing and width violations while drawing and moving",
                             );
-                            ui.checkbox(&mut ed.show_constraints, "Constraints")
-                                .on_hover_text("Show symmetry axes, alignments and fixed items");
-                            ui.checkbox(&mut ed.magnet, "Magnet").on_hover_text(
-                                "Pull drawn and moved shapes to exactly the minimum spacing from their neighbours",
+                            icons::toggle(
+                                ui,
+                                Icon::Magnet,
+                                &mut ed.magnet,
+                                "Magnet: pull drawn and moved shapes to exactly the minimum spacing from their neighbours",
                             );
-                            if ui
-                                .checkbox(&mut ed.live.enabled, "Live DRC")
-                                .on_hover_text("Check the rule deck around every edit; Ctrl+. offers quick fixes")
-                                .changed()
+                            if icons::toggle(
+                                ui,
+                                Icon::LiveDrc,
+                                &mut ed.live.enabled,
+                                "Live DRC: check the rule deck around every edit; Ctrl+. offers quick fixes",
+                            )
+                            .changed()
                             {
                                 ed.live.reset();
                             }
-                            ui.checkbox(&mut ed.show_flylines, "Flylines")
-                                .on_hover_text("Unrouted connections from the schematic");
-                            ui.separator();
-                            if ui.button("⬇ GDS").on_hover_text("Export this cell as GDSII").clicked() {
+                            icons::toggle(
+                                ui,
+                                Icon::Constraints,
+                                &mut ed.show_constraints,
+                                "Constraints: show symmetry axes, alignments and fixed items",
+                            );
+                            icons::toggle(
+                                ui,
+                                Icon::Flylines,
+                                &mut ed.show_flylines,
+                                "Flylines: unrouted connections from the schematic",
+                            );
+                            icons::divider(ui);
+                            ed.snap_control(ui, &tech);
+                            icons::divider(ui);
+                            if icons::button(ui, Icon::Export, false, true, "Export this cell as GDSII").clicked() {
                                 self.queue.push(Command::ExportGds);
                             }
+                            icons::divider(ui);
+                            ui.label(RichText::new(ed.tool.name()).color(pal.layout));
+                            ui.label(RichText::new(format!("on {}", tech.layers[ed.active_layer].name)).color(pal.text_weak));
                             if let Some(c) = cx.context {
-                                ui.separator();
+                                icons::divider(ui);
                                 ui.label(RichText::new(format!("Editing in place in {}", c.root.cell)).color(pal.accent));
-                                if ui.button("Return").on_hover_text("Leave edit-in-place (Shift+B)").clicked() {
+                                if icons::button(ui, Icon::Return, false, true, "Return: leave edit-in-place (Shift+B)").clicked()
+                                {
                                     ed.requests.push(LayRequest::Return);
                                 }
                             }
@@ -3854,6 +3965,11 @@ impl IcStudio {
             ("Copy MCP server config".into(), "", Command::CopyMcpConfig),
         ];
         v.extend(examples);
+        if self.workspace == Workspace::Schematic && self.active.is_some() {
+            for a in SchAction::PALETTE {
+                v.push((format!("Schematic: {}", a.name()), "", Command::Sch(*a)));
+            }
+        }
         if self.workspace == Workspace::Layout && self.active.is_some() {
             for (menu, items) in LayAction::MENUS {
                 for a in items.iter().flatten() {
@@ -4822,6 +4938,11 @@ impl IcStudio {
     /// True while any background simulation is running (used by UI tests).
     pub fn is_simulating(&self) -> bool {
         self.sims.values().any(|s| s.is_running())
+    }
+
+    /// The schematic editor of a cell, once it was opened (used by UI tests).
+    pub fn schematic_editor(&self, r: &CellRef) -> Option<&SchematicEditor> {
+        self.sch_eds.get(r)
     }
 
     /// The layout editor of a cell, once it was opened (used by UI tests).
