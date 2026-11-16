@@ -37,7 +37,8 @@ Canvas keys work while the mouse is over the canvas and no text field has focus.
 | `Esc` | Cancel the current operation, then back to Select, then clear the selection |
 | `Del`, `Backspace` | Delete the selection |
 | `Ctrl+A` | Select all |
-| `Ctrl+D` | Duplicate the selection (layout: deselect all) |
+| `Ctrl+D` | Deselect all |
+| `Ctrl+Shift+D` | Duplicate the selection (schematic) |
 | `Shift`/`Ctrl`+click | Add to or remove from the selection |
 
 The mouse follows the **Interaction** profile in **Settings** (`Ctrl+,`). **Virtuoso**

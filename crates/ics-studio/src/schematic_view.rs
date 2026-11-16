@@ -100,9 +100,9 @@ impl SchAction {
             SchAction::Delete => "Del".into(),
             SchAction::Rotate => "Space".into(),
             SchAction::Mirror => "X".into(),
-            SchAction::Duplicate => theme::kbd("⌘D"),
+            SchAction::Duplicate => theme::kbd("⇧⌘D"),
             SchAction::SelectAll => theme::kbd("⌘A"),
-            SchAction::DeselectAll => "Esc".into(),
+            SchAction::DeselectAll => theme::kbd("⌘D / Esc"),
             SchAction::SelectNet => String::new(),
             SchAction::Fit => "F".into(),
             SchAction::ToggleGrid => String::new(),
@@ -741,7 +741,9 @@ impl SchematicEditor {
             if cmd {
                 match k {
                     Key::A => self.select_all(sch),
-                    Key::D => changed |= self.duplicate_selection(sch),
+                    // Shift+Cmd+D duplicates; Cmd+D deselects all, as in the layout (Virtuoso).
+                    Key::D if shift => changed |= self.duplicate_selection(sch),
+                    Key::D => self.selection.clear(),
                     _ => {}
                 }
                 continue;
@@ -1406,7 +1408,7 @@ pub fn device_palette(ui: &mut egui::Ui, editor: &mut SchematicEditor) {
     for (k, d) in [
         ("Space / X", "rotate / mirror"),
         ("Del", "delete selection"),
-        ("⌘D", "duplicate"),
+        ("⇧⌘D", "duplicate"),
         ("⌘Z", "undo"),
         ("/", "wire corner direction"),
         ("F", "fit to window"),

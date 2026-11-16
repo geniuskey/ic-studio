@@ -37,7 +37,8 @@ Windows와 Linux의 `Ctrl`은 macOS에서 `Cmd`입니다. 앱은 실행 중인 �
 | `Esc` | 현재 작업 취소, 다음엔 Select로 복귀, 그다음 선택 해제 |
 | `Del`, `Backspace` | 선택 항목 삭제 |
 | `Ctrl+A` | 모두 선택 |
-| `Ctrl+D` | 선택 항목 복제 (레이아웃: 모두 선택 해제) |
+| `Ctrl+D` | 모두 선택 해제 |
+| `Ctrl+Shift+D` | 선택 항목 복제 (회로도) |
 | `Shift`/`Ctrl`+클릭 | 선택에 추가 또는 선택에서 제거 |
 
 마우스 동작은 **Settings**(`Ctrl+,`)의 **Interaction** 프로필을 따릅니다. **Virtuoso**(기본값)는

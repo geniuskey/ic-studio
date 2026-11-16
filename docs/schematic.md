@@ -82,9 +82,10 @@ Notes:
 | Add or remove from selection | `Shift`+click or `Ctrl`+click |
 | Box select | Drag on empty space (selects objects fully inside; `Shift` adds) |
 | Select all | `Ctrl+A` |
+| Deselect all | `Ctrl+D` |
 | Move | Drag a selected object; attached wires stretch with moved pins |
 | Rotate / mirror | `Space` / `X`, or the toolbar buttons |
-| Duplicate | `Ctrl+D` (copies offset by two grid points, renamed) |
+| Duplicate | `Ctrl+Shift+D` (copies offset by two grid points, renamed) |
 | Delete | `Del` or `Backspace` |
 | Undo / redo | `Ctrl+Z` / `Ctrl+Shift+Z` or `Ctrl+Y` |
 | Fit to window | `F` |

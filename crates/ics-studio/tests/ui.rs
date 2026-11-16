@@ -2593,6 +2593,32 @@ fn schematic_context_menu() {
     assert_eq!(count(&h), before * 2, "duplicate should copy every instance");
 }
 
+/// Cmd+D deselects all in the schematic, as in the layout; Shift+Cmd+D duplicates.
+#[test]
+fn schematic_cmd_d_matches_layout() {
+    let mut h = app(demo_args("cmos_inverter", "schematic", false));
+    h.run_steps(4);
+    let r = h.state().active_ref().unwrap().clone();
+    let count = |h: &Harness<'_, IcStudio>| {
+        let p = h.state().project().unwrap();
+        p.cell(&r).unwrap().schematic.as_ref().unwrap().instances.len()
+    };
+    let before = count(&h);
+    // Keys reach the canvas while the pointer is over it (empty space).
+    h.hover_at(egui::pos2(650.0, 650.0));
+    h.run_steps(2);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run_steps(2);
+    assert!(!h.state().schematic_editor(&r).unwrap().selection.is_empty());
+    h.key_press_modifiers(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::D);
+    h.run_steps(2);
+    assert_eq!(count(&h), before * 2, "Shift+Cmd+D should duplicate the selection");
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::D);
+    h.run_steps(2);
+    assert_eq!(count(&h), before * 2, "Cmd+D must not duplicate");
+    assert!(h.state().schematic_editor(&r).unwrap().selection.is_empty(), "Cmd+D should deselect all");
+}
+
 /// Tab strip: Close Other Tabs from the command, the same one the tab menu sends.
 #[test]
 fn close_other_tabs() {

@@ -446,7 +446,8 @@ const SHORTCUTS: &[ShortcutGroup] = &[
             ("F", "Fit view"),
             ("Esc", "Cancel, back to Select, clear selection"),
             ("Del / Backspace", "Delete selection"),
-            ("Mod+A / Mod+D", "Select all / duplicate (layout: deselect all)"),
+            ("Mod+A / Mod+D", "Select all / deselect all"),
+            ("Shift+Mod+D", "Schematic: duplicate"),
         ],
     ),
     (
@@ -480,7 +481,7 @@ const SHORTCUTS: &[ShortcutGroup] = &[
             ("Mod+A / Mod+D", "Select all, deselect all"),
             ("Shift+X / x / Shift+B", "Descend into an instance, edit it in place, return"),
             ("Shift+T", "Hierarchy tree"),
-            ("Ctrl+J", "Flip sideways (also while moving)"),
+            ("Mod+J", "Flip sideways (also while moving)"),
             ("Shift+N", "Mark net mode"),
             ("q", "Edit object properties"),
             ("F3", "Options of the current command"),
@@ -501,6 +502,18 @@ const SHORTCUTS: &[ShortcutGroup] = &[
         ],
     ),
 ];
+
+/// How long a warning stays on the status bar.
+const FLASH_TIME: Duration = Duration::from_secs(8);
+
+const NEED_PROJECT: &str = "Open a project first";
+const NEED_SCH: &str = "Open a cell with a schematic first";
+const NEED_LAY: &str = "Open a cell with a layout first";
+
+/// A menu button that is greyed out, with the reason on hover, while it cannot run.
+fn menu_item(ui: &mut egui::Ui, enabled: bool, label: &str, why: &str) -> bool {
+    ui.add_enabled(enabled, egui::Button::new(label)).on_disabled_hover_text(why).clicked()
+}
 
 /// Items of one of the layout editor's menus ([`LayAction::MENUS`]).
 fn lay_menu_items(ui: &mut egui::Ui, menu: &str, q: &mut Vec<Command>) {
@@ -561,6 +574,8 @@ pub struct IcStudio {
     sims: HashMap<CellRef, SimState>,
     log: Vec<LogLine>,
     started: Instant,
+    /// The last warning, flashed on the status bar while the console does not show it.
+    flash: Option<(String, Instant)>,
     show_console: bool,
     bottom_tab: BottomTab,
     queue: Vec<Command>,
@@ -633,6 +648,7 @@ impl IcStudio {
             sims: HashMap::new(),
             log: vec![],
             started: Instant::now(),
+            flash: None,
             show_console: true,
             bottom_tab: BottomTab::Console,
             queue: vec![],
@@ -718,6 +734,7 @@ impl IcStudio {
         self.push_log(Level::Ok, t);
     }
     fn warn(&mut self, t: String) {
+        self.flash = Some((t.clone(), Instant::now()));
         self.push_log(Level::Warn, t);
     }
     fn error(&mut self, t: String) {
@@ -2544,6 +2561,7 @@ impl IcStudio {
     // ----- UI pieces -----
     fn menu_bar(&mut self, ui: &mut egui::Ui) {
         let pal = theme::palette(ui.ctx());
+        let (has_sch, has_lay) = self.active_cell().map_or((false, false), |c| (c.schematic.is_some(), c.layout.is_some()));
         let q = &mut self.queue;
         let has_project = self.project.is_some();
         let lay = self.workspace == Workspace::Layout && self.active.is_some();
@@ -2710,32 +2728,44 @@ impl IcStudio {
                 ui.menu_button("Create", |ui| lay_menu_items(ui, "Create", q));
             }
             ui.menu_button("Simulation", |ui| {
-                if ui.add(egui::Button::new("Run").shortcut_text("F5")).clicked() {
+                if ui
+                    .add_enabled(has_sch, egui::Button::new("Run").shortcut_text("F5"))
+                    .on_disabled_hover_text(NEED_SCH)
+                    .clicked()
+                {
                     q.push(Command::RunSimulation);
                 }
-                if ui.button("Export Netlist…").clicked() {
+                if menu_item(ui, has_sch, "Export Netlist…", NEED_SCH) {
                     q.push(Command::ExportNetlist);
+                }
+                ui.separator();
+                if menu_item(ui, has_sch, "Corner / Sweep Manager…", NEED_SCH) {
+                    q.push(Command::SweepManager);
+                }
+                if menu_item(ui, has_sch, "Monte Carlo…", NEED_SCH) {
+                    q.push(Command::MonteCarlo);
+                }
+                if menu_item(ui, has_sch, "Optimizer…", NEED_SCH) {
+                    q.push(Command::Optimizer);
+                }
+                if menu_item(ui, has_project, "Verification…", NEED_PROJECT) {
+                    q.push(Command::Verification);
                 }
                 ui.separator();
                 if ui.button("Waveform Calculator…").clicked() {
                     q.push(Command::Calculator);
                 }
+                if ui.button("Results Browser…").clicked() {
+                    q.push(Command::ResultsBrowser);
+                }
+                ui.separator();
                 if ui.button("Pixel Optics…").clicked() {
                     q.push(Command::PixelOptics);
                 }
-                if ui.button("Corner / Sweep Manager…").clicked() {
-                    q.push(Command::SweepManager);
-                }
-                if ui.button("Verification…").clicked() {
-                    q.push(Command::Verification);
-                }
-                if ui.button("Monte Carlo…").clicked() {
-                    q.push(Command::MonteCarlo);
-                }
-                if ui.button("Silicon Correlation…").clicked() {
+                if menu_item(ui, has_sch, "Silicon Correlation…", NEED_SCH) {
                     q.push(Command::SiliconCorrelation);
                 }
-                if ui.button("Process Emulation…").clicked() {
+                if menu_item(ui, has_lay, "Process Emulation…", NEED_LAY) {
                     q.push(Command::ProcessEmulation);
                 }
                 if ui.button("Process Data…").clicked() {
@@ -2743,29 +2773,29 @@ impl IcStudio {
                 }
             });
             ui.menu_button("Verify", |ui| {
-                if ui.button("Run DRC").clicked() {
+                if menu_item(ui, has_lay, "Run DRC", NEED_LAY) {
                     q.push(Command::RunDrc);
                 }
-                if ui.button("Extract Nets").clicked() {
+                if menu_item(ui, has_lay, "Extract Nets", NEED_LAY) {
                     q.push(Command::ExtractNets);
                 }
-                if ui.button("Run LVS").clicked() {
+                if menu_item(ui, has_lay && has_sch, "Run LVS", "Open a cell with a schematic and a layout first") {
                     q.push(Command::RunLvs);
                 }
                 if lay && ui.add(egui::Button::new("Mark Net").shortcut_text("Shift+N")).clicked() {
                     q.push(Command::Lay(LayAction::MarkNet));
                 }
-                if ui.button("Run Sign-off Runset").clicked() {
+                if menu_item(ui, has_lay, "Run Sign-off Runset", NEED_LAY) {
                     q.push(Command::RunSignoff(None));
                 }
-                if ui.button("Import Sign-off Results...").clicked() {
+                if menu_item(ui, has_lay, "Import Sign-off Results…", NEED_LAY) {
                     q.push(Command::ImportSignoffResults(None));
                 }
                 ui.separator();
-                if ui.button("Generate Layout from Schematic").clicked() {
+                if menu_item(ui, has_sch, "Generate Layout from Schematic", NEED_SCH) {
                     q.push(Command::GenerateLayout);
                 }
-                if ui.button("Route Flylines").clicked() {
+                if menu_item(ui, has_lay, "Route Flylines", NEED_LAY) {
                     q.push(Command::RouteFlylines);
                 }
             });
@@ -2776,51 +2806,24 @@ impl IcStudio {
                 if ui.button("AI Models…").clicked() {
                     q.push(Command::AiModels);
                 }
-                if ui.button("Optimizer…").clicked() {
-                    q.push(Command::Optimizer);
-                }
-                if ui.button("Waveform Calculator…").clicked() {
-                    q.push(Command::Calculator);
-                }
-                if ui.button("Corner / Sweep Manager…").clicked() {
-                    q.push(Command::SweepManager);
-                }
-                if ui.button("Verification…").clicked() {
-                    q.push(Command::Verification);
-                }
-                if ui.button("Monte Carlo…").clicked() {
-                    q.push(Command::MonteCarlo);
-                }
-                if ui.button("Silicon Correlation…").clicked() {
-                    q.push(Command::SiliconCorrelation);
-                }
-                if ui.button("Process Emulation…").clicked() {
-                    q.push(Command::ProcessEmulation);
-                }
-                if ui.button("Process Data…").clicked() {
-                    q.push(Command::ProcessData);
-                }
-                if ui.button("Results Browser…").clicked() {
-                    q.push(Command::ResultsBrowser);
-                }
                 ui.separator();
-                if ui.add_enabled(has_project, egui::Button::new("Check Schematic")).clicked() {
+                if menu_item(ui, has_sch, "Check Schematic", NEED_SCH) {
                     q.push(Command::CheckSchematic(false));
                 }
-                if ui.add_enabled(has_project, egui::Button::new("Hierarchy Browser…")).clicked() {
+                if menu_item(ui, has_project, "Hierarchy Browser…", NEED_PROJECT) {
                     q.push(Command::HierarchyBrowser);
                 }
-                if ui.add_enabled(has_project, egui::Button::new("Net Browser…")).clicked() {
+                if menu_item(ui, has_project, "Net Browser…", NEED_PROJECT) {
                     q.push(Command::NetBrowser);
                 }
                 ui.menu_button("Layout Generators", |ui| {
-                    if ui.add_enabled(has_project, egui::Button::new("Guard Ring…")).clicked() {
+                    if menu_item(ui, has_project, "Guard Ring…", NEED_PROJECT) {
                         q.push(Command::GuardRing);
                     }
-                    if ui.add_enabled(has_project, egui::Button::new("Via Array…")).clicked() {
+                    if menu_item(ui, has_project, "Via Array…", NEED_PROJECT) {
                         q.push(Command::ViaArray);
                     }
-                    if ui.add_enabled(has_project, egui::Button::new("Matched Placement…")).clicked() {
+                    if menu_item(ui, has_project, "Matched Placement…", NEED_PROJECT) {
                         q.push(Command::MatchedPlacement);
                     }
                 });
@@ -2828,31 +2831,24 @@ impl IcStudio {
                 if ui.button("DRC Rule Designer…").clicked() {
                     q.push(Command::RuleDesigner);
                 }
-                if ui.add_enabled(has_project, egui::Button::new("Stream Layer Map…")).clicked() {
+                if menu_item(ui, has_project, "Stream Layer Map…", NEED_PROJECT) {
                     q.push(Command::StreamMap);
                 }
-                if ui.add_enabled(has_project, egui::Button::new("Layer Display…")).clicked() {
+                if menu_item(ui, has_project, "Layer Display…", NEED_PROJECT) {
                     q.push(Command::LayerDisplay(None));
                 }
-                if ui.add_enabled(has_project, egui::Button::new("Dummy Fill…")).clicked() {
+                if menu_item(ui, has_project, "Dummy Fill…", NEED_PROJECT) {
                     q.push(Command::DummyFill);
                 }
-                if ui.add_enabled(has_project, egui::Button::new("OPC…")).clicked() {
+                if menu_item(ui, has_project, "OPC…", NEED_PROJECT) {
                     q.push(Command::Opc);
                 }
                 ui.separator();
                 if ui.button("SKILL CIW").clicked() {
                     q.push(Command::Ciw);
                 }
-                if ui.add_enabled(has_project, egui::Button::new("Load SKILL (.il)…")).clicked() {
+                if menu_item(ui, has_project, "Load SKILL (.il)…", NEED_PROJECT) {
                     q.push(Command::LoadSkill(None));
-                }
-                ui.separator();
-                if ui.add(egui::Button::new("Command Palette").shortcut_text(theme::kbd("⌘K"))).clicked() {
-                    q.push(Command::CommandPalette);
-                }
-                if ui.add(egui::Button::new("Settings…").shortcut_text(theme::kbd("⌘,"))).clicked() {
-                    q.push(Command::Settings);
                 }
             });
             if lay {
@@ -3290,7 +3286,7 @@ impl IcStudio {
                             if icons::button(ui, Icon::Mirror, false, inst, "Mirror selection (X)").clicked() {
                                 changed |= ed.rotate_selection(sch, true);
                             }
-                            let tip = theme::kbd("Duplicate selection (⌘D)");
+                            let tip = theme::kbd("Duplicate selection (⇧⌘D)");
                             if icons::button(ui, Icon::Duplicate, false, any, &tip).clicked() {
                                 changed |= ed.duplicate_selection(sch);
                             }
@@ -3772,6 +3768,27 @@ impl IcStudio {
                     .clicked()
                 {
                     self.show_console = !self.show_console;
+                }
+                // A warning the hidden console would swallow: show it here for a few seconds.
+                let console_shown = self.show_console && self.bottom_tab == BottomTab::Console;
+                if let Some((text, at)) = &self.flash
+                    && !console_shown
+                {
+                    let age = at.elapsed();
+                    if age < FLASH_TIME {
+                        let l = ui
+                            .add(
+                                egui::Label::new(RichText::new(format!("⚠ {text}")).small().color(pal.warning))
+                                    .truncate()
+                                    .sense(Sense::click()),
+                            )
+                            .on_hover_text("Click to show the console");
+                        if l.clicked() {
+                            self.show_console = true;
+                            self.bottom_tab = BottomTab::Console;
+                        }
+                        ui.ctx().request_repaint_after(FLASH_TIME - age);
+                    }
                 }
             });
         });

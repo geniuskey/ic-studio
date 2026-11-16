@@ -14,6 +14,13 @@ use ics_core::tech::Tech;
 use super::{LDrag, LayCtx, LayRequest, LayTool, LayoutEditor, draw_outline, edit, hits, screen_rect};
 use crate::theme::{self, Palette};
 
+/// A Cmd (macOS) / Ctrl (elsewhere) bindkey label, as `theme::kbd` writes it.
+macro_rules! cmd_key {
+    ($k:literal) => {
+        if cfg!(target_os = "macos") { concat!("⌘", $k) } else { concat!("Ctrl+", $k) }
+    };
+}
+
 /// A named editor action, reachable from a bindkey, a menu and the command palette.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum LayAction {
@@ -149,7 +156,7 @@ impl LayAction {
         }
     }
 
-    /// The Virtuoso default bindkey.
+    /// The Virtuoso default bindkey (Ctrl bindkeys are Cmd on macOS).
     pub fn key(self) -> &'static str {
         match self {
             LayAction::Tool(t) => t.key(),
@@ -158,8 +165,8 @@ impl LayAction {
             LayAction::Delete => "Del",
             LayAction::Yank => "y",
             LayAction::Paste => "Shift+Y",
-            LayAction::SelectAll => "Ctrl+A",
-            LayAction::DeselectAll => "Ctrl+D",
+            LayAction::SelectAll => cmd_key!("A"),
+            LayAction::DeselectAll => cmd_key!("D"),
             LayAction::Properties => "q",
             LayAction::Options => "F3",
             LayAction::DisplayOptions => "e",
@@ -168,7 +175,7 @@ impl LayAction {
             LayAction::Merge => "Shift+M",
             LayAction::ConvertToPolygon | LayAction::Chamfer => "",
             LayAction::Rotate => "Shift+O",
-            LayAction::FlipX => "Ctrl+J",
+            LayAction::FlipX => cmd_key!("J"),
             LayAction::FlipY => "",
             LayAction::EditInPlace => "x",
             LayAction::HierarchyTree => "Shift+T",
@@ -185,10 +192,10 @@ impl LayAction {
             LayAction::NextView => "Shift+W",
             LayAction::Fit => "f",
             LayAction::AllLevels => "Shift+F",
-            LayAction::TopLevel => "Ctrl+F",
+            LayAction::TopLevel => cmd_key!("F"),
             LayAction::ClearRulers => "Shift+K",
             LayAction::LiveDrc => "",
-            LayAction::QuickFix => "Ctrl+.",
+            LayAction::QuickFix => cmd_key!("."),
             LayAction::FixAll => "",
             LayAction::SymmetryV
             | LayAction::SymmetryH
