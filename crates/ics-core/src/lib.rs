@@ -62,6 +62,7 @@ pub mod tracks;
 pub mod units;
 pub mod verify;
 pub mod virtuoso;
+pub mod virtuoso_batch;
 pub mod virtuoso_dump;
 
 pub use geom::{IRect, Orient, Pt};

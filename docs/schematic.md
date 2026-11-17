@@ -205,6 +205,15 @@ SKILL script inside Virtuoso that writes the library as text, then import that f
    `ics import-virtuoso <project> /tmp/myLib.icsdump [--map virtuoso_symbols.toml] [--scale S] [--overwrite]`,
    MCP `import_virtuoso`).
 
+**In one step, with Virtuoso installed**: pick the library's `cds.lib` in **File > Import >
+Virtuoso library (dump or cds.lib)...** and choose a library, or run
+`ics import-virtuoso <project> path/to/cds.lib --lib myLib` (also a directory holding a
+`cds.lib`, or the library directory itself). IC Studio runs Virtuoso in batch mode
+(`virtuoso -nograph -replay`) in a scratch directory whose `cds.lib` includes yours, with the
+dump script, and imports the dump; steps 1 to 3 happen on their own. Virtuoso is
+`$ICS_VIRTUOSO`, else `virtuoso` on the `PATH`; `cds.lib` files may use `INCLUDE`,
+`SOFTINCLUDE`, `UNDEFINE` and environment variables. OpenAccess itself is not linked.
+
 What comes over:
 
 - **Schematics**: each one becomes a cell. Instances are matched to IC Studio devices by

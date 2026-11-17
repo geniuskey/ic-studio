@@ -622,7 +622,8 @@ pub fn definitions() -> Vec<Value> {
             ),
             json!({
                 "dump": {"type": "string", "description": "Dump text."},
-                "path": {"type": "string", "description": "A dump file instead of the text."},
+                "path": {"type": "string", "description": "A dump file instead of the text; or a cds.lib, a directory with one, or a library directory, which Virtuoso (ICS_VIRTUOSO or on the PATH) dumps in batch mode."},
+                "lib": {"type": "string", "description": "Library to import when path is a cds.lib."},
                 "map": {"type": "string", "description": "Symbol map TOML ([[symbol]] entries with kind, model, lib, cell, terms, params)."},
                 "scale": {"type": "number", "description": "Virtuoso user units per schematic grid point (default 0.1875)."},
                 "overwrite": {"type": "boolean", "description": "Replace existing schematics and layouts (default false)."}
@@ -1405,7 +1406,7 @@ impl State {
     fn import_cdl(&mut self, a: &Args) -> Result<Value, String> {
         let text = match (a.opt_str("cdl")?, a.opt_str("path")?) {
             (Some(t), _) => t.to_string(),
-            (None, Some(p)) => std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))?,
+            (None, Some(p)) => ics_core::virtuoso_batch::read_dump(std::path::Path::new(p), a.opt_str("lib")?)?,
             _ => return Err("give the CDL as cdl or path".into()),
         };
         let imp = ics_core::cadence::import_cdl(&text, &self.project()?.tech, a.opt_str("top")?)?;

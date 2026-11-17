@@ -195,6 +195,14 @@ CDL은 연결 정보만 담습니다. 회로도와 레이아웃을 함께 옮기
    `ics import-virtuoso <project> /tmp/myLib.icsdump [--map virtuoso_symbols.toml] [--scale S] [--overwrite]`,
    MCP `import_virtuoso`)를 실행합니다.
 
+**Virtuoso가 설치되어 있으면 한 번에**: **File > Import > Virtuoso library (dump or cds.lib)...**에서
+라이브러리의 `cds.lib`를 고르고 라이브러리를 선택하거나, `ics import-virtuoso <project> path/to/cds.lib
+--lib myLib`를 실행합니다(`cds.lib`가 있는 디렉터리나 라이브러리 디렉터리 자체도 됩니다). IC Studio가 사용자의
+`cds.lib`를 포함하는 임시 디렉터리에서 덤프 스크립트로 Virtuoso를 배치 모드(`virtuoso -nograph -replay`)로
+실행하고 덤프를 가져오므로 1~3단계가 자동으로 진행됩니다. Virtuoso는 `$ICS_VIRTUOSO`, 없으면 `PATH`의
+`virtuoso`입니다. `cds.lib`에는 `INCLUDE`, `SOFTINCLUDE`, `UNDEFINE`, 환경 변수를 쓸 수 있습니다. OpenAccess
+자체를 링크하지는 않습니다.
+
 옮겨지는 내용은 다음과 같습니다.
 
 - **회로도**: 회로도마다 셀이 하나 생깁니다. 인스턴스는 SKILL 내보내기와 같은 심볼 맵을 거꾸로 써서 IC Studio

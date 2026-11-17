@@ -260,8 +260,10 @@ pub enum Command {
     /// Write the active schematic as a SKILL script that recreates it in Virtuoso.
     ExportSkill,
     /// Import a Virtuoso library dump (`icsDumpLib`): schematics and layouts; `None` asks for
-    /// the file.
+    /// the file. A `cds.lib` or a library directory is dumped by running Virtuoso in batch mode.
     ImportVirtuoso(Option<PathBuf>),
+    /// Import library (name) of a `cds.lib` through Virtuoso in batch mode.
+    ImportVirtuosoLib(PathBuf, String),
     /// Save `icsDump.il`, the SKILL script that writes a Virtuoso library dump; `None` asks
     /// where.
     SaveDumpSkill(Option<PathBuf>),
@@ -656,6 +658,8 @@ pub struct IcStudio {
     hier_browser: HierBrowser,
     gens: LayoutGenerators,
     ciw: Ciw,
+    /// A `cds.lib` being imported and its libraries, waiting for the user to pick one.
+    virtuoso_pick: Option<(PathBuf, Vec<String>)>,
     /// SKILL forms displayed by scripts, waiting for OK or Cancel: the form and its edited fields.
     skill_forms: Vec<(ics_core::skill::FormRequest, Vec<ics_core::skill::FormField>)>,
     tutorial: crate::tutorial::Tutorial,
@@ -729,6 +733,7 @@ impl IcStudio {
             hier_browser: HierBrowser::default(),
             gens: LayoutGenerators::default(),
             ciw: Ciw::default(),
+            virtuoso_pick: None,
             skill_forms: vec![],
             tutorial: Default::default(),
         };
@@ -1302,7 +1307,8 @@ impl IcStudio {
             Command::ImportTech => self.import_tech(),
             Command::ImportCdl(path) => self.import_cdl(path),
             Command::ExportSkill => self.export_skill(),
-            Command::ImportVirtuoso(path) => self.import_virtuoso(path),
+            Command::ImportVirtuoso(path) => self.import_virtuoso(path, None),
+            Command::ImportVirtuosoLib(path, lib) => self.import_virtuoso(Some(path), Some(lib)),
             Command::SaveDumpSkill(path) => self.save_dump_skill(path),
             Command::LoadSkill(path) => self.load_skill(path),
             Command::Ciw => {
@@ -2505,14 +2511,31 @@ impl IcStudio {
         }
     }
 
-    fn import_virtuoso(&mut self, path: Option<PathBuf>) {
-        let Some(path) =
-            path.or_else(|| rfd::FileDialog::new().add_filter("Virtuoso library dump", &["icsdump", "txt"]).pick_file())
-        else {
+    fn import_virtuoso(&mut self, path: Option<PathBuf>, lib: Option<String>) {
+        let Some(path) = path.or_else(|| {
+            rfd::FileDialog::new().add_filter("Virtuoso library dump or cds.lib", &["icsdump", "txt", "lib"]).pick_file()
+        }) else {
             return;
         };
+        // A cds.lib names several libraries: ask which one.
+        let is_cds = path.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case("cds.lib"));
+        if lib.is_none() && is_cds {
+            match ics_core::virtuoso_batch::parse_cds_lib(&path) {
+                Ok(libs) => self.virtuoso_pick = Some((path, libs.into_iter().map(|(n, _)| n).collect())),
+                Err(e) => self.error(format!("Cannot read {}: {e}", path.display())),
+            }
+            return;
+        }
+        if ics_core::virtuoso_batch::find_virtuoso().is_some()
+            && !matches!(
+                ics_core::virtuoso_batch::resolve_source(&path, lib.as_deref()),
+                Ok(ics_core::virtuoso_batch::Source::Dump(_))
+            )
+        {
+            self.info(format!("Running Virtuoso in batch mode to dump {}…", lib.as_deref().unwrap_or("the library")));
+        }
         let Some(p) = self.project.as_mut() else { return };
-        let res = std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| {
+        let res = ics_core::virtuoso_batch::read_dump(&path, lib.as_deref()).and_then(|t| {
             let d = ics_core::virtuoso_dump::Dump::parse(&t)?;
             ics_core::virtuoso_dump::import_dump(&d, &p.tech, &ics_core::cadence::SymbolMap::analog_lib(), 0.1875)
         });
@@ -2817,7 +2840,7 @@ impl IcStudio {
                     if ui.add_enabled(has_project, egui::Button::new("CDL netlist (Virtuoso)…")).clicked() {
                         q.push(Command::ImportCdl(None));
                     }
-                    if ui.add_enabled(has_project, egui::Button::new("Virtuoso library dump…")).clicked() {
+                    if ui.add_enabled(has_project, egui::Button::new("Virtuoso library (dump or cds.lib)…")).clicked() {
                         q.push(Command::ImportVirtuoso(None));
                     }
                 });
@@ -4248,7 +4271,7 @@ impl IcStudio {
             ("AI models (provider, model, API key)…".into(), "", Command::AiModels),
             ("Export SPICE netlist…".into(), "", Command::ExportNetlist),
             ("Import CDL netlist (Virtuoso)…".into(), "", Command::ImportCdl(None)),
-            ("Import Virtuoso library dump…".into(), "", Command::ImportVirtuoso(None)),
+            ("Import Virtuoso library (dump or cds.lib)…".into(), "", Command::ImportVirtuoso(None)),
             ("Save Virtuoso dump script (icsDump.il)…".into(), "", Command::SaveDumpSkill(None)),
             ("Export Virtuoso schematic (SKILL)…".into(), "", Command::ExportSkill),
             ("Toggle light / dark theme".into(), "", Command::ToggleTheme),
@@ -5621,9 +5644,51 @@ impl IcStudio {
         true
     }
 
+    /// Libraries offered for a `cds.lib` import, while the choice is open.
+    pub fn pending_virtuoso_libs(&self) -> Vec<String> {
+        self.virtuoso_pick.as_ref().map(|(_, l)| l.clone()).unwrap_or_default()
+    }
+
     /// Titles of the SKILL forms waiting for the user.
     pub fn pending_skill_forms(&self) -> Vec<String> {
         self.skill_forms.iter().map(|(f, _)| f.title.clone()).collect()
+    }
+
+    /// Library choice for a `cds.lib` import.
+    fn virtuoso_pick_window(&mut self, ctx: &egui::Context) {
+        let Some((path, libs)) = &self.virtuoso_pick else { return };
+        let mut pick = None;
+        let mut open = true;
+        egui::Window::new("Import Virtuoso Library")
+            .collapsible(false)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.content_rect().center())
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label(format!("Libraries in {}:", path.display()));
+                ui.label(
+                    egui::RichText::new(if ics_core::virtuoso_batch::find_virtuoso().is_some() {
+                        "Virtuoso runs in batch mode to dump the library you pick."
+                    } else {
+                        "Virtuoso was not found (set ICS_VIRTUOSO or add it to the PATH)."
+                    })
+                    .small()
+                    .weak(),
+                );
+                egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                    for l in libs {
+                        if ui.button(l).clicked() {
+                            pick = Some(l.clone());
+                        }
+                    }
+                });
+            });
+        if let Some(lib) = pick {
+            let (path, _) = self.virtuoso_pick.take().expect("shown");
+            self.queue.push(Command::ImportVirtuosoLib(path, lib));
+        } else if !open {
+            self.virtuoso_pick = None;
+        }
     }
 
     fn gen_window(&mut self, ctx: &egui::Context) {
@@ -6162,6 +6227,7 @@ impl eframe::App for IcStudio {
         self.hier_window(&ctx);
         self.gen_window(&ctx);
         self.skill_form_window(&ctx);
+        self.virtuoso_pick_window(&ctx);
         let progress = self.tutorial_progress();
         self.tutorial.track(&progress);
         let cmds = self.tutorial.window(&ctx, &progress);

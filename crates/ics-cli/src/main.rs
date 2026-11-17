@@ -128,7 +128,12 @@ enum Cmd {
     /// placement kept when possible) and layouts (with their masters). Saves the project.
     ImportVirtuoso {
         project: PathBuf,
+        /// A dump file, or a cds.lib / a directory with one / a library directory: then Virtuoso
+        /// (ICS_VIRTUOSO or `virtuoso` on the PATH) dumps the library in batch mode.
         dump: PathBuf,
+        /// Library to import from a cds.lib.
+        #[arg(long)]
+        lib: Option<String>,
         /// Symbol map (TOML [[symbol]] entries; default: analogLib).
         #[arg(long)]
         map: Option<PathBuf>,
@@ -977,9 +982,9 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             None => print!("{}", ics_core::virtuoso_dump::DUMP_SKILL),
         },
-        Cmd::ImportVirtuoso { project, dump, map, scale, overwrite } => {
+        Cmd::ImportVirtuoso { project, dump, lib, map, scale, overwrite } => {
             let mut p = Project::open(&project).map_err(|e| e.to_string())?;
-            let text = std::fs::read_to_string(&dump).map_err(|e| format!("{}: {e}", dump.display()))?;
+            let text = ics_core::virtuoso_batch::read_dump(&dump, lib.as_deref())?;
             let d = ics_core::virtuoso_dump::Dump::parse(&text).map_err(|e| format!("{}: {e}", dump.display()))?;
             let m = match &map {
                 Some(f) => ics_core::cadence::SymbolMap::from_toml(

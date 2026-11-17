@@ -2997,3 +2997,17 @@ hiDisplayForm(genForm)"#;
     assert_eq!(l.shapes[0].bbox().width(), 5 * p.tech.dbu_per_um);
     assert!(h.state().pending_skill_forms().is_empty());
 }
+
+/// Importing a cds.lib asks which of its libraries to dump through Virtuoso.
+#[test]
+fn virtuoso_cds_lib_import_asks_for_the_library() {
+    let dir = std::env::temp_dir().join(format!("ics-ui-cdslib-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("cds.lib"), "DEFINE analogLib /pdk/analogLib\nDEFINE myLib ./myLib\n").unwrap();
+    let mut h = app(demo_args("cmos_inverter", "layout", false));
+    h.state_mut().command(Command::ImportVirtuoso(Some(dir.join("cds.lib"))));
+    h.run_steps(4);
+    assert_eq!(h.state().pending_virtuoso_libs(), vec!["analogLib".to_string(), "myLib".to_string()]);
+    shot(&mut h, "virtuoso_cds_lib");
+    std::fs::remove_dir_all(&dir).ok();
+}

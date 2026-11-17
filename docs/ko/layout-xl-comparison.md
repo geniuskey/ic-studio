@@ -59,11 +59,12 @@ Cadence Virtuoso Layout XL(연결성 기반 레이아웃)의 기능이 IC Studio
 
 | Virtuoso | IC Studio | 상태 |
 |---|---|---|
-| OpenAccess 데이터베이스 | 셀별 JSON, GDSII / OASIS / LEF / DEF, SKILL 덤프로 Virtuoso 라이브러리 가져오기 | 부분(OA 직접 접근 없음) |
+| OpenAccess 데이터베이스 | 셀별 JSON, GDSII / OASIS / LEF / DEF. Virtuoso 라이브러리는 `cds.lib`에서 한 번에 열거나(Virtuoso가 배치 모드로 덤프) SKILL 덤프로 가져옴 | 부분(OpenAccess 자체는 링크하지 않음) |
 | SKILL | CIW가 있는 레이아웃 스크립트용 SKILL 인터프리터: 언어 핵심, `db*` 도형, 인스턴스, 파라미터 인스턴스, 비아, 넷, 핀, 속성, 레이어 불리언, ROD 도형, 파일 | 레이아웃 스크립트는 예: `pcDefinePCell`, ROD 멀티파트 패스, SKILL++ 클로저, 대화 상자로 표시되는 `hi*` 폼 |
 | Calibre / PVS 사인오프 | Calibre, KLayout, netgen 실행과 캔버스 결과 표시, SVRF를 내장 DRC로 변환 | 예 |
 
 ## 아직 없는 것
 
-- OpenAccess 직접 접근: OA를 읽으려면 Si2 OpenAccess 라이브러리가 필요합니다. 대신 Virtuoso
-  라이브러리는 SKILL 덤프나 GDSII / OASIS로 가져옵니다.
+- Virtuoso 없이 OpenAccess 파일 읽기: Si2 OpenAccess 라이브러리가 필요하며 링크하지 않습니다. Virtuoso가
+  설치되어 있으면 `cds.lib`에서 한 번에 열리고, 없으면 다른 곳에서 만든 SKILL 덤프나 GDSII / OASIS로
+  가져옵니다.

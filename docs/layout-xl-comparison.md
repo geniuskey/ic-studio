@@ -59,11 +59,12 @@ Studio, as of v0.2.8 plus the changes listed here. **Yes** means the workflow is
 
 | Virtuoso | IC Studio | Status |
 |---|---|---|
-| OpenAccess database | JSON per cell, GDSII / OASIS / LEF / DEF; Virtuoso libraries through a SKILL dump | Partial (no direct OA access) |
+| OpenAccess database | JSON per cell, GDSII / OASIS / LEF / DEF; a Virtuoso library opens in one step from its `cds.lib` (Virtuoso dumps it in batch mode), or from a SKILL dump | Partial (OpenAccess itself is not linked) |
 | SKILL | A SKILL interpreter for layout scripts with a CIW: the language core, `db*` shapes, instances, parametric instances, vias, nets, pins, properties, layer Booleans, ROD shapes, files | Yes for layout scripting: `pcDefinePCell`, ROD multipart paths, SKILL++ closures, `hi*` forms as dialogs |
 | Calibre / PVS sign-off | Calibre, KLayout and netgen runs with results on the canvas; SVRF translated to the built-in DRC | Yes |
 
 ## Still missing
 
-- Direct OpenAccess access: reading OA needs the Si2 OpenAccess libraries; Virtuoso
-  libraries come in through a SKILL dump or GDSII / OASIS instead.
+- Reading OpenAccess files without Virtuoso: that needs the Si2 OpenAccess libraries, which
+  are not linked. With Virtuoso installed a library opens from its `cds.lib` in one step;
+  without it, through a SKILL dump made elsewhere or GDSII / OASIS.
