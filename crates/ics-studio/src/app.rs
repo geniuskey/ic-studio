@@ -235,6 +235,13 @@ pub enum Command {
     Ciw,
     /// Evaluate SKILL in the CIW session, as if typed at its prompt.
     CiwEval(String),
+    /// Stop the SKILL script running in the background.
+    CancelSkill,
+    /// Select the instance of this name in the active cell's schematic (shown in the
+    /// inspector).
+    SelectInstance(String),
+    /// Stop the Virtuoso batch dump running in the background.
+    CancelVirtuoso,
     /// Open the spec-driven optimizer for the active cell.
     Optimizer,
     /// Run the optimizer with the cell's saved setup.
@@ -409,6 +416,30 @@ const MCP_EDITS: [&str; 15] = [
     "open_project",
     "new_project",
 ];
+
+/// Virtuoso dumping a library in the background ([`IcStudio::import_virtuoso`]).
+struct VirtuosoJob {
+    path: PathBuf,
+    /// The library, for the progress window.
+    what: String,
+    rx: Receiver<Result<String, String>>,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    started: std::time::Instant,
+}
+
+/// A SKILL evaluation running in the background ([`IcStudio::skill_start`]).
+struct SkillJob {
+    kind: SkillJobKind,
+    /// Every layout before the script, for undo history and change detection.
+    before: HashMap<CellRef, Layout>,
+    started: std::time::Instant,
+}
+
+enum SkillJobKind {
+    Ciw,
+    Load(PathBuf),
+    Form,
+}
 
 /// Every cell layout, to tell afterwards which ones a SKILL script changed.
 fn layout_snapshot(p: &Project) -> HashMap<CellRef, Layout> {
@@ -662,9 +693,11 @@ pub struct IcStudio {
     /// user to pick one.
     virtuoso_pick: Option<(PathBuf, Vec<String>, bool)>,
     /// A Virtuoso batch dump running in the background: the source path and its result.
-    virtuoso_job: Option<(PathBuf, Receiver<Result<String, String>>)>,
+    virtuoso_job: Option<VirtuosoJob>,
     /// SKILL forms displayed by scripts, waiting for OK or Cancel: the form and its edited fields.
     skill_forms: Vec<(ics_core::skill::FormRequest, Vec<ics_core::skill::FormField>)>,
+    /// A SKILL evaluation running in the background, on a copy of the project.
+    skill_job: Option<SkillJob>,
     tutorial: crate::tutorial::Tutorial,
 }
 
@@ -739,6 +772,7 @@ impl IcStudio {
             virtuoso_pick: None,
             virtuoso_job: None,
             skill_forms: vec![],
+            skill_job: None,
             tutorial: Default::default(),
         };
         app.info(format!("IC Studio {} ready — renderer: wgpu", env!("CARGO_PKG_VERSION")));
@@ -1325,6 +1359,30 @@ impl IcStudio {
             Command::CopilotAsk(q) => self.copilot_reply(ctx, crate::copilot::Reply::Text(q)),
             Command::CopilotApprove => self.copilot_reply(ctx, crate::copilot::Reply::Approve),
             Command::CopilotStop => self.copilot.stop(),
+            Command::SelectInstance(name) => {
+                let Some(r) = self.active.clone() else { return };
+                let id = self
+                    .project
+                    .as_ref()
+                    .and_then(|p| p.cell(&r)?.schematic.as_ref()?.instances.iter().find(|i| i.name == name).map(|i| i.id));
+                match id {
+                    Some(id) => {
+                        let ed = self.sch_eds.entry(r).or_default();
+                        ed.selection = [SchObj::Instance(id)].into_iter().collect();
+                    }
+                    None => self.warn(format!("No instance {name} in the schematic")),
+                }
+            }
+            Command::CancelVirtuoso => {
+                if let Some(job) = &self.virtuoso_job {
+                    job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+            Command::CancelSkill => {
+                if self.skill_job.is_some() {
+                    self.ciw.session.cancel();
+                }
+            }
             Command::CiwEval(src) => {
                 self.ciw.push(CiwKind::Input, src.clone());
                 self.ciw_eval(&src);
@@ -2547,12 +2605,14 @@ impl IcStudio {
             }
             self.info(format!("Running Virtuoso in batch mode to dump {}…", lib.as_deref().unwrap_or("the library")));
             let (tx, rx) = mpsc::channel();
-            let (src, ctx) = (path.clone(), ctx.clone());
+            let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let (src, ctx, stop) = (path.clone(), ctx.clone(), cancel.clone());
+            let what = lib.clone().unwrap_or_else(|| path.display().to_string());
             std::thread::spawn(move || {
-                let _ = tx.send(ics_core::virtuoso_batch::read_dump(&src, lib.as_deref()));
+                let _ = tx.send(ics_core::virtuoso_batch::read_dump_with(&src, lib.as_deref(), &stop));
                 ctx.request_repaint();
             });
-            self.virtuoso_job = Some((path, rx));
+            self.virtuoso_job = Some(VirtuosoJob { path, what, rx, cancel, started: std::time::Instant::now() });
             return;
         }
         let text = ics_core::virtuoso_batch::read_dump(&path, lib.as_deref());
@@ -2561,14 +2621,40 @@ impl IcStudio {
 
     /// Finishes a background Virtuoso dump.
     fn poll_virtuoso_job(&mut self) {
-        let Some((_, rx)) = &self.virtuoso_job else { return };
-        let res = match rx.try_recv() {
+        let Some(job) = &self.virtuoso_job else { return };
+        let res = match job.rx.try_recv() {
             Ok(r) => r,
             Err(TryRecvError::Empty) => return,
             Err(TryRecvError::Disconnected) => Err("the Virtuoso run stopped".to_string()),
         };
-        let (path, _) = self.virtuoso_job.take().expect("checked");
-        self.import_virtuoso_text(&path, res);
+        let job = self.virtuoso_job.take().expect("checked");
+        self.import_virtuoso_text(&job.path, res);
+    }
+
+    /// While Virtuoso dumps a library: its elapsed time and a Cancel button.
+    fn virtuoso_job_window(&mut self, ctx: &egui::Context) {
+        let Some(job) = &self.virtuoso_job else { return };
+        let mut cancel = false;
+        egui::Window::new("Virtuoso")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::RIGHT_BOTTOM, [-12.0, -36.0])
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(format!("Dumping {} in batch mode: {:.0} s", job.what, job.started.elapsed().as_secs_f32()));
+                });
+                cancel = ui.button("Cancel").clicked();
+            });
+        if cancel {
+            self.queue.push(Command::CancelVirtuoso);
+        }
+        ctx.request_repaint_after(std::time::Duration::from_millis(500));
+    }
+
+    /// Whether Virtuoso is dumping a library in the background.
+    pub fn virtuoso_running(&self) -> bool {
+        self.virtuoso_job.is_some()
     }
 
     fn import_virtuoso_text(&mut self, path: &Path, text: Result<String, String>) {
@@ -2672,32 +2758,79 @@ impl IcStudio {
     }
 
     fn load_skill(&mut self, path: Option<PathBuf>) {
-        let current = self.active.clone();
-        let Some(p) = self.project.as_mut() else { return };
+        if self.project.is_none() {
+            return;
+        }
         let Some(path) = path.or_else(|| rfd::FileDialog::new().add_filter("Cadence SKILL", &["il", "ils"]).pick_file()) else {
             return;
         };
-        let before = layout_snapshot(p);
-        let res = self.ciw.session.load(p, &path, current.as_ref());
         self.ciw.push(CiwKind::Input, format!("load(\"{}\")", path.display().to_string().replace('\\', "/")));
+        self.skill_start(ics_core::skill::Task::Load(path.clone()), SkillJobKind::Load(path));
+    }
+
+    /// Evaluate a CIW command in the persistent SKILL session.
+    fn ciw_eval(&mut self, src: &str) {
+        if self.project.is_none() {
+            self.ciw.push(CiwKind::Error, "*Error* no project is open");
+            return;
+        }
+        self.skill_start(ics_core::skill::Task::Eval { src: src.to_string(), file: None }, SkillJobKind::Ciw);
+    }
+
+    /// Run `task` in the CIW's SKILL session on a copy of the project. A quick script finishes
+    /// at once; a longer one runs in the background behind a dialog that can cancel it, and its
+    /// result replaces the project when it ends.
+    fn skill_start(&mut self, task: ics_core::skill::Task, kind: SkillJobKind) {
+        if self.skill_job.is_some() {
+            return self.warn("A SKILL script is still running".to_string());
+        }
+        let current = self.active.clone();
+        let Some(p) = self.project.as_ref() else { return };
+        let before = layout_snapshot(p);
+        self.ciw.session.start(p.clone(), task, current);
+        self.skill_job = Some(SkillJob { kind, before, started: std::time::Instant::now() });
+        self.poll_skill_job(std::time::Duration::from_millis(150));
+    }
+
+    /// Collect the background SKILL evaluation if it has ended (waiting up to `wait`).
+    fn poll_skill_job(&mut self, wait: std::time::Duration) {
+        if self.skill_job.is_none() {
+            return;
+        }
+        let Some(f) = self.ciw.session.wait_timeout(wait) else { return };
+        let job = self.skill_job.take().expect("checked");
+        if let Some(p) = f.project {
+            self.project = Some(p);
+        }
+        let res = f.result;
         self.ciw.show(&res);
         if let Ok(r) = &res {
             self.skill_forms.extend(r.forms.iter().map(|f| (f.clone(), f.fields.clone())));
         }
-        let (output, err) = match &res {
-            Ok(r) => (r.output.clone(), None),
-            Err(e) => (e.output.clone(), Some(e.to_string())),
-        };
-        for line in output.lines() {
-            self.info(format!("SKILL: {line}"));
-        }
-        let changed = self.layouts_edited(before);
-        match err {
-            None => self.ok(format!("Loaded {}: {} cell(s) modified", path.display(), changed.len())),
-            Some(e) => {
-                self.error(format!("SKILL error: {e}"));
-                if !changed.is_empty() {
-                    self.warn(format!("Edits made before the error are kept in {} cell(s)", changed.len()));
+        let changed = self.layouts_edited(job.before);
+        match &job.kind {
+            SkillJobKind::Ciw => {}
+            SkillJobKind::Load(path) => {
+                let (output, err) = match &res {
+                    Ok(r) => (r.output.clone(), None),
+                    Err(e) => (e.output.clone(), Some(e.to_string())),
+                };
+                for line in output.lines() {
+                    self.info(format!("SKILL: {line}"));
+                }
+                match err {
+                    None => self.ok(format!("Loaded {}: {} cell(s) modified", path.display(), changed.len())),
+                    Some(e) => {
+                        self.error(format!("SKILL error: {e}"));
+                        if !changed.is_empty() {
+                            self.warn(format!("Edits made before the error are kept in {} cell(s)", changed.len()));
+                        }
+                    }
+                }
+            }
+            SkillJobKind::Form => {
+                if let Err(e) = &res {
+                    self.error(format!("SKILL error: {e}"));
                 }
             }
         }
@@ -2708,25 +2841,32 @@ impl IcStudio {
         }
     }
 
-    /// Evaluate a CIW command in the persistent SKILL session.
-    fn ciw_eval(&mut self, src: &str) {
-        let current = self.active.clone();
-        let Some(p) = self.project.as_mut() else {
-            self.ciw.push(CiwKind::Error, "*Error* no project is open");
-            return;
+    /// Whether a SKILL script is running in the background.
+    pub fn skill_running(&self) -> bool {
+        self.skill_job.is_some()
+    }
+
+    /// While a SKILL script runs: a dialog with its elapsed time and a Cancel button.
+    fn skill_job_window(&mut self, ctx: &egui::Context) {
+        self.poll_skill_job(std::time::Duration::ZERO);
+        let Some(job) = &self.skill_job else { return };
+        let secs = job.started.elapsed().as_secs_f32();
+        let what = match &job.kind {
+            SkillJobKind::Ciw => "CIW command".to_string(),
+            SkillJobKind::Load(p) => p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().to_string()),
+            SkillJobKind::Form => "form callback".to_string(),
         };
-        let before = layout_snapshot(p);
-        let res = self.ciw.session.eval(p, src, None, current.as_ref());
-        self.ciw.show(&res);
-        if let Ok(r) = &res {
-            self.skill_forms.extend(r.forms.iter().map(|f| (f.clone(), f.fields.clone())));
+        let mut cancel = false;
+        egui::Modal::new(egui::Id::unique("skill_running")).show(ctx, |ui| {
+            ui.heading("Running SKILL");
+            ui.label(format!("{what}: {secs:.1} s"));
+            ui.add_space(6.0);
+            cancel = ui.button("Cancel").clicked();
+        });
+        if cancel {
+            self.queue.push(Command::CancelSkill);
         }
-        let changed = self.layouts_edited(before);
-        if self.active.is_none()
-            && let Some(r) = changed.into_iter().next()
-        {
-            self.queue.push(Command::OpenCell(r, Some(Workspace::Layout)));
-        }
+        ctx.request_repaint_after(std::time::Duration::from_millis(100));
     }
 
     /// After an external edit of any number of layouts (a SKILL script): record undo history
@@ -5639,29 +5779,13 @@ impl IcStudio {
             self.ciw.push(CiwKind::Output, format!("{}: cancelled", form.title));
             return;
         }
-        let current = self.active.clone();
-        let Some(p) = self.project.as_mut() else { return };
-        let before = layout_snapshot(p);
-        let res = self.ciw.session.form_ok(p, &form, &fields, current.as_ref());
-        self.ciw.show(&res);
-        if let Ok(r) = &res {
-            self.skill_forms.extend(r.forms.iter().map(|f| (f.clone(), f.fields.clone())));
-        }
-        if let Err(e) = &res {
-            self.error(format!("SKILL error: {e}"));
-        }
-        let changed = self.layouts_edited(before);
-        if self.active.is_none()
-            && let Some(r) = changed.into_iter().next()
-        {
-            self.queue.push(Command::OpenCell(r, Some(Workspace::Layout)));
-        }
+        self.skill_start(ics_core::skill::Task::FormOk(form, fields), SkillJobKind::Form);
     }
 
     /// Answer the first displayed SKILL form as if its dialog's OK (or Cancel) was pressed with
     /// `edits` (field name, value text) applied. For tests and automation.
     pub fn answer_skill_form(&mut self, ok: bool, edits: &[(&str, &str)]) -> bool {
-        if self.skill_forms.is_empty() {
+        if self.skill_forms.is_empty() || self.skill_job.is_some() {
             return false;
         }
         let (form, mut fields) = self.skill_forms.remove(0);
@@ -6163,7 +6287,7 @@ impl eframe::App for IcStudio {
         if self.is_busy() {
             ctx.request_repaint_after(Duration::from_millis(250));
         }
-        if self.dialog.is_none() && self.palette.is_none() {
+        if self.dialog.is_none() && self.palette.is_none() && self.skill_job.is_none() {
             self.shortcuts(ctx);
         }
         self.update_title(ctx);
@@ -6267,12 +6391,22 @@ impl eframe::App for IcStudio {
         self.skill_form_window(&ctx);
         self.virtuoso_pick_window(&ctx);
         self.poll_virtuoso_job();
+        self.virtuoso_job_window(&ctx);
+        self.skill_job_window(&ctx);
         let progress = self.tutorial_progress();
         self.tutorial.track(&progress);
         let cmds = self.tutorial.window(&ctx, &progress);
         self.queue.extend(cmds);
 
-        let cmds = std::mem::take(&mut self.queue);
+        // While a SKILL script runs on a copy of the project, commands wait: its result replaces
+        // the project when it ends.
+        let cmds = if self.skill_job.is_none() {
+            std::mem::take(&mut self.queue)
+        } else {
+            let (cancel, rest) = std::mem::take(&mut self.queue).into_iter().partition(|c| matches!(c, Command::CancelSkill));
+            self.queue = rest;
+            cancel
+        };
         for c in cmds {
             self.run_command(&ctx, c);
         }

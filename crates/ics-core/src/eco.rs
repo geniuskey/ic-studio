@@ -433,15 +433,15 @@ fn resize(project: &mut Project, layout: &mut Layout, sch: &Schematic, device: &
             return Err("no MOS units".into());
         }
         let total = want_w * want_nf.max(1) as i64;
-        if total % (fingers * grid) != 0 {
-            return Err(format!(
-                "W={}u does not split evenly over {fingers} finger(s) on the {}u grid; resize the units by hand",
-                total as f64 / project.tech.dbu_per_um as f64,
-                grid as f64 / project.tech.dbu_per_um as f64,
-            ));
-        }
-        let w = total / fingers;
-        for (id, nf) in have {
+        let um = |v: i64| v as f64 / project.tech.dbu_per_um as f64;
+        let widths = split_width(total, grid, &have.iter().map(|h| h.1).collect::<Vec<_>>()).ok_or_else(|| {
+            format!(
+                "W={}u cannot be split over {fingers} finger(s) on the {}u grid; resize the units by hand",
+                um(total),
+                um(grid)
+            )
+        })?;
+        for ((id, nf), w) in have.into_iter().zip(widths) {
             let mut p = want.clone();
             if let PCell::Mos { w: pw, fingers: pf, .. } = &mut p {
                 (*pw, *pf) = (w, nf);
@@ -458,8 +458,64 @@ fn resize(project: &mut Project, layout: &mut Layout, sch: &Schematic, device: &
     Ok(())
 }
 
+/// Finger widths for units with `fingers` fingers each, on `grid`, adding up to `total`: all
+/// equal when that divides evenly, else some units one grid step wider. `None` when no such
+/// split exists (`total` off the grid, or no units' fingers add up to the remainder).
+fn split_width(total: i64, grid: i64, fingers: &[u32]) -> Option<Vec<i64>> {
+    let f: i64 = fingers.iter().map(|&n| n as i64).sum();
+    if f == 0 || total % grid != 0 {
+        return None;
+    }
+    let (q, r) = ((total / grid) / f, (total / grid) % f);
+    if q < 1 {
+        return None;
+    }
+    // The units that get one more grid step per finger: their fingers add up to `r`.
+    let r = r as usize;
+    let mut from: Vec<Option<usize>> = vec![None; r + 1];
+    let mut reach = vec![false; r + 1];
+    reach[0] = true;
+    for (k, &n) in fingers.iter().enumerate() {
+        let n = n as usize;
+        for s in (n..=r).rev() {
+            if !reach[s] && reach[s - n] {
+                reach[s] = true;
+                from[s] = Some(k);
+            }
+        }
+    }
+    if !reach[r] {
+        return None;
+    }
+    let mut wider = vec![false; fingers.len()];
+    let mut s = r;
+    while s > 0 {
+        let k = from[s]?;
+        wider[k] = true;
+        s -= fingers[k] as usize;
+    }
+    Some(wider.into_iter().map(|w| (q + w as i64) * grid).collect())
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn widths_split_over_units() {
+        // Even split.
+        assert_eq!(super::split_width(2000, 10, &[1, 1]), Some(vec![1000, 1000]));
+        // 1.51u over two units: one is a grid step wider.
+        let w = super::split_width(1510, 10, &[1, 1]).unwrap();
+        assert_eq!(w.iter().sum::<i64>(), 1510);
+        assert!(w.contains(&760) && w.contains(&750));
+        // Fingers count: 2 + 1 fingers, remainder 1 goes to the 1-finger unit.
+        let w = super::split_width(310, 10, &[2, 1]).unwrap();
+        assert_eq!(w[0] * 2 + w[1], 310);
+        // Off the grid, or no units whose fingers make up the remainder.
+        assert_eq!(super::split_width(1515, 10, &[1, 1]), None);
+        assert_eq!(super::split_width(50, 10, &[2, 2]), None);
+    }
+
     use super::*;
     use crate::examples;
 

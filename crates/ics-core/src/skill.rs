@@ -47,6 +47,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 
 use crate::geom::IRect;
 use crate::layout::{ArraySpec, CellInst, Geometry, Layout, Trans};
@@ -173,23 +175,68 @@ pub struct Sandbox {
 
 /// An interpreter whose global variables, procedures, open cellviews, properties and file
 /// ports persist between evaluations, like Virtuoso's CIW.
-#[derive(Default)]
+///
+/// The interpreter runs on a thread of its own with a large stack (deep but bounded recursion in
+/// scripts ends in a SKILL error, never a stack overflow, also on Windows where the main thread
+/// has 1 MB). Its values never leave that thread; the project is handed over for each
+/// evaluation and handed back with the result. [`Session::start`] runs an evaluation in the
+/// background, so an application can stay responsive and offer [`Session::cancel`].
 pub struct Session {
-    globals: HashMap<Name, Value>,
-    funcs: HashMap<Name, Rc<Func>>,
-    cvs: Vec<CvState>,
-    files: Vec<Option<PathBuf>>,
-    ports: Vec<PortFile>,
-    props: HashMap<(usize, u64), Vec<(String, Value)>>,
     /// Forms are shown to the user: `hiDisplayForm` returns them in [`RunResult::forms`]
     /// instead of running their OK callback at once.
     pub interactive: bool,
     /// Restrict file and environment access (`None`: full access, for the user's own scripts).
     pub sandbox: Option<Sandbox>,
+    worker: Option<Worker>,
+    /// No evaluation thread could be started: each evaluation runs on the calling thread with
+    /// a small stack budget and fresh state.
+    no_thread: bool,
+    /// A result computed on the calling thread, waiting for [`Session::try_finish`].
+    ready: Option<Finished>,
+    running: bool,
+    cancel: Arc<AtomicBool>,
+    procedures: Vec<String>,
 }
 
-/// Stack of the thread evaluations run on: deep (but bounded) recursion in scripts must end in
-/// a SKILL error, never a stack overflow, also on Windows where the main thread has 1 MB.
+/// An evaluation for [`Session::start`].
+#[derive(Debug, Clone)]
+pub enum Task {
+    /// Evaluate source; `file` names it for errors and is the base directory of relative
+    /// `load()` paths.
+    Eval { src: String, file: Option<PathBuf> },
+    /// Read and evaluate a `.il` file.
+    Load(PathBuf),
+    /// OK on a displayed form: set its fields to the edited values and run its callback.
+    FormOk(FormRequest, Vec<FormField>),
+}
+
+/// The end of an evaluation: the project (with the script's edits) and the result.
+#[derive(Debug)]
+pub struct Finished {
+    /// `None` only if the evaluation thread died and took the project with it.
+    pub project: Option<Project>,
+    pub result: Result<RunResult, SkillError>,
+}
+
+struct Job {
+    project: Project,
+    task: Task,
+    current: Option<CellRef>,
+    interactive: bool,
+    sandbox: Option<Sandbox>,
+}
+
+struct Done {
+    finished: Finished,
+    procedures: Vec<String>,
+}
+
+struct Worker {
+    tx: mpsc::Sender<Job>,
+    rx: mpsc::Receiver<Done>,
+}
+
+/// Stack of the evaluation thread.
 const EVAL_STACK: usize = 256 << 20;
 
 /// Roughly the current stack position, to measure how deep evaluation has gone.
@@ -199,30 +246,175 @@ fn stack_pos() -> usize {
     std::hint::black_box(&marker) as *const u8 as usize
 }
 
-/// Moves the session (whose values use `Rc`) to the evaluation thread and back.
-struct AssertSend<T>(T);
+fn worker_main(jobs: mpsc::Receiver<Job>, done: mpsc::Sender<Done>, cancel: Arc<AtomicBool>) {
+    let mut state = State::new();
+    for mut job in jobs {
+        state.interactive = job.interactive;
+        state.sandbox = job.sandbox.take();
+        let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            state.run_task(&mut job.project, &job.task, job.current.as_ref(), EVAL_STACK - (32 << 20), &cancel)
+        }));
+        let result = run.unwrap_or_else(|panic| {
+            let msg = panic
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_default();
+            // The interpreter state is lost with the panic: start over.
+            state = State::new();
+            Err(SkillError::plain(format!("internal interpreter error: {msg}"), None))
+        });
+        let procedures = state.procedures();
+        if done.send(Done { finished: Finished { project: Some(job.project), result }, procedures }).is_err() {
+            break;
+        }
+    }
+}
 
-// SAFETY: every `Rc` reachable from a `Session` belongs to that session alone: values never
-// leave the interpreter except as plain strings (`RunResult`, `SkillError`), so no clone of
-// them exists outside it. The session is moved whole to the evaluation thread while the
-// calling thread blocks in `join`, and moved back when the evaluation ends, so the reference
-// counts are never touched by two threads at once (spawn and join order the accesses).
-unsafe impl<T> Send for AssertSend<T> {}
+impl Default for Session {
+    fn default() -> Self {
+        Session::new()
+    }
+}
 
 impl Session {
     pub fn new() -> Self {
-        let globals = ["poport", "errport", "woport", "piport"].into_iter().map(|p| (p.into(), Value::Port(0))).collect();
-        Session { globals, ..Default::default() }
+        Session {
+            interactive: false,
+            sandbox: None,
+            worker: None,
+            no_thread: false,
+            ready: None,
+            running: false,
+            cancel: Arc::new(AtomicBool::new(false)),
+            procedures: vec![],
+        }
     }
 
     /// A session that shows forms to the user ([`Session::interactive`]).
     pub fn interactive() -> Self {
-        Session { interactive: true, ..Session::new() }
+        let mut s = Session::new();
+        s.interactive = true;
+        s
     }
 
     /// A session restricted by `sandbox` ([`Session::sandbox`]).
     pub fn sandboxed(sandbox: Sandbox) -> Self {
-        Session { sandbox: Some(sandbox), ..Session::new() }
+        let mut s = Session::new();
+        s.sandbox = Some(sandbox);
+        s
+    }
+
+    /// Start evaluating `task` on `project` in the background; [`Session::try_finish`] or
+    /// [`Session::wait`] hand the project back. `current` is the cell `geGetEditCellView()`
+    /// returns. Panics if an evaluation is still running.
+    pub fn start(&mut self, project: Project, task: Task, current: Option<CellRef>) {
+        assert!(!self.running, "a SKILL evaluation is already running");
+        self.running = true;
+        self.cancel.store(false, Ordering::SeqCst);
+        let job = Job { project, task, current, interactive: self.interactive, sandbox: self.sandbox.clone() };
+        if !self.no_thread && self.worker.is_none() {
+            let (tx, jobs) = mpsc::channel();
+            let (done, rx) = mpsc::channel();
+            let cancel = self.cancel.clone();
+            let spawned = std::thread::Builder::new()
+                .name("skill".into())
+                .stack_size(EVAL_STACK)
+                .spawn(move || worker_main(jobs, done, cancel));
+            match spawned {
+                Ok(_) => self.worker = Some(Worker { tx, rx }),
+                Err(_) => self.no_thread = true,
+            }
+        }
+        let job = match &self.worker {
+            Some(w) => match w.tx.send(job) {
+                Ok(()) => return,
+                Err(mpsc::SendError(job)) => job,
+            },
+            None => job,
+        };
+        // No evaluation thread: run here, on the caller's stack.
+        self.worker = None;
+        self.no_thread = true;
+        let mut state = State::new();
+        let Job { mut project, task, current, interactive, sandbox } = job;
+        state.interactive = interactive;
+        state.sandbox = sandbox;
+        let result = state.run_task(&mut project, &task, current.as_ref(), 256 << 10, &self.cancel);
+        self.procedures = state.procedures();
+        self.ready = Some(Finished { project: Some(project), result });
+    }
+
+    /// The finished evaluation, if it has ended.
+    pub fn try_finish(&mut self) -> Option<Finished> {
+        self.finish(Some(std::time::Duration::ZERO))
+    }
+
+    /// Wait up to `timeout` for the running evaluation.
+    pub fn wait_timeout(&mut self, timeout: std::time::Duration) -> Option<Finished> {
+        self.finish(Some(timeout))
+    }
+
+    /// Wait for the running evaluation to end. Panics if none is running.
+    pub fn wait(&mut self) -> Finished {
+        self.finish(None).expect("a SKILL evaluation is running")
+    }
+
+    fn finish(&mut self, timeout: Option<std::time::Duration>) -> Option<Finished> {
+        if !self.running {
+            return None;
+        }
+        if let Some(f) = self.ready.take() {
+            self.running = false;
+            return Some(f);
+        }
+        let w = self.worker.as_ref()?;
+        let done = match timeout {
+            None => w.rx.recv().ok(),
+            Some(t) if t.is_zero() => w.rx.try_recv().ok(),
+            Some(t) => w.rx.recv_timeout(t).ok(),
+        };
+        let done = match done {
+            Some(d) => d,
+            None if self.worker_gone() => {
+                // The thread ended without answering: the project went with it.
+                self.running = false;
+                self.worker = None;
+                return Some(Finished {
+                    project: None,
+                    result: Err(SkillError::plain("the SKILL evaluation thread stopped".into(), None)),
+                });
+            }
+            None => return None,
+        };
+        self.running = false;
+        self.procedures = done.procedures;
+        Some(done.finished)
+    }
+
+    fn worker_gone(&self) -> bool {
+        self.worker.as_ref().is_some_and(|w| matches!(w.rx.try_recv(), Err(mpsc::TryRecvError::Disconnected)))
+    }
+
+    /// Whether an evaluation started with [`Session::start`] has not been collected yet.
+    pub fn is_running(&self) -> bool {
+        self.running
+    }
+
+    /// Ask the running evaluation to stop; it ends with a "cancelled" error soon after.
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::SeqCst);
+    }
+
+    /// Run `task` to the end on `project`.
+    fn run(&mut self, project: &mut Project, task: Task, current: Option<&CellRef>) -> Result<RunResult, SkillError> {
+        let owned = std::mem::replace(project, Project::new(""));
+        self.start(owned, task, current.cloned());
+        let f = self.wait();
+        if let Some(p) = f.project {
+            *project = p;
+        }
+        f.result
     }
 
     /// Evaluate `src`; `file` names it for errors and is the base directory of relative `load()`
@@ -234,48 +426,101 @@ impl Session {
         file: Option<&Path>,
         current: Option<&CellRef>,
     ) -> Result<RunResult, SkillError> {
-        let mut slot = Some(AssertSend(std::mem::take(self)));
-        let joined = std::thread::scope(|scope| {
-            let worker = std::thread::Builder::new().name("skill".into()).stack_size(EVAL_STACK).spawn_scoped(scope, || {
-                let mut s = slot.take().expect("session");
-                let r = s.0.eval_here(project, src, file, current, EVAL_STACK - (32 << 20));
-                slot = Some(s);
-                AssertSend(r)
-            });
-            worker.ok().map(|h| h.join())
-        });
-        match joined {
-            Some(Ok(AssertSend(r))) => {
-                *self = slot.take().expect("session").0;
-                r
+        self.run(project, Task::Eval { src: src.to_string(), file: file.map(Path::to_path_buf) }, current)
+    }
+
+    /// OK on a displayed form: set its fields to `fields` (as edited) and run its callback.
+    pub fn form_ok(
+        &mut self,
+        project: &mut Project,
+        form: &FormRequest,
+        fields: &[FormField],
+        current: Option<&CellRef>,
+    ) -> Result<RunResult, SkillError> {
+        self.run(project, Task::FormOk(form.clone(), fields.to_vec()), current)
+    }
+
+    /// Read and evaluate a `.il` file.
+    pub fn load(&mut self, project: &mut Project, path: &Path, current: Option<&CellRef>) -> Result<RunResult, SkillError> {
+        self.run(project, Task::Load(path.to_path_buf()), current)
+    }
+
+    /// Names of the procedures defined so far, sorted.
+    pub fn procedures(&self) -> Vec<String> {
+        self.procedures.clone()
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        // A running evaluation stops soon; the thread ends when its job channel closes.
+        self.cancel();
+    }
+}
+
+impl SkillError {
+    fn plain(message: String, file: Option<String>) -> Self {
+        SkillError { message, file, line: 0, output: String::new(), modified: vec![] }
+    }
+}
+
+/// The interpreter state of a [`Session`]; it lives on the evaluation thread only.
+#[derive(Default)]
+struct State {
+    globals: HashMap<Name, Value>,
+    funcs: HashMap<Name, Rc<Func>>,
+    cvs: Vec<CvState>,
+    files: Vec<Option<PathBuf>>,
+    ports: Vec<PortFile>,
+    props: HashMap<(usize, u64), Vec<(String, Value)>>,
+    interactive: bool,
+    sandbox: Option<Sandbox>,
+}
+
+impl State {
+    fn new() -> Self {
+        let globals = ["poport", "errport", "woport", "piport"].into_iter().map(|p| (p.into(), Value::Port(0))).collect();
+        State { globals, ..Default::default() }
+    }
+
+    fn procedures(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.funcs.keys().map(|k| k.to_string()).collect();
+        v.sort();
+        v
+    }
+
+    fn run_task(
+        &mut self,
+        project: &mut Project,
+        task: &Task,
+        current: Option<&CellRef>,
+        stack_budget: usize,
+        cancel: &Arc<AtomicBool>,
+    ) -> Result<RunResult, SkillError> {
+        match task {
+            Task::Eval { src, file } => self.eval_here(project, src, file.as_deref(), current, stack_budget, cancel),
+            Task::FormOk(form, fields) => {
+                let mut src = String::new();
+                for f in fields.iter().filter(|f| f.kind != FieldKind::Label) {
+                    src += &format!("{}->{}->value = {}\n", form.symbol, f.name, f.skill_value());
+                }
+                src += &format!("hiiFormOk({})\n", form.symbol);
+                self.eval_here(project, &src, None, current, stack_budget, cancel)
             }
-            // No thread could be created: evaluate here, on the caller's stack.
-            None => {
-                *self = slot.take().expect("session").0;
-                self.eval_here(project, src, file, current, 256 << 10)
-            }
-            Some(Err(panic)) => {
-                let msg = panic
-                    .downcast_ref::<&str>()
-                    .map(|s| s.to_string())
-                    .or_else(|| panic.downcast_ref::<String>().cloned())
-                    .unwrap_or_default();
-                // The session was lost with the panicking thread: start over.
-                let (interactive, sandbox) = (self.interactive, self.sandbox.clone());
-                *self = Session { interactive, sandbox, ..Session::new() };
-                Err(SkillError {
-                    message: format!("internal interpreter error: {msg}"),
-                    file: None,
-                    line: 0,
-                    output: String::new(),
-                    modified: vec![],
-                })
+            Task::Load(path) => {
+                let err = |message: String| SkillError::plain(message, Some(path.display().to_string()));
+                let path = match &self.sandbox {
+                    Some(sb) => sandbox_path(sb, path).map_err(err)?,
+                    None => path.to_path_buf(),
+                };
+                let src = std::fs::read_to_string(&path).map_err(|e| err(e.to_string()))?;
+                self.eval_here(project, &src, Some(&path), current, stack_budget, cancel)
             }
         }
     }
 
-    /// [`Session::eval`] on the current thread, using at most about `stack_budget` bytes of
-    /// its stack for nested evaluation.
+    /// Evaluate on the current thread, using at most about `stack_budget` bytes of its stack for
+    /// nested evaluation.
     fn eval_here(
         &mut self,
         project: &mut Project,
@@ -283,12 +528,14 @@ impl Session {
         file: Option<&Path>,
         current: Option<&CellRef>,
         stack_budget: usize,
+        cancel: &Arc<AtomicBool>,
     ) -> Result<RunResult, SkillError> {
         let interactive = self.interactive;
         let mut it = Interp::new(project, current.cloned(), std::mem::take(self));
         it.stack_base = stack_pos();
         it.stack_budget = stack_budget;
         it.interactive = interactive;
+        it.cancel = Some(cancel.clone());
         let r = it.run_source(src, file.map(Path::to_path_buf));
         let modified = std::mem::take(&mut it.modified);
         let output = std::mem::take(&mut it.out);
@@ -304,49 +551,9 @@ impl Session {
             }),
             Err(Flow::NotSpecial) => unreachable!("not a special form"),
         };
-        *self = it.into_session();
+        *self = it.into_state();
         self.interactive = interactive;
         res
-    }
-
-    /// OK on a displayed form: set its fields to `fields` (as edited) and run its callback.
-    pub fn form_ok(
-        &mut self,
-        project: &mut Project,
-        form: &FormRequest,
-        fields: &[FormField],
-        current: Option<&CellRef>,
-    ) -> Result<RunResult, SkillError> {
-        let mut src = String::new();
-        for f in fields.iter().filter(|f| f.kind != FieldKind::Label) {
-            src += &format!("{}->{}->value = {}\n", form.symbol, f.name, f.skill_value());
-        }
-        src += &format!("hiiFormOk({})\n", form.symbol);
-        self.eval(project, &src, None, current)
-    }
-
-    /// Read and evaluate a `.il` file.
-    pub fn load(&mut self, project: &mut Project, path: &Path, current: Option<&CellRef>) -> Result<RunResult, SkillError> {
-        let err = |message: String| SkillError {
-            message,
-            file: Some(path.display().to_string()),
-            line: 0,
-            output: String::new(),
-            modified: vec![],
-        };
-        let path = match &self.sandbox {
-            Some(sb) => sandbox_path(sb, path).map_err(err)?,
-            None => path.to_path_buf(),
-        };
-        let src = std::fs::read_to_string(&path).map_err(|e| err(e.to_string()))?;
-        self.eval(project, &src, Some(&path), current)
-    }
-
-    /// Names of the procedures defined so far, sorted.
-    pub fn procedures(&self) -> Vec<String> {
-        let mut v: Vec<String> = self.funcs.keys().map(|k| k.to_string()).collect();
-        v.sort();
-        v
     }
 }
 
@@ -1485,6 +1692,8 @@ struct Interp<'p> {
     sandbox: Option<Sandbox>,
     /// When a sandboxed run must stop.
     deadline: Option<std::time::Instant>,
+    /// Set from outside to stop the evaluation ([`Session::cancel`]).
+    cancel: Option<Arc<AtomicBool>>,
     current: Option<CellRef>,
     /// Files opened by `outfile` / `infile`; port k is `ports[k - 1]`.
     ports: Vec<PortFile>,
@@ -1537,7 +1746,7 @@ struct Args {
 }
 
 impl<'p> Interp<'p> {
-    fn new(p: &'p mut Project, current: Option<CellRef>, s: Session) -> Self {
+    fn new(p: &'p mut Project, current: Option<CellRef>, s: State) -> Self {
         Interp {
             p,
             globals: s.globals,
@@ -1564,11 +1773,12 @@ impl<'p> Interp<'p> {
             current_form: None,
             interactive: false,
             forms: vec![],
+            cancel: None,
         }
     }
 
-    fn into_session(self) -> Session {
-        Session {
+    fn into_state(self) -> State {
+        State {
             globals: self.globals,
             funcs: self.funcs,
             cvs: self.cvs,
@@ -1596,11 +1806,15 @@ impl<'p> Interp<'p> {
         if self.steps > MAX_STEPS {
             return fail("evaluation step limit exceeded (infinite loop?)");
         }
-        if self.steps.is_multiple_of(4096)
-            && let Some(d) = self.deadline
-            && std::time::Instant::now() > d
-        {
-            return fail("evaluation time limit exceeded");
+        if self.steps.is_multiple_of(4096) {
+            if self.cancel.as_ref().is_some_and(|c| c.load(Ordering::Relaxed)) {
+                return fail("cancelled");
+            }
+            if let Some(d) = self.deadline
+                && std::time::Instant::now() > d
+            {
+                return fail("evaluation time limit exceeded");
+            }
         }
         Ok(())
     }
@@ -4689,6 +4903,35 @@ mod tests {
     fn output(src: &str) -> String {
         let mut p = Project::new("t");
         run(&mut p, src, None).unwrap_or_else(|e| panic!("{e}")).output
+    }
+
+    /// The session is a plain handle: it can move between threads (no `Rc` escapes the
+    /// evaluation thread).
+    #[test]
+    fn session_is_send() {
+        fn send<T: Send>() {}
+        send::<Session>();
+    }
+
+    /// A background evaluation keeps the session's state, can be polled and can be cancelled.
+    #[test]
+    fn background_evaluation_and_cancel() {
+        let mut s = Session::new();
+        s.start(Project::new("t"), Task::Eval { src: "procedure(f() 42)".into(), file: None }, None);
+        let f = s.wait();
+        assert!(f.result.is_ok());
+        assert_eq!(s.procedures(), vec!["f".to_string()]);
+        assert!(!s.is_running() && s.try_finish().is_none());
+
+        s.start(f.project.unwrap(), Task::Eval { src: "while(t 1)".into(), file: None }, None);
+        assert!(s.is_running());
+        assert!(s.wait_timeout(std::time::Duration::from_millis(50)).is_none(), "still looping");
+        s.cancel();
+        let f = s.wait();
+        assert!(f.result.unwrap_err().message.contains("cancelled"));
+        // The state survives a cancelled run.
+        let mut p = f.project.unwrap();
+        assert_eq!(s.eval(&mut p, "f()", None, None).unwrap().value, "42");
     }
 
     #[test]

@@ -815,11 +815,13 @@ CC0 mid gnd! 10f $[mimcap]
         let marked = sch.mark_ports(&[("in".into(), PortDir::Input), ("out".into(), PortDir::Output)]);
         assert_eq!(marked, 2);
         let cdl = crate::signoff::cdl(&sch, &p.tech, "inv");
-        // The other named nets stay ports too, as in the LVS netlist.
-        assert!(cdl.contains(".subckt inv in out gnd vdd\n*.PININFO in:I out:O gnd:B vdd:B"), "{cdl}");
+        // Only the pins are ports (as Virtuoso writes it), in the LVS netlist too.
+        assert!(cdl.contains(".subckt inv in out\n*.PININFO in:I out:O"), "{cdl}");
         let back = import_cdl(&cdl, &p.tech, Some("inv")).expect("import");
-        let ports = back.imported.schematic.ports();
-        assert!(ports.contains(&("in".to_string(), PortDir::Input)) && ports.contains(&("out".to_string(), PortDir::Output)));
+        assert_eq!(
+            back.imported.schematic.ports(),
+            vec![("in".to_string(), PortDir::Input), ("out".to_string(), PortDir::Output)]
+        );
         let (il, _) = skill_schematic(&sch, "lib", "inv", &SymbolMap::analog_lib(), 0.0625);
         assert!(il.contains("schCreatePin(cv dbOpenCellViewByType(\"basic\" \"ipin\" \"symbol\") \"in\" \"input\""), "{il}");
     }

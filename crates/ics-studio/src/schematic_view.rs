@@ -147,8 +147,9 @@ pub struct SchematicEditor {
     /// Body nets of new 3-terminal NMOS and PMOS devices, from the project settings (empty is
     /// the built-in `0` / `vdd`).
     pub bulk_nets: [String; 2],
-    /// Why the symbol of an instance could not be switched to 3-terminal.
-    body_pin_error: Option<(u64, String)>,
+    /// The last symbol switch of an instance: a note (the body pin was labelled) or why it
+    /// could not be switched (`true`).
+    body_pin_msg: Option<(u64, String, bool)>,
 }
 
 impl Default for SchematicEditor {
@@ -171,7 +172,7 @@ impl Default for SchematicEditor {
             actions: Vec::new(),
             mos_body_pin: true,
             bulk_nets: Default::default(),
-            body_pin_error: None,
+            body_pin_msg: None,
         }
     }
 }
@@ -1259,16 +1260,22 @@ impl SchematicEditor {
                         let mut next = sch.clone();
                         match next.set_body_pin(id, body, Some(&rail)) {
                             Ok(true) => {
+                                // Showing the pin labels it with the body's net: say so.
+                                self.body_pin_msg =
+                                    next.labels.iter().find(|l| !sch.labels.iter().any(|o| o.id == l.id)).map(|l| {
+                                        (id, format!("Labelled the body pin '{}' to keep it on its net", l.name), false)
+                                    });
                                 self.history.push(sch);
                                 *sch = next;
                                 return true;
                             }
                             Ok(false) => {}
-                            Err(e) => self.body_pin_error = Some((id, e)),
+                            Err(e) => self.body_pin_msg = Some((id, e, true)),
                         }
                     }
-                    if let Some((_, e)) = self.body_pin_error.as_ref().filter(|(i, _)| *i == id) {
-                        ui.label(egui::RichText::new(e).small().color(ui.visuals().error_fg_color));
+                    if let Some((_, msg, err)) = self.body_pin_msg.as_ref().filter(|(i, ..)| *i == id) {
+                        let color = if *err { ui.visuals().error_fg_color } else { ui.visuals().weak_text_color() };
+                        ui.label(egui::RichText::new(msg).small().color(color));
                     }
                 }
                 if before.kind.implicit_bulk() {

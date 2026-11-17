@@ -486,6 +486,31 @@ fn ciw_console() {
     shot(&mut h, "31_ciw");
 }
 
+/// A long SKILL script runs in the background behind a dialog and can be cancelled; the
+/// session (and the project) survive it.
+#[test]
+fn long_skill_script_can_be_cancelled() {
+    let mut h = app(demo_args("cmos_inverter", "layout", false));
+    h.state_mut().command(Command::CiwEval("procedure(answer() 42) while(t 1)".into()));
+    h.run_steps(3);
+    assert!(h.state().skill_running(), "still looping");
+    shot(&mut h, "31b_skill_running");
+    h.state_mut().command(Command::CancelSkill);
+    for _ in 0..50 {
+        h.run_steps(1);
+        if !h.state().skill_running() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(!h.state().skill_running());
+    assert!(h.state().ciw().lines.last().is_some_and(|(_, t)| t.contains("cancelled")), "{:?}", h.state().ciw().lines);
+    h.state_mut().command(Command::CiwEval("answer()".into()));
+    h.run_steps(2);
+    assert!(h.state().ciw().lines.last().is_some_and(|(_, t)| t == "42"), "{:?}", h.state().ciw().lines);
+    assert!(h.state().project().is_some());
+}
+
 fn demo_args(cell: &str, workspace: &str, run: bool) -> LaunchArgs {
     LaunchArgs { project: None, demo: true, workspace: Some(workspace.into()), cell: Some(cell.into()), run }
 }
@@ -1157,6 +1182,90 @@ fn schematic_mos_symbol_style() {
     assert!(sch.instances.iter().filter(|i| i.kind.is_mos()).all(|i| ["0", "vdd"].contains(&i.param("bulk"))));
     settle(&mut h, "03b_schematic_mos3");
     shot(&mut h, "03b_schematic_mos3");
+}
+
+/// The inspector's symbol switch: refused (with the reason shown) for a body on an unnamed net;
+/// switching back to 4-terminal labels the body pin and says so; an emptied bulk takes the
+/// project's default body net.
+#[test]
+fn inspector_body_pin_switch() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = app(demo_args("cmos_inverter", "schematic", false));
+    h.run_steps(4);
+    let r = h.state().project().unwrap().all_cells().find(|(_, c)| c.name == "cmos_inverter").unwrap().0;
+    let kind = |h: &Harness<'_, IcStudio>, name: &str| {
+        let p = h.state().project().unwrap();
+        p.cell(&r).unwrap().schematic.as_ref().unwrap().instances.iter().find(|i| i.name == name).unwrap().clone()
+    };
+    let pmos = h
+        .state()
+        .project()
+        .unwrap()
+        .cell(&r)
+        .unwrap()
+        .schematic
+        .as_ref()
+        .unwrap()
+        .instances
+        .iter()
+        .find(|i| i.kind.is_pmos())
+        .unwrap()
+        .name
+        .clone();
+
+    // 3-terminal and back: the body pin gets a label with its net, and the inspector says so.
+    h.state_mut().command(Command::SelectInstance(pmos.clone()));
+    h.run_steps(3);
+    h.get_all_by_label("3-terminal").last().unwrap().click(); // the inspector's, not the palette's
+    h.run_steps(3);
+    assert_eq!(kind(&h, &pmos).kind, ics_core::DeviceKind::Pmos3);
+    let labels =
+        |h: &Harness<'_, IcStudio>| h.state().project().unwrap().cell(&r).unwrap().schematic.as_ref().unwrap().labels.len();
+    let before = labels(&h);
+    h.get_all_by_label("4-terminal").last().unwrap().click();
+    h.run_steps(3);
+    assert_eq!(kind(&h, &pmos).kind, ics_core::DeviceKind::Pmos);
+    assert_eq!(labels(&h), before + 1, "the body pin is labelled with its net");
+    assert!(h.query_by_label_contains("Labelled the body pin").is_some(), "and the inspector says so");
+    shot(&mut h, "03c_body_pin_back");
+
+    // An emptied bulk takes the project default.
+    h.state_mut().command(Command::DefaultBulk(true, "avdd".into()));
+    h.run_steps(2);
+    h.get_all_by_label("3-terminal").last().unwrap().click(); // the inspector's, not the palette's
+    h.run_steps(3);
+    let id = kind(&h, &pmos).id;
+    h.state_mut()
+        .project_mut()
+        .unwrap()
+        .cell_mut(&r)
+        .unwrap()
+        .schematic
+        .as_mut()
+        .unwrap()
+        .instance_mut(id)
+        .unwrap()
+        .params
+        .insert("bulk".into(), String::new());
+    h.run_steps(3);
+    assert_eq!(kind(&h, &pmos).param("bulk"), "avdd");
+
+    // A body on an unnamed net is refused, with the reason in the inspector.
+    let p = h.state_mut().project_mut().unwrap();
+    let sch = p.cell_mut(&r).unwrap().schematic.as_mut().unwrap();
+    let a = sch.add_instance(ics_core::DeviceKind::Nmos, ics_core::geom::Pt::new(60, 0), Default::default());
+    let b = sch.add_instance(ics_core::DeviceKind::Nmos, ics_core::geom::Pt::new(80, 0), Default::default());
+    let body = sch.instance(a).unwrap().pin_positions()[3].1;
+    let src = sch.instance(b).unwrap().pin_positions()[2].1;
+    sch.add_wire(body, src);
+    let name = sch.instance(a).unwrap().name.clone();
+    h.state_mut().command(Command::SelectInstance(name.clone()));
+    h.run_steps(3);
+    h.get_all_by_label("3-terminal").last().unwrap().click(); // the inspector's, not the palette's
+    h.run_steps(3);
+    assert_eq!(kind(&h, &name).kind, ics_core::DeviceKind::Nmos);
+    assert!(h.query_by_label_contains("no name").is_some(), "the reason is shown");
+    shot(&mut h, "03d_body_pin_refused");
 }
 
 /// Live mode: MCP tool calls arriving over the bridge channel run on the open project and

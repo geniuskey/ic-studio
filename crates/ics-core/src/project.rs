@@ -706,7 +706,26 @@ impl Project {
         // Without the shared deck file the deck derived from the layer rules is used;
         // `reload_drc_deck` reports why.
         let _ = p.reload_drc_deck();
+        p.fill_default_bulks();
         Ok(p)
+    }
+
+    /// Give every 3-terminal MOS whose `bulk` is empty the project's default body net
+    /// ([`ProjectSettings::default_bulk`]), so all tools see the same net. Returns how many
+    /// devices changed.
+    pub fn fill_default_bulks(&mut self) -> usize {
+        let settings = self.settings.clone();
+        let mut n = 0;
+        for lib in &mut self.libraries {
+            for cell in &mut lib.cells {
+                let Some(sch) = cell.schematic.as_mut() else { continue };
+                for inst in sch.instances.iter_mut().filter(|i| i.kind.implicit_bulk() && i.param("bulk").trim().is_empty()) {
+                    inst.params.insert("bulk".into(), settings.default_bulk(inst.kind).to_string());
+                    n += 1;
+                }
+            }
+        }
+        n
     }
 
     /// The resolved path of the shared DRC deck file (`Tech::drc_deck_file`), if one is linked.
@@ -1354,6 +1373,24 @@ mod tests {
         v.as_object_mut().unwrap().remove("vias");
         let t: Tech = serde_json::from_value(v).unwrap();
         assert!(t.vias.is_empty());
+    }
+
+    /// A 3-terminal device saved without a body net gets the project's default when opened.
+    #[test]
+    fn empty_bulk_takes_the_project_default() {
+        let dir = temp_dir("default-bulk");
+        let mut p = Project::new("b");
+        p.settings.pmos_bulk = Some("avdd".into());
+        let mut sch = crate::Schematic::default();
+        let id = sch.add_instance(crate::DeviceKind::Pmos3, crate::geom::Pt::new(0, 0), crate::geom::Orient::default());
+        sch.instance_mut(id).unwrap().params.insert("bulk".into(), String::new());
+        let mut c = Cell::new("c");
+        c.schematic = Some(sch);
+        p.libraries[0].cells.push(c);
+        p.save_as(&dir).unwrap();
+        let p = Project::open(&dir).unwrap();
+        let sch = p.libraries[0].cells.iter().find(|c| c.name == "c").and_then(|c| c.schematic.as_ref()).unwrap();
+        assert_eq!(sch.instances[0].param("bulk"), "avdd");
     }
 
     #[test]

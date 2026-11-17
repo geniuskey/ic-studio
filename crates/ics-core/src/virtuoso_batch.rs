@@ -8,6 +8,8 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use crate::virtuoso_dump::DUMP_SKILL;
 
@@ -172,7 +174,34 @@ fn skill_string(s: &str) -> String {
 /// Dump library `lib` by running `virtuoso` in batch mode in a temporary directory whose
 /// `cds.lib` includes `cds_lib` (or defines the library at `dir`). Returns the dump text.
 pub fn dump_library(virtuoso: &Path, cds_lib: Option<&Path>, lib: &str, dir: &Path) -> Result<String, String> {
+    dump_library_with(virtuoso, cds_lib, lib, dir, &AtomicBool::new(false))
+}
+
+/// Scratch directories of earlier runs older than this are removed (a failed run keeps its
+/// directory, with Virtuoso's log, for a while).
+const KEEP_FAILED: Duration = Duration::from_secs(24 * 3600);
+
+fn remove_stale_work_dirs() {
+    let Ok(rd) = std::fs::read_dir(std::env::temp_dir()) else { return };
+    for e in rd.flatten() {
+        let old =
+            e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > KEEP_FAILED);
+        if old && e.file_name().to_string_lossy().starts_with("ics-virtuoso-") {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+}
+
+/// [`dump_library`] that stops Virtuoso (and fails) when `cancel` is set.
+pub fn dump_library_with(
+    virtuoso: &Path,
+    cds_lib: Option<&Path>,
+    lib: &str,
+    dir: &Path,
+    cancel: &AtomicBool,
+) -> Result<String, String> {
     check_lib_name(lib)?;
+    remove_stale_work_dirs();
     let cds = match cds_lib {
         Some(c) => format!("INCLUDE {}\n", cds_path(c)?),
         None => format!("DEFINE {lib} {}\n", cds_path(dir)?),
@@ -198,14 +227,28 @@ pub fn dump_library(virtuoso: &Path, cds_lib: Option<&Path>, lib: &str, dir: &Pa
             skill_string(&out.display().to_string())
         ),
     )?;
-    let status = Command::new(virtuoso)
+    let mut child = Command::new(virtuoso)
         .args(["-nograph", "-replay"])
         .arg(&replay)
         .arg("-log")
         .arg(&log)
         .current_dir(&work)
-        .status()
+        .stdin(std::process::Stdio::null())
+        .spawn()
         .map_err(|e| format!("cannot run {}: {e}", virtuoso.display()))?;
+    let status = loop {
+        if cancel.load(Ordering::Relaxed) {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = std::fs::remove_dir_all(&work);
+            return Err(format!("dumping {lib} was cancelled"));
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+            Err(e) => return Err(format!("{}: {e}", virtuoso.display())),
+        }
+    };
     match std::fs::read_to_string(&out) {
         Ok(text) => {
             let _ = std::fs::remove_dir_all(&work);
@@ -230,6 +273,11 @@ pub fn dump_library(virtuoso: &Path, cds_lib: Option<&Path>, lib: &str, dir: &Pa
 /// The dump text for `path` (see [`resolve_source`]): read from a dump file, or written by
 /// Virtuoso in batch mode for a library.
 pub fn read_dump(path: &Path, lib: Option<&str>) -> Result<String, String> {
+    read_dump_with(path, lib, &AtomicBool::new(false))
+}
+
+/// [`read_dump`] that stops a running Virtuoso when `cancel` is set.
+pub fn read_dump_with(path: &Path, lib: Option<&str>, cancel: &AtomicBool) -> Result<String, String> {
     match resolve_source(path, lib)? {
         Source::Dump(p) => std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display())),
         Source::Library { cds_lib, lib, dir } => {
@@ -239,7 +287,7 @@ pub fn read_dump(path: &Path, lib: Option<&str>) -> Result<String, String> {
                      or dump the library in Virtuoso with icsDumpLib and import the dump (ics dump-skill)"
                 )
             })?;
-            dump_library(&v, cds_lib.as_deref(), &lib, &dir)
+            dump_library_with(&v, cds_lib.as_deref(), &lib, &dir, cancel)
         }
     }
 }
@@ -322,6 +370,18 @@ mod tests {
         // A failing Virtuoso reports its log.
         std::fs::write(&fake, "#!/bin/sh\nexit 1\n").unwrap();
         assert!(dump_library(&fake, None, "myLib", &lib).unwrap_err().contains("wrote no dump"));
+        // A cancelled run stops Virtuoso and removes its scratch directory.
+        std::fs::write(&fake, "#!/bin/sh\nsleep 30\n").unwrap();
+        let cancel = AtomicBool::new(false);
+        let t = std::time::Instant::now();
+        let res = std::thread::scope(|s| {
+            let h = s.spawn(|| dump_library_with(&fake, None, "myLib", &lib, &cancel));
+            std::thread::sleep(Duration::from_millis(300));
+            cancel.store(true, Ordering::Relaxed);
+            h.join().unwrap()
+        });
+        assert!(res.unwrap_err().contains("cancelled"));
+        assert!(t.elapsed() < Duration::from_secs(10), "Virtuoso was stopped");
         // Library names never escape the scratch directory.
         assert!(dump_library(&fake, None, "../../x", &lib).unwrap_err().contains("not a valid"));
         assert!(dump_library(&fake, None, "a/b", &lib).unwrap_err().contains("not a valid"));
