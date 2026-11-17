@@ -270,7 +270,9 @@ mod tests {
         let libs = parse_cds_lib(&d.join("cds.lib")).unwrap();
         let names: Vec<&str> = libs.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, ["analogLib", "myLib", "myLib2"]);
-        assert_eq!(libs[0].1, PathBuf::from("/pdk/analogLib"));
+        // On Windows a rooted path without a drive is on the drive of the cds.lib.
+        let drive: PathBuf = d.components().take_while(|c| matches!(c, std::path::Component::Prefix(_))).collect();
+        assert_eq!(libs[0].1, drive.join(PathBuf::from("/pdk/analogLib")));
         assert_eq!(libs[1].1, d.join("./myLib"));
         assert!(parse_cds_lib(&d.join("nope.lib")).is_err());
     }

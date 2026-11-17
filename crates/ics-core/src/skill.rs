@@ -4936,7 +4936,7 @@ gets(line q)
 close(q)
 list(m~>matchGroup dbFindNetByName(cv "out")~>name line arrayp(arr) w~>width)
 "#,
-            out = out.display()
+            out = out.display().to_string().replace('\\', "/")
         );
         let mut p = Project::new("t");
         let r = run(&mut p, &src, None).unwrap_or_else(|e| panic!("{e}"));

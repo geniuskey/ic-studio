@@ -726,6 +726,8 @@ impl Project {
         let Some(path) = self.drc_deck_path() else { return Ok(false) };
         let text = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         let (text, _) = crate::drc::deck_file_text(&text, &path)?;
+        // Line endings are not part of the deck: a CRLF checkout of the same file is unchanged.
+        let text = normalize_newlines(&text);
         // A deck that is empty or does not parse (a file being written, say) is not taken.
         if text.trim().is_empty() {
             return Err(format!("{}: the deck is empty", path.display()));
@@ -792,7 +794,7 @@ impl Project {
                         }
                         Err(e) => return Err(format!("Cannot read the shared DRC deck {}: {e}", path.display())),
                     };
-                    if self.tech.drc_deck.as_deref() != Some(on_disk.as_str()) {
+                    if self.tech.drc_deck.as_deref().map(normalize_newlines) != Some(normalize_newlines(&on_disk)) {
                         return Err(format!(
                             "The shared DRC deck {} changed since this project read it (another project saved it): \
                              reload the DRC deck, then apply the change again",
@@ -809,6 +811,10 @@ impl Project {
         self.tech.drc_deck = Some(text);
         Ok(msg)
     }
+}
+
+fn normalize_newlines(s: &str) -> String {
+    s.replace("\r\n", "\n")
 }
 
 /// `p` without the Windows `\\?\` prefix `canonicalize` adds to local paths.
@@ -1351,6 +1357,15 @@ mod tests {
     }
 
     #[test]
+    fn verbatim_prefix_is_dropped_from_local_paths_only() {
+        assert_eq!(simplify_verbatim(r"\\?\C:\a\b".into()), PathBuf::from(r"C:\a\b"));
+        assert_eq!(simplify_verbatim(r"\\?\UNC\srv\share".into()), PathBuf::from(r"\\?\UNC\srv\share"));
+        assert_eq!(simplify_verbatim("/a/b".into()), PathBuf::from("/a/b"));
+        #[cfg(windows)]
+        assert!(!simplify_verbatim(std::env::temp_dir().canonicalize().unwrap()).to_string_lossy().starts_with(r"\\?\"));
+    }
+
+    #[test]
     fn shared_drc_deck_is_not_lost_or_overwritten() {
         let dir = temp_dir("shared-deck-safe");
         let shared = dir.join("rules.deck");
@@ -1369,6 +1384,11 @@ mod tests {
         assert!(e.contains("changed since"), "{e}");
         assert_eq!(fs::read_to_string(&shared).unwrap(), "width metal1 0.3\n");
         a.reload_drc_deck().unwrap();
+        a.set_drc_deck("width metal1 0.25\n".into()).unwrap();
+
+        // A CRLF checkout of the same deck is not a change by another project.
+        fs::write(&shared, "width metal1 0.25\r\n").unwrap();
+        assert_eq!(a.reload_drc_deck(), Ok(false));
         a.set_drc_deck("width metal1 0.25\n".into()).unwrap();
 
         // An empty or broken file is not taken.
