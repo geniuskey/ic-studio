@@ -19,6 +19,12 @@ struct Mos {
     name: String,
     pmos: bool,
     w: i64,
+    l: i64,
+    /// PDK device (Vt flavour); empty for the default one.
+    device: String,
+    /// Whether the cell has a schematic, so the columns' nets are known (`None` there means the
+    /// device or its pin was not found, not "any net").
+    checked: bool,
     /// Source / drain column centres (parent x) with their nets, left to right.
     cols: Vec<(i64, Option<String>)>,
     /// Bottom of the active area (parent y).
@@ -28,7 +34,10 @@ struct Mos {
     cx: i64,
 }
 
-fn mos(layout: &Layout, id: u64, project: &Project, sch: Option<&Schematic>) -> Result<Mos, String> {
+/// The schematic and its connectivity, extracted once per operation.
+type Source<'a> = Option<(&'a Schematic, &'a connectivity::Connectivity)>;
+
+fn mos(layout: &Layout, id: u64, project: &Project, src: Source) -> Result<Mos, String> {
     let tech = &project.tech;
     let inst = layout.instance(id).ok_or("not an instance")?;
     let name = inst.name.clone().unwrap_or_else(|| format!("#{id}"));
@@ -39,7 +48,7 @@ fn mos(layout: &Layout, id: u64, project: &Project, sch: Option<&Schematic>) -> 
         return Err(format!("{name}: turned by 90°, its columns are not vertical"));
     }
     let cell = project.cell(&inst.cell).ok_or_else(|| format!("{name}: cell {} not found", inst.cell))?;
-    let Some(PCell::Mos { pmos, w, l, fingers, .. }) = cell.pcell.clone() else {
+    let Some(PCell::Mos { pmos, w, l, fingers, device }) = cell.pcell.clone() else {
         return Err(format!("{name}: not a MOS PCell"));
     };
     let child = cell.layout.as_ref().ok_or_else(|| format!("{name}: no layout"))?;
@@ -51,10 +60,9 @@ fn mos(layout: &Layout, id: u64, project: &Project, sch: Option<&Schematic>) -> 
         .map(|s| inst.trans.apply_rect(s.bbox()).y0)
         .min()
         .ok_or_else(|| format!("{name}: no active area"))?;
-    let nets: Option<(Option<String>, Option<String>)> = sch.and_then(|sch| {
+    let nets: Option<(Option<String>, Option<String>)> = src.and_then(|(sch, conn)| {
         let dev = device_of(inst.name.as_deref()?);
         let si = sch.instances.iter().find(|i| i.name == dev)?;
-        let conn = connectivity::extract(sch);
         Some((conn.net_of(si.id, "s").map(str::to_string), conn.net_of(si.id, "d").map(str::to_string)))
     });
     let mut cols: Vec<(i64, Option<String>)> = mos_columns(tech, l, fingers)?
@@ -67,7 +75,8 @@ fn mos(layout: &Layout, id: u64, project: &Project, sch: Option<&Schematic>) -> 
         .collect();
     cols.sort_by_key(|c| c.0);
     let b = child.shapes_bbox().map(|b| inst.trans.apply_rect(b)).unwrap_or_default();
-    Ok(Mos { id, name, pmos, w, cols, active_y0, trans: inst.trans, cx: (b.x0 + b.x1) / 2 })
+    let checked = src.is_some();
+    Ok(Mos { id, name, pmos, w, l, device, checked, cols, active_y0, trans: inst.trans, cx: (b.x0 + b.x1) / 2 })
 }
 
 impl Mos {
@@ -80,6 +89,9 @@ impl Mos {
             name: self.name.clone(),
             pmos: self.pmos,
             w: self.w,
+            l: self.l,
+            device: self.device.clone(),
+            checked: self.checked,
             cols,
             active_y0: self.active_y0,
             trans: f.compose(&self.trans),
@@ -95,7 +107,9 @@ pub fn abut_chain(layout: &mut Layout, ids: &[u64], project: &Project, sch: Opti
     if ids.len() < 2 {
         return Err("select two or more MOS instances".into());
     }
-    let mut devs = ids.iter().map(|&id| mos(layout, id, project, sch)).collect::<Result<Vec<_>, _>>()?;
+    let conn = sch.map(connectivity::extract);
+    let src = sch.zip(conn.as_ref());
+    let mut devs = ids.iter().map(|&id| mos(layout, id, project, src)).collect::<Result<Vec<_>, _>>()?;
     devs.sort_by_key(|d| d.cols.first().map_or(0, |c| c.0));
     let mut notes = Vec::new();
     let mut prev = devs.remove(0);
@@ -103,7 +117,7 @@ pub fn abut_chain(layout: &mut Layout, ids: &[u64], project: &Project, sch: Opti
         let id = next.id;
         notes.push(abut_onto(layout, &prev, next, true)?);
         // The moved device is the reference for the next one.
-        prev = mos(layout, id, project, sch)?;
+        prev = mos(layout, id, project, src)?;
     }
     Ok(notes)
 }
@@ -117,12 +131,16 @@ fn abut_onto(layout: &mut Layout, fixed: &Mos, moving: Mos, right: bool) -> Resu
     if moving.w != fixed.w {
         return Err(format!("{} and {}: finger widths differ", fixed.name, moving.name));
     }
+    if moving.l != fixed.l || moving.device != fixed.device {
+        return Err(format!("{} and {}: different gate lengths or device types", fixed.name, moving.name));
+    }
     let fixed_col = if right { fixed.cols.last() } else { fixed.cols.first() };
     let shared = fixed_col.and_then(|c| c.1.clone());
     let facing = |m: &Mos| if right { m.cols.first().cloned() } else { m.cols.last().cloned() };
+    // With a schematic, both nets must be known and equal; without one there are no nets.
     let fits = |m: &Mos| match (&shared, facing(m).and_then(|c| c.1)) {
         (Some(a), Some(b)) => *a == b,
-        _ => true,
+        _ => !(fixed.checked || m.checked),
     };
     let (moving, flipped) = if fits(&moving) {
         (moving, false)
@@ -155,11 +173,14 @@ fn abut_onto(layout: &mut Layout, fixed: &Mos, moving: Mos, right: bool) -> Resu
 /// vertically, abut it there (flipping it if the nets need that). Returns the note, or `None`
 /// when no neighbour is close or the nets do not allow it (nothing is changed then).
 pub fn auto_abut(layout: &mut Layout, id: u64, project: &Project, sch: Option<&Schematic>, reach: i64) -> Option<String> {
-    let me = mos(layout, id, project, sch).ok()?;
+    let conn = sch.map(connectivity::extract);
+    let src = sch.zip(conn.as_ref());
+    let me = mos(layout, id, project, src).ok()?;
     let mut best: Option<(i64, u64, bool)> = None;
     for other in layout.instances.iter().filter(|i| i.id != id) {
-        let Ok(o) = mos(layout, other.id, project, sch) else { continue };
-        if o.pmos != me.pmos || o.w != me.w || (o.active_y0 - me.active_y0).abs() > reach {
+        let Ok(o) = mos(layout, other.id, project, src) else { continue };
+        if o.pmos != me.pmos || o.w != me.w || o.l != me.l || o.device != me.device || (o.active_y0 - me.active_y0).abs() > reach
+        {
             continue;
         }
         let (Some(of), Some(ol), Some(mf), Some(ml)) = (o.cols.first(), o.cols.last(), me.cols.first(), me.cols.last()) else {
@@ -174,7 +195,7 @@ pub fn auto_abut(layout: &mut Layout, id: u64, project: &Project, sch: Option<&S
         }
     }
     let (_, other, right) = best?;
-    let fixed = mos(layout, other, project, sch).ok()?;
+    let fixed = mos(layout, other, project, src).ok()?;
     let mut next = layout.clone();
     let note = abut_onto(&mut next, &fixed, me, right).ok()?;
     *layout = next;
@@ -210,8 +231,8 @@ mod tests {
             Trans::flip_x_about((0, 0)).compose(&Trans { x: far.x + 5000, y: far.y + 700, ..far });
         let notes = abut_chain(&mut lay, &ids, &p, Some(&sch)).expect("abut");
         assert_eq!(notes.len(), 1, "{notes:?}");
-        let a = mos(&lay, ids[0], &p, Some(&sch)).unwrap();
-        let b = mos(&lay, ids[1], &p, Some(&sch)).unwrap();
+        let a = mos(&lay, ids[0], &p, Some((&sch, &conn))).unwrap();
+        let b = mos(&lay, ids[1], &p, Some((&sch, &conn))).unwrap();
         let (left, right) = if a.cols[0].0 < b.cols[0].0 { (a, b) } else { (b, a) };
         assert_eq!(left.cols.last().unwrap().0, right.cols[0].0, "shared column");
         assert_eq!(left.cols.last().unwrap().1, right.cols[0].1, "on one net");
@@ -228,6 +249,11 @@ mod tests {
             .unwrap()
             .id;
         assert!(abut_chain(&mut lay, &[ids[0], pm], &p, Some(&sch)).is_err());
+
+        // A device the schematic does not know (unnamed) is not abutted: its nets are unknown.
+        lay.instance_mut(ids[1]).unwrap().name = None;
+        lay.instance_mut(ids[1]).unwrap().trans.x += 5000;
+        assert!(abut_chain(&mut lay, &ids, &p, Some(&sch)).is_err());
     }
 
     /// A device dropped near a compatible neighbour snaps onto its shared column.

@@ -151,6 +151,7 @@ pub fn check(sch: &Schematic) -> Vec<Finding> {
     let mut cx = Ctx::new(sch, &conn);
     unconnected_pins(&mut cx);
     floating_nets(&mut cx);
+    body_nets(&mut cx);
     dangling_wires(&mut cx);
     names(&mut cx);
     params(&mut cx);
@@ -197,6 +198,21 @@ fn floating_nets(cx: &mut Ctx) {
             let msg = format!("Net '{net}' only connects to {} pin '{}'", p.inst.name, p.name);
             found.push(Finding::new(Severity::Warning, "floating-net", msg).at(p.at).inst([p.inst.id]).net(net));
         }
+    }
+    cx.out.extend(found);
+}
+
+/// A 3-terminal MOS whose `bulk` names a net nothing else in the schematic is on (a typo, or
+/// a rail named differently): its body would float.
+fn body_nets(cx: &mut Ctx) {
+    let mut found = vec![];
+    for inst in cx.sch.instances.iter().filter(|i| i.kind.implicit_bulk()) {
+        let Some(net) = cx.conn.net_of(inst.id, "b") else { continue };
+        if is_ground(net) || cx.pins.iter().any(|p| p.net == net) || cx.label_nets.iter().any(|(_, _, n)| *n == net) {
+            continue;
+        }
+        let msg = format!("{}: body net '{net}' is not connected to anything in this schematic", inst.name);
+        found.push(Finding::new(Severity::Warning, "body-net", msg).at(inst.pos).inst([inst.id]).net(net));
     }
     cx.out.extend(found);
 }
@@ -542,6 +558,16 @@ mod tests {
         let pins: Vec<_> = f.iter().filter(|f| f.code == "unconnected-pin").collect();
         assert_eq!(pins.len(), 3);
         assert!(pins.iter().all(|f| f.instances == [m] && f.severity != Severity::Info));
+    }
+
+    #[test]
+    fn body_net_must_exist() {
+        let mut s = clean();
+        let m = s.add_instance(DeviceKind::Pmos3, Pt::new(20, 0), O);
+        s.instance_mut(m).unwrap().params.insert("bulk".into(), "vddd".into());
+        assert!(check(&s).iter().any(|f| f.code == "body-net" && f.instances == [m] && f.severity == Severity::Warning));
+        let nm = s.add_instance(DeviceKind::Nmos3, Pt::new(40, 0), O);
+        assert!(!check(&s).iter().any(|f| f.code == "body-net" && f.instances == [nm]), "ground always exists");
     }
 
     #[test]

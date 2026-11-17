@@ -182,7 +182,7 @@ pub fn matched_groups(sch: &Schematic) -> Vec<Vec<String>> {
     for a in 0..mos.len() {
         for b in a + 1..mos.len() {
             let (x, y) = (mos[a], mos[b]);
-            if x.kind != y.kind || tag(x) == "none" || tag(y) == "none" {
+            if x.kind.with_body_pin(true) != y.kind.with_body_pin(true) || tag(x) == "none" || tag(y) == "none" {
                 continue;
             }
             let explicit = !tag(x).is_empty() && tag(x) == tag(y);
@@ -717,13 +717,18 @@ pub fn terminal_pins(sch: &Schematic, layout: &Layout, src: &dyn LayoutSource) -
         }
     }
     // Pins of the cell (schematic pins): a top-level label naming a pin, on a top-level
-    // rectangle (the pin shape, e.g. placed on the boundary by `eco::place_pins`).
+    // rectangle of the layer it labels (the pin shape, e.g. placed on the boundary by
+    // `eco::place_pins`); a well or boundary under the label is not a pin.
     let ports = sch.ports();
     if !ports.is_empty() {
         for s in &layout.shapes {
             let Geometry::Label { text, at, .. } = &s.geom else { continue };
             let Some((port, _)) = ports.iter().find(|(n, _)| n.eq_ignore_ascii_case(text)) else { continue };
-            let on_shape = layout.shapes.iter().any(|r| matches!(&r.geom, Geometry::Rect(b) if b.contains(at.0, at.1)));
+            let metal = src.tech().map(|t| t.labelled_layer(s.layer).unwrap_or(s.layer));
+            let on_shape = layout
+                .shapes
+                .iter()
+                .any(|r| matches!(&r.geom, Geometry::Rect(b) if b.contains(at.0, at.1)) && metal.is_none_or(|m| r.layer == m));
             if on_shape {
                 let key = out.keys().find(|k| k.eq_ignore_ascii_case(port)).cloned().unwrap_or_else(|| port.clone());
                 out.entry(key).or_default().push(("p", *at));

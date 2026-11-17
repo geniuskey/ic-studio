@@ -147,6 +147,24 @@ pub fn find_virtuoso() -> Option<PathBuf> {
     std::env::split_paths(&std::env::var_os("PATH")?).map(|d| d.join(exe)).find(|p| p.is_file())
 }
 
+/// Library names go into file names and `cds.lib`: letters, digits, `_`, `-` and `.` only.
+fn check_lib_name(lib: &str) -> Result<(), String> {
+    let ok = !lib.is_empty()
+        && !lib.starts_with('.')
+        && lib.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
+    if ok { Ok(()) } else { Err(format!("{lib:?} is not a valid Virtuoso library name")) }
+}
+
+/// An absolute path for a `cds.lib` line, which cannot hold whitespace.
+fn cds_path(p: &Path) -> Result<String, String> {
+    let p = std::path::absolute(p).map_err(|e| format!("{}: {e}", p.display()))?;
+    let s = p.display().to_string();
+    if s.chars().any(char::is_whitespace) {
+        return Err(format!("{s}: cds.lib paths cannot contain spaces; move or link the library to a path without spaces"));
+    }
+    Ok(s)
+}
+
 fn skill_string(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "/").replace('"', "\\\""))
 }
@@ -154,18 +172,15 @@ fn skill_string(s: &str) -> String {
 /// Dump library `lib` by running `virtuoso` in batch mode in a temporary directory whose
 /// `cds.lib` includes `cds_lib` (or defines the library at `dir`). Returns the dump text.
 pub fn dump_library(virtuoso: &Path, cds_lib: Option<&Path>, lib: &str, dir: &Path) -> Result<String, String> {
-    let work = std::env::temp_dir().join(format!("ics-virtuoso-{}-{lib}", std::process::id()));
-    std::fs::create_dir_all(&work).map_err(|e| format!("{}: {e}", work.display()))?;
+    check_lib_name(lib)?;
     let cds = match cds_lib {
-        Some(c) => {
-            let c = c.canonicalize().unwrap_or_else(|_| c.to_path_buf());
-            format!("INCLUDE {}\n", c.display())
-        }
-        None => {
-            let d = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
-            format!("DEFINE {lib} {}\n", d.display())
-        }
+        Some(c) => format!("INCLUDE {}\n", cds_path(c)?),
+        None => format!("DEFINE {lib} {}\n", cds_path(dir)?),
     };
+    static RUN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let run = RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let work = std::env::temp_dir().join(format!("ics-virtuoso-{}-{run}-{lib}", std::process::id()));
+    std::fs::create_dir_all(&work).map_err(|e| format!("{}: {e}", work.display()))?;
     let script = work.join("icsDump.il");
     let out = work.join(format!("{lib}.icsdump"));
     let replay = work.join("ics_replay.il");
@@ -305,5 +320,8 @@ mod tests {
         // A failing Virtuoso reports its log.
         std::fs::write(&fake, "#!/bin/sh\nexit 1\n").unwrap();
         assert!(dump_library(&fake, None, "myLib", &lib).unwrap_err().contains("wrote no dump"));
+        // Library names never escape the scratch directory.
+        assert!(dump_library(&fake, None, "../../x", &lib).unwrap_err().contains("not a valid"));
+        assert!(dump_library(&fake, None, "a/b", &lib).unwrap_err().contains("not a valid"));
     }
 }

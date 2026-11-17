@@ -362,6 +362,11 @@ fn root(uf: &mut [usize], mut i: usize) -> usize {
 /// sheet resistances of the technology layers and the via cuts of `top`. Pieces of a net joined
 /// only through layers without resistance (e.g. diffusion) are tied together.
 pub fn rc_networks(top: &Layout, src: &dyn LayoutSource, x: &Extraction, tech: &Tech) -> Vec<Option<RcNet>> {
+    rc_networks_of(top, src, x, tech, None)
+}
+
+/// [`rc_networks`], built only for net `only` when given (the others are `None`).
+fn rc_networks_of(top: &Layout, src: &dyn LayoutSource, x: &Extraction, tech: &Tech, only: Option<usize>) -> Vec<Option<RcNet>> {
     let sheet: HashMap<usize, f64> = tech
         .caps
         .iter()
@@ -388,7 +393,11 @@ pub fn rc_networks(top: &Layout, src: &dyn LayoutSource, x: &Extraction, tech: &
 
     x.nets
         .iter()
-        .map(|net| {
+        .enumerate()
+        .map(|(k, net)| {
+            if only.is_some_and(|o| o != k) {
+                return None;
+            }
             let mut segs: Vec<(usize, IRect)> = Vec::new();
             for (l, r) in net.shapes.iter().filter(|(l, _)| sheet.contains_key(l)) {
                 segs.extend(r.rects().iter().flat_map(|&q| segments(q)).map(|q| (*l, q)));
@@ -691,7 +700,7 @@ pub fn net_electrical(
         })
         .take(5)
         .collect();
-    let worst_r = rc_networks(top, src, x, tech).into_iter().nth(k).flatten().and_then(|rc| {
+    let worst_r = rc_networks_of(top, src, x, tech, Some(k)).into_iter().nth(k).flatten().and_then(|rc| {
         let nodes: Vec<(usize, (i64, i64))> = taps.iter().filter_map(|&p| rc.node_at(p).map(|n| (n, p))).collect();
         let (first, _) = *nodes.first()?;
         nodes
@@ -705,69 +714,77 @@ pub fn net_electrical(
 }
 
 /// Resistance between nodes `a` and `b` of a resistor network: the voltage at `b` with `a`
-/// grounded and 1 A injected at `b` (dense elimination; nets have few nodes).
+/// grounded and 1 A injected at `b`. The conductance matrix is sparse and positive definite, so
+/// conjugate gradients solve it in time proportional to the resistors per iteration (a dense
+/// solve would freeze the editor on a large supply net).
 fn effective_resistance(rc: &RcNet, a: usize, b: usize) -> Option<f64> {
     let n = rc.nodes;
-    if a >= n || b >= n || a == b || n > 4000 {
+    if a >= n || b >= n || a == b {
         return None;
     }
-    // Conductance matrix without node `a`.
-    let idx = |i: usize| if i < a { i } else { i - 1 };
-    let m = n - 1;
-    let mut g = vec![0.0f64; m * m];
+    // Off-diagonal conductances per node and the diagonal; node `a` is ground (held at 0), and
+    // floating nodes get a tiny leak.
+    let mut adj: Vec<Vec<(usize, f64)>> = vec![vec![]; n];
+    let mut diag = vec![0.0f64; n];
     for &(i, j, r) in &rc.resistors {
-        if i == j || r <= 0.0 {
+        if i == j || r <= 0.0 || i >= n || j >= n {
             continue;
         }
         let c = 1.0 / r;
-        if i != a {
-            g[idx(i) * m + idx(i)] += c;
-        }
-        if j != a {
-            g[idx(j) * m + idx(j)] += c;
-        }
-        if i != a && j != a {
-            g[idx(i) * m + idx(j)] -= c;
-            g[idx(j) * m + idx(i)] -= c;
+        diag[i] += c;
+        diag[j] += c;
+        adj[i].push((j, c));
+        adj[j].push((i, c));
+    }
+    for d in diag.iter_mut() {
+        if *d < 1e-30 {
+            *d = 1e-12;
         }
     }
-    let mut rhs = vec![0.0f64; m];
-    rhs[idx(b)] = 1.0;
-    // Gaussian elimination with partial pivoting; floating nodes get a tiny leak.
-    for i in 0..m {
-        if g[i * m + i].abs() < 1e-30 {
-            g[i * m + i] = 1e-12;
+    let mul = |v: &[f64], out: &mut [f64]| {
+        for i in 0..n {
+            out[i] = if i == a {
+                0.0
+            } else {
+                diag[i] * v[i] - adj[i].iter().filter(|(j, _)| *j != a).map(|(j, c)| c * v[*j]).sum::<f64>()
+            };
+        }
+    };
+    // Jacobi-preconditioned conjugate gradients.
+    let mut v = vec![0.0f64; n];
+    let mut r = vec![0.0f64; n];
+    r[b] = 1.0;
+    let mut z: Vec<f64> = (0..n).map(|i| if i == a { 0.0 } else { r[i] / diag[i] }).collect();
+    let mut p = z.clone();
+    let mut rz: f64 = r.iter().zip(&z).map(|(x, y)| x * y).sum();
+    let mut ap = vec![0.0f64; n];
+    let max_iter = (4 * n).clamp(100, 50_000);
+    for _ in 0..max_iter {
+        mul(&p, &mut ap);
+        let pap: f64 = p.iter().zip(&ap).map(|(x, y)| x * y).sum();
+        if pap.abs() < 1e-300 {
+            break;
+        }
+        let alpha = rz / pap;
+        for i in 0..n {
+            v[i] += alpha * p[i];
+            r[i] -= alpha * ap[i];
+        }
+        if r.iter().map(|x| x * x).sum::<f64>().sqrt() < 1e-12 {
+            break;
+        }
+        for i in 0..n {
+            z[i] = if i == a { 0.0 } else { r[i] / diag[i] };
+        }
+        let rz_next: f64 = r.iter().zip(&z).map(|(x, y)| x * y).sum();
+        let beta = rz_next / rz;
+        rz = rz_next;
+        for i in 0..n {
+            p[i] = z[i] + beta * p[i];
         }
     }
-    for col in 0..m {
-        let piv = (col..m).max_by(|&p, &q| g[p * m + col].abs().total_cmp(&g[q * m + col].abs()))?;
-        if piv != col {
-            for k in 0..m {
-                g.swap(piv * m + k, col * m + k);
-            }
-            rhs.swap(piv, col);
-        }
-        let d = g[col * m + col];
-        if d.abs() < 1e-30 {
-            return None;
-        }
-        for row in col + 1..m {
-            let f = g[row * m + col] / d;
-            if f != 0.0 {
-                for k in col..m {
-                    g[row * m + k] -= f * g[col * m + k];
-                }
-                rhs[row] -= f * rhs[col];
-            }
-        }
-    }
-    let mut v = vec![0.0f64; m];
-    for row in (0..m).rev() {
-        let s: f64 = (row + 1..m).map(|k| g[row * m + k] * v[k]).sum();
-        v[row] = (rhs[row] - s) / g[row * m + row];
-    }
-    let r = v[idx(b)];
-    (r.is_finite() && r > 0.0 && r < 1e11).then_some(r)
+    let res = v[b];
+    (res.is_finite() && res > 0.0 && res < 1e11).then_some(res)
 }
 
 /// Electrical estimate of one wire while it is drawn (Virtuoso EAD-style feedback): centre-line

@@ -13,6 +13,11 @@ use crate::project::{CellRef, Project};
 /// Anything that can resolve a cell reference to its layout.
 pub trait LayoutSource {
     fn layout(&self, cell: &CellRef) -> Option<&Layout>;
+
+    /// The technology, when the source has one (a project).
+    fn tech(&self) -> Option<&crate::tech::Tech> {
+        None
+    }
 }
 
 /// A source with no cells: instances stay unresolved.
@@ -27,6 +32,10 @@ impl LayoutSource for NoCells {
 impl LayoutSource for Project {
     fn layout(&self, cell: &CellRef) -> Option<&Layout> {
         self.cell(cell)?.layout.as_ref()
+    }
+
+    fn tech(&self) -> Option<&crate::tech::Tech> {
+        Some(&self.tech)
     }
 }
 

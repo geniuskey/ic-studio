@@ -1152,7 +1152,7 @@ fn schematic_mos_symbol_style() {
     let sch = p.cell_mut(&r).unwrap().schematic.as_mut().unwrap();
     let ids: Vec<u64> = sch.instances.iter().filter(|i| i.kind.is_mos()).map(|i| i.id).collect();
     for id in ids {
-        assert!(sch.set_body_pin(id, false, None));
+        assert!(sch.set_body_pin(id, false, None).unwrap());
     }
     assert!(sch.instances.iter().filter(|i| i.kind.is_mos()).all(|i| ["0", "vdd"].contains(&i.param("bulk"))));
     settle(&mut h, "03b_schematic_mos3");

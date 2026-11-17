@@ -379,6 +379,13 @@ mod tests {
         let vi = call(&mut s, "import_virtuoso", json!({"dump": dump})).unwrap();
         assert_eq!(vi["cells"][0]["cell"], "v/rc", "{vi}");
         assert_eq!(vi["cells"][0]["devices"], 1, "{vi}");
+        // A cds.lib path is resolved as a library source (not parsed as a dump).
+        let cds_dir = std::env::temp_dir().join(format!("ics-mcp-cds-{}", std::process::id()));
+        std::fs::create_dir_all(&cds_dir).unwrap();
+        std::fs::write(cds_dir.join("cds.lib"), "DEFINE myLib ./myLib\n").unwrap();
+        let e = call(&mut s, "import_virtuoso", json!({"path": cds_dir.join("cds.lib").to_string_lossy()})).unwrap_err();
+        assert!(e.contains("myLib"), "lists the libraries: {e}");
+        let _ = std::fs::remove_dir_all(&cds_dir);
         let v = call(&mut s, "verify", json!({"tests": ["rc_lowpass"]})).unwrap();
         assert_eq!((v["status"].as_str(), v["pass"].as_u64()), (Some("pass"), Some(2)), "{v}");
 

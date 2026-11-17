@@ -47,10 +47,14 @@ fn graph(sch: &Schematic) -> Graph {
     let mut g =
         Graph { devs: vec![], pins: vec![], nets: nets.clone(), users: vec![vec![]; nets.len()], rail: vec![None; nets.len()] };
     for inst in &sch.instances {
+        // A 3-terminal MOS has its body on a net too, so both symbols give the same graph.
+        let body = inst.kind.implicit_bulk().then_some("b");
         let pins: Vec<(&'static str, usize)> = inst
             .pin_positions()
             .into_iter()
-            .filter_map(|(p, _)| conn.net_of(inst.id, p).and_then(|n| index.get(n)).map(|&k| (p, k)))
+            .map(|(p, _)| p)
+            .chain(body)
+            .filter_map(|p| conn.net_of(inst.id, p).and_then(|n| index.get(n)).map(|&k| (p, k)))
             .collect();
         match inst.kind {
             DeviceKind::Ground | DeviceKind::Supply => {
@@ -117,7 +121,7 @@ pub fn correspond(reference: &Schematic, target: &Schematic) -> Result<Correspon
     }
     let init = |g: &Graph| -> (Vec<u64>, Vec<u64>) {
         (
-            g.devs.iter().map(|(_, k)| h(format!("{k:?}"))).collect(),
+            g.devs.iter().map(|(_, k)| h(format!("{:?}", k.with_body_pin(true)))).collect(),
             (0..g.nets.len()).map(|n| h((&g.rail[n], g.users[n].len()))).collect(),
         )
     };
@@ -292,6 +296,19 @@ mod tests {
         // A different circuit does not correspond.
         let other = p.cell(&CellRef::new("work", "cmos_inverter")).unwrap().schematic.clone().unwrap();
         assert!(correspond(&sch, &other).is_err());
+    }
+
+    #[test]
+    fn three_terminal_symbols_correspond() {
+        let p = demo_project();
+        let sch = p.cell(&CellRef::new("work", "cmos_inverter")).unwrap().schematic.clone().unwrap();
+        let mut mos3 = sch.clone();
+        let ids: Vec<u64> = mos3.instances.iter().filter(|i| i.kind.is_mos()).map(|i| i.id).collect();
+        for id in ids {
+            mos3.set_body_pin(id, false, None).unwrap();
+        }
+        let c = correspond(&sch, &mos3).unwrap();
+        assert!(c.devices.iter().filter(|(a, _)| a.starts_with('M')).all(|(a, b)| a == b), "{:?}", c.devices);
     }
 
     #[test]

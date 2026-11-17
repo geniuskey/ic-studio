@@ -196,6 +196,10 @@ impl LayoutSource for Live<'_> {
     fn layout(&self, cell: &CellRef) -> Option<&Layout> {
         if cell == self.cell { Some(self.layout) } else { self.src.layout(cell) }
     }
+
+    fn tech(&self) -> Option<&Tech> {
+        Some(&self.src.tech)
+    }
 }
 
 impl LayCtx<'_> {

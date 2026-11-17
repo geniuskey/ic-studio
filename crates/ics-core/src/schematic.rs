@@ -653,24 +653,36 @@ impl Schematic {
     /// Draw MOS instance `id` with (`true`) or without its body pin, keeping its connections:
     /// hiding the pin moves the body's net into the `bulk` parameter (the default rail when the
     /// pin was not wired: `rail`, else [`DeviceKind::default_bulk`]) and removes the wires left
-    /// dangling from it; showing it drops the
-    /// parameter, so the pin must then be wired (an unwired body is tied to the source). Returns
-    /// whether the instance changed.
-    pub fn set_body_pin(&mut self, id: u64, body: bool, rail: Option<&str>) -> bool {
-        let Some(inst) = self.instance(id) else { return false };
+    /// dangling from it; showing it drops the parameter and puts a label with that net on the
+    /// pin. Returns whether the instance changed; an error when the body's net has no name (an
+    /// automatic `netN` name would point at another net once nets are renumbered).
+    pub fn set_body_pin(&mut self, id: u64, body: bool, rail: Option<&str>) -> Result<bool, String> {
+        let Some(inst) = self.instance(id) else { return Ok(false) };
         let kind = inst.kind.with_body_pin(body);
         if kind == inst.kind {
-            return false;
+            return Ok(false);
         }
+        let name = inst.name.clone();
+        let old_bulk = inst.param("bulk").trim().to_string();
+        let old_bulk = if old_bulk.is_empty() { inst.kind.default_bulk().to_string() } else { old_bulk };
         let body_at = inst.pin_positions().into_iter().find(|(n, _)| *n == "b").map(|(_, p)| p);
-        let bulk = (!body).then(|| {
+        let bulk = if body {
+            None
+        } else {
             let conn = crate::connectivity::extract(self);
             let floating = body_at.is_some_and(|p| conn.unconnected_pins.contains(&p));
-            match conn.net_of(id, "b") {
-                Some(n) if !floating => n.to_string(),
+            Some(match conn.net_of(id, "b") {
+                Some(n) if !floating => {
+                    if self.is_auto_net(n) {
+                        return Err(format!(
+                            "{name}: the body's net has no name; label it before switching to the 3-terminal symbol"
+                        ));
+                    }
+                    n.to_string()
+                }
                 _ => rail.unwrap_or(kind.default_bulk()).to_string(),
-            }
-        });
+            })
+        };
         let inst = self.instance_mut(id).expect("instance");
         inst.kind = kind;
         match bulk {
@@ -680,7 +692,23 @@ impl Schematic {
         if let Some(p) = body_at.filter(|_| !body) {
             self.remove_dangling_from(p);
         }
-        true
+        if body {
+            // The body stays on the net it was on.
+            let b = self.instance(id).expect("instance").pin_positions().into_iter().find(|(n, _)| *n == "b").map(|(_, p)| p);
+            if let Some(p) = b
+                && !self.labels.iter().any(|l| l.pos == p)
+            {
+                self.add_label(&old_bulk, p);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Whether `net` is an automatic net name (`netN`) that no label or supply symbol gives.
+    fn is_auto_net(&self, net: &str) -> bool {
+        net.strip_prefix("net").is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+            && !self.labels.iter().any(|l| l.name.trim() == net)
+            && !self.instances.iter().any(|i| i.kind == DeviceKind::Supply && i.param("net").trim() == net)
     }
 
     /// Remove the wire chain that ends at `p` with nothing else there, up to the first pin,

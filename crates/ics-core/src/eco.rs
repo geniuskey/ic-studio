@@ -16,7 +16,7 @@
 //! Shorts and opens are reported only: they are wiring, which [`crate::route`] or the designer
 //! fixes.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::extract;
 use crate::geom::IRect;
@@ -169,14 +169,17 @@ pub fn check(sch: &Schematic, layout: &Layout, project: &Project) -> SourceCheck
     out.devices = mos.len();
 
     // Layout instances per schematic device.
+    // A second instance with a name already seen (a pasted copy keeps the name) is extra, not
+    // another unit of the device.
     let mut placed: BTreeMap<&str, Vec<&crate::layout::CellInst>> = BTreeMap::new();
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
     for inst in &layout.instances {
         let Some(name) = inst.name.as_deref() else { continue };
         if is_support(name) {
             continue;
         }
         let dev = device_of(name);
-        if all_names.contains(dev) {
+        if all_names.contains(dev) && seen.insert(name) {
             placed.entry(dev).or_default().push(inst);
         } else {
             let at = inst_bbox(inst, project);
@@ -226,7 +229,7 @@ pub fn check(sch: &Schematic, layout: &Layout, project: &Project) -> SourceCheck
     }
     if terms.values().any(|t| !t.is_empty()) {
         let ex = extract::extract(layout, project, tech);
-        let mut by_layout: HashMap<usize, (BTreeSet<String>, IRect)> = HashMap::new();
+        let mut by_layout: BTreeMap<usize, (BTreeSet<String>, IRect)> = BTreeMap::new();
         for (net, pts) in &terms {
             let mut pieces: BTreeSet<Option<usize>> = BTreeSet::new();
             let mut floating = 0;
@@ -292,15 +295,23 @@ pub fn place_pins(project: &Project, layout: &mut Layout, sch: &Schematic) -> Ve
     };
     let size = (tech.dbu_per_um / 5).max(1);
     let mut placed = Vec::new();
+    // Pins on one side are at least a pin and a spacing apart, centred on the extent when it is
+    // too short for them.
+    let pitch = snap(side + gap) + g;
+    let spread = |lo: i64, len: i64, n: i64, k: i64| {
+        let span = len.max(n * pitch);
+        let start = lo + len / 2 - span / 2;
+        start + span * (2 * k + 1) / (2 * n)
+    };
     for dir in [PortDir::Input, PortDir::Output, PortDir::InOut] {
         let pins: Vec<&String> = todo.iter().filter(|(_, d)| *d == dir).map(|(n, _)| n).collect();
         let n = pins.len() as i64;
         for (k, name) in pins.into_iter().enumerate() {
             let k = k as i64;
             let c = match dir {
-                PortDir::Input => (ext.x0 - gap - side / 2, ext.y0 + (ext.height() * (2 * k + 1)) / (2 * n)),
-                PortDir::Output => (ext.x1 + gap + side / 2, ext.y0 + (ext.height() * (2 * k + 1)) / (2 * n)),
-                PortDir::InOut => (ext.x0 + (ext.width() * (2 * k + 1)) / (2 * n), ext.y1 + gap + side / 2),
+                PortDir::Input => (ext.x0 - gap - side / 2, spread(ext.y0, ext.height(), n, k)),
+                PortDir::Output => (ext.x1 + gap + side / 2, spread(ext.y0, ext.height(), n, k)),
+                PortDir::InOut => (spread(ext.x0, ext.width(), n, k), ext.y1 + gap + side / 2),
             };
             let c = (snap(c.0), snap(c.1));
             layout.add_rect(m1, c.0 - side / 2, c.1 - side / 2, c.0 + side / 2, c.1 + side / 2);
@@ -422,7 +433,14 @@ fn resize(project: &mut Project, layout: &mut Layout, sch: &Schematic, device: &
             return Err("no MOS units".into());
         }
         let total = want_w * want_nf.max(1) as i64;
-        let w = ((total / fingers) / grid).max(1) * grid;
+        if total % (fingers * grid) != 0 {
+            return Err(format!(
+                "W={}u does not split evenly over {fingers} finger(s) on the {}u grid; resize the units by hand",
+                total as f64 / project.tech.dbu_per_um as f64,
+                grid as f64 / project.tech.dbu_per_um as f64,
+            ));
+        }
+        let w = total / fingers;
         for (id, nf) in have {
             let mut p = want.clone();
             if let PCell::Mos { w: pw, fingers: pf, .. } = &mut p {
@@ -541,5 +559,62 @@ mod tests {
         let c = check(&sch, &lay, &p);
         assert!(c.is_clean(), "{:?}", c.issues);
         assert!(place_pins(&p, &mut lay, &sch).is_empty(), "placed once");
+    }
+
+    /// A pin label over a non-conducting shape (a well, the boundary) is not a pin.
+    #[test]
+    fn pin_label_needs_its_metal() {
+        let (mut p, r) = demo();
+        let (mut sch, mut lay) = generated(&mut p, &r);
+        sch.mark_ports(&[("in".into(), crate::PortDir::Input)]);
+        place_pins(&p, &mut lay, &sch);
+        let m1 = p.tech.metal1().unwrap();
+        let other = (0..p.tech.layers.len()).find(|&k| k != m1 && p.tech.labelled_layer(k).is_none()).unwrap();
+        for s in lay.shapes.iter_mut().filter(|s| s.layer == m1 && matches!(s.geom, crate::layout::Geometry::Rect(_))) {
+            s.layer = other;
+        }
+        let terms = sdl::terminal_pins(&sch, &lay, &p);
+        assert!(!terms.get("in").is_some_and(|t| t.iter().any(|t| t.0 == "p")), "{terms:?}");
+    }
+
+    /// A pasted copy keeps the device's name: it is extra, and the original is left alone.
+    #[test]
+    fn pasted_copy_is_extra_not_a_unit() {
+        let (mut p, r) = demo();
+        let (sch, mut lay) = generated(&mut p, &r);
+        let orig = lay.instances.iter().find(|i| i.name.as_deref().is_some_and(|n| n.starts_with('M'))).cloned().unwrap();
+        let mut copy = orig.clone();
+        copy.id = lay.instances.iter().map(|i| i.id).max().unwrap() + 1;
+        copy.trans.x += 10_000;
+        lay.instances.push(copy.clone());
+        let c = check(&sch, &lay, &p);
+        assert_eq!((c.count("extra"), c.count("parameters")), (1, 0), "{:?}", c.issues);
+        let rep = update(&mut p, &mut lay, &sch, UpdateOptions { remove_extra: true }).unwrap();
+        assert!(rep.updated.is_empty(), "{rep:?}");
+        assert!(lay.instance(copy.id).is_none() && lay.instance(orig.id).map(|i| &i.cell) == Some(&orig.cell));
+    }
+
+    /// Pins on one side never overlap, even with no layout to spread them along.
+    #[test]
+    fn boundary_pins_keep_apart() {
+        let (p, r) = demo();
+        let mut sch = p.cell(&r).and_then(|c| c.schematic.clone()).unwrap();
+        let ports: Vec<(String, crate::PortDir)> = (0..6).map(|k| (format!("d{k}"), crate::PortDir::Input)).collect();
+        for (n, _) in &ports {
+            sch.add_label(n, crate::geom::Pt::new(-100, 0));
+        }
+        sch.mark_ports(&ports);
+        let mut lay = Layout::default();
+        assert_eq!(place_pins(&p, &mut lay, &sch).len(), 6);
+        let rects: Vec<IRect> = lay
+            .shapes
+            .iter()
+            .filter_map(|s| if let crate::layout::Geometry::Rect(r) = s.geom { Some(r) } else { None })
+            .collect();
+        for (k, a) in rects.iter().enumerate() {
+            for b in &rects[k + 1..] {
+                assert!(!a.intersects(b) && a != b, "{a:?} overlaps {b:?}");
+            }
+        }
     }
 }

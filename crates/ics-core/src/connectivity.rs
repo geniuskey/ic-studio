@@ -165,11 +165,15 @@ pub fn extract(sch: &Schematic) -> Connectivity {
             }
         }
     }
-    // A MOS without a body pin has its body on the net its `bulk` parameter names.
+    // A MOS without a body pin has its body on the net its `bulk` parameter names, matched
+    // to the schematic's named nets ignoring case, with gnd / gnd! meaning ground.
+    let mut named: Vec<&str> = root_name.values().map(|(_, n)| n.as_str()).collect();
+    named.sort();
+    named.dedup();
     for inst in sch.instances.iter().filter(|i| i.kind.implicit_bulk()) {
         let bulk = inst.param("bulk").trim();
         let bulk = if bulk.is_empty() { inst.kind.default_bulk() } else { bulk };
-        conn.pin_nets.insert((inst.id, "b"), bulk.to_string());
+        conn.pin_nets.insert((inst.id, "b"), resolve_bulk(bulk, &named));
     }
     for w in &sch.wires {
         let root = dsu.find(point_node[&w.a]);
@@ -180,6 +184,18 @@ pub fn extract(sch: &Schematic) -> Connectivity {
     conn.junctions = degree.into_iter().filter(|(_, d)| *d >= 3).map(|(p, _)| p).collect();
     conn.junctions.sort();
     conn
+}
+
+/// The net a `bulk` parameter names: a named net of the schematic with that name (exact, else
+/// ignoring case), ground for `0` / `gnd` / `gnd!`, else the name itself.
+pub fn resolve_bulk(bulk: &str, named: &[&str]) -> String {
+    if let Some(n) = named.iter().find(|n| **n == bulk).or_else(|| named.iter().find(|n| n.eq_ignore_ascii_case(bulk))) {
+        return n.to_string();
+    }
+    if bulk == "0" || bulk.eq_ignore_ascii_case("gnd") || bulk.eq_ignore_ascii_case("gnd!") {
+        return "0".into();
+    }
+    bulk.to_string()
 }
 
 #[cfg(test)]
@@ -220,11 +236,11 @@ mod tests {
         let m = s.add_instance(DeviceKind::Nmos, Pt::new(0, 0), Orient::default());
         let b = s.instance(m).unwrap().pin_positions()[3].1;
         s.add_label("vsub", b);
-        assert!(s.set_body_pin(m, false, None));
+        assert!(s.set_body_pin(m, false, None).unwrap());
         assert_eq!(s.instance(m).unwrap().kind, DeviceKind::Nmos3);
         assert_eq!(extract(&s).net_of(m, "b"), Some("vsub"));
-        assert!(!s.set_body_pin(m, false, None));
-        assert!(s.set_body_pin(m, true, None));
+        assert!(!s.set_body_pin(m, false, None).unwrap());
+        assert!(s.set_body_pin(m, true, None).unwrap());
         assert_eq!(s.instance(m).unwrap().kind, DeviceKind::Nmos);
         assert!(!s.instance(m).unwrap().params.contains_key("bulk"));
         assert_eq!(extract(&s).net_of(m, "b"), Some("vsub"), "the label is still on the pin");
@@ -239,14 +255,40 @@ mod tests {
         s.add_wire(src, Pt::new(src.x, src.y + 3));
         s.add_instance(DeviceKind::Ground, Pt::new(src.x, src.y + 3), Orient::default());
         let wires = s.wires.len();
-        s.set_body_pin(n, false, None);
+        s.set_body_pin(n, false, None).unwrap();
         assert_eq!(s.instance(n).unwrap().param("bulk"), "0");
         assert_eq!(s.wires.len(), wires - 2, "the source wire to ground stays");
 
         // An unwired body becomes the default rail.
         let p = s.add_instance(DeviceKind::Pmos, Pt::new(20, 0), Orient::default());
-        s.set_body_pin(p, false, Some("avdd"));
+        s.set_body_pin(p, false, Some("avdd")).unwrap();
         assert_eq!(s.instance(p).unwrap().param("bulk"), "avdd");
+
+        // Showing the pin again keeps the body on its net through a label.
+        s.set_body_pin(p, true, None).unwrap();
+        assert_eq!(extract(&s).net_of(p, "b"), Some("avdd"));
+
+        // A body on an unnamed net cannot be hidden.
+        let mut s = Schematic::default();
+        let m1 = s.add_instance(DeviceKind::Nmos, Pt::new(0, 0), Orient::default());
+        let m2 = s.add_instance(DeviceKind::Nmos, Pt::new(20, 0), Orient::default());
+        let b1 = s.instance(m1).unwrap().pin_positions()[3].1;
+        let s2 = s.instance(m2).unwrap().pin_positions()[2].1;
+        s.add_wire(b1, s2);
+        assert!(s.set_body_pin(m1, false, None).unwrap_err().contains("no name"));
+        assert_eq!(s.instance(m1).unwrap().kind, DeviceKind::Nmos);
+    }
+
+    #[test]
+    fn bulk_names_match_the_schematic_nets() {
+        let mut s = Schematic::default();
+        let p = s.add_instance(DeviceKind::Pmos3, Pt::new(0, 0), Orient::default());
+        let n = s.add_instance(DeviceKind::Nmos3, Pt::new(20, 0), Orient::default());
+        s.add_label("VDD", Pt::new(40, 0));
+        s.instance_mut(n).unwrap().params.insert("bulk".into(), "gnd!".into());
+        let conn = extract(&s);
+        assert_eq!(conn.net_of(p, "b"), Some("VDD"), "vdd matches the VDD label");
+        assert_eq!(conn.net_of(n, "b"), Some("0"), "gnd! is ground");
     }
 
     #[test]

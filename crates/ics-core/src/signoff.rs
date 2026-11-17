@@ -461,10 +461,17 @@ pub fn cdl(sch: &Schematic, tech: &Tech, top: &str) -> String {
     if !ports.is_empty()
         && let Some(h) = body.lines().find(|l| l.starts_with(&header) || l.trim_end() == header.trim_end())
     {
-        // Schematic pins are the subcircuit's ports, in pin order, with their directions.
+        // Schematic pins come first (by name) with their directions, then the other named nets
+        // the LVS netlist also has as ports (supplies without a pin, say), as inouts.
         let ground = default_ground();
-        let names: Vec<String> = ports.iter().map(|(n, _)| spice_net(n, &ground)).collect();
-        let info: Vec<String> = ports.iter().zip(&names).map(|((_, d), n)| format!("{n}:{}", d.cdl())).collect();
+        let mut names: Vec<String> = ports.iter().map(|(n, _)| spice_net(n, &ground)).collect();
+        let mut info: Vec<String> = ports.iter().zip(&names).map(|((_, d), n)| format!("{n}:{}", d.cdl())).collect();
+        for n in h.get(header.len()..).unwrap_or("").split_whitespace() {
+            if !names.iter().any(|m| m.eq_ignore_ascii_case(n)) {
+                names.push(n.to_string());
+                info.push(format!("{n}:B"));
+            }
+        }
         return body.replacen(h, &format!("{header}{}\n*.PININFO {}", names.join(" "), info.join(" ")), 1);
     }
     match body.lines().find(|l| l.starts_with(&header)) {

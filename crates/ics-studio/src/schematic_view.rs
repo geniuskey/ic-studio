@@ -147,6 +147,8 @@ pub struct SchematicEditor {
     /// Body nets of new 3-terminal NMOS and PMOS devices, from the project settings (empty is
     /// the built-in `0` / `vdd`).
     pub bulk_nets: [String; 2],
+    /// Why the symbol of an instance could not be switched to 3-terminal.
+    body_pin_error: Option<(u64, String)>,
 }
 
 impl Default for SchematicEditor {
@@ -169,6 +171,7 @@ impl Default for SchematicEditor {
             actions: Vec::new(),
             mos_body_pin: true,
             bulk_nets: Default::default(),
+            body_pin_error: None,
         }
     }
 }
@@ -1252,11 +1255,33 @@ impl SchematicEditor {
                         );
                     });
                     if body != has_body {
-                        self.history.push(sch);
                         let rail = self.bulk_net(before.kind).to_string();
-                        sch.set_body_pin(id, body, Some(&rail));
+                        let mut next = sch.clone();
+                        match next.set_body_pin(id, body, Some(&rail)) {
+                            Ok(true) => {
+                                self.history.push(sch);
+                                *sch = next;
+                                return true;
+                            }
+                            Ok(false) => {}
+                            Err(e) => self.body_pin_error = Some((id, e)),
+                        }
+                    }
+                    if let Some((_, e)) = self.body_pin_error.as_ref().filter(|(i, _)| *i == id) {
+                        ui.label(egui::RichText::new(e).small().color(ui.visuals().error_fg_color));
+                    }
+                }
+                if before.kind.implicit_bulk() {
+                    // An empty bulk means the project's default body net.
+                    if let Some(b) = sch.instance_mut(id)
+                        && b.param("bulk").trim().is_empty()
+                        && !ui.ctx().memory(|m| m.focused().is_some())
+                    {
+                        b.params.insert("bulk".into(), self.bulk_net(before.kind).to_string());
                         return true;
                     }
+                }
+                if before.kind.is_mos() {
                     ui.add_space(4.0);
                 }
                 let mut inst = before.clone();

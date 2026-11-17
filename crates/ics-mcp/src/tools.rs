@@ -1406,7 +1406,7 @@ impl State {
     fn import_cdl(&mut self, a: &Args) -> Result<Value, String> {
         let text = match (a.opt_str("cdl")?, a.opt_str("path")?) {
             (Some(t), _) => t.to_string(),
-            (None, Some(p)) => ics_core::virtuoso_batch::read_dump(std::path::Path::new(p), a.opt_str("lib")?)?,
+            (None, Some(p)) => std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))?,
             _ => return Err("give the CDL as cdl or path".into()),
         };
         let imp = ics_core::cadence::import_cdl(&text, &self.project()?.tech, a.opt_str("top")?)?;
@@ -1434,7 +1434,7 @@ impl State {
     fn import_virtuoso(&mut self, a: &Args) -> Result<Value, String> {
         let text = match (a.opt_str("dump")?, a.opt_str("path")?) {
             (Some(t), _) => t.to_string(),
-            (None, Some(p)) => std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))?,
+            (None, Some(p)) => ics_core::virtuoso_batch::read_dump(std::path::Path::new(p), a.opt_str("lib")?)?,
             _ => return Err("give the dump as dump or path".into()),
         };
         let map = match a.opt_str("map")? {
