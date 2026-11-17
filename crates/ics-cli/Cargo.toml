@@ -1,15 +1,15 @@
 [package]
 name = "ics-cli"
-version = "0.2.8"
+version = "0.2.9"
 edition = "2024"
 license.workspace = true
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] }
-ics-mcp = { version = "0.2.8", path = "../ics-mcp" }
-ics-core = { version = "0.2.8", path = "../ics-core" }
-ics-sim = { version = "0.2.8", path = "../ics-sim" }
-ics-optics = { version = "0.2.8", path = "../ics-optics" }
+ics-mcp = { version = "0.2.9", path = "../ics-mcp" }
+ics-core = { version = "0.2.9", path = "../ics-core" }
+ics-sim = { version = "0.2.9", path = "../ics-sim" }
+ics-optics = { version = "0.2.9", path = "../ics-optics" }
 serde_json = "1.0.154"
 
 [[bin]]
