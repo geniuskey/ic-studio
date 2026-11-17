@@ -47,7 +47,7 @@ enum DeckCmd {
     Export { file: PathBuf },
     /// Link the technology to a shared deck file.
     Link { file: PathBuf },
-    /// Stop using the shared deck file; the project keeps a copy.
+    /// Stop using the shared deck file; the project stores its deck itself.
     Unlink,
 }
 
@@ -1211,7 +1211,7 @@ fn run(cli: Cli) -> Result<(), String> {
                         (Some(f), _) => {
                             println!("shared deck: {}", f.display());
                             if let Err(e) = p.reload_drc_deck() {
-                                eprintln!("warning: {e} (using the copy saved with the project)");
+                                eprintln!("warning: {e} (using the deck derived from the layer rules)");
                             }
                         }
                         (None, Some(_)) => println!("deck stored in the project"),

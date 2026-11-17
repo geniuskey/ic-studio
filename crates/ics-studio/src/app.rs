@@ -181,7 +181,7 @@ pub enum Command {
     /// Link the technology to a shared DRC deck file, which is re-read when the project opens
     /// and written when the deck is applied; `None` asks for the file.
     LinkDrcDeck(Option<PathBuf>),
-    /// Stop using the shared DRC deck file (the project keeps a copy of its deck).
+    /// Stop using the shared DRC deck file; the project stores its deck itself from then on.
     UnlinkDrcDeck,
     /// Re-read the shared DRC deck file.
     ReloadDrcDeck,
@@ -800,7 +800,9 @@ impl IcStudio {
                 if let Some(deck) = p.drc_deck_path() {
                     match p.reload_drc_deck() {
                         Ok(_) => self.info(format!("DRC deck: shared {}", deck.display())),
-                        Err(e) => self.warn(format!("Shared DRC deck not read, using the copy saved with the project: {e}")),
+                        Err(e) => {
+                            self.warn(format!("Shared DRC deck not read, using the deck derived from the layer rules: {e}"))
+                        }
                     }
                 }
                 self.set_project(p);
@@ -1192,7 +1194,10 @@ impl IcStudio {
             Command::UnlinkDrcDeck => match self.project.as_mut().map(Project::unlink_drc_deck) {
                 Some(Some(path)) => {
                     self.mark_dirty();
-                    self.ok(format!("Unlinked the shared DRC deck {}; the project keeps a copy", path.display()));
+                    self.ok(format!(
+                        "Unlinked the shared DRC deck {}; the project now stores its deck (save to keep it)",
+                        path.display()
+                    ));
                 }
                 Some(None) => self.warn("The technology is not linked to a shared DRC deck".into()),
                 None => self.warn("Open a project first".into()),

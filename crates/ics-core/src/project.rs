@@ -607,7 +607,12 @@ impl Project {
         let root = self.root.as_ref().ok_or_else(|| ProjectError::Other("project has no location".into()))?;
         fs::create_dir_all(root).map_err(io_err(root))?;
         self.write_manifest(root)?;
-        write_json(&root.join("tech.json"), &self.tech)?;
+        if self.tech.drc_deck_file.is_some() {
+            // The shared deck file holds the deck; `tech.json` only links it.
+            write_json(&root.join("tech.json"), &Tech { drc_deck: None, ..self.tech.clone() })?;
+        } else {
+            write_json(&root.join("tech.json"), &self.tech)?;
+        }
         for lib in &self.libraries {
             let lib_dir = root.join(&lib.name);
             match lib.storage {
@@ -683,8 +688,8 @@ impl Project {
             libraries,
             settings: manifest.settings,
         };
-        // A missing shared deck keeps the copy saved with the project; `reload_drc_deck`
-        // reports why.
+        // Without the shared deck file the deck derived from the layer rules is used;
+        // `reload_drc_deck` reports why.
         let _ = p.reload_drc_deck();
         Ok(p)
     }
@@ -701,7 +706,7 @@ impl Project {
     }
 
     /// Re-read the shared DRC deck file into the technology. Returns `Ok(false)` when no file is
-    /// linked or the deck is unchanged. On error the deck saved with the project is kept.
+    /// linked or the deck is unchanged. On error the deck is left as it is.
     pub fn reload_drc_deck(&mut self) -> std::result::Result<bool, String> {
         let Some(path) = self.drc_deck_path() else { return Ok(false) };
         let text = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -727,7 +732,7 @@ impl Project {
         Ok(())
     }
 
-    /// Stop using the shared DRC deck file; the project keeps a copy of its deck.
+    /// Stop using the shared DRC deck file; the project stores its deck itself from then on.
     pub fn unlink_drc_deck(&mut self) -> Option<PathBuf> {
         let path = self.drc_deck_path();
         self.tech.drc_deck_file = None;
@@ -1313,11 +1318,13 @@ mod tests {
         assert_eq!(fs::read_to_string(&shared).unwrap(), "width metal1 0.3\n");
         let b = Project::open(&dir.join("b")).unwrap();
         assert_eq!(b.tech.drc_deck.as_deref(), Some("width metal1 0.3\n"));
+        let saved = fs::read_to_string(dir.join("b").join("tech.json")).unwrap();
+        assert!(saved.contains("drc_deck_file") && !saved.contains("\"drc_deck\""), "no copy in tech.json");
 
-        // Without the file the saved copy is kept.
+        // Without the file the deck derived from the layer rules is used.
         fs::remove_file(&shared).unwrap();
         let mut b = Project::open(&dir.join("b")).unwrap();
-        assert_eq!(b.tech.drc_deck.as_deref(), Some("width metal1 0.2\n"));
+        assert_eq!(b.tech.drc_deck, None);
         assert!(b.reload_drc_deck().is_err());
         assert!(b.link_drc_deck(&dir.join("missing.deck")).is_err());
         assert!(b.drc_deck_path().is_some(), "a failed link keeps the old one");

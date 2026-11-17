@@ -732,8 +732,9 @@ pub struct Tech {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drc_deck: Option<String>,
     /// Shared DRC deck file this technology's deck comes from (absolute, or relative to the
-    /// project directory). When set, `drc_deck` is a copy of the file that is re-read when the
-    /// project opens and written back when the deck is changed (see `Project::set_drc_deck`).
+    /// project directory). When set, `drc_deck` holds the file's deck in memory: it is read when
+    /// the project opens, written back when the deck is changed (see `Project::set_drc_deck`) and
+    /// not saved in `tech.json`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drc_deck_file: Option<String>,
     /// Parasitic capacitance coefficients per conducting layer (layers without one are ignored).
