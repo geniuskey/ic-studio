@@ -144,6 +144,9 @@ pub struct SchematicEditor {
     /// New MOS devices are drawn with a body pin (`true`) or without one, the body on a rail and
     /// the arrow on the source. Kept in the app settings.
     pub mos_body_pin: bool,
+    /// Body nets of new 3-terminal NMOS and PMOS devices, from the project settings (empty is
+    /// the built-in `0` / `vdd`).
+    pub bulk_nets: [String; 2],
 }
 
 impl Default for SchematicEditor {
@@ -165,6 +168,7 @@ impl Default for SchematicEditor {
             conn_cache: None,
             actions: Vec::new(),
             mos_body_pin: true,
+            bulk_nets: Default::default(),
         }
     }
 }
@@ -479,6 +483,12 @@ impl SchematicEditor {
             self.conn_cache = Some((sch.clone(), extract(sch)));
         }
         &self.conn_cache.as_ref().unwrap().1
+    }
+
+    /// The body net a new 3-terminal device of `kind` gets.
+    fn bulk_net(&self, kind: DeviceKind) -> &str {
+        let n = self.bulk_nets[kind.is_pmos() as usize].trim();
+        if n.is_empty() { kind.default_bulk() } else { n }
     }
 
     pub fn set_tool(&mut self, t: SchTool) {
@@ -857,6 +867,11 @@ impl SchematicEditor {
                 {
                     self.history.push(sch);
                     let id = sch.add_instance(kind, c, self.place_orient);
+                    if kind.implicit_bulk()
+                        && let Some(i) = sch.instance_mut(id)
+                    {
+                        i.params.insert("bulk".into(), self.bulk_net(kind).to_string());
+                    }
                     self.selection = [SchObj::Instance(id)].into();
                     changed = true;
                 }
@@ -1219,7 +1234,8 @@ impl SchematicEditor {
                     });
                     if body != has_body {
                         self.history.push(sch);
-                        sch.set_body_pin(id, body);
+                        let rail = self.bulk_net(before.kind).to_string();
+                        sch.set_body_pin(id, body, Some(&rail));
                         return true;
                     }
                     ui.add_space(4.0);
@@ -1378,6 +1394,18 @@ pub fn device_palette(ui: &mut egui::Ui, editor: &mut SchematicEditor) {
             }
         }
     });
+    if !editor.mos_body_pin {
+        egui::Grid::new("bulk_nets").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
+            for (k, name) in ["NMOS body", "PMOS body"].into_iter().enumerate() {
+                let l = ui.label(egui::RichText::new(name).color(pal.text_weak));
+                let hint = if k == 1 { "vdd" } else { "0" };
+                ui.add(egui::TextEdit::singleline(&mut editor.bulk_nets[k]).desired_width(90.0).hint_text(hint))
+                    .labelled_by(l.id)
+                    .on_hover_text("Net the body of new 3-terminal devices connects to (a project setting)");
+                ui.end_row();
+            }
+        });
+    }
     ui.add_space(4.0);
     let cell = Vec2::new(ui.available_width() / 2.0 - 4.0, 64.0);
     egui::Grid::new("devgrid").num_columns(2).spacing([6.0, 6.0]).show(ui, |ui| {

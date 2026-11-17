@@ -1109,6 +1109,33 @@ fn schematic_mos_symbol_style() {
     };
     assert_eq!(kinds(&h, "rc_lowpass"), [ics_core::DeviceKind::Nmos3]);
     h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+
+    // The project's PMOS body net goes to new 3-terminal PMOS devices.
+    h.state_mut().command(Command::DefaultBulk(true, "avdd".into()));
+    h.run_steps(2);
+    assert_eq!(h.state().project().unwrap().settings.default_bulk(ics_core::DeviceKind::Pmos3), "avdd");
+    let p2 = egui::pos2(860.0, 640.0);
+    h.hover_at(p2);
+    h.run_steps(2);
+    h.key_press(egui::Key::P);
+    h.run_steps(2);
+    h.hover_at(p2);
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos: p2,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        });
+        h.step();
+    }
+    h.run_steps(3);
+    let p = h.state().project().unwrap();
+    let (_, c) = p.all_cells().find(|(_, c)| c.name == "rc_lowpass").unwrap();
+    let pm = c.schematic.as_ref().unwrap().instances.iter().find(|i| i.kind == ics_core::DeviceKind::Pmos3).expect("PMOS placed");
+    assert_eq!(pm.param("bulk"), "avdd");
+    h.key_press(egui::Key::Escape);
 
     // Show the inverter with both devices in the 3-terminal style.
     let p = h.state_mut().project_mut().unwrap();
@@ -1118,7 +1145,7 @@ fn schematic_mos_symbol_style() {
     let sch = p.cell_mut(&r).unwrap().schematic.as_mut().unwrap();
     let ids: Vec<u64> = sch.instances.iter().filter(|i| i.kind.is_mos()).map(|i| i.id).collect();
     for id in ids {
-        assert!(sch.set_body_pin(id, false));
+        assert!(sch.set_body_pin(id, false, None));
     }
     assert!(sch.instances.iter().filter(|i| i.kind.is_mos()).all(|i| ["0", "vdd"].contains(&i.param("bulk"))));
     settle(&mut h, "03b_schematic_mos3");

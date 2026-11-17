@@ -176,6 +176,9 @@ pub enum Command {
     RuleDesigner,
     /// Draw new MOS devices with a body pin (`true`) or without one, the arrow on the source.
     MosSymbol(bool),
+    /// Set the project's body net of new 3-terminal PMOS (`true`) or NMOS devices; empty is the
+    /// built-in default (`vdd` / `0`).
+    DefaultBulk(bool, String),
     /// Copy a DRC deck file (IC Studio or SVRF) into the technology; `None` asks for the file.
     ImportDrcDeck(Option<PathBuf>),
     /// Write the technology's DRC deck to a file; `None` asks where.
@@ -1202,6 +1205,17 @@ impl IcStudio {
                 let how = if body { "with a body pin (4-terminal)" } else { "with the arrow on the source (3-terminal)" };
                 self.info(format!("New MOS devices are drawn {how}"));
             }
+            Command::DefaultBulk(pmos, net) => match self.project.as_mut() {
+                Some(p) => {
+                    let net = Some(net.trim().to_string()).filter(|n| !n.is_empty());
+                    let slot = if pmos { &mut p.settings.pmos_bulk } else { &mut p.settings.nmos_bulk };
+                    if *slot != net {
+                        *slot = net;
+                        self.mark_dirty();
+                    }
+                }
+                None => self.warn("Open a project first".into()),
+            },
             Command::ImportDrcDeck(path) => self.import_drc_deck(path),
             Command::ExportDrcDeck(path) => self.export_drc_deck(path),
             Command::LinkDrcDeck(path) => self.link_drc_deck(path),
@@ -3374,6 +3388,7 @@ impl IcStudio {
         };
         let Some(project) = self.project.as_mut() else { return };
         let tech = project.tech.clone();
+        let bulk_nets = [&project.settings.nmos_bulk, &project.settings.pmos_bulk].map(|n| n.clone().unwrap_or_default());
         let Some(cell) = project.cell_mut(&r) else {
             self.queue.push(Command::CloseTab(r));
             return;
@@ -3384,11 +3399,17 @@ impl IcStudio {
                 let op = self.sims.get(&r).and_then(|s| s.op_annotation());
                 let ed = self.sch_eds.entry(r.clone()).or_default();
                 ed.mos_body_pin = self.settings.mos_body_pin;
+                ed.bulk_nets = bulk_nets.clone();
                 if let Some(sch) = cell.schematic.as_mut() {
                     theme::aside(egui::Panel::left("sch_tools").resizable(true).default_size(220.0), ui, |ui| {
                         egui::ScrollArea::vertical().show(ui, |ui| device_palette(ui, ed));
                     });
                     self.settings.mos_body_pin = ed.mos_body_pin;
+                    for (k, (new, old)) in ed.bulk_nets.iter().zip(&bulk_nets).enumerate() {
+                        if new != old {
+                            self.queue.push(Command::DefaultBulk(k == 1, new.clone()));
+                        }
+                    }
                     theme::aside(egui::Panel::right("sch_inspector").resizable(true).default_size(250.0), ui, |ui| {
                         egui::ScrollArea::vertical().show(ui, |ui| changed |= ed.inspector(ui, sch));
                     });

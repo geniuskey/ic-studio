@@ -542,10 +542,11 @@ impl Schematic {
 
     /// Draw MOS instance `id` with (`true`) or without its body pin, keeping its connections:
     /// hiding the pin moves the body's net into the `bulk` parameter (the default rail when the
-    /// pin was not wired) and removes the wires left dangling from it; showing it drops the
+    /// pin was not wired: `rail`, else [`DeviceKind::default_bulk`]) and removes the wires left
+    /// dangling from it; showing it drops the
     /// parameter, so the pin must then be wired (an unwired body is tied to the source). Returns
     /// whether the instance changed.
-    pub fn set_body_pin(&mut self, id: u64, body: bool) -> bool {
+    pub fn set_body_pin(&mut self, id: u64, body: bool, rail: Option<&str>) -> bool {
         let Some(inst) = self.instance(id) else { return false };
         let kind = inst.kind.with_body_pin(body);
         if kind == inst.kind {
@@ -557,7 +558,7 @@ impl Schematic {
             let floating = body_at.is_some_and(|p| conn.unconnected_pins.contains(&p));
             match conn.net_of(id, "b") {
                 Some(n) if !floating => n.to_string(),
-                _ => kind.default_bulk().to_string(),
+                _ => rail.unwrap_or(kind.default_bulk()).to_string(),
             }
         });
         let inst = self.instance_mut(id).expect("instance");

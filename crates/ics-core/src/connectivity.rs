@@ -220,11 +220,11 @@ mod tests {
         let m = s.add_instance(DeviceKind::Nmos, Pt::new(0, 0), Orient::default());
         let b = s.instance(m).unwrap().pin_positions()[3].1;
         s.add_label("vsub", b);
-        assert!(s.set_body_pin(m, false));
+        assert!(s.set_body_pin(m, false, None));
         assert_eq!(s.instance(m).unwrap().kind, DeviceKind::Nmos3);
         assert_eq!(extract(&s).net_of(m, "b"), Some("vsub"));
-        assert!(!s.set_body_pin(m, false));
-        assert!(s.set_body_pin(m, true));
+        assert!(!s.set_body_pin(m, false, None));
+        assert!(s.set_body_pin(m, true, None));
         assert_eq!(s.instance(m).unwrap().kind, DeviceKind::Nmos);
         assert!(!s.instance(m).unwrap().params.contains_key("bulk"));
         assert_eq!(extract(&s).net_of(m, "b"), Some("vsub"), "the label is still on the pin");
@@ -239,14 +239,14 @@ mod tests {
         s.add_wire(src, Pt::new(src.x, src.y + 3));
         s.add_instance(DeviceKind::Ground, Pt::new(src.x, src.y + 3), Orient::default());
         let wires = s.wires.len();
-        s.set_body_pin(n, false);
+        s.set_body_pin(n, false, None);
         assert_eq!(s.instance(n).unwrap().param("bulk"), "0");
         assert_eq!(s.wires.len(), wires - 2, "the source wire to ground stays");
 
         // An unwired body becomes the default rail.
         let p = s.add_instance(DeviceKind::Pmos, Pt::new(20, 0), Orient::default());
-        s.set_body_pin(p, false);
-        assert_eq!(s.instance(p).unwrap().param("bulk"), "vdd");
+        s.set_body_pin(p, false, Some("avdd"));
+        assert_eq!(s.instance(p).unwrap().param("bulk"), "avdd");
     }
 
     #[test]

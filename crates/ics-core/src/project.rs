@@ -122,6 +122,20 @@ pub struct ProjectSettings {
     /// Verification plan: the tests run together (`ics verify`, the Verification window).
     #[serde(default, skip_serializing_if = "crate::verify::VerifyPlan::is_empty")]
     pub verification: crate::verify::VerifyPlan,
+    /// Body net of new 3-terminal NMOS devices; `None` is ground (`0`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nmos_bulk: Option<String>,
+    /// Body net of new 3-terminal PMOS devices; `None` is `vdd`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pmos_bulk: Option<String>,
+}
+
+impl ProjectSettings {
+    /// The body net new 3-terminal devices of `kind` get (see [`DeviceKind::default_bulk`]).
+    pub fn default_bulk(&self, kind: crate::schematic::DeviceKind) -> &str {
+        let set = if kind.is_pmos() { &self.pmos_bulk } else { &self.nmos_bulk };
+        set.as_deref().map(str::trim).filter(|n| !n.is_empty()).unwrap_or(kind.default_bulk())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
