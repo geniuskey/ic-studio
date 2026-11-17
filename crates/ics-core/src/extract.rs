@@ -17,7 +17,9 @@
 //!   diffusion pieces: L = area / mean edge, where the mean edge is the mean of the source and
 //!   drain edge lengths, and W is the mean edge less `1 - bend_corner` of the corner squares
 //!   ([`DeviceRules::bend_corner`](crate::tech::DeviceRules::bend_corner)), from the exact
-//!   any-angle geometry when there is any. The
+//!   any-angle geometry when there is any. A gate touching a single diffusion piece is a MOS
+//!   capacitor (the plate of a planar DRAM cell, a MOS varactor): source and drain on that
+//!   piece, W the edge against it and L = area / W. The
 //!   model is the first PDK device ([`Tech::devices`]) of that polarity whose marker layers
 //!   cover the gate, else the generic `nmos` / `pmos`.
 //! - Junctions: each source / drain diffusion piece contributes its area and its perimeter
@@ -694,12 +696,15 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
                         (area as f64, pieces.iter().map(|(&c, &v)| (c, v as f64)).collect())
                     };
                     let ids: Vec<usize> = pieces.keys().copied().collect();
-                    let wl = match ids.as_slice() {
-                        &[s, d] => measure(a, lens.get(&s).copied(), lens.get(&d).copied(), tech.rules.bend_corner),
+                    let wl = match *ids.as_slice() {
+                        [s, d] => measure(a, lens.get(&s).copied(), lens.get(&d).copied(), tech.rules.bend_corner),
+                        // MOS capacitor: W is the edge against its one piece, L = area / W.
+                        [c] => lens.get(&c).filter(|e| **e > 0.0).map(|e| (e.round() as i64, (a / e).round().max(1.0) as i64)),
                         _ => None,
                     };
                     match (ids.as_slice(), wl) {
                         (&[s, d], Some((w, l))) => (s, d, w, l),
+                        (&[c], Some((w, l))) => (c, c, w, l),
                         _ => {
                             warnings.push(format!(
                                 "gate at ({}, {})-({}, {}) does not separate two diffusion pieces ({} touch it); skipped",
@@ -1132,6 +1137,27 @@ mod tests {
         let plain = extract(&lay, &NoCells, &Tech::generic());
         assert!(plain.passives.is_empty());
         assert_eq!(plain.nets.len(), 1, "without the resistor definition the body shorts its ends");
+    }
+
+    #[test]
+    fn mos_capacitor_and_poly2_capacitor() {
+        let tech = Tech::generic();
+        let l = |n: &str| tech.layer_index(n).unwrap();
+        // A plate covering the end of a diffusion: a MOS capacitor on its one piece.
+        let mut lay = Layout::default();
+        lay.add_rect(l("active"), 0, 0, 1000, 2000);
+        lay.add_rect(l("poly"), -300, 800, 1300, 2300);
+        lay.add_rect(l("nplus"), -400, -400, 1400, 2400);
+        let x = extract(&lay, &NoCells, &tech);
+        assert!(x.warnings.is_empty(), "{:?}", x.warnings);
+        let [d] = &x.devices[..] else { panic!("{:?}", x.devices) };
+        assert_eq!((d.kind, d.w, d.l, d.s == d.d), (DevKind::Nmos, 1000, 1200, true));
+        // Poly2 over poly: the interpoly capacitor of the technology.
+        lay.add_rect(l("poly2"), -300, 1000, 1300, 1500);
+        let x = extract(&lay, &NoCells, &tech);
+        let [c] = &x.passives[..] else { panic!("{:?}", x.passives) };
+        assert_eq!((c.model.as_str(), c.area), ("cpip", 1600 * 500));
+        assert!((c.value - 2.65 * 0.8e-15).abs() < 1e-21, "{}", c.value);
     }
 
     #[test]

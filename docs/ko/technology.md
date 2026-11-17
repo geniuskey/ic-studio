@@ -18,10 +18,12 @@
 | pplus | 4 | metal3 | 11 |
 | poly | 5 | boundary | 62 |
 | contact | 6 | text | 63 |
-| metal1 | 7 | | |
+| metal1 | 7 | poly2 | 12 |
 
 배선 레이어는 poly와 metal1~metal3입니다. 비아: `contact`(active에서 metal1), `polycon`(poly에서
-metal1), `via1`, `via2`.
+metal1), `poly2con`(poly2에서 metal1), `via1`, `via2`. `poly2`는 첫 번째 poly 위의 두 번째 poly이며,
+`poly`와 겹치는 곳을 추출기가 커패시터 `cpip`(층간 ONO, 2.65 fF/µm², 등가 산화막 13 nm)로
+인식합니다. 플래시 예제 `nand_string`의 컨트롤 게이트와 플로팅 게이트 사이 커패시턴스입니다.
 
 ## tech.json
 

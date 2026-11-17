@@ -809,37 +809,50 @@ const SRAM_COLS: i64 = 8;
 pub fn sram6t(p: &mut Project) -> Cell {
     let o = Orient::default();
     let mut s = Schematic::default();
-    // Pull-down 0.6 µm, pass gate and pull-up 0.42 µm: cell ratio 1.4 for read stability.
-    let devices = [
-        (DeviceKind::Nmos, (0, 10), "420n", ["bl", "wl", "q"]),
-        (DeviceKind::Pmos, (8, 4), "420n", ["q", "qb", "vdd"]),
-        (DeviceKind::Nmos, (8, 10), "600n", ["q", "qb", "gnd"]),
-        (DeviceKind::Pmos, (16, 4), "420n", ["qb", "q", "vdd"]),
-        (DeviceKind::Nmos, (16, 10), "600n", ["qb", "q", "gnd"]),
-        (DeviceKind::Nmos, (24, 10), "420n", ["blb", "wl", "qb"]),
-    ];
-    for (kind, at, w, nets) in devices {
-        let id = mos(&mut s, kind, at, false, w, "180n", None);
-        let pins = s.instance(id).expect("instance").pin_positions();
-        for (pin, net) in ["d", "g", "s"].into_iter().zip(nets) {
-            let at = pins.iter().find(|(n, _)| *n == pin).expect("MOS pin").1;
-            match net {
-                "vdd" => {
-                    s.add_instance(DeviceKind::Supply, at, o);
-                }
-                "gnd" => {
-                    s.add_instance(DeviceKind::Ground, at, o);
-                }
-                _ => {
-                    s.add_label(net, at);
-                }
-            }
-        }
+    // Textbook drawing (Weste & Harris, CMOS VLSI Design, 4th ed., fig. 12.3): the inverters
+    // P1 / N1 (output q on the left) and P2 / N2 (output qb on the right) between the bit lines,
+    // pass gates A1, A2 on the outside with their gates on the word line. Pull-down 0.6 µm, pass
+    // gate and pull-up 0.42 µm: cell ratio 1.4 for read stability.
+    let l = "180n";
+    let a1 = s.add_instance(DeviceKind::Nmos, Pt::new(1, 8), R90);
+    let a2 = s.add_instance(DeviceKind::Nmos, Pt::new(29, 8), R90);
+    for a in [a1, a2] {
+        set(&mut s, a, &[("w", "420n"), ("l", l)]);
+        let b = s.instance(a).expect("instance").pin_positions()[3].1;
+        s.add_instance(DeviceKind::Ground, b, o);
     }
-    source(&mut s, (-24, 8), "vdd", &[("dc", "1.8")]);
-    source(&mut s, (-18, 8), "wl", &[("dc", "0"), ("tran", "PULSE(0 1.8 1n 50p 50p 1n 4n)")]);
-    source(&mut s, (-12, 8), "bl", &[("dc", "0"), ("tran", "PULSE(0 1.8 2.5n 50p 50p 4n 8n)")]);
-    source(&mut s, (-6, 8), "blb", &[("dc", "1.8"), ("tran", "PULSE(1.8 0 2.5n 50p 50p 4n 8n)")]);
+    mos(&mut s, DeviceKind::Pmos, (10, 6), true, "420n", l, None);
+    mos(&mut s, DeviceKind::Nmos, (10, 12), true, "600n", l, None);
+    mos(&mut s, DeviceKind::Pmos, (20, 6), false, "420n", l, None);
+    mos(&mut s, DeviceKind::Nmos, (20, 12), false, "600n", l, None);
+    wires(&mut s, &[(9, 4), (21, 4)]);
+    s.add_instance(DeviceKind::Supply, Pt::new(15, 4), o);
+    for x in [9, 21] {
+        s.add_instance(DeviceKind::Ground, Pt::new(x, 14), o);
+    }
+    // Inverter gates and outputs.
+    wires(&mut s, &[(12, 6), (12, 12)]);
+    wires(&mut s, &[(18, 6), (18, 12)]);
+    wires(&mut s, &[(9, 8), (9, 10)]);
+    wires(&mut s, &[(21, 8), (21, 10)]);
+    // Pass gates: bit line to q, qb to the complement bit line, gates on the word line.
+    wires(&mut s, &[(3, 9), (9, 9)]);
+    wires(&mut s, &[(21, 9), (27, 9)]);
+    wires(&mut s, &[(1, 6), (1, 1), (29, 1), (29, 6)]);
+    wires(&mut s, &[(-3, 0), (-3, 18)]);
+    wires(&mut s, &[(-3, 9), (-1, 9)]);
+    wires(&mut s, &[(33, 0), (33, 18)]);
+    wires(&mut s, &[(31, 9), (33, 9)]);
+    // Cross-coupling under the cell: q to the P2 / N2 gates, qb to the P1 / N1 gates.
+    wires(&mut s, &[(6, 9), (6, 16), (18, 16), (18, 12)]);
+    wires(&mut s, &[(24, 9), (24, 17), (12, 17), (12, 12)]);
+    for (net, (x, y)) in [("wl", (15, 1)), ("bl", (-3, 0)), ("blb", (33, 0)), ("q", (8, 9)), ("qb", (22, 9))] {
+        s.add_label(net, Pt::new(x, y));
+    }
+    source(&mut s, (-36, 8), "vdd", &[("dc", "1.8")]);
+    source(&mut s, (-28, 8), "wl", &[("dc", "0"), ("tran", "PULSE(0 1.8 1n 50p 50p 1n 4n)")]);
+    source(&mut s, (-20, 8), "bl", &[("dc", "0"), ("tran", "PULSE(0 1.8 2.5n 50p 50p 4n 8n)")]);
+    source(&mut s, (-12, 8), "blb", &[("dc", "1.8"), ("tran", "PULSE(1.8 0 2.5n 50p 50p 4n 8n)")]);
     let mut sim = sim(&["tran"]);
     set_tran(&mut sim, "10p", "8n");
 
@@ -945,6 +958,342 @@ pub fn sram_array(tech: &Tech, lib: &str) -> Cell {
     layout_cell("sram_array", "8 x 8 array of 6T SRAM thin cells, mirrored AREFs (37 x 15 µm)", r.finish())
 }
 
+/// Planar 1T1C DRAM cell (dbu): 1.28 x 2.0 µm (2.56 µm², 79 F² at F = 0.18 µm; the MoSys
+/// 1T-SRAM planar cell of the same node is 1.97 µm²). The cell is mirrored in y for arrays, so
+/// two cells share a bit-line contact and two share the plate.
+const DRAM_W: i64 = 1280;
+const DRAM_H: i64 = 2000;
+/// Storage capacitor: the plate over 1.0 x 1.17 µm of diffusion, ≈ 10 fF at 8.6 fF/µm² (4 nm
+/// gate oxide).
+const DRAM_CAP: IRect = IRect { x0: 140, y0: 690, x1: 1140, y1: DRAM_H - 140 };
+const DRAM_ROWS: i64 = 8;
+const DRAM_COLS: i64 = 8;
+
+/// Piecewise-linear source: `(time ns, value)` steps with `edge` ns transitions.
+fn pwl(steps: &[(f64, f64)], edge: f64) -> String {
+    let mut pts = vec![(0.0, steps[0].1)];
+    for w in steps.windows(2) {
+        pts.push((w[1].0, w[0].1));
+        pts.push((w[1].0 + edge, w[1].1));
+    }
+    let body: Vec<String> = pts.iter().map(|(t, v)| format!("{t}n {v}")).collect();
+    format!("PWL({})", body.join(" "))
+}
+
+/// Planar one-transistor one-capacitor DRAM cell (Dennard, US patent 3,387,286, 1968), as made
+/// in a logic process without a dedicated capacitor (MoSys 1T-SRAM: Leung, Hsu and Jones, "The
+/// ideal SoC memory: 1T-SRAM", IEEE ASIC/SOC Conf. 2000; US patent 6,468,855). The storage
+/// capacitor MCS is a MOS capacitor: a poly plate over the diffusion beyond the access device
+/// MA, the inversion layer under it joined to the storage node `sn`. The plate sits at VPP so
+/// the capacitor stays inverted over the whole stored range, and the word line is boosted to
+/// VPP = VDD + Vt(body) + margin so a full VDD is written.
+///
+/// The test bench writes a 1, precharges the bit line to VDD / 2 and reads it by charge
+/// sharing (ΔV = (VDD / 2) · Cs / (Cs + CBL), about ±150 mV with Cs ≈ 10 fF and a short 50 fF
+/// logic bit line), then does the same for a 0. The bit-line load CBL and the write / precharge
+/// switch MPRE are test-bench parts (`lvsIgnore`). The read is destructive: a sense amplifier
+/// would restore the cell.
+pub fn dram1t1c(p: &mut Project) -> Cell {
+    let o = Orient::default();
+    let mut s = Schematic::default();
+    let (cw, cl) = (format!("{}n", DRAM_CAP.width()), format!("{}n", DRAM_CAP.height()));
+    let ma = mos(&mut s, DeviceKind::Nmos, (10, 6), false, "420n", "180n", None);
+    let cs = mos(&mut s, DeviceKind::Nmos, (12, 12), true, &cw, &cl, None);
+    // Bit line to the access device; the storage node joins both capacitor terminals.
+    wires(&mut s, &[(-1, 2), (11, 2), (11, 4)]);
+    wires(&mut s, &[(11, 8), (11, 10)]);
+    wires(&mut s, &[(11, 14), (11, 16), (4, 16), (4, 9), (11, 9)]);
+    stub(&mut s, (8, 6), -2, "wl");
+    stub(&mut s, (14, 12), 2, "plate");
+    // Test bench: bit-line capacitance and the write / precharge switch from the driver.
+    let cbl = s.add_instance(DeviceKind::Capacitor, Pt::new(4, 4), o);
+    set(&mut s, cbl, &[("c", "50f"), (crate::schematic::LVS_IGNORE, "t")]);
+    s.add_instance(DeviceKind::Ground, Pt::new(4, 6), o);
+    let pre = s.add_instance(DeviceKind::Nmos, Pt::new(-3, 1), R90);
+    set(&mut s, pre, &[("w", "1u"), ("l", "180n"), (crate::schematic::LVS_IGNORE, "t")]);
+    s.add_instance(DeviceKind::Ground, Pt::new(-3, 3), o);
+    for (id, name) in [(ma, "MA"), (cs, "MCS"), (pre, "MPRE"), (cbl, "CBL")] {
+        s.instance_mut(id).expect("instance").name = name.into();
+    }
+    stub(&mut s, (-5, 2), -2, "drv");
+    wires(&mut s, &[(-3, -1), (-3, -2)]);
+    for (net, (x, y)) in [("pre", (-3, -2)), ("bl", (1, 2)), ("sn", (8, 9))] {
+        s.add_label(net, Pt::new(x, y));
+    }
+    // Write 1 (1-5 ns), precharge to VDD / 2, read (12-16 ns); write 0 (21-25 ns), read (32-36 ns).
+    let (vpp, vdd, half) = (2.7, 1.8, 0.9);
+    let wl = pwl(
+        &[(0.0, 0.0), (1.0, vpp), (5.0, 0.0), (12.0, vpp), (16.0, 0.0), (21.0, vpp), (25.0, 0.0), (32.0, vpp), (36.0, 0.0)],
+        0.1,
+    );
+    let drv = pwl(&[(0.0, vdd), (6.0, half), (20.0, 0.0), (26.0, half)], 0.1);
+    // The switch turns off slowly, so its channel charge flows back to the driver.
+    let pre = pwl(&[(0.0, vpp), (9.0, 0.0), (20.0, vpp), (29.0, 0.0)], 2.0);
+    source(&mut s, (-28, 8), "wl", &[("dc", "0"), ("tran", &wl)]);
+    source(&mut s, (-20, 8), "drv", &[("dc", "1.8"), ("tran", &drv)]);
+    source(&mut s, (-12, 8), "pre", &[("dc", "2.7"), ("tran", &pre)]);
+    source(&mut s, (-36, 8), "plate", &[("dc", "2.7")]);
+    let mut sim = sim(&["tran"]);
+    set_tran(&mut sim, "20p", "40n");
+
+    let (w, h, xc) = (DRAM_W, DRAM_H, DRAM_W / 2);
+    let mut r = Router::new(&p.tech);
+    let l = |name: &str| p.tech.layer_index(name).expect("generic layer");
+    let (active, poly, m1, nplus, boundary) = (l("active"), l("poly"), l("metal1"), l("nplus"), l("boundary"));
+    for (layer, b) in [
+        (active, IRect::new(xc - 210, -210, xc + 210, 570)), // access device, W 0.42
+        (active, IRect::new(DRAM_CAP.x0, 570, DRAM_CAP.x1, DRAM_CAP.y1)), // storage node and capacitor
+        (poly, IRect::new(0, 270, w, 450)),                  // word line, L 0.18
+        (poly, IRect::new(-80, DRAM_CAP.y0, w + 80, h + 80)), // plate, shared with the mirrored cell
+        (m1, IRect::new(xc - 170, -170, xc + 170, h)),       // bit line
+        (nplus, IRect::new(0, -390, w, h)),
+        (boundary, IRect::new(0, 0, w, h)),
+    ] {
+        r.lay.add(layer, Geometry::Rect(b));
+    }
+    r.via("contact", (xc, 0));
+    for (net, at) in [("bl", (xc, 1000)), ("wl", (200, 360)), ("plate", (200, 1300)), ("sn", (300, 630))] {
+        r.label(net, at);
+    }
+    full_flow_cell(
+        "dram1t1c",
+        "Planar 1T1C DRAM cell, 1.28 x 2.0 µm, MOS storage capacitor ≈ 10 fF (DRC / LVS clean)",
+        s,
+        r.finish(),
+        sim,
+    )
+}
+
+/// 8 x 8 array of `dram1t1c`: rows mirrored in y (two AREFs) so cell pairs share the bit-line
+/// contact and the plate; bit lines on metal1, word lines in poly, the plates joined by a
+/// metal1 strap at the left edge.
+pub fn dram_array(tech: &Tech, lib: &str) -> Cell {
+    let (w, h) = (DRAM_W, DRAM_H);
+    let mut r = Router::new(tech);
+    let spec = Some(ArraySpec { cols: DRAM_COLS as u32, rows: (DRAM_ROWS / 2) as u32, col: (w, 0), row: (0, 2 * h) });
+    for t in [Trans::new(0, 0), Trans::with(0, 2 * h, 0, true)] {
+        r.lay.add_instance(CellRef::new(lib, "dram1t1c"), t, spec);
+    }
+    let (poly, m1) = (r.layer("poly"), r.layer("metal1"));
+    let strap = -600;
+    for pair in 0..DRAM_ROWS / 2 {
+        let y = (2 * pair + 1) * h;
+        r.lay.add_rect(poly, strap - 210, y - 210, 0, y + 210);
+        r.via("polycon", (strap, y));
+    }
+    r.lay.add_rect(m1, strap - 170, h - 170, strap + 170, (DRAM_ROWS - 1) * h + 170);
+    r.label("plate", (strap, h));
+    for row in 0..DRAM_ROWS {
+        let y = if row % 2 == 0 { row * h + 360 } else { (row + 1) * h - 360 };
+        r.label(&format!("wl{row}"), (200, y));
+    }
+    for col in 0..DRAM_COLS {
+        r.label(&format!("bl{col}"), (col * w + w / 2, 1000));
+    }
+    let boundary = r.layer("boundary");
+    r.lay.add_rect(boundary, strap - 400, 0, DRAM_COLS * w, DRAM_ROWS * h);
+    layout_cell("dram_array", "8 x 8 planar DRAM array, cell pairs sharing contacts and plates (AREF)", r.finish())
+}
+
+/// NAND flash string (dbu): one column 0.9 µm wide and 4.64 µm long (bit-line contact to
+/// source-line contact), mirrored in y for arrays so strings share both contacts. The cell is
+/// 0.9 x 0.42 µm (0.38 µm², 11.7 F²): the generic rules (poly space 0.24 µm, poly past active
+/// 0.22 µm) set it, where a flash process has core rules for its self-aligned 4 F² cell.
+const NAND_W: i64 = 900;
+/// Channel width of the string: 0.22 µm, widened to 0.42 µm at the contacts.
+const NAND_ACT: i64 = 220;
+const NAND_H: i64 = 4640;
+const NAND_CELLS: i64 = 8;
+/// Floating gate: 0.66 µm across the 0.22 µm channel (wings over the field for coupling) by
+/// 0.18 µm, self-aligned under the poly2 word line.
+const NAND_FG: (i64, i64) = (660, 180);
+/// y of the lower edge of word line 0; word lines on a 0.42 µm pitch.
+const NAND_WL0: i64 = 760;
+const NAND_WL_PITCH: i64 = 420;
+const NAND_ROWS: i64 = 4;
+const NAND_COLS: i64 = 8;
+/// Stored floating-gate voltage Q_FG / C_T (all terminals at 0 V) per cell, word line 0 first:
+/// programmed cells (-0.8 V, threshold ≈ 2.4 V from the control gate) on word lines 1, 3 and 6,
+/// the others erased (+1.2 V, threshold ≈ -0.8 V).
+const NAND_FG_V: [f64; 8] = [1.2, -0.8, 1.2, -0.8, 1.2, 1.2, -0.8, 1.2];
+
+/// NAND flash string after Masuoka et al., "New ultra high density EPROM and flash EEPROM with
+/// NAND structure cell", IEDM 1987: eight floating-gate cells in series between the string
+/// select gate SSL (to the bit line) and the ground select gate GSL (to the common source line
+/// `csl`). Each cell is drawn as its capacitive equivalent circuit (Pavan, Bez, Olivo and
+/// Zanoni, "Flash memory cells: an overview", Proc. IEEE 85 (8), 1997): a transistor on the
+/// floating gate `fgN` (9 nm tunnel oxide, model `nfg`) and the interpoly ONO capacitor from the
+/// word line, both extracted from the layout (floating gate in poly over the channel, word line
+/// in poly2 on top). The coupling ratio is α_G = C_ONO / C_T ≈ 0.6. The stored charge is the
+/// initial floating-gate voltage (`.ic`, see [`NAND_FG_V`]); the cell model is BSIM4 with its
+/// charge-conserving capacitances, so a floating gate keeps its charge through any sequence and
+/// follows its terminals: V_FG = α_G V_CG + α_D V_D + α_S V_S + Q_FG / C_T.
+///
+/// The test bench reads two cells as a NAND page read does (selected word line at 0 V, the
+/// others, SSL and GSL at V_read = 4.5 V, the bit line precharged to 1 V): word line 3 is
+/// programmed, so the string stays off and the bit line high; word line 4 is erased, so the
+/// string conducts and discharges it.
+pub fn nand_string(p: &mut Project) -> Cell {
+    let o = Orient::default();
+    let mut s = Schematic::default();
+    let fg_area = NAND_FG.0 as f64 * NAND_FG.1 as f64 / 1e6;
+    let cono = format!("{:.5}f", p.tech.capacitors[0].area * fg_area);
+    // SSL on top, word lines 7 to 0, GSL at the bottom; the bulks share one wire.
+    for i in 0..(NAND_CELLS + 2) as i32 {
+        let y = 4 + 4 * i;
+        let id = s.add_instance(DeviceKind::Nmos, Pt::new(10, y), o);
+        let (name, l, gate) = match i {
+            0 => ("MSSL".to_string(), "250n", "ssl".to_string()),
+            9 => ("MGSL".to_string(), "250n", "gsl".to_string()),
+            _ => (format!("MC{}", 8 - i), "180n", String::new()),
+        };
+        set(&mut s, id, &[("w", &format!("{NAND_ACT}n")), ("l", l)]);
+        s.instance_mut(id).expect("instance").name = name;
+        if gate.is_empty() {
+            let k = 8 - i;
+            set(&mut s, id, &[("model", "nfg")]);
+            let c = s.add_instance(DeviceKind::Capacitor, Pt::new(6, y), R90);
+            set(&mut s, c, &[("c", &cono)]);
+            s.instance_mut(c).expect("instance").name = format!("CONO{k}");
+            s.add_label(format!("fg{k}"), Pt::new(8, y));
+            stub(&mut s, (4, y), -2, &format!("wl{k}"));
+        } else {
+            stub(&mut s, (8, y), -6, &gate);
+        }
+    }
+    wires(&mut s, &[(12, 4), (12, 40)]);
+    s.add_instance(DeviceKind::Ground, Pt::new(12, 40), o);
+    wires(&mut s, &[(11, 42), (11, 44)]);
+    s.add_label("csl", Pt::new(11, 44));
+    // Test bench: bit-line capacitance and the precharge switch from a 1 V driver.
+    wires(&mut s, &[(11, 2), (11, 0), (20, 0)]);
+    let cbl = s.add_instance(DeviceKind::Capacitor, Pt::new(16, 2), o);
+    set(&mut s, cbl, &[("c", "100f"), (crate::schematic::LVS_IGNORE, "t")]);
+    s.add_instance(DeviceKind::Ground, Pt::new(16, 4), o);
+    let pre = s.add_instance(DeviceKind::Nmos, Pt::new(22, -1), R90);
+    set(&mut s, pre, &[("w", "1u"), ("l", "180n"), (crate::schematic::LVS_IGNORE, "t")]);
+    s.add_instance(DeviceKind::Ground, Pt::new(22, 1), o);
+    for (id, name) in [(cbl, "CBL"), (pre, "MPRE")] {
+        s.instance_mut(id).expect("instance").name = name.into();
+    }
+    stub(&mut s, (24, 0), 2, "drv");
+    wires(&mut s, &[(22, -3), (22, -4)]);
+    for (net, (x, y)) in [("pre", (22, -4)), ("bl", (11, 0))] {
+        s.add_label(net, Pt::new(x, y));
+    }
+    // Precharge (0-5 ns, 47-52 ns), read word line 3 (6-46 ns), read word line 4 (53-93 ns):
+    // an erased cell's string carries a few µA, as in NAND, so a read takes tens of ns here
+    // (µs on a real, pF bit line).
+    let vread = 4.5;
+    let both = pwl(&[(0.0, 0.0), (6.0, vread), (46.0, 0.0), (53.0, vread), (93.0, 0.0)], 0.2);
+    let first = pwl(&[(0.0, 0.0), (6.0, vread), (46.0, 0.0)], 0.2);
+    let second = pwl(&[(0.0, 0.0), (53.0, vread), (93.0, 0.0)], 0.2);
+    let mut n = 0;
+    let mut src = |s: &mut Schematic, net: &str, kv: &[(&str, &str)]| {
+        source(s, (-54 + 7 * (n % 7), 10 + 14 * (n / 7)), net, kv);
+        n += 1;
+    };
+    src(&mut s, "drv", &[("dc", "1")]);
+    src(&mut s, "csl", &[("dc", "0")]);
+    let pre = pwl(&[(0.0, 2.7), (3.0, 0.0), (47.0, 2.7), (50.0, 0.0)], 2.0);
+    src(&mut s, "pre", &[("dc", "2.7"), ("tran", &pre)]);
+    src(&mut s, "ssl", &[("dc", "0"), ("tran", &both)]);
+    src(&mut s, "gsl", &[("dc", "0"), ("tran", &both)]);
+    for k in 0..NAND_CELLS {
+        let wave = match k {
+            3 => &second,
+            4 => &first,
+            _ => &both,
+        };
+        src(&mut s, &format!("wl{k}"), &[("dc", "0"), ("tran", wave)]);
+    }
+    let mut sim = sim(&["tran"]);
+    set_tran(&mut sim, "50p", "96n");
+    let ic: Vec<String> = NAND_FG_V.iter().enumerate().map(|(k, v)| format!("v(fg{k})={v}")).collect();
+    sim.extra = format!(
+        "* Floating-gate cell: 9 nm tunnel oxide, BSIM4 with its charge-conserving capacitance model\n\
+         .model nfg nmos (level=54 version=4.8 capmod=2 toxe=9n toxp=9n toxm=9n epsrox=3.9 vth0=0.7 k1=0.5 k2=0 \
+         ndep=3e17 xj=1.5e-7 u0=0.04 vsat=8e4 rdsw=200 cgso=1e-10 cgdo=1e-10 cgbo=0)\n\
+         * Stored charge: floating-gate voltage with every terminal at 0 V\n.ic {}\n",
+        ic.join(" ")
+    );
+
+    let (w, h, xc) = (NAND_W, NAND_H, NAND_W / 2);
+    let mut r = Router::new(&p.tech);
+    let l = |name: &str| p.tech.layer_index(name).expect("generic layer");
+    let (active, poly, poly2, m1, m2) = (l("active"), l("poly"), l("poly2"), l("metal1"), l("metal2"));
+    let (nplus, boundary) = (l("nplus"), l("boundary"));
+    let ssl = NAND_WL0 + (NAND_CELLS - 1) * NAND_WL_PITCH + NAND_FG.1 + 240;
+    for (layer, b) in [
+        (active, IRect::new(xc - NAND_ACT / 2, 0, xc + NAND_ACT / 2, h)),
+        (active, IRect::new(xc - 210, -210, xc + 210, 210)), // contacts
+        (active, IRect::new(xc - 210, h - 210, xc + 210, h + 210)),
+        (poly, IRect::new(0, 270, w, 520)),         // ground select gate, L 0.25
+        (poly, IRect::new(0, ssl, w, ssl + 250)),   // string select gate
+        (m1, IRect::new(0, -170, w, 170)),          // common source line
+        (m2, IRect::new(xc - 190, 0, xc + 190, h)), // bit line
+        (nplus, IRect::new(0, -390, w, h + 390)),
+        (boundary, IRect::new(0, 0, w, h)),
+    ] {
+        r.lay.add(layer, Geometry::Rect(b));
+    }
+    for k in 0..NAND_CELLS {
+        let y = NAND_WL0 + k * NAND_WL_PITCH;
+        r.lay.add_rect(poly, xc - NAND_FG.0 / 2, y, xc + NAND_FG.0 / 2, y + NAND_FG.1);
+        r.lay.add_rect(poly2, 0, y, w, y + NAND_FG.1);
+        r.label(&format!("wl{k}"), (60, y + NAND_FG.1 / 2));
+    }
+    for (name, at) in [("contact", (xc, 0)), ("contact", (xc, h)), ("via1", (xc, h))] {
+        r.via(name, at);
+    }
+    for (net, at) in [("bl", (xc, h / 2)), ("csl", (60, 0)), ("gsl", (60, 395)), ("ssl", (60, ssl + 125))] {
+        r.label(net, at);
+    }
+    full_flow_cell(
+        "nand_string",
+        "NAND flash string: 8 floating-gate cells with select gates, 0.9 x 4.64 µm (DRC / LVS clean)",
+        s,
+        r.finish(),
+        sim,
+    )
+}
+
+/// 8 columns x 4 strings of `nand_string`, strings mirrored in y (two AREFs) so pairs share the
+/// bit-line and source-line contacts; bit lines on metal2, the source lines joined by a metal2
+/// strap at the left edge. Each string row is one block with its own word and select lines.
+pub fn nand_array(tech: &Tech, lib: &str) -> Cell {
+    let (w, h) = (NAND_W, NAND_H);
+    let mut r = Router::new(tech);
+    let spec = Some(ArraySpec { cols: NAND_COLS as u32, rows: (NAND_ROWS / 2) as u32, col: (w, 0), row: (0, 2 * h) });
+    for t in [Trans::new(0, 0), Trans::with(0, 2 * h, 0, true)] {
+        r.lay.add_instance(CellRef::new(lib, "nand_string"), t, spec);
+    }
+    let (m1, m2) = (r.layer("metal1"), r.layer("metal2"));
+    let strap = -600;
+    for k in 0..=NAND_ROWS / 2 {
+        let y = 2 * k * h;
+        r.lay.add_rect(m1, strap - 190, y - 170, 0, y + 170);
+        r.via("via1", (strap, y));
+    }
+    r.lay.add_rect(m2, strap - 190, -190, strap + 190, NAND_ROWS * h + 190);
+    r.label("csl", (strap, h));
+    let ssl = NAND_WL0 + (NAND_CELLS - 1) * NAND_WL_PITCH + NAND_FG.1 + 240 + 125;
+    for row in 0..NAND_ROWS {
+        let at = |y: i64| if row % 2 == 0 { row * h + y } else { (row + 1) * h - y };
+        for k in 0..NAND_CELLS {
+            r.label(&format!("wl{k}_{row}"), (60, at(NAND_WL0 + k * NAND_WL_PITCH + NAND_FG.1 / 2)));
+        }
+        r.label(&format!("gsl{row}"), (60, at(395)));
+        r.label(&format!("ssl{row}"), (60, at(ssl)));
+    }
+    for col in 0..NAND_COLS {
+        r.label(&format!("bl{col}"), (col * w + w / 2, h / 2));
+    }
+    let boundary = r.layer("boundary");
+    r.lay.add_rect(boundary, strap - 400, 0, NAND_COLS * w, NAND_ROWS * h);
+    layout_cell("nand_array", "NAND flash array: 8 bit lines x 4 strings of 8 cells, mirrored (AREF)", r.finish())
+}
+
 /// 4T pixel pitch (dbu): 5.6 µm, a common pixel size of 0.18 µm image sensor processes.
 const PIX: i64 = 5600;
 /// Photodiode: n+ / p-substrate diffusion below the transistor strip, 41 % fill factor.
@@ -964,43 +1313,48 @@ const PIX_COLS: i64 = 8;
 pub fn aps4t(p: &mut Project) -> Cell {
     let o = Orient::default();
     let mut s = Schematic::default();
-    let devices = [
-        ((0, 10), "400n", ["fd", "tx", "pd"]),
-        ((8, 10), "180n", ["vdd", "rst", "fd"]),
-        ((16, 10), "350n", ["vdd", "fd", "x"]),
-        ((24, 10), "180n", ["col", "sel", "x"]),
-    ];
-    for (k, (at, l, nets)) in devices.into_iter().enumerate() {
-        let id = mos(&mut s, DeviceKind::Nmos, at, false, "420n", l, None);
-        if k == 0 {
-            let (a, pe) = (PIX_PD.width() * PIX_PD.height(), 2 * (PIX_PD.width() + PIX_PD.height()));
-            set(&mut s, id, &[("as", &format!("{}p", a as f64 / 1e6)), ("ps", &format!("{}u", pe as f64 / 1e3))]);
-        } else if k == 1 {
-            // The floating diffusion with its metal: a few fF, so the reset edge kicks it little.
-            set(&mut s, id, &[("as", "3p"), ("ps", "8u")]);
-        }
-        let pins = s.instance(id).expect("instance").pin_positions();
-        for (pin, net) in ["d", "g", "s"].into_iter().zip(nets) {
-            let at = pins.iter().find(|(n, _)| *n == pin).expect("MOS pin").1;
-            if net == "vdd" {
-                s.add_instance(DeviceKind::Supply, at, o);
-            } else {
-                s.add_label(net, at);
-            }
-        }
+    // The 4T pixel of Fossum & Hondongwa, "A review of the pinned photodiode for CCD and CMOS
+    // image sensors", IEEE J. Electron Devices Soc. 2 (3), 2014, fig. 6: photodiode, transfer
+    // gate TX to the floating diffusion fd, reset RST from the supply, source follower SF and
+    // row select SEL onto the column line with its current-source load. The photodiode is its
+    // photocurrent and its junction (`as` / `ps` of TX, whose source it is).
+    let tx = s.add_instance(DeviceKind::Nmos, Pt::new(6, 10), R90);
+    let (a, pe) = (PIX_PD.width() * PIX_PD.height(), 2 * (PIX_PD.width() + PIX_PD.height()));
+    let (pd_as, pd_ps) = (format!("{}p", a as f64 / 1e6), format!("{}u", pe as f64 / 1e3));
+    set(&mut s, tx, &[("w", "420n"), ("l", "400n"), ("as", &pd_as), ("ps", &pd_ps)]);
+    s.add_instance(DeviceKind::Ground, Pt::new(6, 12), o);
+    let rst = mos(&mut s, DeviceKind::Nmos, (12, 6), false, "420n", "180n", None);
+    // The floating diffusion with its metal: a few fF, so the reset edge kicks it little.
+    set(&mut s, rst, &[("as", "3p"), ("ps", "8u")]);
+    mos(&mut s, DeviceKind::Nmos, (18, 10), false, "420n", "350n", None);
+    mos(&mut s, DeviceKind::Nmos, (18, 15), false, "420n", "180n", None);
+    // Photodiode node, transfer to the floating diffusion, which drives the follower's gate.
+    wires(&mut s, &[(4, 11), (1, 11), (1, 13)]);
+    let ipd = s.add_instance(DeviceKind::ISource, Pt::new(1, 15), o);
+    set(&mut s, ipd, &[("dc", "10n")]);
+    s.add_instance(DeviceKind::Ground, Pt::new(1, 17), o);
+    wires(&mut s, &[(8, 11), (13, 11), (13, 8)]);
+    wires(&mut s, &[(13, 10), (16, 10)]);
+    // Supply to the reset and follower drains; follower, select and the column line.
+    wires(&mut s, &[(13, 4), (19, 4), (19, 8)]);
+    s.add_instance(DeviceKind::Supply, Pt::new(16, 4), o);
+    wires(&mut s, &[(19, 12), (19, 13)]);
+    wires(&mut s, &[(19, 17), (19, 19), (24, 19)]);
+    let icol = s.add_instance(DeviceKind::ISource, Pt::new(24, 21), o);
+    set(&mut s, icol, &[("dc", "2u")]);
+    s.add_instance(DeviceKind::Ground, Pt::new(24, 23), o);
+    wires(&mut s, &[(6, 8), (6, 6)]);
+    stub(&mut s, (10, 6), -2, "rst");
+    stub(&mut s, (16, 15), -2, "sel");
+    for (net, (x, y)) in [("tx", (6, 6)), ("pd", (2, 11)), ("fd", (10, 11)), ("x", (19, 12)), ("col", (22, 19))] {
+        s.add_label(net, Pt::new(x, y));
     }
     // Reset photodiode and floating diffusion (TX and RST high), integrate, release the reset
     // (reset level on the column), then transfer the charge (signal level).
     source(&mut s, (-30, 8), "vdd", &[("dc", "1.8")]);
-    source(&mut s, (-24, 8), "rst", &[("dc", "1.8"), ("tran", "PULSE(1.8 0 300n 1n 1n 400n 800n)")]);
-    source(&mut s, (-18, 8), "tx", &[("dc", "1.8"), ("tran", "PULSE(1.8 0 50n 1n 1n 350n 800n)")]);
-    source(&mut s, (-12, 8), "sel", &[("dc", "1.8")]);
-    for (x, net, i) in [(32, "pd", "10n"), (38, "col", "2u")] {
-        let id = s.add_instance(DeviceKind::ISource, Pt::new(x, 8), o);
-        set(&mut s, id, &[("dc", i)]);
-        s.add_label(net, Pt::new(x, 6));
-        s.add_instance(DeviceKind::Ground, Pt::new(x, 10), o);
-    }
+    source(&mut s, (-22, 8), "rst", &[("dc", "1.8"), ("tran", "PULSE(1.8 0 300n 1n 1n 400n 800n)")]);
+    source(&mut s, (-14, 8), "tx", &[("dc", "1.8"), ("tran", "PULSE(1.8 0 50n 1n 1n 350n 800n)")]);
+    source(&mut s, (-6, 8), "sel", &[("dc", "1.8")]);
     let mut sim = sim(&["tran"]);
     set_tran(&mut sim, "1n", "600n");
 
@@ -1176,11 +1530,12 @@ pub fn demo_project() -> Project {
     for c in [cmos_inverter(), rc_lowpass(), diode_clipper()].into_iter().chain(hier) {
         p.add_cell("work", c).expect("unique");
     }
-    for make in [nand2, nor2, ring_osc5, current_mirror, ota5t, sram6t, aps4t, full_adder, ota2s] {
+    for make in [nand2, nor2, ring_osc5, current_mirror, ota5t, sram6t, dram1t1c, nand_string, aps4t, full_adder, ota2s] {
         let c = make(&mut p);
         p.add_cell("work", c).expect("unique");
     }
-    for c in [sram_array(&p.tech, "work"), pixel_array(&p.tech, "work")] {
+    for c in [sram_array(&p.tech, "work"), dram_array(&p.tech, "work"), nand_array(&p.tech, "work"), pixel_array(&p.tech, "work")]
+    {
         p.add_cell("work", c).expect("unique");
     }
     let mut devices = Layout::default();
@@ -1231,9 +1586,9 @@ pub const TOPICS: [Topic; 5] = [
     Topic {
         name: "memory_and_pixels",
         title: "Memory and pixels",
-        summary: "SRAM and pixel arrays",
-        description: "6T SRAM thin cell and 4T pixel with 8 x 8 arrays (AREF), word / bit lines, row and column lines",
-        cells: &["sram6t", "sram_array", "aps4t", "pixel_array"],
+        summary: "SRAM, DRAM, flash, pixels",
+        description: "6T SRAM, planar 1T1C DRAM, NAND flash string and 4T pixel, each with an array (AREF) of word / bit or row / column lines",
+        cells: &["sram6t", "sram_array", "dram1t1c", "dram_array", "nand_string", "nand_array", "aps4t", "pixel_array"],
     },
     Topic {
         name: "hierarchy",
@@ -1349,7 +1704,14 @@ mod flow_tests {
         assert!(x.warnings.is_empty(), "{name}: {:?}", x.warnings);
         let r = compare(sch, &x, &LvsOptions::for_tech(&p.tech));
         assert!(r.matched, "{name}: {:#?}", r.errors);
-        let mos = sch.instances.iter().filter(|i| matches!(i.kind, DeviceKind::Nmos | DeviceKind::Pmos)).count();
+        let mos = sch
+            .instances
+            .iter()
+            .filter(|i| {
+                matches!(i.kind, DeviceKind::Nmos | DeviceKind::Pmos | DeviceKind::Capacitor | DeviceKind::Resistor)
+                    && !i.lvs_ignore()
+            })
+            .count();
         if whole {
             assert_eq!(r.layout_devices, mos);
         } else {
@@ -1412,6 +1774,49 @@ mod flow_tests {
         assert_eq!(x.devices.len() as i64, 6 * SRAM_ROWS * SRAM_COLS);
         let labelled = x.nets.iter().filter(|n| n.labelled).count() as i64;
         assert_eq!(labelled, 2 + SRAM_ROWS + 2 * SRAM_COLS);
+    }
+
+    #[test]
+    fn dram1t1c_full_flow() {
+        full_flow("dram1t1c");
+    }
+
+    #[test]
+    fn dram_array_drc_and_extraction() {
+        let p = demo_project();
+        let lay = p.cell(&CellRef::new("work", "dram_array")).and_then(|c| c.layout.as_ref()).expect("array layout");
+        let v = run_tech_deck(lay, &p, &p.tech).unwrap().violations;
+        assert!(v.is_empty(), "{:?}", v.iter().take(10).map(|v| (&v.rule, v.marker)).collect::<Vec<_>>());
+        let x = extract(lay, &p, &p.tech);
+        assert!(x.warnings.is_empty(), "{:?}", x.warnings);
+        assert_eq!(x.devices.len() as i64, 2 * DRAM_ROWS * DRAM_COLS);
+        let labelled = x.nets.iter().filter(|n| n.labelled).count() as i64;
+        assert_eq!(labelled, 1 + DRAM_ROWS + DRAM_COLS);
+        assert_eq!(x.nets.len() as i64, 1 + DRAM_ROWS + DRAM_COLS + DRAM_ROWS * DRAM_COLS + 1, "storage nodes and sub");
+    }
+
+    #[test]
+    fn nand_string_full_flow() {
+        full_flow("nand_string");
+        let p = demo_project();
+        let lay = p.cell(&CellRef::new("work", "nand_string")).and_then(|c| c.layout.as_ref()).unwrap();
+        let x = extract(lay, &p, &p.tech);
+        assert_eq!(x.passives.len() as i64, NAND_CELLS, "one interpoly capacitor per cell");
+    }
+
+    #[test]
+    fn nand_array_drc_and_extraction() {
+        let p = demo_project();
+        let lay = p.cell(&CellRef::new("work", "nand_array")).and_then(|c| c.layout.as_ref()).expect("array layout");
+        let v = run_tech_deck(lay, &p, &p.tech).unwrap().violations;
+        assert!(v.is_empty(), "{:?}", v.iter().take(10).map(|v| (&v.rule, v.marker)).collect::<Vec<_>>());
+        let x = extract(lay, &p, &p.tech);
+        assert!(x.warnings.is_empty(), "{:?}", x.warnings);
+        let strings = NAND_ROWS * NAND_COLS;
+        assert_eq!(x.devices.len() as i64, strings * (NAND_CELLS + 2));
+        assert_eq!(x.passives.len() as i64, strings * NAND_CELLS);
+        let labelled = x.nets.iter().filter(|n| n.labelled).count() as i64;
+        assert_eq!(labelled, NAND_COLS + 1 + NAND_ROWS * (NAND_CELLS + 2));
     }
 
     #[test]

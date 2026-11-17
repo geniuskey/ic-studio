@@ -317,6 +317,23 @@ fn demo_sram_array() {
 }
 
 #[test]
+fn demo_dram_array() {
+    scenario("demo_dram_array", true, Some("dram_array"), "layout", false);
+}
+
+#[test]
+fn demo_nand_array() {
+    scenario("demo_nand_array", true, Some("nand_array"), "layout", false);
+}
+
+#[test]
+fn demo_cells_layout() {
+    for cell in ["dram1t1c", "nand_string"] {
+        scenario(&format!("demo_{cell}_layout"), true, Some(cell), "layout", false);
+    }
+}
+
+#[test]
 fn demo_pixel_array() {
     scenario("demo_pixel_array", true, Some("pixel_array"), "layout", false);
 }
@@ -2739,4 +2756,11 @@ fn layout_stretch_pcell() {
     assert_eq!(b2.x0, b1.x0, "the left edge stays: {b1:?} -> {b2:?}");
     key(&mut h, egui::Key::U);
     assert_eq!(inst(&h).0, pc1, "u undoes the stretch");
+}
+
+#[test]
+fn demo_memory_schematics() {
+    for cell in ["sram6t", "dram1t1c", "nand_string", "aps4t"] {
+        scenario(&format!("demo_{cell}_schematic"), true, Some(cell), "schematic", false);
+    }
 }

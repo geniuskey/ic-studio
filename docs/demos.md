@@ -27,7 +27,7 @@ unless `--force`) and `ics examples` lists them.
 | `getting_started` | `cmos_inverter`, `rc_lowpass`, `diode_clipper`, `devices` |
 | `analog` | `current_mirror`, `ota5t`, `ota2s` |
 | `digital` | `nand2`, `nor2`, `ring_osc5`, `full_adder` |
-| `memory_and_pixels` | `sram6t`, `sram_array`, `aps4t`, `pixel_array` |
+| `memory_and_pixels` | `sram6t`, `sram_array`, `dram1t1c`, `dram_array`, `nand_string`, `nand_array`, `aps4t`, `pixel_array` |
 | `hierarchy` | `inv_chain`, `inv_array`, `inv_tiles` |
 
 Each topic also contains the cells its layouts place, e.g. `cmos_inverter` in `hierarchy`
@@ -88,6 +88,38 @@ neighbouring cells share their edge contacts, with word lines, bit lines and a g
 
 <div class="ics-card">
 
+![8 x 8 planar DRAM array](screenshots/demo_dram_array.webp)
+
+### `dram_array`
+
+An 8 × 8 array of the planar 1T1C DRAM cell `dram1t1c` (1.28 × 2.0 µm): an access transistor
+and a MOS storage capacitor of about 10 fF (a poly plate over the diffusion), the classic
+planar cell (Dennard's 1968 patent) as made in a logic process (MoSys 1T-SRAM). Rows are
+mirrored so cell pairs share the bit-line contact and the plate. The cell simulates writing
+a 1 and a 0 and reading each by charge sharing onto a 50 fF bit line precharged to VDD / 2:
++178 mV and −137 mV.
+
+</div>
+
+<div class="ics-card">
+
+![NAND flash array](screenshots/demo_nand_array.webp)
+
+### `nand_array`
+
+8 bit lines × 4 NAND flash strings (`nand_string`, after Masuoka et al., IEDM 1987): eight
+floating-gate cells (floating gate in poly, word line in poly2) between the string and ground
+select gates. Each cell extracts as a transistor and its interpoly capacitor, the floating-gate
+equivalent circuit. The stored charge is the initial floating-gate voltage (`.ic`), and the
+string simulates a NAND read: V_read = 4.5 V on the other word lines, 0 V on the selected one.
+The programmed cell keeps the bit line at 1 V and the erased one discharges it to about
+0.25 V. The cell (0.9 × 0.42 µm) uses a BSIM4 model, whose charge-conserving capacitances
+keep each floating gate's charge through the reads.
+
+</div>
+
+<div class="ics-card">
+
 ![8 x 8 image sensor pixel array](screenshots/demo_pixel_array.webp)
 
 ### `pixel_array`
@@ -127,6 +159,10 @@ rendering keeps pan and zoom smooth.
 | `ota5t` | 5-transistor OTA: about 42 dB open-loop gain in AC |
 | `sram6t` | 6T SRAM bit cell, DRC and LVS clean: transient write and hold |
 | `sram_array` | 8 × 8 array of `sram6t` |
+| `dram1t1c` | Planar 1T1C DRAM cell with a MOS storage capacitor, DRC and LVS clean: write, precharge and charge-sharing read of a 1 and a 0 |
+| `dram_array` | 8 × 8 array of `dram1t1c`, cell pairs sharing contacts and plates |
+| `nand_string` | NAND flash string of 8 floating-gate cells with select gates, DRC and LVS clean: page read of a programmed and an erased cell |
+| `nand_array` | 8 bit lines × 4 strings of `nand_string` |
 | `aps4t` | 4T image sensor pixel, DRC and LVS clean: transient reset, integration and transfer |
 | `pixel_array` | 8 × 8 array of `aps4t` |
 | `inv_chain` | Four placed `cmos_inverter` instances |
@@ -135,7 +171,7 @@ rendering keeps pan and zoom smooth.
 | `devices` | One instance of every PCell |
 
 Every cell with both a schematic and a layout (`full_adder`, `ota2s`, `nand2`, `nor2`,
-`ring_osc5`, `current_mirror`, `ota5t`, `sram6t`, `aps4t`) runs the whole flow:
+`ring_osc5`, `current_mirror`, `ota5t`, `sram6t`, `dram1t1c`, `nand_string`, `aps4t`) runs the whole flow:
 simulate, open the layout, run DRC and LVS, and simulate again with parasitics.
 
 ## Demo scripts

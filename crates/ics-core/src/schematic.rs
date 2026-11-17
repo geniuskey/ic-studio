@@ -327,6 +327,9 @@ mod symbols {
     }
 }
 
+/// Instance property marking a test-bench part ([`Instance::lvs_ignore`]).
+pub const LVS_IGNORE: &str = "lvsIgnore";
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Instance {
     pub id: u64,
@@ -342,6 +345,12 @@ pub struct Instance {
 impl Instance {
     pub fn param(&self, key: &str) -> &str {
         self.params.get(key).map(String::as_str).unwrap_or("")
+    }
+
+    /// Test-bench part without a layout counterpart: the `lvsIgnore` property (as in Virtuoso)
+    /// is `t`, `true` or `1`. LVS and layout generation skip it; it is still simulated.
+    pub fn lvs_ignore(&self) -> bool {
+        matches!(self.param(LVS_IGNORE).trim().to_ascii_lowercase().as_str(), "t" | "true" | "1" | "yes")
     }
 
     /// World position of each pin, in symbol pin order.

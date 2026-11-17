@@ -161,7 +161,8 @@ pub fn device_of(instance: &str) -> &str {
 /// type and L, common gate and source, the gate tied to the drain of one of them).
 pub fn matched_groups(sch: &Schematic) -> Vec<Vec<String>> {
     let conn = connectivity::extract(sch);
-    let mos: Vec<&Instance> = sch.instances.iter().filter(|i| matches!(i.kind, DeviceKind::Nmos | DeviceKind::Pmos)).collect();
+    let mos: Vec<&Instance> =
+        sch.instances.iter().filter(|i| matches!(i.kind, DeviceKind::Nmos | DeviceKind::Pmos) && !i.lvs_ignore()).collect();
     let rails: HashSet<&str> = sch
         .instances
         .iter()
@@ -558,7 +559,7 @@ pub fn plan(sch: &Schematic, tech: &Tech) -> SdlPlan {
     let mut plan = SdlPlan::default();
     let conn = connectivity::extract(sch);
     let mut mos: Vec<&Instance> = Vec::new();
-    for inst in &sch.instances {
+    for inst in sch.instances.iter().filter(|i| !i.lvs_ignore()) {
         match inst.kind {
             DeviceKind::Nmos | DeviceKind::Pmos => mos.push(inst),
             DeviceKind::Ground | DeviceKind::Supply => {}

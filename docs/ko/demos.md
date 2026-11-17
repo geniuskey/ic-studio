@@ -26,7 +26,7 @@ cargo run --release -- --demo
 | `getting_started` | `cmos_inverter`, `rc_lowpass`, `diode_clipper`, `devices` |
 | `analog` | `current_mirror`, `ota5t`, `ota2s` |
 | `digital` | `nand2`, `nor2`, `ring_osc5`, `full_adder` |
-| `memory_and_pixels` | `sram6t`, `sram_array`, `aps4t`, `pixel_array` |
+| `memory_and_pixels` | `sram6t`, `sram_array`, `dram1t1c`, `dram_array`, `nand_string`, `nand_array`, `aps4t`, `pixel_array` |
 | `hierarchy` | `inv_chain`, `inv_array`, `inv_tiles` |
 
 각 주제에는 레이아웃이 배치하는 셀도 들어 있습니다. 예를 들어 `hierarchy`에는 `cmos_inverter`가,
@@ -84,6 +84,36 @@ common-centroid 순서로 배치한 뒤 배선합니다. 개루프 이득은 약
 
 <div class="ics-card">
 
+![8 x 8 평면 DRAM 어레이](../screenshots/demo_dram_array.webp)
+
+### `dram_array`
+
+평면 1T1C DRAM 셀 `dram1t1c`(1.28 × 2.0 µm)의 8 × 8 어레이입니다. 셀은 액세스 트랜지스터와 약
+10 fF의 MOS 저장 커패시터(확산 영역 위의 poly 플레이트)로 이루어집니다. Dennard의 1968년 특허에
+나온 고전적인 평면 셀을 로직 공정에서 구현한 방식(MoSys 1T-SRAM)입니다. 행을 미러링해 셀 두 개가
+비트 라인 콘택과 플레이트를 공유합니다. 셀 시뮬레이션은 1과 0을 쓰고, VDD / 2로 프리차지한
+50 fF 비트 라인에 전하 공유로 읽습니다: +178 mV, −137 mV.
+
+</div>
+
+<div class="ics-card">
+
+![NAND 플래시 어레이](../screenshots/demo_nand_array.webp)
+
+### `nand_array`
+
+비트 라인 8개 × NAND 플래시 스트링 4개입니다(`nand_string`, Masuoka 외, IEDM 1987). 스트링은
+스트링 선택 게이트와 접지 선택 게이트 사이에 플로팅 게이트 셀 8개(플로팅 게이트는 poly, 워드
+라인은 poly2)로 이루어집니다. 각 셀은 트랜지스터와 층간 커패시터, 즉 플로팅 게이트의 등가 회로로
+추출됩니다. 저장된 전하는 플로팅 게이트의 초기 전압(`.ic`)이며, 스트링은 NAND 읽기를
+시뮬레이션합니다. 다른 워드 라인에 V_read = 4.5 V, 선택한 워드 라인에 0 V를 걸면 프로그램된
+셀은 비트 라인을 1 V로 유지하고 소거된 셀은 약 0.25 V까지 방전합니다. 셀(0.9 × 0.42 µm)은 BSIM4
+모델을 쓰며, 전하를 보존하는 커패시턴스 모델이라 읽기를 거쳐도 플로팅 게이트 전하가 유지됩니다.
+
+</div>
+
+<div class="ics-card">
+
 ![8 x 8 이미지 센서 픽셀 어레이](../screenshots/demo_pixel_array.webp)
 
 ### `pixel_array`
@@ -122,6 +152,10 @@ common-centroid 순서로 배치한 뒤 배선합니다. 개루프 이득은 약
 | `ota5t` | 5 트랜지스터 OTA: AC 개루프 이득 약 42 dB |
 | `sram6t` | DRC와 LVS를 통과한 6T SRAM 비트 셀: 과도 해석으로 쓰기와 유지 |
 | `sram_array` | `sram6t`의 8 × 8 어레이 |
+| `dram1t1c` | MOS 저장 커패시터를 쓴 평면 1T1C DRAM 셀, DRC와 LVS 통과: 1과 0의 쓰기, 프리차지, 전하 공유 읽기 |
+| `dram_array` | `dram1t1c`의 8 × 8 어레이, 셀 쌍이 콘택과 플레이트를 공유 |
+| `nand_string` | 선택 게이트와 플로팅 게이트 셀 8개로 된 NAND 플래시 스트링, DRC와 LVS 통과: 프로그램된 셀과 소거된 셀의 페이지 읽기 |
+| `nand_array` | `nand_string`의 비트 라인 8개 × 스트링 4개 |
 | `aps4t` | DRC와 LVS를 통과한 4T 이미지 센서 픽셀: 과도 해석으로 리셋, 적분, 전송 |
 | `pixel_array` | `aps4t`의 8 × 8 어레이 |
 | `inv_chain` | 배치된 `cmos_inverter` 인스턴스 4개 |
@@ -130,7 +164,7 @@ common-centroid 순서로 배치한 뒤 배선합니다. 개루프 이득은 약
 | `devices` | 모든 PCell의 인스턴스 각 1개 |
 
 회로도와 레이아웃이 모두 있는 셀(`full_adder`, `ota2s`, `nand2`, `nor2`, `ring_osc5`,
-`current_mirror`, `ota5t`, `sram6t`, `aps4t`)은 전체 플로를 실행할 수 있습니다. 시뮬레이션, 레이아웃
+`current_mirror`, `ota5t`, `sram6t`, `dram1t1c`, `nand_string`, `aps4t`)은 전체 플로를 실행할 수 있습니다. 시뮬레이션, 레이아웃
 열기, DRC와 LVS 실행, 기생 성분을 포함한 재시뮬레이션입니다.
 
 ## 데모 스크립트

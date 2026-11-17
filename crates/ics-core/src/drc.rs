@@ -2306,7 +2306,7 @@ mod tests {
         assert_eq!(d.rules[0].name, "metal2.ANT");
         assert_eq!(d.rules[0].rule.description(&t, &d.layer_names(&t)), "metal2 antenna ratio > 400");
         let Rule::Antenna { ref vias, .. } = d.rules[0].rule else { panic!() };
-        assert_eq!(vias.len(), 3, "contact, polycon and via1, not via2");
+        assert_eq!(vias.len(), 4, "contact, polycon, poly2con and via1, not via2");
         for bad in ["antenna poly 10", "antenna text 10", "antenna metal1"] {
             assert!(parse_deck(bad, &t).is_err(), "{bad}");
         }

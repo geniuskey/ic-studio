@@ -278,6 +278,10 @@ writes them to `Documents/IC Studio/Examples`.
 | `ota5t` | 5-transistor OTA (NMOS pair, PMOS mirror load); about 42 dB open-loop gain in AC |
 | `sram6t` | 6T SRAM thin cell (4.62 × 1.84 µm, point-symmetric, straight poly on two tracks), DRC and LVS clean; transient write and hold |
 | `sram_array` | 8 × 8 array of `sram6t`, mirrored in x and y so neighbours share edge contacts, with labelled word lines and bit lines |
+| `dram1t1c` | Planar 1T1C DRAM cell (1.28 × 2.0 µm) with a ≈ 10 fF MOS storage capacitor, DRC and LVS clean; write, VDD / 2 precharge and charge-sharing read of a 1 and a 0 |
+| `dram_array` | 8 × 8 array of `dram1t1c`, rows mirrored so cell pairs share the bit-line contact and the plate |
+| `nand_string` | NAND flash string: 8 floating-gate cells (poly floating gate, poly2 word line) with select gates, DRC and LVS clean; page read of a programmed and an erased cell |
+| `nand_array` | 8 bit lines × 4 strings of `nand_string`, mirrored so strings share contacts |
 | `aps4t` | 5.6 µm 4T image sensor pixel (transfer gate, floating diffusion, reset, source follower, row select) over an n+ / p-sub photodiode with 41 % fill factor, DRC and LVS clean; transient reset, integration and transfer |
 | `pixel_array` | 8 × 8 pixel array (AREF) of `aps4t` with labelled transfer / reset / select rows and column lines |
 | `full_adder` | 28T mirror full adder, placed and routed automatically from its netlist (no hand-drawn layout), DRC and LVS clean; transient over all eight input combinations |
@@ -287,7 +291,7 @@ writes them to `Documents/IC Studio/Examples`.
 | `inv_tiles` | 8 × 8 array of `inv_array`: 8192 inverters, two levels of hierarchy |
 | `devices` | One instance of every PCell (NMOS, PMOS, poly resistor, MOM capacitor) |
 
-The routed cells (`nand2`, `nor2`, `ring_osc5`, `current_mirror`, `ota5t`, `sram6t`, `aps4t`, `full_adder`, `ota2s`) run the whole
+The routed cells (`nand2`, `nor2`, `ring_osc5`, `current_mirror`, `ota5t`, `sram6t`, `dram1t1c`, `nand_string`, `aps4t`, `full_adder`, `ota2s`) run the whole
 flow: simulate the schematic, open the layout, run DRC and LVS, and simulate again with
 `--parasitics`.
 

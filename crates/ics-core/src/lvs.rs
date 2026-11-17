@@ -372,7 +372,10 @@ fn schematic_side(sch: &Schematic, opts: &LvsOptions, errors: &mut Vec<LvsError>
     let mut insts: Vec<_> = sch.instances.iter().collect();
     insts.sort_by(|a, b| a.name.cmp(&b.name));
     for inst in insts {
-        if matches!(inst.kind, DeviceKind::Ground | DeviceKind::Supply) || opts.ignore_kinds.contains(&inst.kind) {
+        if matches!(inst.kind, DeviceKind::Ground | DeviceKind::Supply)
+            || opts.ignore_kinds.contains(&inst.kind)
+            || inst.lvs_ignore()
+        {
             continue;
         }
         if opts.filter_off && matches!(inst.kind, DeviceKind::Nmos | DeviceKind::Pmos) {

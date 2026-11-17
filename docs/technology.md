@@ -20,10 +20,13 @@ A generic 180 nm-class technology, used by new projects and the demo. 1 dbu = 1 
 | pplus | 4 | metal3 | 11 |
 | poly | 5 | boundary | 62 |
 | contact | 6 | text | 63 |
-| metal1 | 7 | | |
+| metal1 | 7 | poly2 | 12 |
 
 Routing layers are poly and metal1 to metal3. Vias: `contact` (active to metal1),
-`polycon` (poly to metal1), `via1`, `via2`.
+`polycon` (poly to metal1), `poly2con` (poly2 to metal1), `via1`, `via2`. `poly2` is a second
+poly over the first: where it overlaps `poly` the extractor finds the capacitor `cpip`
+(interpoly ONO, 2.65 fF/µm², 13 nm equivalent oxide), the control gate to floating gate
+capacitance of the flash example `nand_string`.
 
 ## tech.json
 

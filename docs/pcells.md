@@ -121,7 +121,10 @@ whether it came from a PCell, a SKILL script, GDS import or hand drawing.
 
 A gate that is not a rectangle must split the diffusion into exactly two pieces (source and
 drain); otherwise it is skipped with the warning
-`gate ... does not separate two diffusion pieces`. For connectivity, any-angle shapes on
+`gate ... does not separate two diffusion pieces`. The exception is a gate that touches a
+single piece, such as a plate covering the end of a diffusion: it is a MOS capacitor (the
+storage capacitor of the planar DRAM example `dram1t1c`), with source and drain on that piece,
+W the edge against it and L = area / W. For connectivity, any-angle shapes on
 every layer are replaced by a staircase of narrow bands (a grid step, at least 10 dbu), so
 wires and contacts on them connect as drawn; device sizes always use the exact geometry.
 

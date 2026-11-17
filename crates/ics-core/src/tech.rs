@@ -1086,17 +1086,22 @@ impl Tech {
                 l("metal3", 11, [240, 170, 80, 120], FillStyle::CrossHatch, 280, 280, true),
                 l("text", 63, [255, 255, 255, 255], FillStyle::Outline, 0, 0, false),
                 l("boundary", 62, [160, 160, 170, 255], FillStyle::Outline, 0, 0, false).line(LineStyle::Dashed),
+                // Second poly (control gates of floating-gate cells, poly-poly capacitors), last so
+                // the indices of the layers above stay those of earlier projects.
+                l("poly2", 12, [240, 120, 170, 150], FillStyle::Hatch, 180, 240, false),
             ],
             vias: vec![
                 v("contact", "active", "contact", "metal1", 220, 250, 100, 60, 10.0, 0.1e-3),
                 v("polycon", "poly", "contact", "metal1", 220, 250, 100, 60, 10.0, 0.1e-3),
                 v("via1", "metal1", "via1", "metal2", 260, 260, 60, 60, 5.0, 0.2e-3),
                 v("via2", "metal2", "via2", "metal3", 260, 260, 60, 60, 5.0, 0.2e-3),
+                v("poly2con", "poly2", "contact", "metal1", 220, 250, 100, 60, 10.0, 0.1e-3),
             ],
             drc_deck: None,
             // Illustrative 180nm-class values (field oxide to substrate), not foundry data.
             caps: [
                 ("poly", 100.0, 45.0, 7.0, 7.5, 0.05e-3),
+                ("poly2", 90.0, 40.0, 7.0, 7.5, 0.05e-3),
                 ("metal1", 38.0, 40.0, 17.0, 0.08, 1.0e-3),
                 ("metal2", 16.0, 32.0, 20.0, 0.08, 1.0e-3),
                 ("metal3", 10.0, 28.0, 20.0, 0.06, 1.5e-3),
@@ -1114,7 +1119,17 @@ impl Tech {
             rules: DeviceRules::default(),
             devices: vec![],
             resistors: vec![],
-            capacitors: vec![],
+            // Interpoly dielectric (ONO, 13 nm equivalent oxide): the control-gate to
+            // floating-gate capacitance of flash cells, or a poly-poly capacitor.
+            capacitors: vec![CapDef {
+                name: "cpip".into(),
+                bottom: "poly".into(),
+                top: "poly2".into(),
+                layers: vec![],
+                exclude: vec![],
+                area: 2.65,
+                perimeter: 0.0,
+            }],
             models: None,
             signoff: vec![],
             pcell_layers: vec![],
