@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::schematic::{DeviceKind, Schematic};
+use crate::schematic::Schematic;
 use crate::sweep::Spec;
 use crate::units::parse_spice;
 
@@ -226,7 +226,7 @@ pub fn area(sch: &Schematic, setup: &OptSetup, values: &[f64]) -> f64 {
     let mos: Vec<f64> = sch
         .instances
         .iter()
-        .filter(|i| matches!(i.kind, DeviceKind::Nmos | DeviceKind::Pmos))
+        .filter(|i| i.kind.is_mos())
         .map(|i| num(i.param("w"), 0.0) * num(i.param("l"), 0.0) * num(i.param("m"), 1.0) * num(i.param("nf"), 1.0))
         .collect();
     if !mos.is_empty() {

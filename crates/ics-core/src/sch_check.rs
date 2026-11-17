@@ -60,7 +60,7 @@ fn is_device(kind: DeviceKind) -> bool {
 }
 
 fn is_mos(kind: DeviceKind) -> bool {
-    matches!(kind, DeviceKind::Nmos | DeviceKind::Pmos)
+    kind.is_mos()
 }
 
 fn is_ground(net: &str) -> bool {
@@ -274,7 +274,7 @@ fn params(cx: &mut Ctx) {
             DeviceKind::Resistor => value("r", true),
             DeviceKind::Capacitor => value("c", true),
             DeviceKind::Inductor => value("l", true),
-            DeviceKind::Nmos | DeviceKind::Pmos => {
+            DeviceKind::Nmos | DeviceKind::Pmos | DeviceKind::Nmos3 | DeviceKind::Pmos3 => {
                 for key in ["w", "l"] {
                     value(key, true);
                 }
@@ -447,7 +447,9 @@ fn dc_paths(cx: &mut Ctx) {
     let mut sets = NetSets::new();
     for inst in cx.devices() {
         let pins = cx.pins_of(inst.id);
-        let net = |name: &str| pins.iter().find(|p| p.name == name).map_or("", |p| p.net);
+        let conn = cx.conn;
+        // A 3-terminal MOS has no body pin; its body net comes from connectivity.
+        let net = |name: &str| pins.iter().find(|p| p.name == name).map(|p| p.net).or(conn.net_of(inst.id, name)).unwrap_or("");
         match inst.kind {
             DeviceKind::Resistor | DeviceKind::Inductor | DeviceKind::VSource => {
                 sets.union(net("p"), net("n"));
@@ -455,7 +457,7 @@ fn dc_paths(cx: &mut Ctx) {
             DeviceKind::Diode => {
                 sets.union(net("a"), net("k"));
             }
-            DeviceKind::Nmos | DeviceKind::Pmos => {
+            DeviceKind::Nmos | DeviceKind::Pmos | DeviceKind::Nmos3 | DeviceKind::Pmos3 => {
                 sets.union(net("d"), net("s"));
                 if !cx.bulk_floating(inst) {
                     sets.union(net("s"), net("b"));
@@ -530,6 +532,16 @@ mod tests {
         assert_eq!(pins.len(), 4);
         assert!(pins.iter().all(|f| f.instances == [m]));
         assert_eq!(pins.iter().filter(|f| f.severity == Severity::Info).count(), 1);
+    }
+
+    #[test]
+    fn three_terminal_mos_has_three_pins() {
+        let mut s = clean();
+        let m = s.add_instance(DeviceKind::Nmos3, Pt::new(20, 0), O);
+        let f = check(&s);
+        let pins: Vec<_> = f.iter().filter(|f| f.code == "unconnected-pin").collect();
+        assert_eq!(pins.len(), 3);
+        assert!(pins.iter().all(|f| f.instances == [m] && f.severity != Severity::Info));
     }
 
     #[test]

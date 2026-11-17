@@ -165,6 +165,12 @@ pub fn extract(sch: &Schematic) -> Connectivity {
             }
         }
     }
+    // A MOS without a body pin has its body on the net its `bulk` parameter names.
+    for inst in sch.instances.iter().filter(|i| i.kind.implicit_bulk()) {
+        let bulk = inst.param("bulk").trim();
+        let bulk = if bulk.is_empty() { inst.kind.default_bulk() } else { bulk };
+        conn.pin_nets.insert((inst.id, "b"), bulk.to_string());
+    }
     for w in &sch.wires {
         let root = dsu.find(point_node[&w.a]);
         let n = name_of(root);
@@ -194,6 +200,53 @@ mod tests {
         assert_eq!(conn.net_of(r, "n"), Some("out"));
         assert_eq!(conn.net_of(c, "p"), Some("out"));
         assert_eq!(conn.net_of(c, "n"), Some("0"));
+    }
+
+    #[test]
+    fn three_terminal_mos_body_is_its_bulk_net() {
+        let mut s = Schematic::default();
+        let n = s.add_instance(DeviceKind::Nmos3, Pt::new(0, 0), Orient::default());
+        let p = s.add_instance(DeviceKind::Pmos3, Pt::new(10, 0), Orient::default());
+        assert_eq!(s.instance(n).unwrap().pin_positions().len(), 3);
+        s.instance_mut(p).unwrap().params.insert("bulk".into(), "vpwr".into());
+        let conn = extract(&s);
+        assert_eq!(conn.net_of(n, "b"), Some("0"));
+        assert_eq!(conn.net_of(p, "b"), Some("vpwr"));
+    }
+
+    #[test]
+    fn body_pin_can_be_hidden_and_shown() {
+        let mut s = Schematic::default();
+        let m = s.add_instance(DeviceKind::Nmos, Pt::new(0, 0), Orient::default());
+        let b = s.instance(m).unwrap().pin_positions()[3].1;
+        s.add_label("vsub", b);
+        assert!(s.set_body_pin(m, false));
+        assert_eq!(s.instance(m).unwrap().kind, DeviceKind::Nmos3);
+        assert_eq!(extract(&s).net_of(m, "b"), Some("vsub"));
+        assert!(!s.set_body_pin(m, false));
+        assert!(s.set_body_pin(m, true));
+        assert_eq!(s.instance(m).unwrap().kind, DeviceKind::Nmos);
+        assert!(!s.instance(m).unwrap().params.contains_key("bulk"));
+        assert_eq!(extract(&s).net_of(m, "b"), Some("vsub"), "the label is still on the pin");
+
+        // The wires to a hidden body go, up to the pin they lead to.
+        let n = s.add_instance(DeviceKind::Nmos, Pt::new(40, 0), Orient::default());
+        let pins = s.instance(n).unwrap().pin_positions();
+        let (src, b) = (pins[2].1, pins[3].1);
+        let corner = Pt::new(b.x, src.y);
+        s.add_wire(b, corner);
+        s.add_wire(corner, src);
+        s.add_wire(src, Pt::new(src.x, src.y + 3));
+        s.add_instance(DeviceKind::Ground, Pt::new(src.x, src.y + 3), Orient::default());
+        let wires = s.wires.len();
+        s.set_body_pin(n, false);
+        assert_eq!(s.instance(n).unwrap().param("bulk"), "0");
+        assert_eq!(s.wires.len(), wires - 2, "the source wire to ground stays");
+
+        // An unwired body becomes the default rail.
+        let p = s.add_instance(DeviceKind::Pmos, Pt::new(20, 0), Orient::default());
+        s.set_body_pin(p, false);
+        assert_eq!(s.instance(p).unwrap().param("bulk"), "vdd");
     }
 
     #[test]

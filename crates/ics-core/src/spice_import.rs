@@ -384,7 +384,7 @@ fn row_of(kind: DeviceKind) -> i32 {
 /// Pin names of a symbol in SPICE node order.
 fn pin_order(kind: DeviceKind) -> &'static [&'static str] {
     match kind {
-        DeviceKind::Nmos | DeviceKind::Pmos => &["d", "g", "s", "b"],
+        DeviceKind::Nmos | DeviceKind::Pmos | DeviceKind::Nmos3 | DeviceKind::Pmos3 => &["d", "g", "s", "b"],
         DeviceKind::Diode => &["a", "k"],
         _ => &["p", "n"],
     }

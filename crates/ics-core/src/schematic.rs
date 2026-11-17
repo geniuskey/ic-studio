@@ -19,10 +19,31 @@ pub enum DeviceKind {
     Pmos,
     Ground,
     Supply,
+    /// NMOS without a body pin: the body connects to the net named by its `bulk` parameter.
+    Nmos3,
+    /// PMOS without a body pin: the body connects to the net named by its `bulk` parameter.
+    Pmos3,
 }
 
 impl DeviceKind {
-    pub const ALL: [DeviceKind; 10] = [
+    pub const ALL: [DeviceKind; 12] = [
+        DeviceKind::Resistor,
+        DeviceKind::Capacitor,
+        DeviceKind::Inductor,
+        DeviceKind::VSource,
+        DeviceKind::ISource,
+        DeviceKind::Diode,
+        DeviceKind::Nmos,
+        DeviceKind::Pmos,
+        DeviceKind::Nmos3,
+        DeviceKind::Pmos3,
+        DeviceKind::Ground,
+        DeviceKind::Supply,
+    ];
+
+    /// The kinds of the device library: one NMOS and one PMOS, placed with or without a body pin
+    /// as the user prefers ([`with_body_pin`](Self::with_body_pin)).
+    pub const PALETTE: [DeviceKind; 10] = [
         DeviceKind::Resistor,
         DeviceKind::Capacitor,
         DeviceKind::Inductor,
@@ -35,6 +56,38 @@ impl DeviceKind {
         DeviceKind::Supply,
     ];
 
+    /// This MOS kind with (`true`) or without a body pin; other kinds are returned unchanged.
+    pub fn with_body_pin(self, body: bool) -> DeviceKind {
+        match (self, body) {
+            (DeviceKind::Nmos | DeviceKind::Nmos3, true) => DeviceKind::Nmos,
+            (DeviceKind::Pmos | DeviceKind::Pmos3, true) => DeviceKind::Pmos,
+            (DeviceKind::Nmos | DeviceKind::Nmos3, false) => DeviceKind::Nmos3,
+            (DeviceKind::Pmos | DeviceKind::Pmos3, false) => DeviceKind::Pmos3,
+            (k, _) => k,
+        }
+    }
+
+    /// A MOS transistor, with or without a body pin.
+    pub fn is_mos(self) -> bool {
+        matches!(self, DeviceKind::Nmos | DeviceKind::Pmos | DeviceKind::Nmos3 | DeviceKind::Pmos3)
+    }
+
+    /// A PMOS transistor, with or without a body pin.
+    pub fn is_pmos(self) -> bool {
+        matches!(self, DeviceKind::Pmos | DeviceKind::Pmos3)
+    }
+
+    /// A MOS transistor whose body is not a pin but the net of its `bulk` parameter.
+    pub fn implicit_bulk(self) -> bool {
+        matches!(self, DeviceKind::Nmos3 | DeviceKind::Pmos3)
+    }
+
+    /// The net the body of an [`implicit_bulk`](Self::implicit_bulk) device connects to when
+    /// its `bulk` parameter is empty: ground for NMOS, `vdd` for PMOS.
+    pub fn default_bulk(self) -> &'static str {
+        if self.is_pmos() { "vdd" } else { "0" }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             DeviceKind::Resistor => "Resistor",
@@ -45,6 +98,8 @@ impl DeviceKind {
             DeviceKind::Diode => "Diode",
             DeviceKind::Nmos => "NMOS",
             DeviceKind::Pmos => "PMOS",
+            DeviceKind::Nmos3 => "NMOS (3-terminal)",
+            DeviceKind::Pmos3 => "PMOS (3-terminal)",
             DeviceKind::Ground => "Ground",
             DeviceKind::Supply => "Supply Net",
         }
@@ -53,6 +108,7 @@ impl DeviceKind {
     /// Keyboard shortcut used by the schematic editor to place this device.
     pub fn shortcut(self) -> Option<char> {
         Some(match self {
+            DeviceKind::Nmos3 | DeviceKind::Pmos3 => return None,
             DeviceKind::Resistor => 'R',
             DeviceKind::Capacitor => 'C',
             DeviceKind::Inductor => 'L',
@@ -75,7 +131,7 @@ impl DeviceKind {
             DeviceKind::VSource => Some('V'),
             DeviceKind::ISource => Some('I'),
             DeviceKind::Diode => Some('D'),
-            DeviceKind::Nmos | DeviceKind::Pmos => Some('M'),
+            DeviceKind::Nmos | DeviceKind::Pmos | DeviceKind::Nmos3 | DeviceKind::Pmos3 => Some('M'),
             DeviceKind::Ground | DeviceKind::Supply => None,
         }
     }
@@ -88,7 +144,7 @@ impl DeviceKind {
             DeviceKind::VSource => "V",
             DeviceKind::ISource => "I",
             DeviceKind::Diode => "D",
-            DeviceKind::Nmos | DeviceKind::Pmos => "M",
+            DeviceKind::Nmos | DeviceKind::Pmos | DeviceKind::Nmos3 | DeviceKind::Pmos3 => "M",
             DeviceKind::Ground => "GND",
             DeviceKind::Supply => "VDD",
         }
@@ -105,6 +161,8 @@ impl DeviceKind {
             DeviceKind::Diode => vec![("model", "dmod")],
             DeviceKind::Nmos => vec![("model", "nmos"), ("w", "1u"), ("l", "180n"), ("m", "1")],
             DeviceKind::Pmos => vec![("model", "pmos"), ("w", "2u"), ("l", "180n"), ("m", "1")],
+            DeviceKind::Nmos3 => vec![("model", "nmos"), ("w", "1u"), ("l", "180n"), ("m", "1"), ("bulk", "0")],
+            DeviceKind::Pmos3 => vec![("model", "pmos"), ("w", "2u"), ("l", "180n"), ("m", "1"), ("bulk", "vdd")],
             DeviceKind::Ground => vec![],
             DeviceKind::Supply => vec![("net", "vdd")],
         }
@@ -118,7 +176,7 @@ impl DeviceKind {
             DeviceKind::Inductor => Some("l"),
             DeviceKind::VSource | DeviceKind::ISource => Some("dc"),
             DeviceKind::Diode => Some("model"),
-            DeviceKind::Nmos | DeviceKind::Pmos => None,
+            DeviceKind::Nmos | DeviceKind::Pmos | DeviceKind::Nmos3 | DeviceKind::Pmos3 => None,
             DeviceKind::Ground => None,
             DeviceKind::Supply => Some("net"),
         }
@@ -284,6 +342,25 @@ mod symbols {
         }
     }
 
+    /// MOS without a body pin. The arrow sits on the source lead: out of the channel for NMOS,
+    /// into it for PMOS.
+    fn mos3(pmos: bool) -> Symbol {
+        let mut s = mos(pmos);
+        s.pins.retain(|p| p.name != "b");
+        s.prims.retain(|p| {
+            !matches!(p, Prim::Fill(_))
+                && !matches!(p, Prim::Line(x0, y0, x1, y1) if *x0 == 0.0 && *y0 == 0.0 && *x1 == 2.0 && *y1 == 0.0)
+        });
+        s.prims.push(if pmos {
+            Prim::Fill(vec![(0.15, -0.7), (0.5, -0.9), (0.5, -0.5)])
+        } else {
+            Prim::Fill(vec![(0.8, 0.7), (0.45, 0.5), (0.45, 0.9)])
+        });
+        s.bbox = (-2.0, -2.0, 1.2, 2.0);
+        s.label_at = (1.5, -1.9);
+        s
+    }
+
     fn ground() -> Symbol {
         Symbol {
             pins: vec![SymPin { name: "gnd", at: Pt::new(0, 0) }],
@@ -319,6 +396,8 @@ mod symbols {
                 (DeviceKind::Diode, diode()),
                 (DeviceKind::Nmos, mos(false)),
                 (DeviceKind::Pmos, mos(true)),
+                (DeviceKind::Nmos3, mos3(false)),
+                (DeviceKind::Pmos3, mos3(true)),
                 (DeviceKind::Ground, ground()),
                 (DeviceKind::Supply, supply()),
             ]
@@ -459,6 +538,56 @@ impl Schematic {
 
     pub fn instance(&self, id: u64) -> Option<&Instance> {
         self.instances.iter().find(|i| i.id == id)
+    }
+
+    /// Draw MOS instance `id` with (`true`) or without its body pin, keeping its connections:
+    /// hiding the pin moves the body's net into the `bulk` parameter (the default rail when the
+    /// pin was not wired) and removes the wires left dangling from it; showing it drops the
+    /// parameter, so the pin must then be wired (an unwired body is tied to the source). Returns
+    /// whether the instance changed.
+    pub fn set_body_pin(&mut self, id: u64, body: bool) -> bool {
+        let Some(inst) = self.instance(id) else { return false };
+        let kind = inst.kind.with_body_pin(body);
+        if kind == inst.kind {
+            return false;
+        }
+        let body_at = inst.pin_positions().into_iter().find(|(n, _)| *n == "b").map(|(_, p)| p);
+        let bulk = (!body).then(|| {
+            let conn = crate::connectivity::extract(self);
+            let floating = body_at.is_some_and(|p| conn.unconnected_pins.contains(&p));
+            match conn.net_of(id, "b") {
+                Some(n) if !floating => n.to_string(),
+                _ => kind.default_bulk().to_string(),
+            }
+        });
+        let inst = self.instance_mut(id).expect("instance");
+        inst.kind = kind;
+        match bulk {
+            Some(b) => inst.params.insert("bulk".into(), b),
+            None => inst.params.remove("bulk"),
+        };
+        if let Some(p) = body_at.filter(|_| !body) {
+            self.remove_dangling_from(p);
+        }
+        true
+    }
+
+    /// Remove the wire chain that ends at `p` with nothing else there, up to the first pin,
+    /// label or junction.
+    fn remove_dangling_from(&mut self, p: Pt) {
+        let mut ends = vec![p];
+        while let Some(p) = ends.pop() {
+            let held = self.instances.iter().any(|i| i.pin_positions().iter().any(|(_, q)| *q == p))
+                || self.labels.iter().any(|l| l.pos == p)
+                || self.wires.iter().any(|w| w.a != p && w.b != p && crate::geom::on_segment(p, w.a, w.b));
+            let touching: Vec<usize> =
+                self.wires.iter().enumerate().filter(|(_, w)| w.a == p || w.b == p).map(|(k, _)| k).collect();
+            if held || touching.len() != 1 {
+                continue;
+            }
+            let w = self.wires.remove(touching[0]);
+            ends.push(if w.a == p { w.b } else { w.a });
+        }
     }
 
     pub fn instance_mut(&mut self, id: u64) -> Option<&mut Instance> {

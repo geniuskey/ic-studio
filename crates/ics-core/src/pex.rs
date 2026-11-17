@@ -30,7 +30,7 @@ use crate::lvs::{LvsOptions, LvsReport, compare};
 use crate::netlist::spice_name;
 use crate::project::{CellRef, Project};
 use crate::region::{BoolOp, Region};
-use crate::schematic::{DeviceKind, Schematic};
+use crate::schematic::Schematic;
 use crate::tech::LengthUnit;
 use crate::tech::Tech;
 
@@ -204,12 +204,7 @@ pub fn junction_params(
     lde: bool,
 ) -> BTreeMap<String, String> {
     let conn = connectivity::extract(sch);
-    let insts: HashMap<&str, _> = sch
-        .instances
-        .iter()
-        .filter(|i| matches!(i.kind, DeviceKind::Nmos | DeviceKind::Pmos))
-        .map(|i| (i.name.as_str(), i))
-        .collect();
+    let insts: HashMap<&str, _> = sch.instances.iter().filter(|i| i.kind.is_mos()).map(|i| (i.name.as_str(), i)).collect();
     let devs: HashMap<&str, _> = x.devices.iter().map(|d| (d.name.as_str(), d)).collect();
     let to_layout: HashMap<&str, &str> = rep.nets.iter().map(|(s, l)| (s.as_str(), l.as_str())).collect();
     let f = unit.per_metre();
@@ -813,7 +808,7 @@ mod tests {
         let x = extract(&lay, &crate::hier::NoCells, &tech);
         assert_eq!(x.devices.len(), gates.len());
         let mut sch = Schematic::default();
-        let id = sch.add_instance(DeviceKind::Nmos, Pt::new(0, 0), Orient::default());
+        let id = sch.add_instance(crate::DeviceKind::Nmos, Pt::new(0, 0), Orient::default());
         let pins = sch.instance(id).unwrap().pin_positions();
         for (pin, net) in [("d", "d"), ("g", "g"), ("s", "s")] {
             sch.add_label(net, pins.iter().find(|(n, _)| *n == pin).unwrap().1);

@@ -1072,6 +1072,59 @@ fn schematic_place_and_undo() {
     assert_eq!(instance_count(&h), before, "undo should remove it");
 }
 
+/// MOS symbol style: with the 3-terminal style, N places an NMOS without a body pin; an existing
+/// device switches style keeping its body net.
+#[test]
+fn schematic_mos_symbol_style() {
+    let mut h = app(LaunchArgs {
+        project: None,
+        demo: true,
+        workspace: Some("schematic".into()),
+        cell: Some("rc_lowpass".into()),
+        run: false,
+    });
+    h.run_steps(4);
+    h.state_mut().command(Command::MosSymbol(false));
+    h.run_steps(2);
+    let p = egui::pos2(760.0, 640.0);
+    h.hover_at(p);
+    h.run_steps(2);
+    h.key_press(egui::Key::N);
+    h.run_steps(2);
+    h.hover_at(p);
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos: p,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        });
+        h.step();
+    }
+    h.run_steps(3);
+    let kinds = |h: &Harness<'_, IcStudio>, cell: &str| -> Vec<ics_core::DeviceKind> {
+        let p = h.state().project().unwrap();
+        let (_, c) = p.all_cells().find(|(_, c)| c.name == cell).unwrap();
+        c.schematic.as_ref().unwrap().instances.iter().map(|i| i.kind).filter(|k| k.is_mos()).collect()
+    };
+    assert_eq!(kinds(&h, "rc_lowpass"), [ics_core::DeviceKind::Nmos3]);
+    h.key_press(egui::Key::Escape);
+
+    // Show the inverter with both devices in the 3-terminal style.
+    let p = h.state_mut().project_mut().unwrap();
+    let (r, _) = p.all_cells().find(|(_, c)| c.name == "cmos_inverter").unwrap();
+    h.state_mut().command(Command::OpenCell(r.clone(), None));
+    let p = h.state_mut().project_mut().unwrap();
+    let sch = p.cell_mut(&r).unwrap().schematic.as_mut().unwrap();
+    let ids: Vec<u64> = sch.instances.iter().filter(|i| i.kind.is_mos()).map(|i| i.id).collect();
+    for id in ids {
+        assert!(sch.set_body_pin(id, false));
+    }
+    assert!(sch.instances.iter().filter(|i| i.kind.is_mos()).all(|i| ["0", "vdd"].contains(&i.param("bulk"))));
+    settle(&mut h, "03b_schematic_mos3");
+    shot(&mut h, "03b_schematic_mos3");
+}
+
 /// Live mode: MCP tool calls arriving over the bridge channel run on the open project and
 /// switch the window to their result.
 #[test]

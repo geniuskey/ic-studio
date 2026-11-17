@@ -640,12 +640,8 @@ mod tests {
         let p = crate::examples::demo_project();
         let r = CellRef::new("work", "cmos_inverter");
         let sch = p.cell(&r).unwrap().schematic.as_ref().unwrap();
-        let by_element: BTreeMap<String, f64> = sch
-            .instances
-            .iter()
-            .filter(|i| matches!(i.kind, crate::schematic::DeviceKind::Pmos))
-            .map(|i| (element_name(i, &p.tech), -2e-4))
-            .collect();
+        let by_element: BTreeMap<String, f64> =
+            sch.instances.iter().filter(|i| i.kind.is_pmos()).map(|i| (element_name(i, &p.tech), -2e-4)).collect();
         let currents = layout_currents(&p, &r, &by_element).unwrap();
         assert_eq!(currents.values().filter(|a| **a > 0.0).count(), 1, "{currents:?}");
         let rep = analyze_cell(&p, &r, "vdd", &currents).unwrap();

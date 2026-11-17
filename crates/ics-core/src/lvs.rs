@@ -378,7 +378,7 @@ fn schematic_side(sch: &Schematic, opts: &LvsOptions, errors: &mut Vec<LvsError>
         {
             continue;
         }
-        if opts.filter_off && matches!(inst.kind, DeviceKind::Nmos | DeviceKind::Pmos) {
+        if opts.filter_off && inst.kind.is_mos() {
             let floating = inst.pin_positions().iter().any(|(n, p)| *n == "b" && conn.unconnected_pins.contains(p));
             let bulk = conn.net_of(inst.id, if floating { "s" } else { "b" });
             if bulk.is_some() && conn.net_of(inst.id, "g") == bulk {
@@ -387,8 +387,8 @@ fn schematic_side(sch: &Schematic, opts: &LvsOptions, errors: &mut Vec<LvsError>
         }
         *count += 1;
         let kind = match inst.kind {
-            DeviceKind::Nmos => Kind::Nmos,
-            DeviceKind::Pmos => Kind::Pmos,
+            DeviceKind::Nmos | DeviceKind::Nmos3 => Kind::Nmos,
+            DeviceKind::Pmos | DeviceKind::Pmos3 => Kind::Pmos,
             DeviceKind::Resistor => Kind::Res,
             DeviceKind::Capacitor => Kind::Cap,
             k => {

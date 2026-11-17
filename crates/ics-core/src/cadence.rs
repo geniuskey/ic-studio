@@ -550,8 +550,9 @@ impl SymbolMap {
 
 fn kind_name(k: DeviceKind) -> Option<&'static str> {
     Some(match k {
-        DeviceKind::Nmos => "nmos",
-        DeviceKind::Pmos => "pmos",
+        // A 3-terminal MOS is written as the 4-terminal symbol with its body on the bulk net.
+        DeviceKind::Nmos | DeviceKind::Nmos3 => "nmos",
+        DeviceKind::Pmos | DeviceKind::Pmos3 => "pmos",
         DeviceKind::Resistor => "resistor",
         DeviceKind::Capacitor => "capacitor",
         DeviceKind::Inductor => "inductor",
@@ -648,7 +649,8 @@ pub fn skill_schematic(sch: &Schematic, lib: &str, cell: &str, map: &SymbolMap, 
                 s += &format!("  dbReplaceProp(inst {} \"string\" {})\n", skill_str(theirs), skill_str(v));
             }
         }
-        for (pin, _) in inst.pin_positions() {
+        let body = inst.kind.implicit_bulk().then_some("b");
+        for pin in inst.pin_positions().into_iter().map(|(p, _)| p).chain(body) {
             let Some(term) = sym.terms.get(pin) else { continue };
             let net = conn.net_of(inst.id, pin).unwrap_or("").to_string();
             let net = if net == "0" || net.eq_ignore_ascii_case("gnd") { "gnd!".to_string() } else { net };
@@ -706,7 +708,7 @@ CC0 mid gnd! 10f $[mimcap]
         let imp = import_cdl(CDL, &Tech::generic(), None).unwrap();
         assert_eq!(imp.flat.top, "buf");
         let sch = &imp.imported.schematic;
-        assert_eq!(sch.instances.iter().filter(|i| matches!(i.kind, DeviceKind::Nmos | DeviceKind::Pmos)).count(), 4);
+        assert_eq!(sch.instances.iter().filter(|i| i.kind.is_mos()).count(), 4);
         let conn = connectivity::extract(sch);
         let m = sch.instance_by_name("MI0/M1").unwrap();
         assert_eq!(conn.net_of(m.id, "d"), Some("mid"));
@@ -730,7 +732,7 @@ CC0 mid gnd! 10f $[mimcap]
             .instances
             .iter()
             .map(|i| match i.kind {
-                DeviceKind::Nmos | DeviceKind::Pmos => 4,
+                DeviceKind::Nmos | DeviceKind::Pmos | DeviceKind::Nmos3 | DeviceKind::Pmos3 => 4,
                 DeviceKind::Ground | DeviceKind::Supply => 0,
                 _ => 2,
             })
@@ -763,10 +765,9 @@ CC0 mid gnd! 10f $[mimcap]
             let imp = import_cdl(&cdl, &p.tech, None).unwrap_or_else(|e| panic!("{cell}: {e}\n{cdl}"));
             let back = &imp.imported.schematic;
             let (a, b) = (connectivity::extract(sch), connectivity::extract(back));
-            let mos =
-                |s: &Schematic| s.instances.iter().filter(|i| matches!(i.kind, DeviceKind::Nmos | DeviceKind::Pmos)).count();
+            let mos = |s: &Schematic| s.instances.iter().filter(|i| i.kind.is_mos()).count();
             assert_eq!(mos(sch), mos(back), "{cell}");
-            for i in sch.instances.iter().filter(|i| matches!(i.kind, DeviceKind::Nmos | DeviceKind::Pmos)) {
+            for i in sch.instances.iter().filter(|i| i.kind.is_mos()) {
                 let j = back
                     .instances
                     .iter()

@@ -491,7 +491,7 @@ mod tests {
                 inst.params.insert(k.to_string(), v.to_string());
             }
         }
-        for inst in sch.instances.iter_mut().filter(|i| matches!(i.kind, DeviceKind::Nmos | DeviceKind::Pmos)) {
+        for inst in sch.instances.iter_mut().filter(|i| i.kind.is_mos()) {
             inst.params.insert(crate::sdl::MATCH_PARAM.into(), "none".into());
         }
         sch

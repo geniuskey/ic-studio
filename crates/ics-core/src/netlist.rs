@@ -93,8 +93,8 @@ fn fmt_num(v: f64) -> String {
 pub fn element_name(inst: &Instance, tech: &Tech) -> String {
     let name = spice_name(inst);
     match inst.kind {
-        DeviceKind::Nmos | DeviceKind::Pmos
-            if tech.mos_device(inst.kind == DeviceKind::Pmos, inst.param("model")).is_some_and(|d| d.subckt) =>
+        DeviceKind::Nmos | DeviceKind::Pmos | DeviceKind::Nmos3 | DeviceKind::Pmos3
+            if tech.mos_device(inst.kind.is_pmos(), inst.param("model")).is_some_and(|d| d.subckt) =>
         {
             format!("X{name}")
         }
@@ -154,12 +154,12 @@ pub fn netlist_for(sch: &Schematic, tech: &Tech, corner: &str) -> Netlist {
                 needs_diode = true;
                 format!("{name} {} {} {}", net("a"), net("k"), inst.param("model"))
             }
-            DeviceKind::Nmos | DeviceKind::Pmos => {
+            DeviceKind::Nmos | DeviceKind::Pmos | DeviceKind::Nmos3 | DeviceKind::Pmos3 => {
                 needs_mos = true;
                 let bulk_pin = inst.pin_positions().into_iter().find(|(n, _)| *n == "b").map(|(_, p)| p);
                 let bulk_floating = bulk_pin.is_some_and(|p| conn.unconnected_pins.contains(&p));
                 let bulk = if bulk_floating { net("s") } else { net("b") };
-                let model = match tech.mos_device(inst.kind == DeviceKind::Pmos, inst.param("model")) {
+                let model = match tech.mos_device(inst.kind.is_pmos(), inst.param("model")) {
                     Some(d) => d.name.clone(),
                     None => {
                         if !tech.devices.is_empty() {
@@ -193,9 +193,8 @@ pub fn netlist_for(sch: &Schematic, tech: &Tech, corner: &str) -> Netlist {
     }
 
     for p in &conn.unconnected_pins {
-        let owner = sch.instances.iter().find(|i| {
-            i.pin_positions().iter().any(|(n, q)| q == p && !(*n == "b" && matches!(i.kind, DeviceKind::Nmos | DeviceKind::Pmos)))
-        });
+        let owner =
+            sch.instances.iter().find(|i| i.pin_positions().iter().any(|(n, q)| q == p && !(*n == "b" && i.kind.is_mos())));
         if let Some(o) = owner {
             warnings.push(format!("Unconnected pin on {} at ({}, {})", o.name, p.x, p.y));
         }
@@ -227,6 +226,31 @@ pub fn netlist_for(sch: &Schematic, tech: &Tech, corner: &str) -> Netlist {
 mod tests {
     use super::*;
     use crate::geom::{Orient, Pt};
+
+    #[test]
+    fn three_terminal_mos_body_goes_to_its_bulk_net() {
+        let mut s = Schematic::default();
+        let n = s.add_instance(DeviceKind::Nmos3, Pt::new(0, 0), Orient::default());
+        let p = s.add_instance(DeviceKind::Pmos3, Pt::new(10, 0), Orient::default());
+        for (id, d, g, src) in [(n, "dn", "gn", "sn"), (p, "dp", "gp", "sp")] {
+            for (pin, at) in s.instance(id).unwrap().pin_positions() {
+                s.add_label(
+                    match pin {
+                        "d" => d,
+                        "g" => g,
+                        _ => src,
+                    },
+                    at,
+                );
+            }
+        }
+        s.instance_mut(p).unwrap().params.insert("bulk".into(), "vnw".into());
+        let nl = netlist(&s);
+        let line = |name: &str| nl.body.lines().find(|l| l.starts_with(name)).unwrap().to_string();
+        assert!(line("M1").starts_with("M1 dn gn sn 0 "), "{}", nl.body);
+        assert!(line("M2").starts_with("M2 dp gp sp vnw "), "{}", nl.body);
+        assert!(!nl.warnings.iter().any(|w| w.contains("Unconnected")), "{:?}", nl.warnings);
+    }
 
     #[test]
     fn simple_deck() {

@@ -35,7 +35,7 @@ struct Graph {
 
 fn role(kind: DeviceKind, pin: &'static str) -> &'static str {
     match (kind, pin) {
-        (DeviceKind::Nmos | DeviceKind::Pmos, "d" | "s") => "sd",
+        (DeviceKind::Nmos | DeviceKind::Pmos | DeviceKind::Nmos3 | DeviceKind::Pmos3, "d" | "s") => "sd",
         _ => pin,
     }
 }
@@ -196,7 +196,7 @@ pub fn place_like(project: &mut Project, reference: &CellRef, target: &CellRef) 
     for (rdev, insts) in &units {
         let Some(&tdev) = dev_map.get(rdev) else { continue };
         let Some(ti) = tsch.instances.iter().find(|i| i.name == tdev) else { continue };
-        if !matches!(ti.kind, DeviceKind::Nmos | DeviceKind::Pmos) {
+        if !ti.kind.is_mos() {
             continue;
         }
         let mut pc = mos_pcell(ti, &tech)?;
@@ -259,7 +259,7 @@ pub fn place_like(project: &mut Project, reference: &CellRef, target: &CellRef) 
     let unmatched: Vec<&str> = tsch
         .instances
         .iter()
-        .filter(|i| matches!(i.kind, DeviceKind::Nmos | DeviceKind::Pmos))
+        .filter(|i| i.kind.is_mos())
         .filter(|i| !out.instances.iter().any(|o| o.name.as_deref().map(device_of) == Some(i.name.as_str())))
         .map(|i| i.name.as_str())
         .collect();
@@ -283,7 +283,7 @@ mod tests {
         let sch = p.cell(&r).unwrap().schematic.clone().unwrap();
         let mut renamed = sch.clone();
         for i in &mut renamed.instances {
-            if matches!(i.kind, DeviceKind::Nmos | DeviceKind::Pmos) {
+            if i.kind.is_mos() {
                 i.name = format!("X{}", i.name);
             }
         }
@@ -303,7 +303,7 @@ mod tests {
         copy.layout = None;
         if let Some(s) = copy.schematic.as_mut() {
             for i in &mut s.instances {
-                if matches!(i.kind, DeviceKind::Nmos | DeviceKind::Pmos) {
+                if i.kind.is_mos() {
                     i.name = format!("N{}", i.name);
                 }
             }

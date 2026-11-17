@@ -141,6 +141,9 @@ pub struct SchematicEditor {
     conn_cache: Option<(Schematic, Connectivity)>,
     /// Actions queued by menus and `Command::Sch`, run by the next canvas frame.
     pub actions: Vec<SchAction>,
+    /// New MOS devices are drawn with a body pin (`true`) or without one, the body on a rail and
+    /// the arrow on the source. Kept in the app settings.
+    pub mos_body_pin: bool,
 }
 
 impl Default for SchematicEditor {
@@ -161,6 +164,7 @@ impl Default for SchematicEditor {
             show_grid: true,
             conn_cache: None,
             actions: Vec::new(),
+            mos_body_pin: true,
         }
     }
 }
@@ -284,7 +288,7 @@ pub fn draw_schematic(painter: &egui::Painter, view: &View2D, rect: Rect, sch: &
         match inst.kind {
             DeviceKind::Ground => {}
             DeviceKind::Supply => lines.push(inst.param("net").to_string()),
-            DeviceKind::Nmos | DeviceKind::Pmos => {
+            DeviceKind::Nmos | DeviceKind::Pmos | DeviceKind::Nmos3 | DeviceKind::Pmos3 => {
                 lines.push(inst.name.clone());
                 lines.push(format!("{}/{}", inst.param("w"), inst.param("l")));
             }
@@ -680,8 +684,8 @@ impl SchematicEditor {
                     item(ui, SchAction::Tool(SchTool::Wire), true, &mut picked);
                     item(ui, SchAction::Tool(SchTool::Label), true, &mut picked);
                     ui.menu_button("Place Device", |ui| {
-                        for k in DeviceKind::ALL {
-                            item(ui, SchAction::Tool(SchTool::Place(k)), true, &mut picked);
+                        for k in DeviceKind::PALETTE {
+                            item(ui, SchAction::Tool(SchTool::Place(k.with_body_pin(self.mos_body_pin))), true, &mut picked);
                         }
                     });
                     ui.separator();
@@ -772,10 +776,10 @@ impl SchematicEditor {
                 }
                 Key::T => self.set_tool(SchTool::Label),
                 _ => {
-                    for kind in DeviceKind::ALL {
+                    for kind in DeviceKind::PALETTE {
                         let Some(c) = kind.shortcut() else { continue };
                         if Key::from_name(&c.to_string()) == Some(k) && !shift {
-                            self.set_tool(SchTool::Place(kind));
+                            self.set_tool(SchTool::Place(kind.with_body_pin(self.mos_body_pin)));
                         }
                     }
                 }
@@ -1202,6 +1206,24 @@ impl SchematicEditor {
                     return false;
                 };
                 theme::section(ui, before.kind.label());
+                if before.kind.is_mos() {
+                    let has_body = !before.kind.implicit_bulk();
+                    let mut body = has_body;
+                    ui.horizontal(|ui| {
+                        ui.label("Symbol");
+                        ui.selectable_value(&mut body, true, "4-terminal")
+                            .on_hover_text("The body is a pin to wire (unwired, it is tied to the source)");
+                        ui.selectable_value(&mut body, false, "3-terminal").on_hover_text(
+                            "No body pin, the arrow on the source: the body connects to the net of the bulk parameter",
+                        );
+                    });
+                    if body != has_body {
+                        self.history.push(sch);
+                        sch.set_body_pin(id, body);
+                        return true;
+                    }
+                    ui.add_space(4.0);
+                }
                 let mut inst = before.clone();
                 let mut focus_gained = false;
                 egui::Grid::new("inst_props").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
@@ -1324,7 +1346,7 @@ fn param_hint(kind: DeviceKind, k: &str) -> &'static str {
     match (kind, k) {
         (_, "tran") => "PULSE(0 1 0 1n 1n 5n 10n)",
         (_, "ac") => "e.g. 1",
-        (DeviceKind::Nmos | DeviceKind::Pmos, "l") => "180n",
+        (DeviceKind::Nmos | DeviceKind::Pmos | DeviceKind::Nmos3 | DeviceKind::Pmos3, "l") => "180n",
         _ => "",
     }
 }
@@ -1342,9 +1364,26 @@ pub fn device_palette(ui: &mut egui::Ui, editor: &mut SchematicEditor) {
         ui.add_space(6.0);
     }
     theme::section(ui, "Device Library · analogLib");
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("MOS").color(pal.text_weak));
+        let mut body = editor.mos_body_pin;
+        ui.selectable_value(&mut body, true, "4-terminal").on_hover_text("Place MOS devices with a body pin to wire");
+        ui.selectable_value(&mut body, false, "3-terminal").on_hover_text(
+            "Place MOS devices without a body pin, the arrow on the source: the body is on ground (NMOS) or vdd (PMOS), set by the bulk parameter",
+        );
+        if body != editor.mos_body_pin {
+            editor.mos_body_pin = body;
+            if let SchTool::Place(k) = editor.tool {
+                editor.tool = SchTool::Place(k.with_body_pin(body));
+            }
+        }
+    });
+    ui.add_space(4.0);
     let cell = Vec2::new(ui.available_width() / 2.0 - 4.0, 64.0);
     egui::Grid::new("devgrid").num_columns(2).spacing([6.0, 6.0]).show(ui, |ui| {
-        for (i, kind) in DeviceKind::ALL.iter().enumerate() {
+        let body = editor.mos_body_pin;
+        for (i, kind) in DeviceKind::PALETTE.iter().map(|k| k.with_body_pin(body)).enumerate() {
+            let kind = &kind;
             let active = editor.tool == SchTool::Place(*kind);
             let (r, painter) = ui.allocate_painter(cell, Sense::click());
             let fill = if active {
@@ -1374,11 +1413,12 @@ pub fn device_palette(ui: &mut egui::Ui, editor: &mut SchematicEditor) {
             painter.text(
                 r.rect.center_bottom() - Vec2::new(0.0, 4.0),
                 Align2::CENTER_BOTTOM,
-                kind.label(),
+                // The MOS toggle above says which symbol; the tile keeps the short name.
+                kind.with_body_pin(true).label(),
                 FontId::proportional(11.0),
                 pal.text_weak,
             );
-            if let Some(c) = kind.shortcut() {
+            if let Some(c) = kind.with_body_pin(true).shortcut() {
                 painter.text(
                     r.rect.right_top() + Vec2::new(-6.0, 4.0),
                     Align2::RIGHT_TOP,

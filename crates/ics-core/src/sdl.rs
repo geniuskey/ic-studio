@@ -137,7 +137,7 @@ pub fn mos_pcell(inst: &Instance, tech: &Tech) -> Result<PCell, String> {
     let max_w = (MAX_FINGER_W_UM * tech.dbu_per_um as f64) as i64;
     let split = if max_w > 0 { ((w + max_w - 1) / max_w).max(1) } else { 1 };
     let fingers = u32::try_from(split).ok().and_then(|s| s.checked_mul(m)).ok_or("too many fingers")?;
-    let pmos = inst.kind == DeviceKind::Pmos;
+    let pmos = inst.kind.is_pmos();
     // Name the PDK device only when it is not the polarity's default.
     let device = match (tech.mos_device(pmos, inst.param("model")), tech.mos_device(pmos, "")) {
         (Some(d), Some(default)) if d.name != default.name => d.name.clone(),
@@ -161,8 +161,7 @@ pub fn device_of(instance: &str) -> &str {
 /// type and L, common gate and source, the gate tied to the drain of one of them).
 pub fn matched_groups(sch: &Schematic) -> Vec<Vec<String>> {
     let conn = connectivity::extract(sch);
-    let mos: Vec<&Instance> =
-        sch.instances.iter().filter(|i| matches!(i.kind, DeviceKind::Nmos | DeviceKind::Pmos) && !i.lvs_ignore()).collect();
+    let mos: Vec<&Instance> = sch.instances.iter().filter(|i| i.kind.is_mos() && !i.lvs_ignore()).collect();
     let rails: HashSet<&str> = sch
         .instances
         .iter()
@@ -361,7 +360,7 @@ fn candidate_with(inst: &Instance, conn: &Connectivity, tech: &Tech, pcell: PCel
     let net = |pin: &str| conn.net_of(inst.id, pin).map(str::to_string);
     let bulk_pin = inst.pin_positions().into_iter().find(|(n, _)| *n == "b").map(|(_, p)| p);
     let bulk = if bulk_pin.is_some_and(|p| conn.unconnected_pins.contains(&p)) { None } else { net("b") };
-    candidate_from(tech, pcell, name, inst.kind == DeviceKind::Pmos, (net("s"), net("d")), bulk)
+    candidate_from(tech, pcell, name, inst.kind.is_pmos(), (net("s"), net("d")), bulk)
 }
 
 /// Candidate for a MOS PCell whose source / drain columns are on `nets`.
@@ -561,7 +560,7 @@ pub fn plan(sch: &Schematic, tech: &Tech) -> SdlPlan {
     let mut mos: Vec<&Instance> = Vec::new();
     for inst in sch.instances.iter().filter(|i| !i.lvs_ignore()) {
         match inst.kind {
-            DeviceKind::Nmos | DeviceKind::Pmos => mos.push(inst),
+            DeviceKind::Nmos | DeviceKind::Pmos | DeviceKind::Nmos3 | DeviceKind::Pmos3 => mos.push(inst),
             DeviceKind::Ground | DeviceKind::Supply => {}
             k => plan.skipped.push(format!("{} ({}): no layout generator", inst.name, k.label().to_lowercase())),
         }
@@ -577,7 +576,7 @@ pub fn plan(sch: &Schematic, tech: &Tech) -> SdlPlan {
                     group.iter().enumerate().map(|(k, i)| format!("{} = {}", (b'A' + (k % 26) as u8) as char, i.name)).collect();
                 plan.notes.push(format!("{}: matched as {pattern} ({})", names.join(", "), legend.join(", ")));
                 matched.extend(names);
-                if group[0].kind == DeviceKind::Pmos { &mut pblocks } else { &mut nblocks }.push(units);
+                if group[0].kind.is_pmos() { &mut pblocks } else { &mut nblocks }.push(units);
             }
             Err(e) => plan.notes.push(format!("{}: not matched, {e}", names.join(", "))),
         }
@@ -659,7 +658,7 @@ pub type Pin = (&'static str, (i64, i64));
 pub fn terminal_pins(sch: &Schematic, layout: &Layout, src: &dyn LayoutSource) -> BTreeMap<String, Vec<Pin>> {
     let conn = connectivity::extract(sch);
     let mut out: BTreeMap<String, Vec<Pin>> = BTreeMap::new();
-    for inst in sch.instances.iter().filter(|i| matches!(i.kind, DeviceKind::Nmos | DeviceKind::Pmos)) {
+    for inst in sch.instances.iter().filter(|i| i.kind.is_mos()) {
         for placed in layout.instances.iter().filter(|i| i.name.as_deref().is_some_and(|n| device_of(n) == inst.name)) {
             let Some(child) = src.layout(&placed.cell) else { continue };
             let (cols, rows) = placed.dims();

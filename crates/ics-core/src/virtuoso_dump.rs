@@ -382,7 +382,7 @@ fn kind_of(name: &str) -> Option<DeviceKind> {
 
 fn pin_order(kind: DeviceKind) -> &'static [&'static str] {
     match kind {
-        DeviceKind::Nmos | DeviceKind::Pmos => &["d", "g", "s", "b"],
+        DeviceKind::Nmos | DeviceKind::Pmos | DeviceKind::Nmos3 | DeviceKind::Pmos3 => &["d", "g", "s", "b"],
         DeviceKind::Diode => &["a", "k"],
         _ => &["p", "n"],
     }
@@ -516,7 +516,7 @@ fn dump_cdl(dump: &Dump, map: &SymbolMap, warnings: &mut Vec<String>) -> CdlOut 
             let kind = kind_of(&sym.kind).expect("filtered");
             let theirs = |ours: &str| sym.params.get(ours).map(|t| param(t)).unwrap_or_default();
             let letter = match kind {
-                DeviceKind::Nmos | DeviceKind::Pmos => 'M',
+                DeviceKind::Nmos | DeviceKind::Pmos | DeviceKind::Nmos3 | DeviceKind::Pmos3 => 'M',
                 DeviceKind::Resistor => 'R',
                 DeviceKind::Capacitor => 'C',
                 DeviceKind::Inductor => 'L',
@@ -531,7 +531,7 @@ fn dump_cdl(dump: &Dump, map: &SymbolMap, warnings: &mut Vec<String>) -> CdlOut 
                 l += &format!(" {}", conn(&term));
             }
             match kind {
-                DeviceKind::Nmos | DeviceKind::Pmos => {
+                DeviceKind::Nmos | DeviceKind::Pmos | DeviceKind::Nmos3 | DeviceKind::Pmos3 => {
                     let model = Some(theirs("model"))
                         .filter(|m| !m.is_empty())
                         .or_else(|| sym.model.clone())

@@ -174,6 +174,8 @@ pub enum Command {
     IrDrop(Option<String>),
     /// Open the DRC Rule Designer window on the technology's deck.
     RuleDesigner,
+    /// Draw new MOS devices with a body pin (`true`) or without one, the arrow on the source.
+    MosSymbol(bool),
     /// Copy a DRC deck file (IC Studio or SVRF) into the technology; `None` asks for the file.
     ImportDrcDeck(Option<PathBuf>),
     /// Write the technology's DRC deck to a file; `None` asks where.
@@ -294,6 +296,9 @@ struct Settings {
     examples_version: String,
     /// The console panel was open when the app last quit. Closed on first start; errors open it.
     console: bool,
+    /// New MOS devices get a body pin (4-terminal); `false` places them without one, the arrow
+    /// on the source (3-terminal).
+    mos_body_pin: bool,
 }
 
 impl Default for Settings {
@@ -309,6 +314,7 @@ impl Default for Settings {
             llm: Default::default(),
             examples_version: String::new(),
             console: false,
+            mos_body_pin: true,
         }
     }
 }
@@ -1188,6 +1194,14 @@ impl IcStudio {
                 Some(p) => self.rule_designer.show(&p.tech),
                 None => self.rule_designer.show_standalone(),
             },
+            Command::MosSymbol(body) => {
+                self.settings.mos_body_pin = body;
+                for ed in self.sch_eds.values_mut() {
+                    ed.mos_body_pin = body;
+                }
+                let how = if body { "with a body pin (4-terminal)" } else { "with the arrow on the source (3-terminal)" };
+                self.info(format!("New MOS devices are drawn {how}"));
+            }
             Command::ImportDrcDeck(path) => self.import_drc_deck(path),
             Command::ExportDrcDeck(path) => self.export_drc_deck(path),
             Command::LinkDrcDeck(path) => self.link_drc_deck(path),
@@ -3369,10 +3383,12 @@ impl IcStudio {
             Workspace::Schematic => {
                 let op = self.sims.get(&r).and_then(|s| s.op_annotation());
                 let ed = self.sch_eds.entry(r.clone()).or_default();
+                ed.mos_body_pin = self.settings.mos_body_pin;
                 if let Some(sch) = cell.schematic.as_mut() {
                     theme::aside(egui::Panel::left("sch_tools").resizable(true).default_size(220.0), ui, |ui| {
                         egui::ScrollArea::vertical().show(ui, |ui| device_palette(ui, ed));
                     });
+                    self.settings.mos_body_pin = ed.mos_body_pin;
                     theme::aside(egui::Panel::right("sch_inspector").resizable(true).default_size(250.0), ui, |ui| {
                         egui::ScrollArea::vertical().show(ui, |ui| changed |= ed.inspector(ui, sch));
                     });
@@ -4039,6 +4055,8 @@ impl IcStudio {
             ("Run LVS".into(), "", Command::RunLvs),
             ("IR drop / EM analysis".into(), "", Command::IrDrop(None)),
             ("DRC rule designer".into(), "", Command::RuleDesigner),
+            ("MOS symbol: body pin (4-terminal)".into(), "", Command::MosSymbol(true)),
+            ("MOS symbol: arrow on source, body hidden (3-terminal)".into(), "", Command::MosSymbol(false)),
             ("DRC deck: import from a file".into(), "", Command::ImportDrcDeck(None)),
             ("DRC deck: export to a file".into(), "", Command::ExportDrcDeck(None)),
             ("DRC deck: link a shared deck file (common to several projects)".into(), "", Command::LinkDrcDeck(None)),
@@ -4582,6 +4600,16 @@ impl IcStudio {
                             .response
                             .labelled_by(il.id)
                             .on_hover_text(self.settings.interaction.describe());
+                        ui.end_row();
+                        let ml = ui.label("MOS symbol");
+                        ui.horizontal(|ui| {
+                            ui.radio_value(&mut self.settings.mos_body_pin, true, "Body pin (4-terminal)")
+                                .labelled_by(ml.id)
+                                .on_hover_text("New NMOS / PMOS devices have a body pin to wire");
+                            ui.radio_value(&mut self.settings.mos_body_pin, false, "Arrow on source (3-terminal)")
+                                .labelled_by(ml.id)
+                                .on_hover_text("New NMOS / PMOS devices hide the body: it is on ground (NMOS) or vdd (PMOS), set by the bulk parameter");
+                        });
                         ui.end_row();
                         ui.label("Startup");
                         ui.checkbox(&mut self.settings.reopen_last, "Reopen last project");
