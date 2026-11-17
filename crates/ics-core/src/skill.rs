@@ -33,8 +33,11 @@
 //! - forms (`hi*`) without a window: fields and forms are tables (`form->field->value`), and
 //!   `hiDisplayForm` runs the OK callback at once with the current values;
 //! - SKILL++: in `.ils` files, `lambda` and `procedure` make closures over the variables in
-//!   scope where they are created (kept between calls), which do not see their callers'
-//!   variables;
+//!   scope where they are created (shared with that scope and the other closures made there,
+//!   kept between calls), which do not see their callers' variables;
+//! - limits: evaluation runs on its own thread with a large stack; recursion, nesting, steps,
+//!   string and list sizes are bounded and end in SKILL errors. A [`Sandbox`] (used for agent
+//!   code) also confines file access to given directories and hides environment variables.
 //!
 //! Coordinates are user units (µm), converted to database units with the technology's
 //! `dbu_per_um`. A layer-purpose pair is a layer name, `list("metal1" "drawing")` or a layer index;
@@ -157,18 +160,54 @@ pub fn run_with(
     Session::new().eval(project, src, file, current)
 }
 
-/// An interpreter whose global variables, procedures and open cellviews persist between
-/// evaluations, like Virtuoso's CIW.
+/// Restrictions for running untrusted SKILL (e.g. code from an AI agent): file I/O only under
+/// `roots`, no environment variables, an optional wall-clock limit.
+#[derive(Debug, Clone, Default)]
+pub struct Sandbox {
+    /// Directories that `load`, `outfile` and `infile` may access (with their subdirectories).
+    /// Relative paths are taken relative to the first one. Empty: no file access at all.
+    pub roots: Vec<PathBuf>,
+    /// Stop an evaluation that runs longer than this.
+    pub time_limit: Option<std::time::Duration>,
+}
+
+/// An interpreter whose global variables, procedures, open cellviews, properties and file
+/// ports persist between evaluations, like Virtuoso's CIW.
 #[derive(Default)]
 pub struct Session {
     globals: HashMap<Name, Value>,
     funcs: HashMap<Name, Rc<Func>>,
     cvs: Vec<CvState>,
     files: Vec<Option<PathBuf>>,
+    ports: Vec<PortFile>,
+    props: HashMap<(usize, u64), Vec<(String, Value)>>,
     /// Forms are shown to the user: `hiDisplayForm` returns them in [`RunResult::forms`]
     /// instead of running their OK callback at once.
     pub interactive: bool,
+    /// Restrict file and environment access (`None`: full access, for the user's own scripts).
+    pub sandbox: Option<Sandbox>,
 }
+
+/// Stack of the thread evaluations run on: deep (but bounded) recursion in scripts must end in
+/// a SKILL error, never a stack overflow, also on Windows where the main thread has 1 MB.
+const EVAL_STACK: usize = 256 << 20;
+
+/// Roughly the current stack position, to measure how deep evaluation has gone.
+#[inline(never)]
+fn stack_pos() -> usize {
+    let marker = 0u8;
+    std::hint::black_box(&marker) as *const u8 as usize
+}
+
+/// Moves the session (whose values use `Rc`) to the evaluation thread and back.
+struct AssertSend<T>(T);
+
+// SAFETY: every `Rc` reachable from a `Session` belongs to that session alone: values never
+// leave the interpreter except as plain strings (`RunResult`, `SkillError`), so no clone of
+// them exists outside it. The session is moved whole to the evaluation thread while the
+// calling thread blocks in `join`, and moved back when the evaluation ends, so the reference
+// counts are never touched by two threads at once (spawn and join order the accesses).
+unsafe impl<T> Send for AssertSend<T> {}
 
 impl Session {
     pub fn new() -> Self {
@@ -181,6 +220,11 @@ impl Session {
         Session { interactive: true, ..Session::new() }
     }
 
+    /// A session restricted by `sandbox` ([`Session::sandbox`]).
+    pub fn sandboxed(sandbox: Sandbox) -> Self {
+        Session { sandbox: Some(sandbox), ..Session::new() }
+    }
+
     /// Evaluate `src`; `file` names it for errors and is the base directory of relative `load()`
     /// paths, `current` is the cell `geGetEditCellView()` returns.
     pub fn eval(
@@ -190,8 +234,60 @@ impl Session {
         file: Option<&Path>,
         current: Option<&CellRef>,
     ) -> Result<RunResult, SkillError> {
+        let mut slot = Some(AssertSend(std::mem::take(self)));
+        let joined = std::thread::scope(|scope| {
+            let worker = std::thread::Builder::new().name("skill".into()).stack_size(EVAL_STACK).spawn_scoped(scope, || {
+                let mut s = slot.take().expect("session");
+                let r = s.0.eval_here(project, src, file, current, EVAL_STACK - (32 << 20));
+                slot = Some(s);
+                AssertSend(r)
+            });
+            worker.ok().map(|h| h.join())
+        });
+        match joined {
+            Some(Ok(AssertSend(r))) => {
+                *self = slot.take().expect("session").0;
+                r
+            }
+            // No thread could be created: evaluate here, on the caller's stack.
+            None => {
+                *self = slot.take().expect("session").0;
+                self.eval_here(project, src, file, current, 256 << 10)
+            }
+            Some(Err(panic)) => {
+                let msg = panic
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                    .unwrap_or_default();
+                // The session was lost with the panicking thread: start over.
+                let (interactive, sandbox) = (self.interactive, self.sandbox.clone());
+                *self = Session { interactive, sandbox, ..Session::new() };
+                Err(SkillError {
+                    message: format!("internal interpreter error: {msg}"),
+                    file: None,
+                    line: 0,
+                    output: String::new(),
+                    modified: vec![],
+                })
+            }
+        }
+    }
+
+    /// [`Session::eval`] on the current thread, using at most about `stack_budget` bytes of
+    /// its stack for nested evaluation.
+    fn eval_here(
+        &mut self,
+        project: &mut Project,
+        src: &str,
+        file: Option<&Path>,
+        current: Option<&CellRef>,
+        stack_budget: usize,
+    ) -> Result<RunResult, SkillError> {
         let interactive = self.interactive;
         let mut it = Interp::new(project, current.cloned(), std::mem::take(self));
+        it.stack_base = stack_pos();
+        it.stack_budget = stack_budget;
         it.interactive = interactive;
         let r = it.run_source(src, file.map(Path::to_path_buf));
         let modified = std::mem::take(&mut it.modified);
@@ -206,6 +302,7 @@ impl Session {
                 output,
                 modified,
             }),
+            Err(Flow::NotSpecial) => unreachable!("not a special form"),
         };
         *self = it.into_session();
         self.interactive = interactive;
@@ -230,14 +327,19 @@ impl Session {
 
     /// Read and evaluate a `.il` file.
     pub fn load(&mut self, project: &mut Project, path: &Path, current: Option<&CellRef>) -> Result<RunResult, SkillError> {
-        let src = std::fs::read_to_string(path).map_err(|e| SkillError {
-            message: e.to_string(),
+        let err = |message: String| SkillError {
+            message,
             file: Some(path.display().to_string()),
             line: 0,
             output: String::new(),
             modified: vec![],
-        })?;
-        self.eval(project, &src, Some(path), current)
+        };
+        let path = match &self.sandbox {
+            Some(sb) => sandbox_path(sb, path).map_err(err)?,
+            None => path.to_path_buf(),
+        };
+        let src = std::fs::read_to_string(&path).map_err(|e| err(e.to_string()))?;
+        self.eval(project, &src, Some(&path), current)
     }
 
     /// Names of the procedures defined so far, sorted.
@@ -245,6 +347,30 @@ impl Session {
         let mut v: Vec<String> = self.funcs.keys().map(|k| k.to_string()).collect();
         v.sort();
         v
+    }
+}
+
+/// `path` if `sandbox` allows access to it: resolved (relative paths against the first root,
+/// symbolic links followed) and inside one of the roots.
+fn sandbox_path(sandbox: &Sandbox, path: &Path) -> Result<PathBuf, String> {
+    let denied = || format!("access to {} is not allowed here (only files under the project directory)", path.display());
+    let full = match (path.is_relative(), sandbox.roots.first()) {
+        (true, Some(root)) => root.join(path),
+        (true, None) => return Err(denied()),
+        _ => path.to_path_buf(),
+    };
+    let resolved = match full.canonicalize() {
+        Ok(p) => p,
+        // A file to create: its directory must exist and be allowed.
+        Err(_) => match (full.parent(), full.file_name()) {
+            (Some(dir), Some(name)) => dir.canonicalize().map_err(|_| denied())?.join(name),
+            _ => return Err(denied()),
+        },
+    };
+    if sandbox.roots.iter().filter_map(|r| r.canonicalize().ok()).any(|r| resolved.starts_with(r)) {
+        Ok(resolved)
+    } else {
+        Err(denied())
     }
 }
 
@@ -299,7 +425,7 @@ enum Value {
     Str(Rc<str>),
     Sym(Name),
     /// Never empty: the empty list is `Nil`.
-    List(Rc<Vec<Value>>),
+    List(Rc<ListData>),
     Func(Rc<Func>),
     Obj(Obj),
     Table(Rc<RefCell<Table>>),
@@ -314,6 +440,17 @@ enum Obj {
     Inst(usize, u64),
 }
 
+/// The elements of a list.
+#[derive(Debug)]
+struct ListData(Vec<Value>);
+
+impl std::ops::Deref for ListData {
+    type Target = Vec<Value>;
+    fn deref(&self) -> &Vec<Value> {
+        &self.0
+    }
+}
+
 #[derive(Debug, Default)]
 struct Table {
     name: String,
@@ -321,14 +458,102 @@ struct Table {
     entries: Vec<(Value, Value)>,
 }
 
+/// Local variables of a `let`, a loop or a function call; shared with the SKILL++ closures
+/// created in it.
+type Frame = Rc<RefCell<HashMap<Name, Value>>>;
+
+fn frame(vars: HashMap<Name, Value>) -> Frame {
+    Rc::new(RefCell::new(vars))
+}
+
+fn frame_new() -> Frame {
+    frame(HashMap::new())
+}
+
 #[derive(Debug)]
 struct Func {
     name: Name,
     params: Params,
     body: Vec<Node>,
-    /// SKILL++ (`.ils`) closure: the variables it was created among, kept between calls. A
-    /// closure sees these and the globals, not its caller's variables.
-    env: Option<RefCell<HashMap<Name, Value>>>,
+    /// SKILL++ (`.ils`) closure: the variable frames it was created in, shared with that scope
+    /// and the other closures made there. A closure sees these and the globals, not its
+    /// caller's variables.
+    env: Option<Vec<Frame>>,
+}
+
+// Values nest without limit (a list in a list in a list ...), so their parts are dropped with a
+// loop instead of recursion, which could overflow the stack.
+
+fn nests(v: &Value) -> bool {
+    matches!(v, Value::List(_) | Value::Table(_) | Value::Func(_))
+}
+
+/// Drop `stack`, taking apart the lists, tables and functions it holds the last reference to.
+fn drop_values(mut stack: Vec<Value>) {
+    while let Some(v) = stack.pop() {
+        match v {
+            Value::List(l) => {
+                if let Ok(mut l) = Rc::try_unwrap(l) {
+                    stack.append(&mut l.0);
+                }
+            }
+            Value::Table(t) => {
+                if let Ok(t) = Rc::try_unwrap(t) {
+                    let mut t = t.into_inner();
+                    stack.extend(t.default.take());
+                    for (k, x) in t.entries.drain(..) {
+                        stack.push(k);
+                        stack.push(x);
+                    }
+                }
+            }
+            Value::Func(f) => {
+                if let Ok(mut f) = Rc::try_unwrap(f) {
+                    for fr in f.env.take().into_iter().flatten() {
+                        if let Ok(fr) = Rc::try_unwrap(fr) {
+                            stack.extend(fr.into_inner().into_values());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Drop for ListData {
+    fn drop(&mut self) {
+        if self.0.iter().any(nests) {
+            drop_values(std::mem::take(&mut self.0));
+        }
+    }
+}
+
+impl Drop for Table {
+    fn drop(&mut self) {
+        let mut stack: Vec<Value> = self.default.take().into_iter().collect();
+        for (k, x) in self.entries.drain(..) {
+            stack.push(k);
+            stack.push(x);
+        }
+        if stack.iter().any(nests) {
+            drop_values(stack);
+        }
+    }
+}
+
+impl Drop for Func {
+    fn drop(&mut self) {
+        let mut stack = vec![];
+        for fr in self.env.take().into_iter().flatten() {
+            if let Ok(fr) = Rc::try_unwrap(fr) {
+                stack.extend(fr.into_inner().into_values());
+            }
+        }
+        if stack.iter().any(nests) {
+            drop_values(stack);
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -340,7 +565,7 @@ struct Params {
 }
 
 fn list(v: Vec<Value>) -> Value {
-    if v.is_empty() { Value::Nil } else { Value::List(Rc::new(v)) }
+    if v.is_empty() { Value::Nil } else { Value::List(Rc::new(ListData(v))) }
 }
 
 fn sym(s: &str) -> Value {
@@ -370,20 +595,32 @@ fn items(v: &Value) -> &[Value] {
     }
 }
 
+/// Structural equality, with a loop instead of recursion (lists nest without limit).
 fn equal(a: &Value, b: &Value) -> bool {
-    match (a, b) {
-        (Value::Nil, Value::Nil) | (Value::T, Value::T) => true,
-        (Value::Port(x), Value::Port(y)) => x == y,
-        (Value::Int(x), Value::Int(y)) => x == y,
-        (Value::Int(_) | Value::Float(_), Value::Int(_) | Value::Float(_)) => as_f64(a) == as_f64(b),
-        (Value::Str(x), Value::Str(y)) => x == y,
-        (Value::Sym(x), Value::Sym(y)) => x == y,
-        (Value::List(x), Value::List(y)) => x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| equal(a, b)),
-        (Value::Func(x), Value::Func(y)) => Rc::ptr_eq(x, y),
-        (Value::Obj(x), Value::Obj(y)) => x == y,
-        (Value::Table(x), Value::Table(y)) => Rc::ptr_eq(x, y),
-        _ => false,
+    let mut todo = vec![(a, b)];
+    while let Some((a, b)) = todo.pop() {
+        let same = match (a, b) {
+            (Value::Nil, Value::Nil) | (Value::T, Value::T) => true,
+            (Value::Port(x), Value::Port(y)) => x == y,
+            (Value::Int(x), Value::Int(y)) => x == y,
+            (Value::Int(_) | Value::Float(_), Value::Int(_) | Value::Float(_)) => as_f64(a) == as_f64(b),
+            (Value::Str(x), Value::Str(y)) => x == y,
+            (Value::Sym(x), Value::Sym(y)) => x == y,
+            (Value::List(x), Value::List(y)) if Rc::ptr_eq(x, y) => true,
+            (Value::List(x), Value::List(y)) => {
+                todo.extend(x.iter().zip(y.iter()));
+                x.len() == y.len()
+            }
+            (Value::Func(x), Value::Func(y)) => Rc::ptr_eq(x, y),
+            (Value::Obj(x), Value::Obj(y)) => x == y,
+            (Value::Table(x), Value::Table(y)) => Rc::ptr_eq(x, y),
+            _ => false,
+        };
+        if !same {
+            return false;
+        }
     }
+    true
 }
 
 fn eq(a: &Value, b: &Value) -> bool {
@@ -392,6 +629,22 @@ fn eq(a: &Value, b: &Value) -> bool {
         (Value::Str(x), Value::Str(y)) => Rc::ptr_eq(x, y) || x == y,
         _ => equal(a, b),
     }
+}
+
+/// A string literal, quoted and escaped.
+fn write_str(x: &str, s: &mut String) {
+    s.push('"');
+    for c in x.chars() {
+        match c {
+            '"' => s.push_str("\\\""),
+            '\\' => s.push_str("\\\\"),
+            '\n' => s.push_str("\\n"),
+            '\t' => s.push_str("\\t"),
+            '\r' => s.push_str("\\r"),
+            c => s.push(c),
+        }
+    }
+    s.push('"');
 }
 
 fn as_f64(v: &Value) -> f64 {
@@ -447,6 +700,8 @@ struct ErrInfo {
 enum Flow {
     Err(ErrInfo),
     Return(Value),
+    /// From [`Interp::special`] only: the name is not a special form.
+    NotSpecial,
 }
 
 type R<T> = Result<T, Flow>;
@@ -706,6 +961,36 @@ enum Node {
 struct Parser {
     toks: Vec<(Tok, Pos)>,
     i: usize,
+    /// Nesting of the expression being parsed.
+    depth: usize,
+}
+
+/// Deepest nesting of expressions and quoted data the parser accepts (and `eval` converts).
+const MAX_NESTING: usize = 1000;
+
+/// Height of the tree under `n` (quoted data included), without recursion.
+fn node_depth(n: &Node) -> usize {
+    enum Item<'a> {
+        N(&'a Node),
+        V(&'a Value),
+    }
+    let mut max = 0;
+    let mut todo = vec![(Item::N(n), 1)];
+    while let Some((it, d)) = todo.pop() {
+        max = max.max(d);
+        match it {
+            Item::N(Node::Call(_, args, _) | Node::Form(args, _)) => todo.extend(args.iter().map(|a| (Item::N(a), d + 1))),
+            Item::N(Node::Get(o, _, _)) => todo.push((Item::N(o), d + 1)),
+            Item::N(Node::Index(o, i, _)) => todo.extend([(Item::N(o), d + 1), (Item::N(i), d + 1)]),
+            Item::N(Node::Lit(v)) | Item::V(v) => {
+                if let Value::List(l) = v {
+                    todo.extend(l.iter().map(|x| (Item::V(x), d + 1)));
+                }
+            }
+            Item::N(_) => {}
+        }
+    }
+    max
 }
 
 fn binary(op: &str) -> Option<(u8, &'static str)> {
@@ -782,8 +1067,32 @@ impl Parser {
         }
     }
 
+    /// Run `f` one nesting level deeper.
+    fn nested<T>(&mut self, f: impl FnOnce(&mut Self) -> R<T>) -> R<T> {
+        if self.depth >= MAX_NESTING {
+            return self.err(format!("expression nested too deeply (more than {MAX_NESTING} levels)"));
+        }
+        self.depth += 1;
+        let r = f(self);
+        self.depth -= 1;
+        r
+    }
+
+    /// Check that a node of height `h` built at this level stays within [`MAX_NESTING`].
+    fn check_height(&self, h: usize) -> R<()> {
+        if self.depth + h > MAX_NESTING {
+            return self.err(format!("expression nested too deeply (more than {MAX_NESTING} levels)"));
+        }
+        Ok(())
+    }
+
     fn expr(&mut self, min: u8) -> R<Node> {
+        self.nested(|s| s.expr_inner(min))
+    }
+
+    fn expr_inner(&mut self, min: u8) -> R<Node> {
         let mut lhs = self.unary()?;
+        let mut h = 0;
         while let Tok::Op(op) = *self.peek() {
             let Some((prec, name)) = binary(op) else { break };
             if prec < min {
@@ -793,12 +1102,22 @@ impl Parser {
             self.next();
             let right_assoc = matches!(op, "=" | "**");
             let rhs = self.expr(if right_assoc { prec } else { prec + 1 })?;
+            // A chain `a + b + c ...` deepens the tree without recursing here.
+            if h == 0 {
+                h = node_depth(&lhs);
+            }
+            h = 1 + h.max(node_depth(&rhs));
+            self.check_height(h)?;
             lhs = Node::Call(name.into(), vec![lhs, rhs], pos);
         }
         Ok(lhs)
     }
 
     fn unary(&mut self) -> R<Node> {
+        self.nested(|s| s.unary_inner())
+    }
+
+    fn unary_inner(&mut self) -> R<Node> {
         let pos = self.pos();
         match *self.peek() {
             Tok::Op("-") => {
@@ -833,8 +1152,18 @@ impl Parser {
 
     fn postfix(&mut self) -> R<Node> {
         let mut e = self.primary()?;
+        let mut h = 0;
         loop {
             let pos = self.pos();
+            // `a~>b~>c ...` and `a[1][2] ...` deepen the tree without recursing here.
+            if !matches!(self.peek(), Tok::Op("~>" | "->" | "++" | "--") | Tok::LBracket) {
+                return Ok(e);
+            }
+            if h == 0 {
+                h = node_depth(&e);
+            }
+            h += 1;
+            self.check_height(h)?;
             match self.peek().clone() {
                 Tok::Op("~>") | Tok::Op("->") => {
                     self.next();
@@ -889,6 +1218,10 @@ impl Parser {
     }
 
     fn datum(&mut self) -> R<Value> {
+        self.nested(|s| s.datum_inner())
+    }
+
+    fn datum_inner(&mut self) -> R<Value> {
         let (t, pos) = self.next();
         Ok(match t {
             Tok::Num(v, true) => Value::Int(v as i64),
@@ -931,7 +1264,7 @@ impl Parser {
 }
 
 fn parse(src: &str, file: u32) -> R<Vec<Node>> {
-    Parser { toks: lex(src, file)?, i: 0 }.program()
+    Parser { toks: lex(src, file)?, i: 0, depth: 0 }.program()
 }
 
 /// The elements of a list-like node, for forms such as `let((a (b 1)) ...)`.
@@ -948,34 +1281,178 @@ fn elems(n: &Node) -> Vec<Node> {
     }
 }
 
+/// Code as data: `f(a 'b)` is `(f a (quote b))`, `x~>p` is `(getq x p)` and `x[i]` is
+/// `(arrayref x i)`; [`datum_to_node`] converts back.
 fn node_to_datum(n: &Node) -> Value {
     match n {
+        Node::Lit(v @ (Value::Sym(_) | Value::List(_))) => list(vec![sym("quote"), v.clone()]),
         Node::Lit(v) => v.clone(),
         Node::Var(s) => Value::Sym(s.clone()),
         Node::Key(k) => sym(&format!("?{k}")),
         Node::At(a) => sym(&format!("@{a}")),
-        n => list(elems(n).iter().map(node_to_datum).collect()),
+        Node::Get(o, p, _) => list(vec![sym("getq"), node_to_datum(o), Value::Sym(p.clone())]),
+        Node::Index(o, i, _) => list(vec![sym("arrayref"), node_to_datum(o), node_to_datum(i)]),
+        Node::Form(v, _) => list(v.iter().map(node_to_datum).collect()),
+        Node::Call(f, args, _) => {
+            let mut v = vec![Value::Sym(f.clone())];
+            v.extend(args.iter().map(node_to_datum));
+            list(v)
+        }
     }
 }
 
-fn datum_to_node(v: &Value) -> Node {
+/// A `case` key: literals stand for themselves.
+fn case_key(n: &Node) -> Value {
+    match n {
+        Node::Lit(v) => v.clone(),
+        n => node_to_datum(n),
+    }
+}
+
+fn datum_to_node(v: &Value) -> R<Node> {
+    datum_to_node_at(v, 0)
+}
+
+fn datum_to_node_at(v: &Value, depth: usize) -> R<Node> {
+    if depth >= MAX_NESTING {
+        return fail(format!("eval: expression nested too deeply (more than {MAX_NESTING} levels)"));
+    }
     let pos = Pos { file: 0, line: 0 };
-    match v {
+    let sub = |x: &Value| datum_to_node_at(x, depth + 1);
+    Ok(match v {
         Value::Sym(s) => Node::Var(s.clone()),
-        Value::List(l) => match &l[0] {
-            Value::Sym(q) if &**q == "quote" && l.len() == 2 => Node::Lit(l[1].clone()),
-            Value::Sym(f) => Node::Call(f.clone(), l[1..].iter().map(datum_to_node).collect(), pos),
-            _ => Node::Form(l.iter().map(datum_to_node).collect(), pos),
+        Value::List(l) => match (&l[0], l.len()) {
+            (Value::Sym(q), 2) if &**q == "quote" => Node::Lit(l[1].clone()),
+            (Value::Sym(q), 3) if &**q == "getq" && matches!(l[2], Value::Sym(_)) => {
+                let Value::Sym(p) = &l[2] else { unreachable!() };
+                Node::Get(Box::new(sub(&l[1])?), p.clone(), pos)
+            }
+            (Value::Sym(q), 3) if &**q == "arrayref" => Node::Index(Box::new(sub(&l[1])?), Box::new(sub(&l[2])?), pos),
+            (Value::Sym(f), _) => Node::Call(f.clone(), l[1..].iter().map(sub).collect::<R<_>>()?, pos),
+            _ => Node::Form(l.iter().map(sub).collect::<R<_>>()?, pos),
         },
         v => Node::Lit(v.clone()),
+    })
+}
+
+/// SKILL source for `n` that parses back to the same tree (for storing PCell bodies).
+fn unparse(n: &Node, s: &mut String) -> R<()> {
+    fn name(x: &str, s: &mut String) {
+        for (i, c) in x.chars().enumerate() {
+            if !(if i == 0 { ident_start(c) } else { ident_char(c) }) {
+                s.push('\\');
+            }
+            s.push(c);
+        }
     }
+    fn datum(v: &Value, s: &mut String) -> R<()> {
+        match v {
+            Value::Nil => s.push_str("nil"),
+            Value::T => s.push('t'),
+            Value::Int(i) => s.push_str(&i.to_string()),
+            Value::Float(f) if f.is_finite() => s.push_str(&fmt_float(*f)),
+            Value::Str(x) => write_str(x, s),
+            Value::Sym(x) => match x.strip_prefix(['?', '@']) {
+                Some(rest) if rest.chars().next().is_some_and(ident_start) => {
+                    s.push_str(&x[..1]);
+                    name(rest, s);
+                }
+                _ => name(x, s),
+            },
+            Value::List(l) => {
+                s.push('(');
+                for (i, x) in l.iter().enumerate() {
+                    if i > 0 {
+                        s.push(' ');
+                    }
+                    datum(x, s)?;
+                }
+                s.push(')');
+            }
+            v => return fail(format!("cannot write {} as source", type_name(v))),
+        }
+        Ok(())
+    }
+    let seq = |items: &[Node], s: &mut String| -> R<()> {
+        for (i, x) in items.iter().enumerate() {
+            if i > 0 {
+                s.push(' ');
+            }
+            unparse(x, s)?;
+        }
+        Ok(())
+    };
+    // Every node prints as a primary expression, so `~>` and `[]` can follow any of them.
+    match n {
+        // A negative number after another argument would read as a subtraction.
+        Node::Lit(Value::Int(i)) if *i < 0 => s.push_str(&format!("({i})")),
+        Node::Lit(Value::Float(f)) if *f < 0.0 && f.is_finite() => s.push_str(&format!("({})", fmt_float(*f))),
+        Node::Lit(v @ (Value::Sym(_) | Value::List(_))) => {
+            s.push('\'');
+            datum(v, s)?;
+        }
+        Node::Lit(v) => datum(v, s)?,
+        Node::Var(x) => name(x, s),
+        Node::Key(k) => {
+            s.push('?');
+            name(k, s);
+        }
+        Node::At(a) => {
+            s.push('@');
+            name(a, s);
+        }
+        Node::Call(f, args, _) => {
+            name(f, s);
+            s.push('(');
+            seq(args, s)?;
+            s.push(')');
+        }
+        // `(-1)` is already how a negative literal prints.
+        Node::Form(items, _) if matches!(items.as_slice(), [Node::Lit(Value::Int(i))] if *i < 0) => unparse(&items[0], s)?,
+        Node::Form(items, _) if matches!(items.as_slice(), [Node::Lit(Value::Float(f))] if *f < 0.0 && f.is_finite()) => {
+            unparse(&items[0], s)?
+        }
+        Node::Form(items, _) => {
+            s.push('(');
+            seq(items, s)?;
+            s.push(')');
+        }
+        Node::Get(o, p, _) => {
+            unparse(o, s)?;
+            s.push_str("~>");
+            name(p, s);
+        }
+        Node::Index(o, i, _) => {
+            unparse(o, s)?;
+            s.push('[');
+            unparse(i, s)?;
+            s.push(']');
+        }
+    }
+    Ok(())
 }
 
 // ----------------------------------------------------------------------------------------------
 // Interpreter
 
-const MAX_DEPTH: usize = 400;
+/// Deepest nesting of procedure calls.
+const MAX_DEPTH: usize = 10_000;
+/// Deepest nesting of expression evaluation (calls and the expressions inside them).
+const MAX_EVAL_DEPTH: usize = 100_000;
+/// Evaluation steps (expressions and loop iterations) per run.
 const MAX_STEPS: u64 = 200_000_000;
+/// Longest string a script may build or print (bytes).
+const MAX_STR: usize = 64 << 20;
+/// Longest list `append` and friends may build.
+const MAX_LIST: usize = 50_000_000;
+/// Widest field and highest precision of a `printf` directive.
+const MAX_FORMAT_WIDTH: usize = 10_000;
+/// Most rectangles one `rodCreatePath ?subRect` may create.
+const MAX_SUBRECTS: usize = 100_000;
+/// Largest coordinate or length (dbu) the ROD path arithmetic accepts.
+const COORD_LIMIT: i64 = 1 << 40;
+/// Most bytes a run may write to files.
+const MAX_FILE_BYTES: u64 = 1 << 30;
 
 struct CvState {
     cell: CellRef,
@@ -985,15 +1462,29 @@ struct CvState {
 struct Interp<'p> {
     p: &'p mut Project,
     globals: HashMap<Name, Value>,
-    frames: Vec<HashMap<Name, Value>>,
+    frames: Vec<Frame>,
     funcs: HashMap<Name, Rc<Func>>,
     out: String,
     cvs: Vec<CvState>,
     modified: Vec<CellRef>,
     files: Vec<Option<PathBuf>>,
     load_stack: Vec<Option<PathBuf>>,
+    /// Procedure call nesting.
     depth: usize,
+    /// Expression evaluation nesting.
+    eval_depth: usize,
+    /// Stack position where evaluation started, and how much stack it may use from there.
+    stack_base: usize,
+    stack_budget: usize,
     steps: u64,
+    /// Bytes written to files in this run.
+    file_bytes: u64,
+    /// State of `random`.
+    rng: u64,
+    /// Restrictions on file and environment access.
+    sandbox: Option<Sandbox>,
+    /// When a sandboxed run must stop.
+    deadline: Option<std::time::Instant>,
     current: Option<CellRef>,
     /// Files opened by `outfile` / `infile`; port k is `ports[k - 1]`.
     ports: Vec<PortFile>,
@@ -1058,10 +1549,17 @@ impl<'p> Interp<'p> {
             files: s.files,
             load_stack: vec![],
             depth: 0,
+            eval_depth: 0,
+            stack_base: stack_pos(),
+            stack_budget: 256 << 10,
             steps: 0,
+            file_bytes: 0,
+            rng: 0,
+            deadline: s.sandbox.as_ref().and_then(|sb| sb.time_limit).map(|t| std::time::Instant::now() + t),
+            sandbox: s.sandbox,
             current,
-            ports: vec![],
-            props: HashMap::new(),
+            ports: s.ports,
+            props: s.props,
             lexical: false,
             current_form: None,
             interactive: false,
@@ -1070,19 +1568,65 @@ impl<'p> Interp<'p> {
     }
 
     fn into_session(self) -> Session {
-        Session { globals: self.globals, funcs: self.funcs, cvs: self.cvs, files: self.files, interactive: self.interactive }
+        Session {
+            globals: self.globals,
+            funcs: self.funcs,
+            cvs: self.cvs,
+            files: self.files,
+            ports: self.ports,
+            props: self.props,
+            interactive: self.interactive,
+            sandbox: self.sandbox,
+        }
     }
 
-    /// In SKILL++ code, the variables a new function closes over (all visible locals).
-    fn closure_env(&self) -> Option<RefCell<HashMap<Name, Value>>> {
-        if !self.lexical {
-            return None;
+    /// In SKILL++ code, the variables a new function closes over: the frames in scope, shared.
+    fn closure_env(&self) -> Option<Vec<Frame>> {
+        self.lexical.then(|| self.frames.clone())
+    }
+
+    /// Whether nested evaluation has used up its stack budget.
+    fn stack_low(&self) -> bool {
+        self.stack_base.abs_diff(stack_pos()) > self.stack_budget
+    }
+
+    /// Count an evaluation step (an expression or a loop iteration) against the limits.
+    fn tick(&mut self) -> R<()> {
+        self.steps += 1;
+        if self.steps > MAX_STEPS {
+            return fail("evaluation step limit exceeded (infinite loop?)");
         }
-        let mut env = HashMap::new();
-        for f in &self.frames {
-            env.extend(f.iter().map(|(k, v)| (k.clone(), v.clone())));
+        if self.steps.is_multiple_of(4096)
+            && let Some(d) = self.deadline
+            && std::time::Instant::now() > d
+        {
+            return fail("evaluation time limit exceeded");
         }
-        Some(RefCell::new(env))
+        Ok(())
+    }
+
+    /// `path` if the sandbox (if any) allows `f` to access it.
+    fn file_path(&self, f: &str, path: &Path) -> R<PathBuf> {
+        match &self.sandbox {
+            Some(sb) => sandbox_path(sb, path).or_else(|e| fail(format!("{f}: {e}"))),
+            None => Ok(path.to_path_buf()),
+        }
+    }
+
+    /// Append `text` to the output.
+    fn emit(&mut self, text: &str) -> R<()> {
+        if self.out.len() + text.len() > MAX_STR {
+            return fail(format!("output longer than {} MB", MAX_STR >> 20));
+        }
+        self.out.push_str(text);
+        Ok(())
+    }
+
+    /// The variable `name` in the innermost frame.
+    fn set_local(&mut self, name: Name, v: Value) {
+        if let Some(f) = self.frames.last() {
+            f.borrow_mut().insert(name, v);
+        }
     }
 
     fn run_source(&mut self, src: &str, file: Option<PathBuf>) -> R<Value> {
@@ -1124,7 +1668,7 @@ impl<'p> Interp<'p> {
 
     fn lookup(&self, name: &str) -> R<Value> {
         for f in self.frames.iter().rev() {
-            if let Some(v) = f.get(name) {
+            if let Some(v) = f.borrow().get(name) {
                 return Ok(v.clone());
             }
         }
@@ -1135,8 +1679,8 @@ impl<'p> Interp<'p> {
     }
 
     fn assign(&mut self, name: &Name, v: Value) {
-        for f in self.frames.iter_mut().rev() {
-            if let Some(slot) = f.get_mut(name) {
+        for f in self.frames.iter().rev() {
+            if let Some(slot) = f.borrow_mut().get_mut(name) {
                 *slot = v;
                 return;
             }
@@ -1144,8 +1688,8 @@ impl<'p> Interp<'p> {
         self.globals.insert(name.clone(), v);
     }
 
-    fn with_frame<T>(&mut self, frame: HashMap<Name, Value>, f: impl FnOnce(&mut Self) -> R<T>) -> R<T> {
-        self.frames.push(frame);
+    fn with_frame<T>(&mut self, vars: HashMap<Name, Value>, f: impl FnOnce(&mut Self) -> R<T>) -> R<T> {
+        self.frames.push(frame(vars));
         let r = f(self);
         self.frames.pop();
         r
@@ -1162,10 +1706,17 @@ impl<'p> Interp<'p> {
     // ----- evaluation -----
 
     fn eval(&mut self, n: &Node) -> R<Value> {
-        self.steps += 1;
-        if self.steps > MAX_STEPS {
-            return fail("evaluation step limit exceeded (infinite loop?)");
+        self.tick()?;
+        if self.eval_depth >= MAX_EVAL_DEPTH || self.stack_low() {
+            return fail("expressions nested too deeply (infinite recursion?)");
         }
+        self.eval_depth += 1;
+        let r = self.eval_node(n);
+        self.eval_depth -= 1;
+        r
+    }
+
+    fn eval_node(&mut self, n: &Node) -> R<Value> {
         match n {
             Node::Lit(v) => Ok(v.clone()),
             Node::Var(s) => self.lookup(s),
@@ -1280,22 +1831,19 @@ impl<'p> Interp<'p> {
         }
         self.depth += 1;
         // A SKILL++ closure runs on its own captured variables instead of the caller's.
-        let saved = func.env.as_ref().map(|env| std::mem::replace(&mut self.frames, vec![env.borrow().clone()]));
+        let saved = func.env.as_ref().map(|env| std::mem::replace(&mut self.frames, env.clone()));
         let r = self.with_frame(frame, |s| {
             for (p, d) in defaults {
                 let v = match d {
                     Some(n) => s.eval(&n)?,
                     None => Value::Nil,
                 };
-                s.frames.last_mut().unwrap().insert(p, v);
+                s.set_local(p, v);
             }
             s.body(&func.body)
         });
-        if let (Some(env), Some(caller)) = (&func.env, saved) {
-            let captured = std::mem::replace(&mut self.frames, caller);
-            if let Some(f) = captured.into_iter().next() {
-                *env.borrow_mut() = f;
-            }
+        if let Some(caller) = saved {
+            self.frames = caller;
         }
         self.depth -= 1;
         match r {
@@ -1458,23 +2006,55 @@ impl<'p> Interp<'p> {
                         };
                         params.push((name.to_string(), self.repr(&default)));
                     }
-                    let body: Vec<String> = args[2..].iter().map(|n| self.repr(&node_to_datum(n))).collect();
-                    let def = crate::pcell::PCell::SkillDef { params: params.clone(), body: body.join("\n") };
+                    // The body is kept as source text that parses back to the same code.
+                    let mut body = String::new();
+                    for (i, n) in args[2..].iter().enumerate() {
+                        if i > 0 {
+                            body.push('\n');
+                        }
+                        unparse(n, &mut body).map_err(|e| match e {
+                            Flow::Err(ErrInfo { msg, pos }) => Flow::Err(ErrInfo { msg: format!("pcDefinePCell: {msg}"), pos }),
+                            e => e,
+                        })?;
+                    }
+                    let def = crate::pcell::PCell::SkillDef { params: params.clone(), body };
+                    let r = CellRef::new(&lib, &cell);
+                    let old = match self.p.cell(&r) {
+                        Some(c) => match &c.pcell {
+                            Some(d @ crate::pcell::PCell::SkillDef { .. }) => Some(d.clone()),
+                            _ if c.layout.as_ref().is_some_and(|l| !l.is_empty()) => {
+                                return fail(format!(
+                                    "pcDefinePCell: {lib}/{cell} already has a layout that is not a SKILL PCell; \
+                                     delete it or use another cell name"
+                                ));
+                            }
+                            _ => None,
+                        },
+                        None => None,
+                    };
                     if self.p.libraries.iter().all(|l| l.name != lib) {
                         self.p.add_library(&lib).or_else(fail)?;
                     }
-                    let r = CellRef::new(&lib, &cell);
                     if self.p.cell(&r).is_none() {
                         self.p.add_cell(&lib, Cell::new(&cell)).or_else(fail)?;
                     }
+                    let was_writable = self.cvs.iter().find(|c| c.cell == r).map(|c| c.writable);
+                    self.clear_layout(&r)?;
                     if let Some(c) = self.p.cell_mut(&r) {
                         c.pcell = Some(def.clone());
-                        c.layout = Some(Layout::default());
                         c.description = def.summary(1000);
                     }
                     // The master's own layout is the PCell at its defaults.
                     self.eval_skill_pcell(&r, &r, &params)?;
-                    Ok(self.open_cv(r, false))
+                    // A changed definition: rebuild the variants already made from the old one.
+                    if old.is_some_and(|o| o != def) {
+                        self.rebuild_variants(&r, &params)?;
+                    }
+                    let cv = self.open_cv(r, false);
+                    if let Ok(i) = self.cv(&cv) {
+                        self.cvs[i].writable = was_writable.unwrap_or(false);
+                    }
+                    Ok(cv)
                 }
                 "declare" => {
                     // declare(a[n]): an array, kept as a table indexed 0 .. n-1.
@@ -1553,8 +2133,8 @@ impl<'p> Interp<'p> {
                         let Some(head) = e.first() else { continue };
                         let hit = match head {
                             Node::Lit(Value::T) => true,
-                            Node::Form(..) | Node::Call(..) => elems(head).iter().any(|k| equal(&node_to_datum(k), &v)),
-                            k => equal(&node_to_datum(k), &v),
+                            Node::Form(..) | Node::Call(..) => elems(head).iter().any(|k| equal(&case_key(k), &v)),
+                            k => equal(&case_key(k), &v),
                         };
                         if hit {
                             return self.body(&e[1..]);
@@ -1584,6 +2164,7 @@ impl<'p> Interp<'p> {
                 "while" => {
                     argc(1)?;
                     while truthy(&self.eval(&args[0])?) {
+                        self.tick()?;
                         self.body(&args[1..])?;
                     }
                     Ok(Value::T)
@@ -1598,9 +2179,12 @@ impl<'p> Interp<'p> {
                     self.with_frame(frame, |s| {
                         let mut i = from;
                         while i <= to {
-                            s.frames.last_mut().unwrap().insert(var.clone(), Value::Int(i));
+                            s.tick()?;
+                            s.set_local(var.clone(), Value::Int(i));
                             s.body(&args[3..])?;
-                            i += 1;
+                            // Stop at i64::MAX instead of overflowing.
+                            let Some(next) = i.checked_add(1) else { break };
+                            i = next;
                         }
                         Ok(Value::T)
                     })
@@ -1640,8 +2224,9 @@ impl<'p> Interp<'p> {
                     let mut results = vec![];
                     self.with_frame(HashMap::new(), |s| {
                         for i in 0..n {
+                            s.tick()?;
                             for (v, l) in vars.iter().zip(&lists) {
-                                s.frames.last_mut().unwrap().insert(v.clone(), l[i].clone());
+                                s.set_local(v.clone(), l[i].clone());
                             }
                             let r = s.body(body)?;
                             if mapper.is_some() {
@@ -1664,7 +2249,8 @@ impl<'p> Interp<'p> {
                     self.with_frame(HashMap::new(), |s| {
                         let mut kept = vec![];
                         for (i, x) in l.iter().enumerate() {
-                            s.frames.last_mut().unwrap().insert(var.clone(), x.clone());
+                            s.tick()?;
+                            s.set_local(var.clone(), x.clone());
                             let ok = truthy(&s.body(&args[2..])?);
                             match f {
                                 "setof" if ok => kept.push(x.clone()),
@@ -1686,11 +2272,13 @@ impl<'p> Interp<'p> {
                         self.bind_list(&args[0])?
                     } else {
                         let mut frame = HashMap::new();
-                        self.frames.push(HashMap::new());
+                        self.frames.push(frame_new());
                         let r = (|| {
                             for b in elems(&args[0]) {
                                 let one = self.bind_list(&Node::Form(vec![b], Pos { file: 0, line: 0 }))?;
-                                self.frames.last_mut().unwrap().extend(one.clone());
+                                if let Some(f) = self.frames.last() {
+                                    f.borrow_mut().extend(one.clone());
+                                }
                                 frame.extend(one);
                             }
                             Ok(())
@@ -1764,10 +2352,10 @@ impl<'p> Interp<'p> {
                     let Some(Node::Var(v)) = args.first() else { unreachable!() };
                     Ok(boolv(self.lookup(v).is_ok()))
                 }
-                _ => Err(Flow::Return(Value::Nil)),
+                _ => Err(Flow::NotSpecial),
             }
         })())
-        .filter(|r| !matches!(r, Err(Flow::Return(Value::Nil))) || f == "return")
+        .filter(|r| !matches!(r, Err(Flow::NotSpecial)))
     }
 
     // ----- printing -----
@@ -1778,47 +2366,55 @@ impl<'p> Interp<'p> {
         s
     }
 
+    /// Print `v` SKILL style, with a loop instead of recursion (lists nest without limit); text
+    /// beyond [`MAX_STR`] bytes is cut off with `...`.
     fn write_repr(&self, v: &Value, s: &mut String) {
-        match v {
-            Value::Nil => s.push_str("nil"),
-            Value::T => s.push('t'),
-            Value::Int(i) => s.push_str(&i.to_string()),
-            Value::Float(f) => s.push_str(&fmt_float(*f)),
-            Value::Str(x) => {
-                s.push('"');
-                for c in x.chars() {
-                    match c {
-                        '"' => s.push_str("\\\""),
-                        '\\' => s.push_str("\\\\"),
-                        '\n' => s.push_str("\\n"),
-                        '\t' => s.push_str("\\t"),
-                        c => s.push(c),
+        enum Item<'a> {
+            V(&'a Value),
+            Text(&'static str),
+        }
+        let mut todo = vec![Item::V(v)];
+        while let Some(it) = todo.pop() {
+            if s.len() > MAX_STR {
+                s.push_str("...");
+                return;
+            }
+            let v = match it {
+                Item::Text(t) => {
+                    s.push_str(t);
+                    continue;
+                }
+                Item::V(v) => v,
+            };
+            match v {
+                Value::Nil => s.push_str("nil"),
+                Value::T => s.push('t'),
+                Value::Int(i) => s.push_str(&i.to_string()),
+                Value::Float(f) => s.push_str(&fmt_float(*f)),
+                Value::Str(x) => write_str(x, s),
+                Value::Sym(x) => s.push_str(x),
+                Value::List(l) => {
+                    s.push('(');
+                    todo.push(Item::Text(")"));
+                    for (i, x) in l.iter().enumerate().rev() {
+                        todo.push(Item::V(x));
+                        if i > 0 {
+                            todo.push(Item::Text(" "));
+                        }
                     }
                 }
-                s.push('"');
-            }
-            Value::Sym(x) => s.push_str(x),
-            Value::List(l) => {
-                s.push('(');
-                for (i, x) in l.iter().enumerate() {
-                    if i > 0 {
-                        s.push(' ');
-                    }
-                    self.write_repr(x, s);
+                Value::Func(f) => s.push_str(&format!("funobj:{}", f.name)),
+                Value::Obj(o) => {
+                    let (cv, id) = match o {
+                        Obj::Cv(c) => (*c, 0),
+                        Obj::Shape(c, id) | Obj::Inst(c, id) => (*c, *id),
+                    };
+                    s.push_str(&format!("db:0x{:08x}", ((cv as u64 + 1) << 24) | id));
                 }
-                s.push(')');
+                Value::Table(t) => s.push_str(&format!("table:{}", t.borrow().name)),
+                Value::Port(0) => s.push_str("port:\"*stdout*\""),
+                Value::Port(k) => s.push_str(&format!("port:\"file{k}\"")),
             }
-            Value::Func(f) => s.push_str(&format!("funobj:{}", f.name)),
-            Value::Obj(o) => {
-                let (cv, id) = match o {
-                    Obj::Cv(c) => (*c, 0),
-                    Obj::Shape(c, id) | Obj::Inst(c, id) => (*c, *id),
-                };
-                s.push_str(&format!("db:0x{:08x}", ((cv as u64 + 1) << 24) | id));
-            }
-            Value::Table(t) => s.push_str(&format!("table:{}", t.borrow().name)),
-            Value::Port(0) => s.push_str("port:\"*stdout*\""),
-            Value::Port(k) => s.push_str(&format!("port:\"file{k}\"")),
         }
     }
 
@@ -1864,7 +2460,11 @@ impl<'p> Interp<'p> {
                     p.push(c);
                     i += 1;
                 }
-                prec = Some(p.parse().unwrap_or(0));
+                prec = Some(p.parse().unwrap_or(usize::MAX));
+            }
+            let w: usize = if width.is_empty() { 0 } else { width.parse().unwrap_or(usize::MAX) };
+            if w > MAX_FORMAT_WIDTH || prec.is_some_and(|p| p > MAX_FORMAT_WIDTH) {
+                return fail(format!("format: field width or precision above {MAX_FORMAT_WIDTH}"));
             }
             let Some(&conv) = cs.get(i) else { return fail("format: incomplete % directive") };
             i += 1;
@@ -1917,7 +2517,6 @@ impl<'p> Interp<'p> {
             if flags.contains('+') && matches!(conv, 'd' | 'i' | 'f' | 'e' | 'g' | 'n') && !body.starts_with('-') {
                 body.insert(0, '+');
             }
-            let w: usize = width.parse().unwrap_or(0);
             let len = body.chars().count();
             if len < w {
                 let pad = w - len;
@@ -1931,6 +2530,9 @@ impl<'p> Interp<'p> {
                 }
             }
             out.push_str(&body);
+            if out.len() > MAX_STR {
+                return fail(format!("format: result longer than {} MB", MAX_STR >> 20));
+            }
         }
         Ok(out)
     }
@@ -1987,11 +2589,13 @@ impl<'p> Interp<'p> {
                         .and_then(|c| c.get(1).cloned())
                         .unwrap_or(Value::Nil));
                 }
-                let mut out = vec![];
-                for x in l.iter() {
-                    out.push(self.get_prop(x, prop)?);
+                if self.eval_depth >= MAX_EVAL_DEPTH || self.stack_low() {
+                    return fail(format!("~>{prop}: list nested too deeply"));
                 }
-                Ok(list(out))
+                self.eval_depth += 1;
+                let out = l.iter().map(|x| self.get_prop(x, prop)).collect::<R<_>>();
+                self.eval_depth -= 1;
+                Ok(list(out?))
             }
             o => fail(format!("cannot get property {prop} of {}", self.repr(o))),
         }
@@ -2054,14 +2658,16 @@ impl<'p> Interp<'p> {
             "expt" => {
                 need(2)?;
                 match (&v[0], &v[1]) {
-                    (Value::Int(b), Value::Int(e)) if *e >= 0 => {
-                        b.checked_pow(*e as u32).map(Value::Int).map_or_else(|| fail("expt: overflow"), Ok)
-                    }
+                    (Value::Int(b), Value::Int(e)) if *e >= 0 => u32::try_from(*e)
+                        .ok()
+                        .and_then(|e| b.checked_pow(e))
+                        .map(Value::Int)
+                        .map_or_else(|| fail("expt: integer overflow"), Ok),
                     _ => Ok(float(num(0)?.powf(num(1)?))),
                 }
             }
             "abs" => match arg(0) {
-                Value::Int(i) => Ok(Value::Int(i.abs())),
+                Value::Int(i) => i.checked_abs().map(Value::Int).map_or_else(|| fail("abs: integer overflow"), Ok),
                 _ => Ok(float(num(0)?.abs())),
             },
             "min" | "max" => {
@@ -2106,12 +2712,13 @@ impl<'p> Interp<'p> {
                 if y == 0 {
                     return fail(format!("{f}: division by zero"));
                 }
-                Ok(Value::Int(if f == "modulo" { x.rem_euclid(y) } else { x % y }))
+                let r = if f == "modulo" { x.checked_rem_euclid(y) } else { x.checked_rem(y) };
+                r.map(Value::Int).map_or_else(|| fail(format!("{f}: integer overflow")), Ok)
             }
             "random" => {
                 let k = if n > 0 { int(0)?.max(1) } else { i64::MAX };
-                self.steps = self.steps.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-                Ok(Value::Int(((self.steps >> 17) as i64).rem_euclid(k)))
+                self.rng = self.rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                Ok(Value::Int(((self.rng >> 17) as i64).rem_euclid(k)))
             }
             "bitand" | "bitor" | "bitxor" | "leftshift" | "rightshift" => {
                 let (x, y) = (int(0)?, int(1)?);
@@ -2204,7 +2811,7 @@ impl<'p> Interp<'p> {
                 _ => Ok(Value::Int(lst(0)?.len() as i64)),
             },
             "nth" => Ok(lst(1)?.get(int(0)?.max(0) as usize).cloned().unwrap_or(Value::Nil)),
-            "nthelem" => Ok(lst(1)?.get((int(0)? - 1).max(0) as usize).cloned().unwrap_or(Value::Nil)),
+            "nthelem" => Ok(lst(1)?.get(int(0)?.saturating_sub(1).max(0) as usize).cloned().unwrap_or(Value::Nil)),
             "nthcdr" => Ok(list(lst(1)?.into_iter().skip(int(0)?.max(0) as usize).collect())),
             "last" => Ok(lst(0)?.last().map(|x| list(vec![x.clone()])).unwrap_or(Value::Nil)),
             "reverse" => Ok(list(lst(0)?.into_iter().rev().collect())),
@@ -2217,7 +2824,10 @@ impl<'p> Interp<'p> {
                     return Ok(v[0].clone());
                 }
                 let mut out = vec![];
-                for k in 0..n {
+                for (k, x) in v.iter().enumerate() {
+                    if out.len() + items(x).len() > MAX_LIST {
+                        return fail(format!("{f}: list longer than {MAX_LIST} elements"));
+                    }
                     out.extend(lst(k)?);
                 }
                 Ok(list(out))
@@ -2251,16 +2861,22 @@ impl<'p> Interp<'p> {
             "copy" => Ok(arg(0)),
             "subst" => {
                 need(3)?;
-                fn rec(new: &Value, old: &Value, x: &Value) -> Value {
+                // Bounded: lists nest without limit and may share sublists (exponential copies).
+                fn rec(new: &Value, old: &Value, x: &Value, depth: usize, budget: &mut usize) -> R<Value> {
+                    if depth > 10 * MAX_NESTING || *budget == 0 {
+                        return fail("subst: list too large or nested too deeply");
+                    }
+                    *budget -= 1;
                     if equal(x, old) {
-                        return new.clone();
+                        return Ok(new.clone());
                     }
-                    match x {
-                        Value::List(l) => list(l.iter().map(|e| rec(new, old, e)).collect()),
+                    Ok(match x {
+                        Value::List(l) => list(l.iter().map(|e| rec(new, old, e, depth + 1, budget)).collect::<R<_>>()?),
                         x => x.clone(),
-                    }
+                    })
                 }
-                Ok(rec(&v[0], &v[1], &v[2]))
+                let mut budget = MAX_LIST;
+                rec(&v[0], &v[1], &v[2], 0, &mut budget)
             }
             "listp" => Ok(boolv(matches!(arg(0), Value::Nil | Value::List(_)))),
             "pairp" | "dtpr" => Ok(boolv(matches!(arg(0), Value::List(_)))),
@@ -2281,8 +2897,12 @@ impl<'p> Interp<'p> {
                 let len = lists.iter().map(Vec::len).min().unwrap_or(0);
                 let mut out = vec![];
                 for i in 0..len {
+                    self.tick()?;
                     let r = self.call1(&v[0], lists.iter().map(|l| l[i].clone()).collect())?;
                     out.push(r);
+                }
+                if f == "mapcan" && out.iter().map(|r| items(r).len()).sum::<usize>() > MAX_LIST {
+                    return fail(format!("{f}: list longer than {MAX_LIST} elements"));
                 }
                 Ok(match f {
                     "mapcar" => list(out),
@@ -2308,7 +2928,7 @@ impl<'p> Interp<'p> {
             }
             "eval" => {
                 need(1)?;
-                let node = datum_to_node(&v[0]);
+                let node = datum_to_node(&v[0])?;
                 self.eval(&node)
             }
             "evalstring" => {
@@ -2321,6 +2941,7 @@ impl<'p> Interp<'p> {
                     Some(dir) if path.is_relative() => dir.join(path),
                     _ => path,
                 };
+                let path = self.file_path(f, &path)?;
                 let src = match std::fs::read_to_string(&path) {
                     Ok(src) => src,
                     Err(e) => return fail(format!("load: cannot read {}: {e}", path.display())),
@@ -2378,6 +2999,9 @@ impl<'p> Interp<'p> {
                         Value::Nil => {}
                         x => return fail(format!("strcat: string expected, got {}", self.repr(x))),
                     }
+                    if out.len() > MAX_STR {
+                        return fail(format!("strcat: string longer than {} MB", MAX_STR >> 20));
+                    }
                 }
                 Ok(string(out))
             }
@@ -2416,13 +3040,25 @@ impl<'p> Interp<'p> {
             }
             "buildString" => {
                 let sep = if n > 1 { s(1)?.to_string() } else { " ".into() };
-                let parts: Vec<String> = lst(0)?.iter().map(|x| self.display(x)).collect();
-                Ok(string(parts.join(&sep)))
+                let mut out = String::new();
+                for (i, x) in lst(0)?.iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(&sep);
+                    }
+                    out.push_str(&self.display(x));
+                    if out.len() > MAX_STR {
+                        return fail(format!("buildString: string longer than {} MB", MAX_STR >> 20));
+                    }
+                }
+                Ok(string(out))
             }
             "concat" => {
                 let mut out = String::new();
                 for x in &v {
                     out.push_str(&self.display(x));
+                    if out.len() > MAX_STR {
+                        return fail(format!("concat: string longer than {} MB", MAX_STR >> 20));
+                    }
                 }
                 Ok(sym(&out))
             }
@@ -2453,16 +3089,14 @@ impl<'p> Interp<'p> {
             "printf" | "info" => {
                 let fmt = s(0)?;
                 let text = self.format(&fmt, &v[1..])?;
-                self.out.push_str(&text);
+                self.emit(&text)?;
                 Ok(Value::T)
             }
             "warn" => {
                 let fmt = s(0)?;
                 let text = self.format(&fmt, &v[1..])?;
-                self.out.push_str(&format!("*WARNING* {text}"));
-                if !text.ends_with('\n') {
-                    self.out.push('\n');
-                }
+                let nl = if text.ends_with('\n') { "" } else { "\n" };
+                self.emit(&format!("*WARNING* {text}{nl}"))?;
                 Ok(Value::Nil)
             }
             "fprintf" => {
@@ -2470,13 +3104,15 @@ impl<'p> Interp<'p> {
                 let text = self.format(&fmt, &v[2..])?;
                 match v.first() {
                     Some(Value::Port(k)) if *k > 0 => self.write_port(*k, &text)?,
-                    _ => self.out.push_str(&text),
+                    _ => self.emit(&text)?,
                 }
                 Ok(Value::T)
             }
             "outfile" | "infile" => {
                 need(1)?;
                 let path = PathBuf::from(&*s(0)?);
+                // Checked before anything is opened: outfile truncates.
+                let path = self.file_path(f, &path)?;
                 let port = if f == "outfile" {
                     let append = matches!(v.get(1), Some(Value::Str(m)) if m.starts_with('a'));
                     if !append {
@@ -2525,21 +3161,20 @@ impl<'p> Interp<'p> {
             f if f.starts_with("hi") => self.hi_call(f, &v, &a.keys),
             "print" | "println" | "pprint" => {
                 need(1)?;
-                let text = self.repr(&v[0]);
-                self.out.push_str(&text);
+                let mut text = self.repr(&v[0]);
                 if f != "print" {
-                    self.out.push('\n');
+                    text.push('\n');
                 }
+                self.emit(&text)?;
                 Ok(Value::Nil)
             }
             "printlev" => {
                 let text = self.repr(&arg(0));
-                self.out.push_str(&text);
-                self.out.push('\n');
+                self.emit(&format!("{text}\n"))?;
                 Ok(Value::Nil)
             }
             "newline" => {
-                self.out.push('\n');
+                self.emit("\n")?;
                 Ok(Value::Nil)
             }
             "drain" | "gc" | "sstatus" | "status" | "hiRegTimer" => Ok(Value::T),
@@ -2553,7 +3188,13 @@ impl<'p> Interp<'p> {
             }
             "getCurrentTime" => Ok(string("Jan  1 00:00:00 2026")),
             "getVersion" => Ok(string("IC Studio SKILL")),
-            "getShellEnvVar" => Ok(std::env::var(&*s(0)?).map_or(Value::Nil, string)),
+            "getShellEnvVar" => {
+                let name = s(0)?;
+                if self.sandbox.is_some() {
+                    return fail("getShellEnvVar: environment variables are not available here");
+                }
+                Ok(std::env::var(&*name).map_or(Value::Nil, string))
+            }
 
             // layout database
             f if f.starts_with("db") || f.starts_with("ge") || f.starts_with("de") || f.starts_with("le") => self.db_call(f, &v),
@@ -3454,13 +4095,19 @@ impl<'p> Interp<'p> {
                 .position(|x| matches!(x, Value::Sym(s) if s.strip_prefix('?') == Some(k)))
                 .and_then(|i| spec.get(i + 1).cloned())
         };
+        if w.abs() > COORD_LIMIT || pts.iter().any(|p| p.0.abs() > COORD_LIMIT || p.1.abs() > COORD_LIMIT) {
+            return fail(format!("{f}: coordinates or width out of range"));
+        }
         let mut out = vec![];
         for spec in specs(enc) {
             let Some(lv) = get(&spec, "layer") else { return fail(format!("{f}: ?encSubPath needs ?layer")) };
             let layer = self.layer(&lv)?;
             let e = get(&spec, "enclosure").map_or(0, |v| self.to_dbu(as_f64(&v)));
-            if w + 2 * e > 0 {
-                out.push((layer, Geometry::Path { points: pts.to_vec(), width: w + 2 * e }));
+            let Some(width) = e.checked_mul(2).and_then(|e2| w.checked_add(e2)) else {
+                return fail(format!("{f}: ?encSubPath enclosure out of range"));
+            };
+            if width > 0 {
+                out.push((layer, Geometry::Path { points: pts.to_vec(), width }));
             }
         }
         for spec in specs(offset) {
@@ -3468,6 +4115,9 @@ impl<'p> Interp<'p> {
             let layer = self.layer(&lv)?;
             let sw = get(&spec, "width").map_or(w, |v| self.to_dbu(as_f64(&v)));
             let sep = get(&spec, "sep").map_or(0, |v| self.to_dbu(as_f64(&v)));
+            if sw.abs() > COORD_LIMIT || sep.abs() > COORD_LIMIT {
+                return fail(format!("{f}: ?offsetSubPath size out of range"));
+            }
             let right = get(&spec, "justification").is_some_and(|j| self.display(&j) == "right");
             let d = (w / 2 + sep + sw / 2) * if right { -1 } else { 1 };
             let Some(line) = crate::reshape::offset_polyline(pts, d, None) else {
@@ -3484,6 +4134,10 @@ impl<'p> Interp<'p> {
             }
             let rl = get(&spec, "length").map_or(rw, |v| self.to_dbu(as_f64(&v)));
             let space = get(&spec, "space").map_or(rw, |v| self.to_dbu(as_f64(&v)));
+            // Bounded values keep the arithmetic below far from overflow.
+            if [rw, rl, space].iter().any(|x| x.abs() > COORD_LIMIT) {
+                return fail(format!("{f}: ?subRect size out of range"));
+            }
             let pitch = (rl + space).max(1);
             for seg in pts.windows(2) {
                 let (a, b) = (seg[0], seg[1]);
@@ -3494,6 +4148,9 @@ impl<'p> Interp<'p> {
                     continue;
                 }
                 let n = usable / pitch + 1;
+                if out.len() as i64 + n > MAX_SUBRECTS as i64 {
+                    return fail(format!("{f}: ?subRect would create more than {MAX_SUBRECTS} rectangles"));
+                }
                 let start = w / 2 + space + (usable - (n - 1) * pitch) / 2;
                 let dir = ((b.0 - a.0).signum(), (b.1 - a.1).signum());
                 for k in 0..n {
@@ -3586,6 +4243,44 @@ impl<'p> Interp<'p> {
         Ok(r)
     }
 
+    /// Empty the layout of `cell`, as a tracked edit (see [`Interp::layout_mut`]).
+    fn clear_layout(&mut self, cell: &CellRef) -> R<()> {
+        let cv = self.open_cv(cell.clone(), true);
+        let cv = self.cv(&cv)?;
+        *self.layout_mut(cv)? = Layout::default();
+        Ok(())
+    }
+
+    /// Re-run the (redefined) SKILL PCell `master` into each of its existing variants, with the
+    /// variant's parameter values over the new `defaults`.
+    fn rebuild_variants(&mut self, master: &CellRef, defaults: &[(String, String)]) -> R<()> {
+        let key = format!("{}/{}", master.lib, master.cell);
+        let variants: Vec<(CellRef, Vec<(String, String)>)> = self
+            .p
+            .all_cells()
+            .filter_map(|(r, c)| match &c.pcell {
+                Some(crate::pcell::PCell::SkillVariant { master: m, params }) if *m == key => Some((r, params.clone())),
+                _ => None,
+            })
+            .collect();
+        for (r, given) in variants {
+            let mut values = defaults.to_vec();
+            for (n, v) in &given {
+                if let Some(slot) = values.iter_mut().find(|(k, _)| k == n) {
+                    slot.1 = v.clone();
+                }
+            }
+            self.clear_layout(&r)?;
+            if let Some(c) = self.p.cell_mut(&r) {
+                let variant = crate::pcell::PCell::SkillVariant { master: key.clone(), params: values.clone() };
+                c.description = variant.summary(1000);
+                c.pcell = Some(variant);
+            }
+            self.eval_skill_pcell(master, &r, &values)?;
+        }
+        Ok(())
+    }
+
     /// Run the body of SKILL PCell `master` into cell `into`, with `pcCellView` and the
     /// parameters (SKILL text) bound.
     fn eval_skill_pcell(&mut self, master: &CellRef, into: &CellRef, values: &[(String, String)]) -> R<()> {
@@ -3606,6 +4301,10 @@ impl<'p> Interp<'p> {
         use std::io::Write;
         match self.ports.get(k as usize - 1) {
             Some(PortFile::Out(path)) => {
+                self.file_bytes += text.len() as u64;
+                if self.file_bytes > MAX_FILE_BYTES {
+                    return fail(format!("fprintf: more than {} MB written to files", MAX_FILE_BYTES >> 20));
+                }
                 let mut f = std::fs::OpenOptions::new()
                     .append(true)
                     .create(true)
@@ -3918,33 +4617,61 @@ fn format_g(x: f64, prec: usize) -> String {
 }
 
 /// Minimal regular expression match: `^`, `$`, `.`, `*` and literal characters.
+///
+/// Runs as a set of NFA states in time O(pattern × text), never backtracking.
 fn simple_match(pat: &str, s: &str) -> bool {
-    fn here(p: &[char], s: &[char]) -> bool {
-        match p {
-            [] => true,
-            ['$'] => s.is_empty(),
-            [c, '*', rest @ ..] => {
-                let mut i = 0;
-                loop {
-                    if here(rest, &s[i..]) {
-                        return true;
-                    }
-                    if i < s.len() && (*c == '.' || s[i] == *c) {
-                        i += 1;
-                    } else {
-                        return false;
-                    }
-                }
-            }
-            [c, rest @ ..] => !s.is_empty() && (*c == '.' || s[0] == *c) && here(rest, &s[1..]),
+    let mut p: Vec<char> = pat.chars().collect();
+    let anchored = p.first() == Some(&'^');
+    if anchored {
+        p.remove(0);
+    }
+    // Items (character or '.', repeated with '*'); a final '$' anchors the end.
+    let mut items: Vec<(char, bool)> = vec![];
+    let mut at_end = false;
+    let mut i = 0;
+    while i < p.len() {
+        if p[i] == '$' && i + 1 == p.len() {
+            at_end = true;
+        } else if p.get(i + 1) == Some(&'*') {
+            items.push((p[i], true));
+            i += 1;
+        } else {
+            items.push((p[i], false));
         }
+        i += 1;
     }
-    let p: Vec<char> = pat.chars().collect();
-    let s: Vec<char> = s.chars().collect();
-    if p.first() == Some(&'^') {
-        return here(&p[1..], &s);
+    let n = items.len();
+    // Add state k and the states after the starred items it can skip.
+    let add = |set: &mut Vec<bool>, mut k: usize| {
+        while k <= n && !set[k] {
+            set[k] = true;
+            if k < n && items[k].1 {
+                k += 1;
+            } else {
+                break;
+            }
+        }
+    };
+    let mut cur = vec![false; n + 1];
+    add(&mut cur, 0);
+    let text: Vec<char> = s.chars().collect();
+    for &c in &text {
+        if cur[n] && !at_end {
+            return true;
+        }
+        let mut next = vec![false; n + 1];
+        for (k, &(pc, star)) in items.iter().enumerate() {
+            if cur[k] && (pc == '.' || pc == c) {
+                // A starred item may repeat (its closure includes what follows).
+                add(&mut next, if star { k } else { k + 1 });
+            }
+        }
+        if !anchored {
+            add(&mut next, 0);
+        }
+        cur = next;
     }
-    (0..=s.len()).any(|i| here(&p, &s[i..]))
+    cur[n]
 }
 
 #[cfg(test)]
@@ -4389,5 +5116,283 @@ hiDisplayForm(myGenForm)
         let l = p.cell(&CellRef::new("work", "gen")).and_then(|c| c.layout.clone()).unwrap();
         assert_eq!(l.shapes[0].bbox().width(), 4 * p.tech.dbu_per_um);
         assert_eq!(l.shapes[0].layer, p.tech.layer_index("metal2").unwrap());
+    }
+
+    fn error(src: &str) -> String {
+        let mut p = Project::new("t");
+        match run(&mut p, src, None) {
+            Ok(r) => panic!("expected an error, got {}", r.value),
+            Err(e) => e.message,
+        }
+    }
+
+    /// Deep recursion, deep nesting in the source and deeply nested values end in SKILL errors
+    /// (or work), never in a stack overflow, also when the caller has a small stack.
+    #[test]
+    fn deep_recursion_and_nesting_are_errors() {
+        let small = std::thread::Builder::new().stack_size(512 << 10);
+        let r = small
+            .spawn(|| {
+                let rec = "procedure(r(n) if(n == 0 then 0 else 1 + r(n - 1)))\n";
+                let ok = eval(&format!("{rec}r(2000)"));
+                let deep = error(&format!("{rec}r(100000000)"));
+                // Recursion through built-ins and through deeply nested bodies.
+                for body in [
+                    "funcall('r n - 1)",
+                    "car(mapcar(lambda((k) r(k)) list(n - 1)))",
+                    &format!("{}r(n - 1){}", "progn(".repeat(900), ")".repeat(900)),
+                    &format!("{}r(n - 1){}", "if(t then ".repeat(300), ")".repeat(300)),
+                ] {
+                    let e = error(&format!("procedure(r(n) if(n == 0 then 0 else 1 + {body}))\nr(100000000)"));
+                    assert!(e.contains("depth limit") || e.contains("too deeply"), "{e}");
+                }
+                (ok, deep)
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(r.0, "2000");
+        assert!(r.1.contains("depth limit") || r.1.contains("too deeply"), "{}", r.1);
+
+        // Source nesting.
+        let nested = format!("{}1{}", "list(".repeat(5000), ")".repeat(5000));
+        assert!(error(&nested).contains("nested too deeply"));
+        let quoted = format!("'{}1{}", "(".repeat(5000), ")".repeat(5000));
+        assert!(error(&quoted).contains("nested too deeply"));
+        let chain = format!("1{}", " + 1".repeat(5000));
+        assert!(error(&chain).contains("nested too deeply"));
+        assert_eq!(eval(&format!("1{}", " + 1".repeat(500))), "501");
+
+        // A 200000 deep value: built, compared, printed and dropped without recursion.
+        let deep = "x = nil for(i 1 200000 x = list(x)) y = nil for(i 1 200000 y = list(y))\n";
+        assert_eq!(eval(&format!("{deep}list(length(x) equal(x y))")), "(1 t)");
+        assert_eq!(output(&format!("{deep}print(x) 1")).len(), 2 * 200000 + 3);
+        assert!(error(&format!("{deep}eval(x)")).contains("nested too deeply"));
+        assert!(error(&format!("{deep}subst(1 nil x)")).contains("nested too deeply"));
+        // Deep tables and closures drop iteratively too (here, on the 512 KB thread).
+        std::thread::Builder::new()
+            .stack_size(512 << 10)
+            .spawn(|| {
+                let mut p = Project::new("t");
+                let mut s = Session::new();
+                s.eval(&mut p, "tb = nil for(i 1 200000 u = makeTable(\"t\") u[0] = tb tb = u) 1", None, None).unwrap();
+                s.eval(&mut p, "x = nil for(i 1 200000 x = list(x)) 1", None, None).unwrap();
+                drop(s);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    /// A PCell body keeps `~>`, `->`, `a[i]` and quoted data exactly (it is stored as source).
+    #[test]
+    fn pcell_body_round_trips() {
+        let src = r#"
+pcDefinePCell(list(ddGetObj("mylib") "multi" "layout") ((w 1.0) (lay "metal1"))
+  let((r box)
+    declare(arr[2])
+    arr[0] = w
+    foreach(l '("metal1" "metal2") r = dbCreateRect(pcCellView l list(0:0 arr[0]:1)))
+    box = r~>bBox
+    when(pcCellView->cellName == "multi" && car(box) == '(0.0 0.0)
+      dbCreateRect(pcCellView lay list(-1:-1 0:0)))
+    case(lay ("metal1" t) (t nil))))
+cv = dbOpenCellViewByType("work" "top" "layout" "maskLayout" "w")
+i = dbCreateParamInstByMasterName(cv "mylib" "multi" "layout" "I1" 0:0 "R0" 1 list(list("w" "float" 2.0)))
+length(i~>master~>shapes)
+"#;
+        let mut p = Project::new("t");
+        let r = run(&mut p, src, None).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(r.value, "2", "a variant has two rectangles");
+        let m = p.cell(&CellRef::new("mylib", "multi")).and_then(|c| c.layout.clone()).unwrap();
+        assert_eq!(m.shapes.len(), 3, "the master (cellName multi) also has the third");
+
+        // Unparsed source parses back to the same code.
+        for code in [
+            "a~>b->c[1 + 2] = '(x \"y\" (1 -2.5) ?k @rest) f(?k -1 x - 1) (g 1 'h) { a b } if(a then b else c)",
+            "x = -1 y = - x z = quote(f(x~>y 'z))",
+        ] {
+            let nodes = parse(code, 0).unwrap_or_else(|_| panic!("parse {code}"));
+            let mut once = String::new();
+            for n in &nodes {
+                unparse(n, &mut once).unwrap();
+                once.push('\n');
+            }
+            let again = parse(&once, 0).unwrap_or_else(|_| panic!("reparse {once}"));
+            let mut twice = String::new();
+            for n in &again {
+                unparse(n, &mut twice).unwrap();
+                twice.push('\n');
+            }
+            assert_eq!(once, twice);
+        }
+        assert_eq!(eval("quote(f(x~>y 'z a[1]))"), "(f (getq x y) (quote z) (arrayref a 1))");
+        assert_eq!(
+            eval("t1 = makeTable(\"t\") t1[1] = 5 o = list(nil 'p 7) list(eval(quote(o~>p)) eval(quote(t1[1])))"),
+            "(7 5)"
+        );
+    }
+
+    /// pcDefinePCell does not overwrite a drawn layout, and its edits are tracked.
+    #[test]
+    fn pcell_definition_keeps_drawn_layouts() {
+        let mut p = Project::new("t");
+        let draw = r#"cv = dbOpenCellViewByType("mylib" "hand" "layout" "maskLayout" "w")
+dbCreateRect(cv "metal1" list(0:0 1:1))"#;
+        run(&mut p, draw, None).unwrap();
+        let def =
+            r#"pcDefinePCell(list(ddGetObj("mylib") "hand" "layout") ((w 1.0)) dbCreateRect(pcCellView "metal2" list(0:0 w:w)))"#;
+        let e = run(&mut p, def, None).unwrap_err();
+        assert!(e.message.contains("already has a layout"), "{}", e.message);
+        let hand = p.cell(&CellRef::new("mylib", "hand")).unwrap();
+        assert_eq!(hand.layout.as_ref().unwrap().shapes.len(), 1);
+        assert!(hand.pcell.is_none());
+        // A new cell: created and reported as modified.
+        let r = run(&mut p, &def.replace("\"hand\"", "\"gen\""), None).unwrap();
+        assert!(r.modified.contains(&CellRef::new("mylib", "gen")), "{:?}", r.modified);
+    }
+
+    /// Redefining a SKILL PCell re-evaluates the variants already placed.
+    #[test]
+    fn pcell_redefinition_updates_variants() {
+        let mut p = Project::new("t");
+        let mut s = Session::new();
+        let def1 =
+            r#"pcDefinePCell(list(ddGetObj("mylib") "pc" "layout") ((w 1.0)) dbCreateRect(pcCellView "metal1" list(0:0 w:1)))"#;
+        s.eval(&mut p, def1, None, None).unwrap();
+        let place = r#"cv = dbOpenCellViewByType("work" "top" "layout" "maskLayout" "w")
+dbCreateParamInstByMasterName(cv "mylib" "pc" "layout" "I1" 0:0 "R0" 1 list(list("w" "float" 2.0)))~>master~>cellName"#;
+        let name = s.eval(&mut p, place, None, None).unwrap().value;
+        let variant = CellRef::new("mylib", name.trim_matches('"'));
+        let count = |p: &Project| p.cell(&variant).and_then(|c| c.layout.as_ref()).map_or(0, |l| l.shapes.len());
+        assert_eq!(count(&p), 1);
+        let def2 = def1.replace("list(0:0 w:1)))", "list(0:0 w:1)) dbCreateRect(pcCellView \"metal2\" list(0:0 w:2)))");
+        let r = s.eval(&mut p, &def2, None, None).unwrap();
+        assert_eq!(count(&p), 2, "the variant follows the new body");
+        assert!(r.modified.contains(&variant));
+    }
+
+    /// Properties and file ports outlive one CIW command.
+    #[test]
+    fn session_keeps_properties_and_ports() {
+        let dir = std::env::temp_dir().join(format!("ics-skill-session-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("out.txt");
+        let mut p = Project::new("t");
+        let mut s = Session::new();
+        let src = format!(
+            "cv = dbOpenCellViewByType(\"work\" \"a\" \"layout\" \"maskLayout\" \"w\") dbReplaceProp(cv \"note\" \"string\" \"hi\")\n\
+             port = outfile(\"{}\")",
+            path.display().to_string().replace('\\', "/")
+        );
+        s.eval(&mut p, &src, None, None).unwrap();
+        assert_eq!(s.eval(&mut p, "cv~>note", None, None).unwrap().value, "\"hi\"");
+        s.eval(&mut p, "fprintf(port \"line\\n\") close(port)", None, None).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "line\n");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// SKILL++ closures share the variables they capture.
+    #[test]
+    fn skillpp_closures_share_variables() {
+        let mut p = Project::new("t");
+        let src = "let(((count 0)) procedure(incr() count = count + 1) procedure(getc() count)) incr() incr() getc()";
+        let r = run(&mut p, src, Some(Path::new("counter.ils"))).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(r.value, "2");
+        let src = "mk = lambda(() let(((n 0)) list(lambda(() n = n + 1) lambda(() n))))\n\
+                   c = funcall(mk) funcall(car(c)) funcall(car(c)) d = funcall(mk) funcall(car(d))\n\
+                   list(funcall(cadr(c)) funcall(cadr(d)))";
+        let r = run(&mut p, src, Some(Path::new("pairs.ils"))).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(r.value, "(2 1)");
+    }
+
+    /// `return(nil)` leaves the procedure once, without running anything again.
+    #[test]
+    fn return_nil_runs_side_effects_once() {
+        let mut p = Project::new("t");
+        let r = run(&mut p, "procedure(f() when(t printf(\"side\\n\") return(nil)) 1) f()", None).unwrap();
+        assert_eq!((r.output.as_str(), r.value.as_str()), ("side\n", "nil"));
+        let r = run(&mut p, "procedure(g() foreach(x '(1 2) printf(\"%d\" x) return(nil)) 1) g()", None).unwrap();
+        assert_eq!((r.output.as_str(), r.value.as_str()), ("1", "nil"));
+        assert_eq!(eval("procedure(h() let((a) if(t return(nil))) 1) h()"), "nil");
+    }
+
+    /// Runaway loops, huge formats and strings, unbounded ROD rows and backtracking patterns
+    /// end in errors (or finish quickly).
+    #[test]
+    fn work_and_memory_are_bounded() {
+        let mut p = Project::new("t");
+        let mut s = Session::sandboxed(Sandbox { roots: vec![], time_limit: Some(std::time::Duration::from_millis(300)) });
+        let e = s.eval(&mut p, "for(i 0 2000000000000)", None, None).unwrap_err();
+        assert!(e.message.contains("time limit"), "{}", e.message);
+        let e = s.eval(&mut p, "while(t)", None, None).unwrap_err();
+        assert!(e.message.contains("time limit"), "{}", e.message);
+        assert!(error("sprintf(nil \"%99999999999999d\" 1)").contains("width"));
+        assert!(error("sprintf(nil \"%.99999999999f\" 1.0)").contains("precision"));
+        assert!(error("s = \"x\" for(i 1 40 s = strcat(s s))").contains("longer than"));
+        assert!(error("l = list(1) for(i 1 40 l = append(l l))").contains("longer than"));
+        let rod = r#"cv = dbOpenCellViewByType("work" "r" "layout" "maskLayout" "w")
+rodCreatePath(?cvId cv ?layer "metal1" ?width 0.5 ?pts list(0:0 1000000:0)
+  ?subRect list(list(?layer "contact" ?width 0.001 ?space 0.001)))"#;
+        assert!(error(rod).contains("rectangles"));
+        let t = std::time::Instant::now();
+        assert_eq!(eval(&format!("rexMatchp(\"{}b\" \"{}\")", "a*".repeat(30), "a".repeat(40))), "nil");
+        assert!(t.elapsed().as_secs() < 2, "no exponential backtracking");
+        for (pat, text, m) in [
+            ("^ab*c$", "abbbc", "t"),
+            ("^ab*c$", "abbbcd", "nil"),
+            ("b.d", "abcde", "t"),
+            ("^b", "abc", "nil"),
+            ("c$", "abc", "t"),
+            ("x*", "", "t"),
+            ("a$*", "a$$", "t"),
+            ("", "abc", "t"),
+        ] {
+            assert_eq!(eval(&format!("rexMatchp(\"{pat}\" \"{text}\")")), m, "{pat} on {text}");
+        }
+    }
+
+    /// Integer edge cases are errors, not panics.
+    #[test]
+    fn integer_overflow_is_an_error() {
+        let min = "(-9223372036854775807 - 1)";
+        assert!(error(&format!("mod({min} -1)")).contains("overflow"));
+        assert!(error(&format!("remainder({min} -1)")).contains("overflow"));
+        assert!(error(&format!("modulo({min} -1)")).contains("overflow"));
+        assert!(error(&format!("abs({min})")).contains("overflow"));
+        assert!(error("expt(2 4294967296)").contains("overflow"));
+        assert_eq!(eval(&format!("nthelem({min} '(1 2))")), "1");
+        assert_eq!(eval("n = 0 for(i 9223372036854775806 9223372036854775807 n++) n"), "1");
+        let rod = r#"cv = dbOpenCellViewByType("work" "r" "layout" "maskLayout" "w")
+rodCreatePath(?cvId cv ?layer "metal1" ?width 0.5 ?pts list(0:0 1e300:0)
+  ?subRect list(list(?layer "contact" ?width 0.2 ?space 0.2)) ?encSubPath list(list(?layer "metal2" ?enclosure 1e300)))"#;
+        assert!(error(rod).contains("out of range"));
+    }
+
+    /// A sandbox confines file access to its roots and hides the environment.
+    #[test]
+    fn sandbox_limits_files_and_environment() {
+        let base = std::env::temp_dir().join(format!("ics-skill-sandbox-{}", std::process::id()));
+        let root = base.join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let outside = base.join("outside.txt");
+        std::fs::write(&outside, "keep").unwrap();
+        std::fs::write(root.join("lib.il"), "libValue = 42").unwrap();
+        let mut p = Project::new("t");
+        let mut s = Session::sandboxed(Sandbox { roots: vec![root.clone()], time_limit: None });
+        let e = s.eval(&mut p, "outfile(\"../outside.txt\")", None, None).unwrap_err();
+        assert!(e.message.contains("not allowed"), "{}", e.message);
+        let abs = outside.display().to_string().replace('\\', "/");
+        assert!(s.eval(&mut p, &format!("outfile(\"{abs}\" \"w\")"), None, None).is_err());
+        assert!(s.eval(&mut p, &format!("infile(\"{abs}\")"), None, None).is_err());
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "keep", "not truncated");
+        s.eval(&mut p, "q = outfile(\"inside.txt\") fprintf(q \"ok\") close(q)", None, None).unwrap();
+        assert_eq!(std::fs::read_to_string(root.join("inside.txt")).unwrap(), "ok");
+        assert_eq!(s.eval(&mut p, "load(\"lib.il\") libValue", None, None).unwrap().value, "42");
+        assert!(s.eval(&mut p, "getShellEnvVar(\"PATH\")", None, None).is_err());
+        assert!(s.load(&mut p, &outside, None).is_err());
+        // Without a sandbox (the user's own scripts) everything stays available.
+        assert!(run(&mut p, "getShellEnvVar(\"PATH\")", None).is_ok());
+        std::fs::remove_dir_all(&base).ok();
     }
 }

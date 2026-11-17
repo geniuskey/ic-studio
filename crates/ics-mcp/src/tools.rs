@@ -1115,7 +1115,7 @@ pub fn definitions() -> Vec<Value> {
         tool(
             "run_skill",
             &format!(
-                "Run Cadence SKILL (.il) code on the project, e.g. dbOpenCellViewByType / dbCreateRect / dbCreateInst (coordinates in µm). Give 'code' or 'file'. Returns what the script printed, the value of its last form and the cells whose layout it created or changed (lib/cell). On an error the edits made before it are kept. {NOT_SAVED}"
+                "Run Cadence SKILL (.il) code on the project, e.g. dbOpenCellViewByType / dbCreateRect / dbCreateInst (coordinates in µm). Give 'code' or 'file'. Returns what the script printed, the value of its last form and the cells whose layout it created or changed (lib/cell). On an error the edits made before it are kept. Sandboxed: 'file', load(), outfile() and infile() only reach files under the project directory (relative paths are taken from there; an unsaved project has none), getShellEnvVar() is unavailable, and a run stops after 120 s. {NOT_SAVED}"
             ),
             json!({
                 "code": {"type": "string", "description": "SKILL source to run."},
@@ -2810,9 +2810,14 @@ impl State {
             None => None,
         };
         let p = self.project_mut()?;
+        // Agent code is sandboxed: files only under the project directory, no environment.
+        let mut session = ics_core::skill::Session::sandboxed(ics_core::skill::Sandbox {
+            roots: p.root.iter().cloned().collect(),
+            time_limit: Some(std::time::Duration::from_secs(120)),
+        });
         let res = match (code, file) {
-            (Some(code), None) => ics_core::skill::run_with(p, code, None, current.as_ref()),
-            (None, Some(file)) => ics_core::skill::run_file_with(p, Path::new(file), current.as_ref()),
+            (Some(code), None) => session.eval(p, code, None, current.as_ref()),
+            (None, Some(file)) => session.load(p, Path::new(file), current.as_ref()),
             _ => return Err("give exactly one of 'code' or 'file'".into()),
         };
         let names = |m: &[CellRef]| m.iter().map(CellRef::to_string).collect::<Vec<_>>();
