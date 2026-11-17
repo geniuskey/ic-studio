@@ -174,6 +174,17 @@ pub enum Command {
     IrDrop(Option<String>),
     /// Open the DRC Rule Designer window on the technology's deck.
     RuleDesigner,
+    /// Copy a DRC deck file (IC Studio or SVRF) into the technology; `None` asks for the file.
+    ImportDrcDeck(Option<PathBuf>),
+    /// Write the technology's DRC deck to a file; `None` asks where.
+    ExportDrcDeck(Option<PathBuf>),
+    /// Link the technology to a shared DRC deck file, which is re-read when the project opens
+    /// and written when the deck is applied; `None` asks for the file.
+    LinkDrcDeck(Option<PathBuf>),
+    /// Stop using the shared DRC deck file (the project keeps a copy of its deck).
+    UnlinkDrcDeck,
+    /// Re-read the shared DRC deck file.
+    ReloadDrcDeck,
     /// Open the Stream Layer Map editor (GDSII / OASIS layer numbers on import and export).
     StreamMap,
     /// Open the Layer Display editor (fill colour, stipple, outline colour and line style per
@@ -783,9 +794,15 @@ impl IcStudio {
 
     fn open_project(&mut self, path: &Path) {
         match Project::open(path) {
-            Ok(p) => {
+            Ok(mut p) => {
                 let root = p.root.clone().unwrap();
                 self.info(format!("Opened project '{}' ({})", p.name, root.display()));
+                if let Some(deck) = p.drc_deck_path() {
+                    match p.reload_drc_deck() {
+                        Ok(_) => self.info(format!("DRC deck: shared {}", deck.display())),
+                        Err(e) => self.warn(format!("Shared DRC deck not read, using the copy saved with the project: {e}")),
+                    }
+                }
                 self.set_project(p);
                 self.remember_recent(&root);
             }
@@ -1168,6 +1185,29 @@ impl IcStudio {
             Command::RuleDesigner => match &self.project {
                 Some(p) => self.rule_designer.show(&p.tech),
                 None => self.rule_designer.show_standalone(),
+            },
+            Command::ImportDrcDeck(path) => self.import_drc_deck(path),
+            Command::ExportDrcDeck(path) => self.export_drc_deck(path),
+            Command::LinkDrcDeck(path) => self.link_drc_deck(path),
+            Command::UnlinkDrcDeck => match self.project.as_mut().map(Project::unlink_drc_deck) {
+                Some(Some(path)) => {
+                    self.mark_dirty();
+                    self.ok(format!("Unlinked the shared DRC deck {}; the project keeps a copy", path.display()));
+                }
+                Some(None) => self.warn("The technology is not linked to a shared DRC deck".into()),
+                None => self.warn("Open a project first".into()),
+            },
+            Command::ReloadDrcDeck => match self.project.as_mut().map(Project::reload_drc_deck) {
+                Some(Ok(true)) => {
+                    self.drc_deck_changed();
+                    self.ok("Reloaded the shared DRC deck".into());
+                }
+                Some(Ok(false)) => match self.project.as_ref().and_then(Project::drc_deck_path) {
+                    Some(p) => self.info(format!("The shared DRC deck {} is unchanged", p.display())),
+                    None => self.warn("The technology is not linked to a shared DRC deck".into()),
+                },
+                Some(Err(e)) => self.error(format!("Cannot reload the shared DRC deck: {e}")),
+                None => self.warn("Open a project first".into()),
             },
             Command::LayerDisplay(layer) => match &self.project {
                 Some(p) => self.display.show(&p.tech, layer.as_deref()),
@@ -2842,6 +2882,30 @@ impl IcStudio {
                 if ui.button("DRC Rule Designer…").clicked() {
                     q.push(Command::RuleDesigner);
                 }
+                ui.menu_button("DRC Deck", |ui| {
+                    let linked = self.project.as_ref().and_then(Project::drc_deck_path);
+                    if let Some(f) = &linked {
+                        ui.label(format!("Shared: {}", f.display()));
+                        ui.separator();
+                    }
+                    if menu_item(ui, has_project, "Import Deck…", NEED_PROJECT) {
+                        q.push(Command::ImportDrcDeck(None));
+                    }
+                    if menu_item(ui, has_project, "Export Deck…", NEED_PROJECT) {
+                        q.push(Command::ExportDrcDeck(None));
+                    }
+                    ui.separator();
+                    if menu_item(ui, has_project, "Link Shared Deck…", NEED_PROJECT) {
+                        q.push(Command::LinkDrcDeck(None));
+                    }
+                    let why = if has_project { "The technology is not linked to a shared deck" } else { NEED_PROJECT };
+                    if menu_item(ui, linked.is_some(), "Reload Shared Deck", why) {
+                        q.push(Command::ReloadDrcDeck);
+                    }
+                    if menu_item(ui, linked.is_some(), "Unlink Shared Deck", why) {
+                        q.push(Command::UnlinkDrcDeck);
+                    }
+                });
                 if menu_item(ui, has_project, "Stream Layer Map…", NEED_PROJECT) {
                     q.push(Command::StreamMap);
                 }
@@ -3557,11 +3621,13 @@ impl IcStudio {
                         },
                         LayRequest::OpenRuleDesigner => self.queue.push(Command::RuleDesigner),
                         LayRequest::EditLayerDisplay(name) => self.queue.push(Command::LayerDisplay(Some(name))),
-                        LayRequest::SetDeck(text) => {
-                            project.tech.drc_deck = Some(text);
-                            changed = true;
-                            log.push((true, "Saved the DRC rule deck to the technology".into()));
-                        }
+                        LayRequest::SetDeck(text) => match project.set_drc_deck(text) {
+                            Ok(msg) => {
+                                changed = true;
+                                log.push((true, msg));
+                            }
+                            Err(e) => log.push((false, e)),
+                        },
                         LayRequest::PlacePCell { pcell, trans, array } => match project.ensure_pcell(&pcell) {
                             Ok(cr) => {
                                 ed.history.push(&lay);
@@ -3968,6 +4034,11 @@ impl IcStudio {
             ("Run LVS".into(), "", Command::RunLvs),
             ("IR drop / EM analysis".into(), "", Command::IrDrop(None)),
             ("DRC rule designer".into(), "", Command::RuleDesigner),
+            ("DRC deck: import from a file".into(), "", Command::ImportDrcDeck(None)),
+            ("DRC deck: export to a file".into(), "", Command::ExportDrcDeck(None)),
+            ("DRC deck: link a shared deck file (common to several projects)".into(), "", Command::LinkDrcDeck(None)),
+            ("DRC deck: reload the shared deck".into(), "", Command::ReloadDrcDeck),
+            ("DRC deck: unlink the shared deck".into(), "", Command::UnlinkDrcDeck),
             ("Stream layer map (GDSII / OASIS layer numbers)".into(), "", Command::StreamMap),
             ("Layer display (fill, stipple, outline, line style)".into(), "", Command::LayerDisplay(None)),
             ("Dummy fill (metal density)".into(), "", Command::DummyFill),
@@ -5038,16 +5109,91 @@ impl IcStudio {
         let active = self.active_layout();
         let Some(action) = self.rule_designer.window(ctx, self.project.as_ref(), active.as_ref()) else { return };
         let (DesignerAction::Apply(text) | DesignerAction::ApplyAndRun(text)) = &action;
-        if let Some(p) = self.project.as_mut() {
-            p.tech.drc_deck = Some(text.clone());
+        let Some(p) = self.project.as_mut() else { return };
+        match p.set_drc_deck(text.clone()) {
+            Ok(msg) => self.ok(format!("Rule Designer: {msg}")),
+            Err(e) => return self.error(format!("Rule Designer: {e}")),
         }
         for ed in self.lay_eds.values_mut() {
             ed.verify.deck = None;
         }
         self.mark_dirty();
-        self.ok("Rule Designer: applied the DRC deck to the technology".into());
         if matches!(action, DesignerAction::ApplyAndRun(_)) {
             self.queue.push(Command::RunDrc);
+        }
+    }
+
+    /// The technology's deck was replaced from a file: drop the decks the editors and the
+    /// designer hold.
+    fn drc_deck_changed(&mut self) {
+        for ed in self.lay_eds.values_mut() {
+            ed.verify.deck = None;
+        }
+        if let Some(p) = &self.project {
+            self.rule_designer.tech_deck_changed(&p.tech);
+        }
+        self.mark_dirty();
+    }
+
+    fn deck_dialog(title: &str) -> rfd::FileDialog {
+        rfd::FileDialog::new().set_title(title).add_filter("DRC deck", &["deck", "drc", "svrf", "rul", "cal", "txt"])
+    }
+
+    fn import_drc_deck(&mut self, path: Option<PathBuf>) {
+        let Some(p) = self.project.as_ref() else { return self.warn("Open a project first".into()) };
+        let Some(path) = path.or_else(|| Self::deck_dialog("Import a DRC deck").pick_file()) else { return };
+        // Parse first so a deck with errors is not stored.
+        let notes = match ics_core::drc::load_deck(&path, &p.tech) {
+            Ok(d) => d.notes,
+            Err(e) => return self.error(format!("Cannot import the DRC deck: {e}")),
+        };
+        let text = match std::fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|t| ics_core::drc::deck_file_text(&t, &path))
+        {
+            Ok((t, _)) => t,
+            Err(e) => return self.error(format!("Cannot import the DRC deck: {e}")),
+        };
+        let Some(p) = self.project.as_mut() else { return };
+        let unlinked = p.unlink_drc_deck();
+        p.tech.drc_deck = Some(text);
+        self.drc_deck_changed();
+        for n in notes {
+            self.info(format!("DRC deck: {n}"));
+        }
+        let also = unlinked.map_or(String::new(), |f| format!(" (unlinked the shared deck {})", f.display()));
+        self.ok(format!("Imported the DRC deck {} into the technology{also}", path.display()));
+    }
+
+    fn export_drc_deck(&mut self, path: Option<PathBuf>) {
+        let Some(p) = self.project.as_ref() else { return self.warn("Open a project first".into()) };
+        let text = p.tech.deck_text();
+        let name = format!("{}.deck", p.tech.name.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-', "_"));
+        let Some(path) = path.or_else(|| Self::deck_dialog("Export the DRC deck").set_file_name(name).save_file()) else {
+            return;
+        };
+        match std::fs::write(&path, text) {
+            Ok(()) => self.ok(format!("Wrote the DRC deck to {}", path.display())),
+            Err(e) => self.error(format!("Cannot write the DRC deck: {e}")),
+        }
+    }
+
+    fn link_drc_deck(&mut self, path: Option<PathBuf>) {
+        let Some(p) = self.project.as_ref() else { return self.warn("Open a project first".into()) };
+        let Some(path) = path.or_else(|| Self::deck_dialog("Link a shared DRC deck").pick_file()) else { return };
+        if let Err(e) = ics_core::drc::load_deck(&path, &p.tech) {
+            return self.error(format!("Cannot link the DRC deck: {e}"));
+        }
+        let Some(p) = self.project.as_mut() else { return };
+        match p.link_drc_deck(&path) {
+            Ok(()) => {
+                self.drc_deck_changed();
+                self.ok(format!(
+                    "Linked the shared DRC deck {}: it is re-read when the project opens and applying a deck writes it",
+                    path.display()
+                ));
+            }
+            Err(e) => self.error(format!("Cannot link the DRC deck: {e}")),
         }
     }
 

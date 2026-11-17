@@ -675,14 +675,87 @@ impl Project {
             libraries.push(Library { name: lib_name.into(), cells, storage });
         }
         resolve_external_refs(&mut libraries);
-        Ok(Project {
+        let mut p = Project {
             root: Some(root),
             name: manifest.name,
             description: manifest.description,
             tech,
             libraries,
             settings: manifest.settings,
+        };
+        // A missing shared deck keeps the copy saved with the project; `reload_drc_deck`
+        // reports why.
+        let _ = p.reload_drc_deck();
+        Ok(p)
+    }
+
+    /// The resolved path of the shared DRC deck file (`Tech::drc_deck_file`), if one is linked.
+    /// A relative path is relative to the project directory.
+    pub fn drc_deck_path(&self) -> Option<PathBuf> {
+        let f = self.tech.drc_deck_file.as_deref()?;
+        let path = Path::new(f);
+        Some(match &self.root {
+            Some(root) if path.is_relative() => root.join(path),
+            _ => path.to_path_buf(),
         })
+    }
+
+    /// Re-read the shared DRC deck file into the technology. Returns `Ok(false)` when no file is
+    /// linked or the deck is unchanged. On error the deck saved with the project is kept.
+    pub fn reload_drc_deck(&mut self) -> std::result::Result<bool, String> {
+        let Some(path) = self.drc_deck_path() else { return Ok(false) };
+        let text = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let (text, _) = crate::drc::deck_file_text(&text, &path)?;
+        let changed = self.tech.drc_deck.as_deref() != Some(text.as_str());
+        self.tech.drc_deck = Some(text);
+        Ok(changed)
+    }
+
+    /// Link the technology to shared DRC deck file `path` and load its deck. A file inside the
+    /// project directory is stored relative to it, any other file by its absolute path.
+    pub fn link_drc_deck(&mut self, path: &Path) -> std::result::Result<(), String> {
+        let abs = if path.is_absolute() { path.to_path_buf() } else { std::env::current_dir().unwrap_or_default().join(path) };
+        let stored = match self.root.as_ref().and_then(|r| abs.strip_prefix(r).ok()) {
+            Some(rel) => rel.to_path_buf(),
+            None => abs.clone(),
+        };
+        let old = self.tech.drc_deck_file.replace(stored.to_string_lossy().replace('\\', "/"));
+        if let Err(e) = self.reload_drc_deck() {
+            self.tech.drc_deck_file = old;
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// Stop using the shared DRC deck file; the project keeps a copy of its deck.
+    pub fn unlink_drc_deck(&mut self) -> Option<PathBuf> {
+        let path = self.drc_deck_path();
+        self.tech.drc_deck_file = None;
+        path
+    }
+
+    /// Set the technology's DRC deck. With a shared deck file linked, the file is written too, so
+    /// every project linked to it gets the change; an SVRF file is never overwritten, so the
+    /// project is unlinked from it instead. Returns what happened, for the log.
+    pub fn set_drc_deck(&mut self, text: String) -> std::result::Result<String, String> {
+        let msg = match self.drc_deck_path() {
+            Some(path) => {
+                let svrf = fs::read_to_string(&path).is_ok_and(|t| crate::svrf::looks_like_svrf(&t));
+                if svrf {
+                    self.tech.drc_deck_file = None;
+                    format!(
+                        "Saved the DRC deck to the technology and unlinked the SVRF deck {} (it is not overwritten)",
+                        path.display()
+                    )
+                } else {
+                    fs::write(&path, &text).map_err(|e| format!("Cannot write the shared DRC deck {}: {e}", path.display()))?;
+                    format!("Saved the DRC deck to the shared file {}", path.display())
+                }
+            }
+            None => "Saved the DRC deck to the technology".to_string(),
+        };
+        self.tech.drc_deck = Some(text);
+        Ok(msg)
     }
 }
 
@@ -1216,5 +1289,55 @@ mod tests {
         v.as_object_mut().unwrap().remove("vias");
         let t: Tech = serde_json::from_value(v).unwrap();
         assert!(t.vias.is_empty());
+    }
+
+    #[test]
+    fn shared_drc_deck_is_linked_reloaded_and_written_back() {
+        let dir = temp_dir("shared-deck");
+        let shared = dir.join("common").join("rules.deck");
+        fs::create_dir_all(shared.parent().unwrap()).unwrap();
+        fs::write(&shared, "width metal1 0.2\n").unwrap();
+        let mut a = Project::new("a");
+        a.save_as(&dir.join("a")).unwrap();
+        a.link_drc_deck(&shared).unwrap();
+        assert_eq!(a.tech.drc_deck.as_deref(), Some("width metal1 0.2\n"));
+        a.save().unwrap();
+        let mut b = Project::new("b");
+        b.save_as(&dir.join("b")).unwrap();
+        b.link_drc_deck(&shared).unwrap();
+        b.save().unwrap();
+
+        // A change made from one project reaches the other when it opens.
+        let msg = a.set_drc_deck("width metal1 0.3\n".into()).unwrap();
+        assert!(msg.contains("shared file"), "{msg}");
+        assert_eq!(fs::read_to_string(&shared).unwrap(), "width metal1 0.3\n");
+        let b = Project::open(&dir.join("b")).unwrap();
+        assert_eq!(b.tech.drc_deck.as_deref(), Some("width metal1 0.3\n"));
+
+        // Without the file the saved copy is kept.
+        fs::remove_file(&shared).unwrap();
+        let mut b = Project::open(&dir.join("b")).unwrap();
+        assert_eq!(b.tech.drc_deck.as_deref(), Some("width metal1 0.2\n"));
+        assert!(b.reload_drc_deck().is_err());
+        assert!(b.link_drc_deck(&dir.join("missing.deck")).is_err());
+        assert!(b.drc_deck_path().is_some(), "a failed link keeps the old one");
+        assert_eq!(b.unlink_drc_deck(), Some(shared));
+        assert!(b.tech.drc_deck_file.is_none());
+
+        // A deck inside the project is stored relative to it.
+        let local = dir.join("b").join("deck").join("my.deck");
+        fs::create_dir_all(local.parent().unwrap()).unwrap();
+        fs::write(&local, "space metal1 0.2\n").unwrap();
+        b.link_drc_deck(&local).unwrap();
+        assert_eq!(b.tech.drc_deck_file.as_deref(), Some("deck/my.deck"));
+
+        // An SVRF deck is never overwritten: setting the deck unlinks it.
+        fs::write(&local, "LAYER M1 1\nM1.W { INT M1 < 0.2 ABUT<90 SINGULAR REGION }\n").unwrap();
+        b.reload_drc_deck().unwrap();
+        let msg = b.set_drc_deck("width metal1 0.4\n".into()).unwrap();
+        assert!(msg.contains("unlinked"), "{msg}");
+        assert!(b.tech.drc_deck_file.is_none());
+        assert!(fs::read_to_string(&local).unwrap().starts_with("LAYER"));
+        let _ = fs::remove_dir_all(&dir);
     }
 }

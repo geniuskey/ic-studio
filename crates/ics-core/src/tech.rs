@@ -731,6 +731,11 @@ pub struct Tech {
     /// DRC rule deck (see `drc`); `None` uses the deck derived from the layer rules.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drc_deck: Option<String>,
+    /// Shared DRC deck file this technology's deck comes from (absolute, or relative to the
+    /// project directory). When set, `drc_deck` is a copy of the file that is re-read when the
+    /// project opens and written back when the deck is changed (see `Project::set_drc_deck`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drc_deck_file: Option<String>,
     /// Parasitic capacitance coefficients per conducting layer (layers without one are ignored).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub caps: Vec<LayerCap>,
@@ -1098,6 +1103,7 @@ impl Tech {
                 v("poly2con", "poly2", "contact", "metal1", 220, 250, 100, 60, 10.0, 0.1e-3),
             ],
             drc_deck: None,
+            drc_deck_file: None,
             // Illustrative 180nm-class values (field oxide to substrate), not foundry data.
             caps: [
                 ("poly", 100.0, 45.0, 7.0, 7.5, 0.05e-3),

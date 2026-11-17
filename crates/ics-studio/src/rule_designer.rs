@@ -302,6 +302,8 @@ pub struct RuleDesigner {
     own_tech: Option<Tech>,
     /// Deck file the draft was opened from or saved to.
     file: Option<PathBuf>,
+    /// Shared deck file the open project's technology is linked to.
+    shared: Option<PathBuf>,
 }
 
 /// A designer action that the toolbar and the guide share.
@@ -347,6 +349,7 @@ impl Default for RuleDesigner {
             add_layer: 0,
             own_tech: None,
             file: None,
+            shared: None,
         }
     }
 }
@@ -635,6 +638,14 @@ impl RuleDesigner {
         self.own_tech = Some(tech);
     }
 
+    /// The technology's deck changed outside the designer (a shared deck was linked or
+    /// reloaded): reload the draft unless it has edits.
+    pub fn tech_deck_changed(&mut self, tech: &Tech) {
+        if self.open && !self.dirty {
+            self.load(tech, &tech.deck_text());
+        }
+    }
+
     fn touch(&mut self) {
         self.gen_ += 1;
     }
@@ -744,6 +755,7 @@ impl RuleDesigner {
     ) -> Option<DesignerAction> {
         let active = active.filter(|_| project.is_some());
         let standalone = project.is_none();
+        self.shared = project.and_then(Project::drc_deck_path);
         let pal = theme::palette(ui.ctx());
         if self.job.is_some() {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
@@ -916,6 +928,14 @@ impl RuleDesigner {
                 .on_hover_text("Technology the rules are written for (no project is open)");
             } else {
                 ui.label(RichText::new(format!("· {}", tech.name)).color(pal.text_weak));
+                if let Some(f) = &self.shared {
+                    let name = f.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                    ui.label(RichText::new(format!("shared deck: {name}")).color(pal.accent)).on_hover_text(format!(
+                        "The technology's deck comes from {}. Applying writes it, so every project linked to it gets \
+                         the change.",
+                        f.display()
+                    ));
+                }
             }
             if let Some(f) = &self.file {
                 let name = f.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
@@ -999,7 +1019,11 @@ impl RuleDesigner {
                     act = Some(Act::ApplyRun);
                 }
                 let apply = egui::Button::new(RichText::new("Apply to technology").color(theme::on_fill(pal.accent))).fill(pal.accent);
-                if ui.add(apply).on_hover_text("Store the deck in the project's technology (save the project to keep it)").clicked() {
+                let hover = match &self.shared {
+                    Some(f) => format!("Store the deck in the technology and write it to the shared deck {}", f.display()),
+                    None => "Store the deck in the project's technology (save the project to keep it)".into(),
+                };
+                if ui.add(apply).on_hover_text(hover).clicked() {
                     act = Some(Act::Apply);
                 }
                 if let Some((ok, s)) = &self.status {
@@ -1115,8 +1139,9 @@ impl RuleDesigner {
             });
             step(ui, 6, "Apply", pal, |ui| {
                 ui.label(
-                    "Store the deck as the technology's DRC deck so DRC uses it. Save the project to keep it, or save \
-                     the deck to a file to share it.",
+                    "Store the deck as the technology's DRC deck so DRC uses it. Save the project to keep it. To \
+                     share one deck between projects, save it to a file and link it with Tools > DRC Deck > Link \
+                     Shared Deck; applying then writes that file.",
                 );
                 if ui.button("Apply to technology").clicked() {
                     act = Some(Act::Apply);

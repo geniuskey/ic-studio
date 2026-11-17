@@ -36,6 +36,22 @@ enum Template {
 }
 
 #[derive(Subcommand)]
+enum DeckCmd {
+    /// Print where the deck comes from and its rule count.
+    Show,
+    /// Print the deck text.
+    Print,
+    /// Copy a deck file (IC Studio or SVRF) into the technology (unlinks a shared deck).
+    Import { file: PathBuf },
+    /// Write the technology's deck to a file.
+    Export { file: PathBuf },
+    /// Link the technology to a shared deck file.
+    Link { file: PathBuf },
+    /// Stop using the shared deck file; the project keeps a copy.
+    Unlink,
+}
+
+#[derive(Subcommand)]
 enum Cmd {
     /// Run the MCP server for AI agents on stdio (`claude mcp add ic-studio -- ics mcp`).
     Mcp,
@@ -230,6 +246,14 @@ enum Cmd {
         /// Apply verified quick fixes (top-level geometry only) and save the project first.
         #[arg(long)]
         fix: bool,
+    },
+    /// Manage the technology's DRC deck: show where it comes from, import or export a deck file,
+    /// or link a shared deck file common to several projects (re-read on open, written when the
+    /// deck is changed). Changes save the project.
+    Deck {
+        project: PathBuf,
+        #[command(subcommand)]
+        action: DeckCmd,
     },
     /// Compact a cell's layout toward the given directions (fixed items stay, constraints hold,
     /// no new DRC violations) and save the project.
@@ -1177,6 +1201,54 @@ fn run(cli: Cli) -> Result<(), String> {
             println!("{left} flyline(s) left");
             if !rep.failed.is_empty() {
                 return Err("some nets could not be routed".into());
+            }
+        }
+        Cmd::Deck { project, action } => {
+            let mut p = Project::open(&project).map_err(|e| e.to_string())?;
+            match action {
+                DeckCmd::Show => {
+                    match (p.drc_deck_path(), &p.tech.drc_deck) {
+                        (Some(f), _) => {
+                            println!("shared deck: {}", f.display());
+                            if let Err(e) = p.reload_drc_deck() {
+                                eprintln!("warning: {e} (using the copy saved with the project)");
+                            }
+                        }
+                        (None, Some(_)) => println!("deck stored in the project"),
+                        (None, None) => println!("deck derived from the layer rules"),
+                    }
+                    let d = ics_core::drc::parse_any(&p.tech.deck_text(), &p.tech).map_err(|errs| {
+                        errs.iter().map(|e| format!("deck:{}: {}", e.line, e.message)).collect::<Vec<_>>().join("\n")
+                    })?;
+                    println!("{} rule(s), {} derived layer(s)", d.deck.rules.len(), d.deck.derived.len());
+                }
+                DeckCmd::Print => print!("{}", p.tech.deck_text()),
+                DeckCmd::Export { file } => {
+                    std::fs::write(&file, p.tech.deck_text()).map_err(|e| format!("{}: {e}", file.display()))?;
+                    println!("wrote {}", file.display());
+                }
+                DeckCmd::Import { file } => {
+                    ics_core::drc::load_deck(&file, &p.tech)?;
+                    let text = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+                    let (text, _) = ics_core::drc::deck_file_text(&text, &file)?;
+                    p.unlink_drc_deck();
+                    p.tech.drc_deck = Some(text);
+                    p.save().map_err(|e| e.to_string())?;
+                    println!("imported {}", file.display());
+                }
+                DeckCmd::Link { file } => {
+                    ics_core::drc::load_deck(&file, &p.tech)?;
+                    p.link_drc_deck(&file)?;
+                    p.save().map_err(|e| e.to_string())?;
+                    println!("linked {}", p.drc_deck_path().unwrap().display());
+                }
+                DeckCmd::Unlink => match p.unlink_drc_deck() {
+                    Some(f) => {
+                        p.save().map_err(|e| e.to_string())?;
+                        println!("unlinked {}", f.display());
+                    }
+                    None => println!("no shared deck linked"),
+                },
             }
         }
         Cmd::Drc { project, cell, deck, fix } => {
