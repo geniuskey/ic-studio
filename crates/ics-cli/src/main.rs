@@ -236,6 +236,22 @@ enum Cmd {
         #[arg(long)]
         place: bool,
     },
+    /// Check a schematic-driven layout against its schematic (missing, extra and changed
+    /// devices, shorts, opens); `--update` places new devices and resizes changed ones, then
+    /// saves. Non-zero exit when differences remain.
+    Eco {
+        project: PathBuf,
+        cell: String,
+        /// Update the layout from the schematic and save the project.
+        #[arg(long)]
+        update: bool,
+        /// With --update: also delete layout devices that are no longer in the schematic.
+        #[arg(long)]
+        remove_extra: bool,
+        /// Ignore opens (unrouted nets) for the exit status.
+        #[arg(long)]
+        allow_opens: bool,
+    },
     /// Run DRC on a cell layout with the technology deck (or `--deck FILE`).
     Drc {
         project: PathBuf,
@@ -1191,7 +1207,8 @@ fn run(cli: Cli) -> Result<(), String> {
                     eprintln!("not placed: {s}");
                 }
                 let placed = ics_core::sdl::apply(&mut p, &mut lay, &plan)?;
-                println!("placed {} device(s)", placed.len());
+                let pins = ics_core::eco::place_pins(&p, &mut lay, &sch);
+                println!("placed {} device(s), {} pin(s)", placed.len(), pins.len());
             }
             let rep = ics_core::route::route(&sch, &mut lay, &p, &p.tech)?;
             p.cell_mut(&r).unwrap().layout = Some(lay);
@@ -1201,6 +1218,31 @@ fn run(cli: Cli) -> Result<(), String> {
             println!("{left} flyline(s) left");
             if !rep.failed.is_empty() {
                 return Err("some nets could not be routed".into());
+            }
+        }
+        Cmd::Eco { project, cell, update, remove_extra, allow_opens } => {
+            let mut p = Project::open(&project).map_err(|e| e.to_string())?;
+            let r = resolve(&p, &cell)?;
+            let sch = p.cell(&r).unwrap().schematic.clone().ok_or("cell has no schematic")?;
+            if update {
+                let mut lay = p.cell_mut(&r).unwrap().layout.take().unwrap_or_default();
+                let res = ics_core::eco::update(&mut p, &mut lay, &sch, ics_core::eco::UpdateOptions { remove_extra });
+                p.cell_mut(&r).unwrap().layout = Some(lay);
+                let rep = res?;
+                if rep.changed() {
+                    p.save().map_err(|e| e.to_string())?;
+                }
+                println!("{}", rep.summary());
+            }
+            let lay = p.layout(&r).ok_or("cell has no layout")?;
+            let c = ics_core::eco::check(&sch, lay, &p);
+            for i in &c.issues {
+                println!("[{}] {}", i.kind(), i.message());
+            }
+            println!("{}", c.summary());
+            let bad = c.issues.iter().filter(|i| !(allow_opens && matches!(i, ics_core::eco::Issue::Open { .. }))).count();
+            if bad > 0 {
+                return Err(format!("{bad} difference(s) between layout and schematic"));
             }
         }
         Cmd::Deck { project, action } => {

@@ -30,6 +30,7 @@
 - [PCells and custom devices](pcells.md)
 - [Verification: DRC, extraction and LVS](verification.md)
 - [Schematic-driven layout](schematic-driven-layout.md)
+- [Compared with Virtuoso Layout XL](layout-xl-comparison.md)
 - [Technology](technology.md)
 - [Tools: calculator, sweeps, generators and more](tools.md)
 - [Pixel optics: QE, crosstalk, photocurrent](pixel-optics.md)

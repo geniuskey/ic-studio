@@ -473,7 +473,25 @@ fn pcell_from(kind: &str, params: &Args, tech: &Tech) -> Result<PCell, String> {
         "poly_res" => PCell::PolyRes { w: len("w", 0.4)?, l: len("l", 5.0)? },
         "mom_cap" => PCell::MomCap { w: len("w", 5.0)?, h: len("h", 5.0)? },
         "ntap" | "ptap" => PCell::Tap { well: kind == "ntap", w: len("w", 1.0)? },
-        k => return Err(format!("unknown pcell kind '{k}' (use nmos, pmos, poly_res, mom_cap, ntap or ptap)")),
+        "nring_path" | "pring_path" => {
+            let pts =
+                params.get("points").and_then(Value::as_array).ok_or("parameter 'points' must be an array of [x, y] in µm")?;
+            let points = pts
+                .iter()
+                .map(|p| match p.as_array().map(|v| v.iter().filter_map(Value::as_f64).collect::<Vec<_>>()).as_deref() {
+                    Some([x, y]) => Ok((dbu(tech, *x), dbu(tech, *y))),
+                    _ => Err("each point must be [x, y] in µm".to_string()),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let width = params.opt_num("width")?.map_or(0, |v| dbu(tech, v.max(0.0)));
+            PCell::RingPath { well: kind == "nring_path", points, closed: params.opt_bool("closed")?.unwrap_or(false), width }
+        }
+        "nring" | "pring" => PCell::GuardRing { well: kind == "nring", w: len("w", 5.0)?, h: len("h", 5.0)?, width: 0, gap: 0 },
+        k => {
+            return Err(format!(
+                "unknown pcell kind '{k}' (use nmos, pmos, poly_res, mom_cap, ntap, ptap, nring, pring, nring_path or pring_path)"
+            ));
+        }
     })
 }
 
@@ -631,6 +649,7 @@ pub fn definitions() -> Vec<Value> {
                 "netlist": {"type": "string", "description": "SPICE netlist, one element per line, e.g. 'M1 out in vdd vdd pmos w=2u l=180n', 'M2 out in 0 0 nmos w=1u l=180n', 'V1 vdd 0 1.8', 'V2 in 0 PULSE(0 1.8 1n 50p 50p 2n 4n)', '.tran 10p 10n'. MOS: d g s b model w= l= [m=] [match=]."},
                 "overwrite": {"type": "boolean", "description": "Replace an existing schematic (default false: refuse)."},
                 "description": {"type": "string", "description": "Cell description."},
+                "pins": {"type": "object", "additionalProperties": {"type": "string", "enum": ["input", "output", "inout"]}, "description": "Schematic pins (cell ports) by net name and direction, e.g. {\"in\": \"input\", \"out\": \"output\"}. They become the CDL subcircuit ports and the nets checked for layout pins."},
             }),
             &["cell", "netlist"],
         ),
@@ -732,11 +751,11 @@ pub fn definitions() -> Vec<Value> {
             ),
             json!({
                 "cell": edit_cell(),
-                "kind": {"type": "string", "enum": ["nmos", "pmos", "poly_res", "mom_cap", "ntap", "ptap"]},
+                "kind": {"type": "string", "enum": ["nmos", "pmos", "poly_res", "mom_cap", "ntap", "ptap", "nring", "pring", "nring_path", "pring_path"]},
                 "params": {
                     "type": "object",
-                    "description": "Sizes in µm. nmos/pmos: w (per finger, default 1 / 2), l (default 0.18), fingers (default 1), device (PDK device name, e.g. a low-Vt model; default: the technology's default device). poly_res: w (0.4), l (5). mom_cap: w (5), h (5). ntap/ptap: w (tap height, 1).",
-                    "properties": {"w": {"type": "number"}, "l": {"type": "number"}, "h": {"type": "number"}, "fingers": {"type": "integer", "minimum": 1}, "device": {"type": "string"}},
+                    "description": "Sizes in µm. nmos/pmos: w (per finger, default 1 / 2), l (default 0.18), fingers (default 1), device (PDK device name, e.g. a low-Vt model; default: the technology's default device). poly_res: w (0.4), l (5). mom_cap: w (5), h (5). ntap/ptap: w (tap height, 1). nring/pring: guard ring around a w x h area (5 x 5). nring_path/pring_path: guard ring along the Manhattan centre line points ([[x, y], ...] µm, relative to the origin), closed into a loop when closed is true; width (0 = minimum).",
+                    "properties": {"w": {"type": "number"}, "l": {"type": "number"}, "h": {"type": "number"}, "fingers": {"type": "integer", "minimum": 1}, "device": {"type": "string"}, "points": {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2}}, "closed": {"type": "boolean"}, "width": {"type": "number"}},
                     "additionalProperties": false,
                 },
                 "x": num_prop("Origin x (µm)."), "y": num_prop("Origin y (µm)."),
@@ -775,6 +794,28 @@ pub fn definitions() -> Vec<Value> {
             ),
             json!({"cell": cell()}),
             &["cell"],
+        ),
+        tool(
+            "check_against_source",
+            "Layout XL 'Check Against Source': compare a schematic-driven layout with its schematic. Lists schematic MOS devices not placed (missing), named layout devices no longer in the schematic (extra), placed devices whose W / L / m / model differ (parameters; matched units compared by total width), layout conductors joining several schematic nets (short) and schematic nets split over several conductors (open = unrouted). Boxes in µm.",
+            json!({"cell": cell()}),
+            &["cell"],
+        ),
+        tool(
+            "update_from_source",
+            &format!(
+                "Layout XL 'Update Components and Nets': place schematic devices missing from the layout, give changed devices the schematic's parameters in place (new PCell master, same placement; compact afterwards if they grew), and with remove_extra delete devices no longer in the schematic. Shorts and opens are reported, not fixed: call route. {NOT_SAVED}"
+            ),
+            json!({"cell": cell(), "remove_extra": {"type": "boolean", "description": "Delete layout devices that are not in the schematic (default false)."}}),
+            &["cell"],
+        ),
+        tool(
+            "abut",
+            &format!(
+                "Layout XL 'Abut': slide the named MOS PCell instances together, left to right, so each one's outer source / drain column sits on its neighbour's (shared diffusion, active areas aligned). With a schematic the shared columns must be on the same net; a device is flipped left-right when that makes them match, else the call fails without changing anything. All devices must have the same type and finger width and not be arrays or turned 90°. {NOT_SAVED}"
+            ),
+            json!({"cell": cell(), "instances": {"type": "array", "items": {"type": "string"}, "minItems": 2, "description": "Instance names (e.g. [\"M1\", \"M2\"])."}}),
+            &["cell", "instances"],
         ),
         tool(
             "run_drc",
@@ -1156,6 +1197,9 @@ impl State {
             "generate_layout" => self.generate_layout(a),
             "flylines" => self.flylines(a),
             "route" => self.route(a),
+            "check_against_source" => self.check_against_source(a),
+            "update_from_source" => self.update_from_source(a),
+            "abut" => self.abut(a),
             "run_drc" => self.run_drc(a),
             "fix_drc" => self.fix_drc(a),
             "compact" => self.compact(a),
@@ -1487,7 +1531,20 @@ impl State {
 
     fn write_schematic(&mut self, a: &Args) -> Result<Value, String> {
         let cell = a.str("cell")?;
-        let imp = ics_core::spice_import::import(a.str("netlist")?, &self.project()?.tech)?;
+        let mut imp = ics_core::spice_import::import(a.str("netlist")?, &self.project()?.tech)?;
+        if let Some(pins) = a.get("pins") {
+            let pins = pins.as_object().ok_or("argument 'pins' must be an object of net: direction")?;
+            let list: Vec<(String, ics_core::PortDir)> = pins
+                .iter()
+                .map(|(n, d)| {
+                    d.as_str().map(|d| (n.clone(), ics_core::PortDir::parse(d))).ok_or("pin directions must be strings")
+                })
+                .collect::<Result<_, _>>()?;
+            let marked = imp.schematic.mark_ports(&list);
+            if marked < list.len() {
+                imp.warnings.push(format!("{} pin(s) name no net of the netlist", list.len() - marked));
+            }
+        }
         if let Some(r) = find(self.project()?, cell)
             && self.project()?.cell(&r).is_some_and(|c| c.schematic.is_some())
             && !a.opt_bool("overwrite")?.unwrap_or(false)
@@ -1778,6 +1835,7 @@ impl State {
         let original = p.cell_mut(&r).expect("resolved").layout.take();
         let mut layout = original.clone().unwrap_or_default();
         let res = sdl::apply(p, &mut layout, &plan);
+        let pins = if res.is_ok() { ics_core::eco::place_pins(p, &mut layout, &sch) } else { vec![] };
         p.cell_mut(&r).expect("resolved").layout = if res.is_ok() { Some(layout) } else { original };
         let placed = res?;
         let flylines = sdl::ratsnest(&sch, layout_of(p, &r)?, p, &p.tech).len();
@@ -1787,6 +1845,7 @@ impl State {
             "placed": placed,
             "skipped": plan.skipped,
             "matched": plan.notes,
+            "pins": pins,
             "unrouted_flylines": flylines,
         }))
     }
@@ -1814,6 +1873,79 @@ impl State {
             "wire_length_um": sig(rep.wire_length as f64 / um),
             "unrouted_flylines": left,
         }))
+    }
+
+    fn check_against_source(&self, a: &Args) -> Result<Value, String> {
+        let (p, r) = self.cell_arg(a)?;
+        let t = &p.tech;
+        let sch = p.cell(&r).and_then(|c| c.schematic.as_ref()).ok_or("cell has no schematic view")?;
+        let c = ics_core::eco::check(sch, layout_of(p, &r)?, p);
+        let issues: Vec<Value> = c
+            .issues
+            .iter()
+            .map(|i| {
+                let mut v = json!({"kind": i.kind(), "message": i.message()});
+                if let Some(at) = i.at() {
+                    v["at"] = rect_um(t, at);
+                }
+                v
+            })
+            .collect();
+        Ok(
+            json!({"cell": r.to_string(), "clean": c.is_clean(), "summary": c.summary(), "devices": c.devices, "nets": c.nets, "issues": issues}),
+        )
+    }
+
+    fn update_from_source(&mut self, a: &Args) -> Result<Value, String> {
+        let (_, r) = self.cell_arg(a)?;
+        let remove_extra = a.opt_bool("remove_extra")?.unwrap_or(false);
+        let p = self.project_mut()?;
+        let sch = p.cell(&r).and_then(|c| c.schematic.clone()).ok_or("cell has no schematic view")?;
+        let mut layout = p.cell_mut(&r).expect("resolved").layout.take().unwrap_or_default();
+        let res = ics_core::eco::update(p, &mut layout, &sch, ics_core::eco::UpdateOptions { remove_extra });
+        p.cell_mut(&r).expect("resolved").layout = Some(layout);
+        let rep = res?;
+        if rep.changed() {
+            self.dirty = true;
+        }
+        Ok(json!({
+            "cell": r.to_string(),
+            "placed": rep.placed,
+            "updated": rep.updated,
+            "removed": rep.removed,
+            "pins": rep.pins,
+            "remaining": rep.remaining,
+        }))
+    }
+
+    fn abut(&mut self, a: &Args) -> Result<Value, String> {
+        let (_, r) = self.cell_arg(a)?;
+        let names: Vec<String> = a
+            .get("instances")
+            .and_then(Value::as_array)
+            .ok_or("argument 'instances' must be an array of instance names")?
+            .iter()
+            .map(|v| v.as_str().map(str::to_string).ok_or("instance names must be strings"))
+            .collect::<Result<_, _>>()?;
+        let p = self.project_mut()?;
+        let lay = p.cell(&r).and_then(|c| c.layout.as_ref()).ok_or("cell has no layout view")?;
+        let ids = names
+            .iter()
+            .map(|n| {
+                lay.instances
+                    .iter()
+                    .find(|i| i.name.as_deref() == Some(n.as_str()))
+                    .map(|i| i.id)
+                    .ok_or(format!("no instance named '{n}'"))
+            })
+            .collect::<Result<Vec<u64>, String>>()?;
+        let mut next = lay.clone();
+        let sch = p.cell(&r).and_then(|c| c.schematic.as_ref());
+        let checked = sch.is_some();
+        let notes = ics_core::abut::abut_chain(&mut next, &ids, p, sch)?;
+        p.cell_mut(&r).expect("resolved").layout = Some(next);
+        self.dirty = true;
+        Ok(json!({"cell": r.to_string(), "abutted": notes, "nets_checked": checked}))
     }
 
     fn flylines(&self, a: &Args) -> Result<Value, String> {

@@ -716,6 +716,20 @@ pub fn terminal_pins(sch: &Schematic, layout: &Layout, src: &dyn LayoutSource) -
             }
         }
     }
+    // Pins of the cell (schematic pins): a top-level label naming a pin, on a top-level
+    // rectangle (the pin shape, e.g. placed on the boundary by `eco::place_pins`).
+    let ports = sch.ports();
+    if !ports.is_empty() {
+        for s in &layout.shapes {
+            let Geometry::Label { text, at, .. } = &s.geom else { continue };
+            let Some((port, _)) = ports.iter().find(|(n, _)| n.eq_ignore_ascii_case(text)) else { continue };
+            let on_shape = layout.shapes.iter().any(|r| matches!(&r.geom, Geometry::Rect(b) if b.contains(at.0, at.1)));
+            if on_shape {
+                let key = out.keys().find(|k| k.eq_ignore_ascii_case(port)).cloned().unwrap_or_else(|| port.clone());
+                out.entry(key).or_default().push(("p", *at));
+            }
+        }
+    }
     out
 }
 

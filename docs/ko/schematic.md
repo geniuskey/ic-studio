@@ -66,6 +66,18 @@
 있습니다. 넷 이름은 다음 순서로 정해집니다. **Ground** 심볼(넷 `0`), **Supply Net** 심볼의
 `net` 파라미터(비워 두면 `vdd`), 넷 레이블, 그리고 자동 이름(`net1`, `net2`, ...).
 
+### 핀
+
+레이블 인스펙터에서 **Pin**을 `input`, `output`, `inputOutput`으로 정하면 그 레이블은 셀의
+**핀**(Virtuoso 회로도 핀)이 되고 핀 모양으로 그려집니다. 핀은 셀의 포트입니다.
+
+- CDL 넷리스트(와 LVS)는 핀을 이름순 `.SUBCKT` 포트로 쓰고 `*.PININFO`에 방향을 적습니다.
+  핀이 없으면 이름 붙은 넷이 모두 포트입니다.
+- CDL 가져오기(와 Virtuoso 라이브러리 가져오기)는 `*.PININFO` 핀을 회로도 핀으로 만들고, SKILL
+  내보내기는 `basic` `ipin` / `opin` / `iopin` 핀을 만듭니다.
+- Check Against Source는 핀마다(핀이 없으면 이름 붙은 넷마다) 레이아웃 핀 라벨을 요구합니다.
+- MCP `write_schematic`은 `pins`를 받습니다. 예: `{"in": "input", "out": "output"}`.
+
 참고:
 
 - 넷 `0`을 만드는 것은 Ground 심볼뿐입니다. `gnd`라는 레이블은 일반 넷입니다.

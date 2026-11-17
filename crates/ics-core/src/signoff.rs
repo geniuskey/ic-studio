@@ -457,6 +457,16 @@ pub fn lvs_netlist(sch: &Schematic, tech: &Tech, top: &str, runset: &Runset) -> 
 pub fn cdl(sch: &Schematic, tech: &Tech, top: &str) -> String {
     let body = cdl_body(sch, tech, top, &default_skip(), &default_ground());
     let header = format!(".subckt {top} ");
+    let ports = sch.ports();
+    if !ports.is_empty()
+        && let Some(h) = body.lines().find(|l| l.starts_with(&header) || l.trim_end() == header.trim_end())
+    {
+        // Schematic pins are the subcircuit's ports, in pin order, with their directions.
+        let ground = default_ground();
+        let names: Vec<String> = ports.iter().map(|(n, _)| spice_net(n, &ground)).collect();
+        let info: Vec<String> = ports.iter().zip(&names).map(|((_, d), n)| format!("{n}:{}", d.cdl())).collect();
+        return body.replacen(h, &format!("{header}{}\n*.PININFO {}", names.join(" "), info.join(" ")), 1);
+    }
     match body.lines().find(|l| l.starts_with(&header)) {
         Some(h) => {
             let pins: Vec<String> = h[header.len()..].split_whitespace().map(|p| format!("{p}:B")).collect();

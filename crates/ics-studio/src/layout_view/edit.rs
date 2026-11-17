@@ -54,6 +54,13 @@ pub enum LayRequest {
     OpenRuleDesigner,
     /// Open the Layer Display editor on a layer.
     EditLayerDisplay(String),
+    /// Update the layout from its schematic (`true`: also delete extra devices).
+    UpdateFromSource(bool),
+    /// Replace shape `shape` by an instance of `pcell` at the origin (one undo step).
+    ReplaceWithPCell {
+        shape: u64,
+        pcell: PCell,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -798,6 +805,28 @@ pub(super) fn pcell_params(ui: &mut egui::Ui, p: &mut PCell, tech: &Tech, salt: 
             len(ui, "H", h);
         }
         PCell::Tap { w, .. } => len(ui, "H", w),
+        PCell::SkillDef { params, .. } | PCell::SkillVariant { params, .. } => {
+            for (n, v) in params.iter() {
+                ui.label(n.as_str());
+                ui.label(egui::RichText::new(v.as_str()).monospace());
+                ui.end_row();
+            }
+        }
+        PCell::RingPath { points, closed, width, .. } => {
+            ui.label("Vertices");
+            ui.label(points.len().to_string());
+            ui.end_row();
+            ui.label("");
+            ui.checkbox(closed, "Closed");
+            ui.end_row();
+            len(ui, "Ring width", width);
+        }
+        PCell::GuardRing { w, h, width, gap, .. } => {
+            len(ui, "Inner W", w);
+            len(ui, "Inner H", h);
+            len(ui, "Ring width", width);
+            len(ui, "Gap", gap);
+        }
     });
     *p != before
 }

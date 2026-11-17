@@ -266,6 +266,18 @@ lambda를 피팅하면 오차가 81 %에서 0.5 %(잡음 수준)로 줄고 0.520
 룰의 최솟값을 씁니다. 영역을 µm로 지정하거나, **Use selection**을 눌러 선택한 도형과 인스턴스의
 경계 상자를 사용합니다. 콘택과 스트랩을 넣으면 링 자체로 DRC를 통과합니다.
 
+콘택과 스트랩이 있으면(기본값) 링은 가드 링 PCell(`pring` / `nring`, Virtuoso fluid guard ring과
+같은 방식)로 배치됩니다. 선택한 뒤 아무 변이나 스트레치(`S`)하면 둘러싼 영역의 크기가 바뀌고,
+속성에서 **Inner W**, **Inner H**, **Ring width**, **Gap**을 바꿀 수 있습니다. 둘 중 하나라도
+없으면 일반 도형으로 추가됩니다.
+
+임의의 맨해튼 외곽을 가진 링(Virtuoso multi-part path)은 중심선을 패스(열린 링)나 폴리곤, 사각형
+(닫힌 링)으로 그린 뒤 선택하고 **Edit > Modify Shapes > P+ Guard Ring Along Shape** 또는 **N+ Guard
+Ring Along Shape**(Assist 메뉴에도 있음)를 고릅니다. 도형은 링 패스 PCell(`pring_path` /
+`nring_path`)이 되어 확산 띠, 임플란트, 각 구간을 따르는 콘택, metal1 스트랩, n+의 경우 띠와 닫힌
+링 내부를 덮는 nwell을 갖습니다. 변을 스트레치하면 그쪽 꼭짓점이 움직이고, 속성에서 띠 폭과 닫힘
+여부를 바꿉니다. MCP `place_pcell`은 `points`와 함께 `pring_path` / `nring_path`를 받습니다.
+
 ### Via Array
 
 비아를 고른 뒤 다음 중 하나를 선택합니다.

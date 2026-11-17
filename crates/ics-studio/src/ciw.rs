@@ -29,7 +29,8 @@ pub struct Ciw {
 impl Default for Ciw {
     fn default() -> Self {
         Ciw {
-            session: Session::new(),
+            // Forms a script displays are shown as dialogs (see `IcStudio::skill_form_window`).
+            session: Session::interactive(),
             lines: vec![],
             input: String::new(),
             pending: String::new(),
@@ -52,7 +53,7 @@ impl Ciw {
 
     /// Forget all SKILL state (a different project was opened); the transcript stays.
     pub fn reset(&mut self) {
-        self.session = Session::new();
+        self.session = Session::interactive();
         self.pending.clear();
     }
 

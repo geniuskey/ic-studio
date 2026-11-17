@@ -18,7 +18,23 @@
 //!   (no-ops: the caller saves the project) and `geGetEditCellView` for the cell open in the editor;
 //!   layer Boolean operations `dbLayerAnd` / `dbLayerOr` / `dbLayerXor` / `dbLayerAndNot`
 //!   `(cv layer shapes1 shapes2)` and `dbLayerSize(cv layer shapes size)`, exact for any-angle
-//!   geometry (see [`crate::polybool`]).
+//!   geometry (see [`crate::polybool`]); `dbCreateParamInst` / `dbCreateParamInstByMasterName` on the
+//!   built-in PCells (`nmos`, `pmos`, `poly_res`, `mom_cap`, `ntap`, `ptap`, `nring`, `pring`, with
+//!   CDF-style `list(name type value)` parameters), `dbCreateVia` with `techFindViaDefByName`, nets,
+//!   terms and pins (`dbCreateNet`, `dbMakeNet`, `dbFindNetByName`, `dbCreateTerm`, `dbCreatePin`,
+//!   `dbAddFigToNet`: a pin is labelled with its net), properties (`dbReplaceProp`,
+//!   `dbCreateProp`, `dbGetPropByName`, read back with `~>`);
+//! - ROD: `rodCreateRect`, `rodCreatePath`, `rodCreatePolygon` with keyword arguments;
+//! - SKILL PCells: `pcDefinePCell(list(ddGetObj(lib) cell "layout") ((name default) ...) body)`
+//!   stores the definition on the master cell (evaluated at the defaults); each
+//!   `dbCreateParamInst` parameter set gets its own variant cell in the master's library, made by
+//!   running the body with `pcCellView` and the parameters bound;
+//! - files: `outfile`, `infile`, `fprintf` to a port, `gets`, `close`; arrays with `declare`;
+//! - forms (`hi*`) without a window: fields and forms are tables (`form->field->value`), and
+//!   `hiDisplayForm` runs the OK callback at once with the current values;
+//! - SKILL++: in `.ils` files, `lambda` and `procedure` make closures over the variables in
+//!   scope where they are created (kept between calls), which do not see their callers'
+//!   variables;
 //!
 //! Coordinates are user units (µm), converted to database units with the technology's
 //! `dbu_per_um`. A layer-purpose pair is a layer name, `list("metal1" "drawing")` or a layer index;
@@ -44,6 +60,60 @@ pub struct RunResult {
     pub value: String,
     /// Cells whose layout the script created or changed, in first-touched order.
     pub modified: Vec<CellRef>,
+    /// Forms the script displayed in an interactive session ([`Session::interactive`]), for the
+    /// application to show; [`Session::form_ok`] runs their OK callback.
+    pub forms: Vec<FormRequest>,
+}
+
+/// A form for the user to fill in (`hiDisplayForm` in an interactive session).
+#[derive(Debug, Clone, PartialEq)]
+pub struct FormRequest {
+    /// Global variable holding the form.
+    pub symbol: String,
+    pub title: String,
+    pub fields: Vec<FormField>,
+}
+
+/// A field of a [`FormRequest`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct FormField {
+    pub name: String,
+    pub prompt: String,
+    pub kind: FieldKind,
+    /// Current value, as text (strings without quotes; booleans `t` / `nil`).
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FieldKind {
+    String,
+    Float,
+    Int,
+    Bool,
+    /// One of the choices.
+    Choice(Vec<String>),
+    /// Shown, not edited (labels, buttons).
+    Label,
+}
+
+impl FormField {
+    /// The value as a SKILL expression.
+    fn skill_value(&self) -> String {
+        match &self.kind {
+            FieldKind::Float | FieldKind::Int => {
+                let t = self.value.trim();
+                if t.parse::<f64>().is_ok() { t.to_string() } else { "nil".into() }
+            }
+            FieldKind::Bool => {
+                if matches!(self.value.trim(), "t" | "true" | "1") {
+                    "t".into()
+                } else {
+                    "nil".into()
+                }
+            }
+            _ => format!("\"{}\"", self.value.replace('\\', "\\\\").replace('"', "\\\"")),
+        }
+    }
 }
 
 /// A SKILL error with the position it happened at.
@@ -95,12 +165,20 @@ pub struct Session {
     funcs: HashMap<Name, Rc<Func>>,
     cvs: Vec<CvState>,
     files: Vec<Option<PathBuf>>,
+    /// Forms are shown to the user: `hiDisplayForm` returns them in [`RunResult::forms`]
+    /// instead of running their OK callback at once.
+    pub interactive: bool,
 }
 
 impl Session {
     pub fn new() -> Self {
-        let globals = ["poport", "errport", "woport", "piport"].into_iter().map(|p| (p.into(), Value::Port)).collect();
+        let globals = ["poport", "errport", "woport", "piport"].into_iter().map(|p| (p.into(), Value::Port(0))).collect();
         Session { globals, ..Default::default() }
+    }
+
+    /// A session that shows forms to the user ([`Session::interactive`]).
+    pub fn interactive() -> Self {
+        Session { interactive: true, ..Session::new() }
     }
 
     /// Evaluate `src`; `file` names it for errors and is the base directory of relative `load()`
@@ -112,12 +190,15 @@ impl Session {
         file: Option<&Path>,
         current: Option<&CellRef>,
     ) -> Result<RunResult, SkillError> {
+        let interactive = self.interactive;
         let mut it = Interp::new(project, current.cloned(), std::mem::take(self));
+        it.interactive = interactive;
         let r = it.run_source(src, file.map(Path::to_path_buf));
         let modified = std::mem::take(&mut it.modified);
         let output = std::mem::take(&mut it.out);
+        let forms = std::mem::take(&mut it.forms);
         let res = match r {
-            Ok(v) | Err(Flow::Return(v)) => Ok(RunResult { output, value: it.repr(&v), modified }),
+            Ok(v) | Err(Flow::Return(v)) => Ok(RunResult { output, value: it.repr(&v), modified, forms }),
             Err(Flow::Err(e)) => Err(SkillError {
                 message: e.msg,
                 file: e.pos.and_then(|p| it.files.get(p.file as usize).cloned().flatten()).map(|p| p.display().to_string()),
@@ -127,7 +208,24 @@ impl Session {
             }),
         };
         *self = it.into_session();
+        self.interactive = interactive;
         res
+    }
+
+    /// OK on a displayed form: set its fields to `fields` (as edited) and run its callback.
+    pub fn form_ok(
+        &mut self,
+        project: &mut Project,
+        form: &FormRequest,
+        fields: &[FormField],
+        current: Option<&CellRef>,
+    ) -> Result<RunResult, SkillError> {
+        let mut src = String::new();
+        for f in fields.iter().filter(|f| f.kind != FieldKind::Label) {
+            src += &format!("{}->{}->value = {}\n", form.symbol, f.name, f.skill_value());
+        }
+        src += &format!("hiiFormOk({})\n", form.symbol);
+        self.eval(project, &src, None, current)
     }
 
     /// Read and evaluate a `.il` file.
@@ -205,7 +303,8 @@ enum Value {
     Func(Rc<Func>),
     Obj(Obj),
     Table(Rc<RefCell<Table>>),
-    Port,
+    /// Output / input port: 0 is the console, others are files opened by `outfile` / `infile`.
+    Port(u32),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -227,6 +326,9 @@ struct Func {
     name: Name,
     params: Params,
     body: Vec<Node>,
+    /// SKILL++ (`.ils`) closure: the variables it was created among, kept between calls. A
+    /// closure sees these and the globals, not its caller's variables.
+    env: Option<RefCell<HashMap<Name, Value>>>,
 }
 
 #[derive(Debug, Default)]
@@ -270,7 +372,8 @@ fn items(v: &Value) -> &[Value] {
 
 fn equal(a: &Value, b: &Value) -> bool {
     match (a, b) {
-        (Value::Nil, Value::Nil) | (Value::T, Value::T) | (Value::Port, Value::Port) => true,
+        (Value::Nil, Value::Nil) | (Value::T, Value::T) => true,
+        (Value::Port(x), Value::Port(y)) => x == y,
         (Value::Int(x), Value::Int(y)) => x == y,
         (Value::Int(_) | Value::Float(_), Value::Int(_) | Value::Float(_)) => as_f64(a) == as_f64(b),
         (Value::Str(x), Value::Str(y)) => x == y,
@@ -321,7 +424,7 @@ fn type_name(v: &Value) -> &'static str {
         Value::Func(_) => "funobj",
         Value::Obj(_) => "dbobject",
         Value::Table(_) => "assocTable",
-        Value::Port => "port",
+        Value::Port(_) => "port",
     }
 }
 
@@ -892,6 +995,49 @@ struct Interp<'p> {
     depth: usize,
     steps: u64,
     current: Option<CellRef>,
+    /// Files opened by `outfile` / `infile`; port k is `ports[k - 1]`.
+    ports: Vec<PortFile>,
+    /// Properties set with `dbReplaceProp` / `dbCreateProp`, by object.
+    props: HashMap<(usize, u64), Vec<(String, Value)>>,
+    /// Running SKILL++ (`.ils`) code: new functions are closures.
+    lexical: bool,
+    /// The form whose callback is running (`hiGetCurrentForm`).
+    current_form: Option<Value>,
+    /// Show forms to the user instead of running their callback at once.
+    interactive: bool,
+    /// Forms displayed during this run (interactive sessions).
+    forms: Vec<FormRequest>,
+}
+
+/// A file port.
+enum PortFile {
+    /// Output: written through (appended) on every `fprintf`.
+    Out(PathBuf),
+    /// Input: the lines not read yet.
+    In(std::collections::VecDeque<String>),
+    Closed,
+}
+
+/// A disembodied property list `(nil k1 v1 k2 v2 ...)`.
+fn dpl(pairs: &[(&str, Value)]) -> Value {
+    let mut v = vec![Value::Nil];
+    for (k, x) in pairs {
+        v.push(sym(k));
+        v.push(x.clone());
+    }
+    list(v)
+}
+
+/// A length from a CDF-style parameter in µm: strings and numbers below 1e-3 are metres.
+fn param_um(v: &Value) -> Option<f64> {
+    match v {
+        Value::Str(s) => crate::units::parse_spice(s).map(|m| m * 1e6),
+        Value::Int(_) | Value::Float(_) => {
+            let x = as_f64(v);
+            Some(if x.abs() < 1e-3 { x * 1e6 } else { x })
+        }
+        _ => None,
+    }
 }
 
 struct Args {
@@ -914,14 +1060,44 @@ impl<'p> Interp<'p> {
             depth: 0,
             steps: 0,
             current,
+            ports: vec![],
+            props: HashMap::new(),
+            lexical: false,
+            current_form: None,
+            interactive: false,
+            forms: vec![],
         }
     }
 
     fn into_session(self) -> Session {
-        Session { globals: self.globals, funcs: self.funcs, cvs: self.cvs, files: self.files }
+        Session { globals: self.globals, funcs: self.funcs, cvs: self.cvs, files: self.files, interactive: self.interactive }
+    }
+
+    /// In SKILL++ code, the variables a new function closes over (all visible locals).
+    fn closure_env(&self) -> Option<RefCell<HashMap<Name, Value>>> {
+        if !self.lexical {
+            return None;
+        }
+        let mut env = HashMap::new();
+        for f in &self.frames {
+            env.extend(f.iter().map(|(k, v)| (k.clone(), v.clone())));
+        }
+        Some(RefCell::new(env))
     }
 
     fn run_source(&mut self, src: &str, file: Option<PathBuf>) -> R<Value> {
+        // `.ils` files are SKILL++: lexically scoped closures.
+        let ils = file.as_ref().and_then(|f| f.extension()).is_some_and(|e| e.eq_ignore_ascii_case("ils"));
+        if ils && !self.lexical {
+            self.lexical = true;
+            let r = self.run_source_inner(src, file);
+            self.lexical = false;
+            return r;
+        }
+        self.run_source_inner(src, file)
+    }
+
+    fn run_source_inner(&mut self, src: &str, file: Option<PathBuf>) -> R<Value> {
         if self.files.len() >= u32::MAX as usize {
             return fail("too many loaded files");
         }
@@ -1103,6 +1279,8 @@ impl<'p> Interp<'p> {
             }
         }
         self.depth += 1;
+        // A SKILL++ closure runs on its own captured variables instead of the caller's.
+        let saved = func.env.as_ref().map(|env| std::mem::replace(&mut self.frames, vec![env.borrow().clone()]));
         let r = self.with_frame(frame, |s| {
             for (p, d) in defaults {
                 let v = match d {
@@ -1113,6 +1291,12 @@ impl<'p> Interp<'p> {
             }
             s.body(&func.body)
         });
+        if let (Some(env), Some(caller)) = (&func.env, saved) {
+            let captured = std::mem::replace(&mut self.frames, caller);
+            if let Some(f) = captured.into_iter().next() {
+                *env.borrow_mut() = f;
+            }
+        }
         self.depth -= 1;
         match r {
             Err(Flow::Return(v)) => Ok(v),
@@ -1155,7 +1339,7 @@ impl<'p> Interp<'p> {
         let e = elems(sig);
         let Some(Node::Var(name)) = e.first() else { return fail("procedure name expected") };
         let params = self.params(&e[1..])?;
-        let f = Rc::new(Func { name: name.clone(), params, body: body.to_vec() });
+        let f = Rc::new(Func { name: name.clone(), params, body: body.to_vec(), env: self.closure_env() });
         self.funcs.insert(name.clone(), f);
         Ok(Value::Sym(name.clone()))
     }
@@ -1253,6 +1437,78 @@ impl<'p> Interp<'p> {
                     Ok(if f.starts_with("pre") { new } else { old })
                 }
                 "progn" => self.body(args),
+                "pcDefinePCell" => {
+                    // pcDefinePCell(list(lib cell "layout") ((name default) ...) body...)
+                    argc(2)?;
+                    let target = self.eval(&args[0])?;
+                    let t = items(&target).to_vec();
+                    if t.len() < 2 {
+                        return fail("pcDefinePCell: the first argument is list(library cell view)");
+                    }
+                    let (lib, cell) = (self.display(&t[0]), self.display(&t[1]));
+                    let mut params = Vec::new();
+                    for p in elems(&args[1]) {
+                        let pe = elems(&p);
+                        let Some(Node::Var(name)) = pe.first() else {
+                            return fail("pcDefinePCell: a parameter is (name default)");
+                        };
+                        let default = match pe.get(1) {
+                            Some(n) => self.eval(n)?,
+                            None => Value::Nil,
+                        };
+                        params.push((name.to_string(), self.repr(&default)));
+                    }
+                    let body: Vec<String> = args[2..].iter().map(|n| self.repr(&node_to_datum(n))).collect();
+                    let def = crate::pcell::PCell::SkillDef { params: params.clone(), body: body.join("\n") };
+                    if self.p.libraries.iter().all(|l| l.name != lib) {
+                        self.p.add_library(&lib).or_else(fail)?;
+                    }
+                    let r = CellRef::new(&lib, &cell);
+                    if self.p.cell(&r).is_none() {
+                        self.p.add_cell(&lib, Cell::new(&cell)).or_else(fail)?;
+                    }
+                    if let Some(c) = self.p.cell_mut(&r) {
+                        c.pcell = Some(def.clone());
+                        c.layout = Some(Layout::default());
+                        c.description = def.summary(1000);
+                    }
+                    // The master's own layout is the PCell at its defaults.
+                    self.eval_skill_pcell(&r, &r, &params)?;
+                    Ok(self.open_cv(r, false))
+                }
+                "declare" => {
+                    // declare(a[n]): an array, kept as a table indexed 0 .. n-1.
+                    argc(1)?;
+                    let Node::Index(target, size, _) = &args[0] else { return fail("declare: use declare(name[size])") };
+                    let n = self.eval(size)?;
+                    let t = Value::Table(Rc::new(RefCell::new(Table {
+                        name: "array".into(),
+                        default: Some(Value::Nil),
+                        entries: vec![],
+                    })));
+                    if let Value::Int(n) = n
+                        && n < 0
+                    {
+                        return fail("declare: negative size");
+                    }
+                    self.set_target(target, t.clone())?;
+                    Ok(t)
+                }
+                "gets" => {
+                    // gets(var port): the next line of an input port (with its newline) into var.
+                    argc(2)?;
+                    let port = self.eval(&args[1])?;
+                    let line = match port {
+                        Value::Port(k) if k > 0 => match self.ports.get_mut(k as usize - 1) {
+                            Some(PortFile::In(lines)) => lines.pop_front().map(|l| string(format!("{l}\n"))),
+                            _ => None,
+                        },
+                        _ => None,
+                    }
+                    .unwrap_or(Value::Nil);
+                    self.set_target(&args[0], line.clone())?;
+                    Ok(line)
+                }
                 "if" => {
                     argc(1)?;
                     let c = truthy(&self.eval(&args[0])?);
@@ -1470,7 +1726,8 @@ impl<'p> Interp<'p> {
                 "lambda" => {
                     argc(1)?;
                     let params = self.params(&elems(&args[0]))?;
-                    Ok(Value::Func(Rc::new(Func { name: "lambda".into(), params, body: args[1..].to_vec() })))
+                    let env = self.closure_env();
+                    Ok(Value::Func(Rc::new(Func { name: "lambda".into(), params, body: args[1..].to_vec(), env })))
                 }
                 "errset" => {
                     argc(1)?;
@@ -1560,7 +1817,8 @@ impl<'p> Interp<'p> {
                 s.push_str(&format!("db:0x{:08x}", ((cv as u64 + 1) << 24) | id));
             }
             Value::Table(t) => s.push_str(&format!("table:{}", t.borrow().name)),
-            Value::Port => s.push_str("port:\"*stdout*\""),
+            Value::Port(0) => s.push_str("port:\"*stdout*\""),
+            Value::Port(k) => s.push_str(&format!("port:\"file{k}\"")),
         }
     }
 
@@ -1700,7 +1958,16 @@ impl<'p> Interp<'p> {
 
     fn get_prop(&mut self, o: &Value, prop: &Name) -> R<Value> {
         match o {
-            Value::Obj(obj) => self.db_prop(*obj, prop),
+            Value::Obj(obj) => {
+                let key = match obj {
+                    Obj::Cv(c) => (*c, 0),
+                    Obj::Shape(c, id) | Obj::Inst(c, id) => (*c, *id),
+                };
+                if let Some((_, v)) = self.props.get(&key).and_then(|p| p.iter().find(|(n, _)| **n == **prop)) {
+                    return Ok(v.clone());
+                }
+                self.db_prop(*obj, prop)
+            }
             Value::Table(t) => {
                 if &**prop == "?" {
                     return Ok(list(t.borrow().entries.iter().map(|(k, _)| k.clone()).collect()));
@@ -1881,7 +2148,15 @@ impl<'p> Interp<'p> {
             "null" | "not" => Ok(boolv(!truthy(&arg(0)))),
 
             // lists
-            "list" => Ok(list(v)),
+            "list" => {
+                // ?key value items stay in the list (ROD sub-path specs are written that way).
+                let mut v = v;
+                for (k, x) in a.keys {
+                    v.push(sym(&format!("?{k}")));
+                    v.push(x);
+                }
+                Ok(list(v))
+            }
             "range" => Ok(list(v)),
             "cons" => {
                 need(2)?;
@@ -2193,9 +2468,61 @@ impl<'p> Interp<'p> {
             "fprintf" => {
                 let fmt = s(1)?;
                 let text = self.format(&fmt, &v[2..])?;
-                self.out.push_str(&text);
+                match v.first() {
+                    Some(Value::Port(k)) if *k > 0 => self.write_port(*k, &text)?,
+                    _ => self.out.push_str(&text),
+                }
                 Ok(Value::T)
             }
+            "outfile" | "infile" => {
+                need(1)?;
+                let path = PathBuf::from(&*s(0)?);
+                let port = if f == "outfile" {
+                    let append = matches!(v.get(1), Some(Value::Str(m)) if m.starts_with('a'));
+                    if !append {
+                        std::fs::write(&path, "").or_else(|e| fail(format!("{f}: {}: {e}", path.display())))?;
+                    }
+                    PortFile::Out(path)
+                } else {
+                    match std::fs::read_to_string(&path) {
+                        Ok(t) => PortFile::In(t.lines().map(str::to_string).collect()),
+                        Err(_) => return Ok(Value::Nil),
+                    }
+                };
+                self.ports.push(port);
+                Ok(Value::Port(self.ports.len() as u32))
+            }
+            "close" => {
+                if let Some(Value::Port(k)) = v.first()
+                    && let Some(p) = (*k as usize).checked_sub(1).and_then(|i| self.ports.get_mut(i))
+                {
+                    *p = PortFile::Closed;
+                }
+                Ok(Value::T)
+            }
+            "portp" => Ok(boolv(matches!(arg(0), Value::Port(_)))),
+            // Library objects are their names here: list(ddGetObj("lib") "cell" "layout").
+            "ddGetObj" => Ok(match v.first() {
+                Some(x @ (Value::Str(_) | Value::Sym(_))) => string(self.display(x)),
+                _ => Value::Nil,
+            }),
+            "arrayp" => Ok(boolv(matches!(arg(0), Value::Table(ref t) if t.borrow().name == "array"))),
+            "techGetTechFile" => Ok(dpl(&[("objType", string("techFile")), ("libName", string(self.p.tech.name.clone()))])),
+            "techFindViaDefByName" => {
+                need(2)?;
+                let name = s(1)?;
+                Ok(match self.p.tech.vias.iter().find(|d| *d.name == *name) {
+                    Some(d) => dpl(&[("objType", string("viaDef")), ("name", string(d.name.clone()))]),
+                    None => Value::Nil,
+                })
+            }
+            "techGetLayerName" => {
+                need(2)?;
+                let k = int(1)?;
+                Ok(self.p.tech.layers.iter().find(|l| l.gds_layer as i64 == k).map_or(Value::Nil, |l| string(l.name.clone())))
+            }
+            f if f.starts_with("rod") => self.rod_call(f, &v, &a.keys),
+            f if f.starts_with("hi") => self.hi_call(f, &v, &a.keys),
             "print" | "println" | "pprint" => {
                 need(1)?;
                 let text = self.repr(&v[0]);
@@ -2215,7 +2542,7 @@ impl<'p> Interp<'p> {
                 self.out.push('\n');
                 Ok(Value::Nil)
             }
-            "drain" | "close" | "gc" | "sstatus" | "status" | "hiRegTimer" => Ok(Value::T),
+            "drain" | "gc" | "sstatus" | "status" | "hiRegTimer" => Ok(Value::T),
             "error" => {
                 let text = match v.first() {
                     Some(Value::Str(fmt)) => self.format(fmt, &v[1..])?,
@@ -2453,6 +2780,133 @@ impl<'p> Interp<'p> {
             x => fail(format!("{f}: argument {} must be a string, got {}", k + 1, x.map_or("nothing".into(), |x| self.repr(x)))),
         };
         match f {
+            "dbCreateParamInst" | "dbCreateParamInstByMasterName" => {
+                let by_name = f.ends_with("MasterName");
+                need(if by_name { 7 } else { 5 })?;
+                let cv = self.cv(&v[0])?;
+                let (lib, cell, k) = if by_name {
+                    (text(1)?, text(2)?, 4)
+                } else {
+                    let m = self.cv(&v[1])?;
+                    (self.cvs[m].cell.lib.clone(), self.cvs[m].cell.cell.clone(), 2)
+                };
+                let params = items(&arg(k + 4)).to_vec();
+                let master = CellRef::new(&lib, &cell);
+                if let Some(crate::pcell::PCell::SkillDef { params: defaults, .. }) =
+                    self.p.cell(&master).and_then(|c| c.pcell.clone())
+                {
+                    let r = self.skill_variant(&master, &defaults, &params)?;
+                    return self.place(cv, r, &v[k], &v[k + 1], &v[k + 2], None);
+                }
+                match self.param_pcell(&cell, &params)? {
+                    Some(pc) => {
+                        let r = self.p.ensure_pcell(&pc).or_else(fail)?;
+                        self.place(cv, r, &v[k], &v[k + 1], &v[k + 2], None)
+                    }
+                    None => match self.master(cv, &lib, &cell)? {
+                        Some(r) => {
+                            if !params.is_empty() {
+                                self.out
+                                    .push_str(&format!("*WARNING* {f}: {lib}/{cell} is not a PCell here; parameters ignored\n"));
+                            }
+                            self.place(cv, r, &v[k], &v[k + 1], &v[k + 2], None)
+                        }
+                        None => {
+                            self.out.push_str(&format!("*WARNING* {f}: cannot open master {lib}/{cell} layout\n"));
+                            Ok(Value::Nil)
+                        }
+                    },
+                }
+            }
+            "dbCreateVia" => {
+                need(3)?;
+                let cv = self.cv(&v[0])?;
+                let name = match &v[1] {
+                    Value::Str(s) | Value::Sym(s) => s.to_string(),
+                    d => match self.get_prop(d, &Name::from("name"))? {
+                        Value::Str(s) => s.to_string(),
+                        _ => return fail(format!("{f}: via definition expected, got {}", self.repr(d))),
+                    },
+                };
+                let at = self.point(&v[2])?;
+                let def = self.p.tech.vias.iter().find(|d| d.name == name).cloned();
+                let Some(def) = def else { return fail(format!("{f}: no via '{name}' in the technology")) };
+                let items = crate::pcell::via_at(&self.p.tech, &def, at).or_else(fail)?;
+                let l = self.layout_mut(cv)?;
+                let ids: Vec<u64> = items.into_iter().map(|(layer, g)| l.add(layer, g)).collect();
+                Ok(ids.first().map_or(Value::Nil, |id| Value::Obj(Obj::Shape(cv, *id))))
+            }
+            "dbCreateNet" | "dbMakeNet" | "dbFindNetByName" => {
+                need(2)?;
+                let cv = self.cv(&v[0])?;
+                let name = text(1)?;
+                if f == "dbFindNetByName" {
+                    let has = self.layout(cv).is_some_and(|l| {
+                        l.shapes.iter().any(|s| matches!(&s.geom, Geometry::Label { text, .. } if *text == name))
+                    });
+                    if !has {
+                        return Ok(Value::Nil);
+                    }
+                }
+                Ok(dpl(&[("objType", string("net")), ("name", string(name)), ("cellView", Value::Obj(Obj::Cv(cv)))]))
+            }
+            "dbCreateTerm" => {
+                need(2)?;
+                let net = self.get_prop(&v[0], &Name::from("name"))?;
+                let dir = v.get(2).map(|d| self.display(d)).unwrap_or_else(|| "inputOutput".into());
+                Ok(dpl(&[("objType", string("term")), ("name", net.clone()), ("net", v[0].clone()), ("direction", string(dir))]))
+            }
+            "dbCreatePin" | "dbAddFigToNet" => {
+                // A pin is the figure plus a label with the net name at its centre, on the
+                // layer's net label layer, which extraction and LVS read as a port.
+                need(2)?;
+                let (net_v, fig_v) = if f == "dbCreatePin" { (&v[0], &v[1]) } else { (&v[1], &v[0]) };
+                let name = match self.get_prop(net_v, &Name::from("name"))? {
+                    Value::Str(s) => s.to_string(),
+                    x => return fail(format!("{f}: net expected, got {}", self.repr(&x))),
+                };
+                let (cv, id) = self.fig(fig_v)?;
+                let shape = self.layout(cv).and_then(|l| l.shape(id)).cloned();
+                let Some(shape) = shape else { return fail(format!("{f}: the figure is not a shape")) };
+                let b = shape.bbox();
+                let layer = self.p.tech.net_label_layer(shape.layer).unwrap_or(shape.layer);
+                let size = self.to_dbu(0.1).max(1);
+                let at = ((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2);
+                self.layout_mut(cv)?.add(layer, Geometry::Label { text: name.clone(), at, size });
+                Ok(dpl(&[("objType", string("pin")), ("name", string(name)), ("fig", fig_v.clone())]))
+            }
+            "dbReplaceProp" | "dbCreateProp" => {
+                need(4)?;
+                let (cv, id) = self.fig(&v[0]).or_else(|_| match &v[0] {
+                    Value::Obj(Obj::Cv(c)) => Ok((*c, 0)),
+                    x => fail(format!("{f}: object expected, got {}", self.repr(x))),
+                })?;
+                let name = text(1)?;
+                let props = self.props.entry((cv, id)).or_default();
+                props.retain(|(n, _)| *n != name);
+                props.push((name.clone(), v[3].clone()));
+                Ok(dpl(&[("objType", string("prop")), ("name", string(name)), ("value", v[3].clone())]))
+            }
+            "dbGetPropByName" => {
+                need(2)?;
+                let key = match &v[0] {
+                    Value::Obj(Obj::Cv(c)) => (*c, 0),
+                    o => self.fig(o)?,
+                };
+                let name = text(1)?;
+                Ok(match self.props.get(&key).and_then(|p| p.iter().find(|(n, _)| *n == name)) {
+                    Some((_, x)) => dpl(&[("objType", string("prop")), ("name", string(name)), ("value", x.clone())]),
+                    None => Value::Nil,
+                })
+            }
+            "geGetSelSet" | "geGetSelectedSet" => Ok(Value::Nil),
+            "geSelectFig" | "geDeselectAll" | "geDeselectFig" => Ok(Value::T),
+            "leIsPointInsideFig" => {
+                need(2)?;
+                let (cv, id) = self.fig(&v[0])?;
+                let p = self.point(&v[1])?;
+                Ok(boolv(self.layout(cv).and_then(|l| l.shape(id)).is_some_and(|s| s.hit(p.0, p.1, 0))))
+            }
             "dbOpenCellViewByType" | "dbOpenCellView" => {
                 need(3)?;
                 let (lib, cell, view) = (text(0)?, text(1)?, text(2)?);
@@ -2743,6 +3197,424 @@ impl<'p> Interp<'p> {
                 x => fail(format!("{f}: shape expected, got {}", self.repr(x))),
             })
             .collect()
+    }
+
+    /// User interface forms (`hi*`) without a window: forms and fields are tables whose values
+    /// scripts read and set (`form->field->value`), and `hiDisplayForm` runs the form's OK
+    /// callback at once with the current values, as when OK is pressed on the defaults.
+    fn hi_call(&mut self, f: &str, v: &[Value], keys: &[(Name, Value)]) -> R<Value> {
+        let key = |k: &str| keys.iter().find(|(n, _)| &**n == k).map(|(_, v)| v.clone());
+        let table = |name: &str, entries: Vec<(Value, Value)>| {
+            Value::Table(Rc::new(RefCell::new(Table { name: name.into(), default: None, entries })))
+        };
+        match f {
+            "hiCreateStringField"
+            | "hiCreateFloatField"
+            | "hiCreateIntField"
+            | "hiCreateBooleanButton"
+            | "hiCreateCyclicField"
+            | "hiCreateRadioField"
+            | "hiCreateListBoxField"
+            | "hiCreateLabel"
+            | "hiCreateButton"
+            | "hiCreateComboField"
+            | "hiCreateToggleField"
+            | "hiCreatePointField"
+            | "hiCreateFileSelectorField" => {
+                let name = key("name").unwrap_or(Value::Nil);
+                let value = key("value").or_else(|| key("defValue")).unwrap_or(Value::Nil);
+                let mut e = vec![
+                    (sym("name"), name),
+                    (sym("value"), value.clone()),
+                    (sym("defValue"), value),
+                    (sym("hiFieldType"), string(f)),
+                ];
+                for k in ["prompt", "choices", "items", "callback", "range"] {
+                    if let Some(x) = key(k) {
+                        e.push((sym(k), x));
+                    }
+                }
+                Ok(table("field", e))
+            }
+            "hiCreateAppForm" | "hiCreateForm" | "hiCreateLayoutForm" => {
+                let name = key("name").or_else(|| v.first().cloned()).unwrap_or(Value::Nil);
+                let fields = key("fields").or_else(|| v.get(2).cloned()).unwrap_or(Value::Nil);
+                let mut e = vec![(sym("hiFormSym"), name.clone()), (sym("fieldList"), fields.clone())];
+                if let Some(t) = key("formTitle").or_else(|| v.get(1).cloned()) {
+                    e.push((sym("formTitle"), t));
+                }
+                for fld in items(&fields).iter() {
+                    // A field, or list(field x y ...) in a layout form.
+                    let fld = match fld {
+                        Value::List(l) => l[0].clone(),
+                        x => x.clone(),
+                    };
+                    let fname = self.get_prop(&fld, &Name::from("name"))?;
+                    if let Value::Sym(n) = fname {
+                        e.push((Value::Sym(n), fld));
+                    }
+                }
+                if let Some(cb) = key("callback").or_else(|| v.get(3).cloned()) {
+                    e.push((sym("callback"), cb));
+                }
+                let form = table("form", e);
+                if let Value::Sym(n) = &name {
+                    self.globals.insert(n.clone(), form.clone());
+                }
+                Ok(form)
+            }
+            "hiDisplayForm" | "hiDisplayModalDBox" | "hiiFormOk" => {
+                let form = v.first().cloned().unwrap_or(Value::Nil);
+                let form = match &form {
+                    Value::Sym(n) => self.lookup(n)?,
+                    x => x.clone(),
+                };
+                if self.interactive && f != "hiiFormOk" {
+                    let req = self.form_request(&form)?;
+                    self.forms.push(req);
+                    return Ok(Value::T);
+                }
+                let cb = self.get_prop(&form, &Name::from("callback"))?;
+                // list(okCallback cancelCallback): OK.
+                let cb = match &cb {
+                    Value::List(l) if !matches!(l[0], Value::Sym(ref s) if &**s == "lambda") => l[0].clone(),
+                    x => x.clone(),
+                };
+                let prev = self.current_form.replace(form.clone());
+                let r = match cb {
+                    Value::Nil => Ok(Value::Nil),
+                    Value::Str(src) => self.run_source(&src, None),
+                    Value::Sym(n) => match self.funcs.get(&n).cloned() {
+                        Some(func) => self.apply(&func, Args { pos: vec![form.clone()], keys: vec![] }),
+                        None => self.run_source(&n, None),
+                    },
+                    Value::Func(func) => self.apply(&func, Args { pos: vec![form.clone()], keys: vec![] }),
+                    x => fail(format!("{f}: cannot call the callback {}", self.repr(&x))),
+                };
+                self.current_form = prev;
+                r.map(|_| Value::T)
+            }
+            "hiGetCurrentForm" => Ok(self.current_form.clone().unwrap_or(Value::Nil)),
+            "hiFormDone" | "hiFormCancel" | "hiFormClose" | "hiFormApply" | "hiRedraw" | "hiFlush" | "hiDeleteForm"
+            | "hiRegTimer" | "hiSetBindKey" | "hiSetBindKeys" | "hiInsertBannerMenu" | "hiAddMenuItem" => Ok(Value::T),
+            "hiGetCurrentWindow" | "hiCreateMenu" | "hiCreateMenuItem" | "hiCreatePulldownMenu" | "hiGetAppType" => {
+                Ok(Value::Nil)
+            }
+            "hiQuestionBox" | "hiDisplayAppDBox" => Ok(Value::T),
+            _ => fail(format!("undefined function {f} (interactive forms are not shown; see hiDisplayForm)")),
+        }
+    }
+
+    /// The [`FormRequest`] of a form table, registering it under a global name if it has none.
+    fn form_request(&mut self, form: &Value) -> R<FormRequest> {
+        let symbol = match self.get_prop(form, &Name::from("hiFormSym"))? {
+            Value::Sym(n) => n.to_string(),
+            _ => {
+                let n = format!("icsForm{}", self.globals.len());
+                self.globals.insert(n.as_str().into(), form.clone());
+                n
+            }
+        };
+        let title = match self.get_prop(form, &Name::from("formTitle"))? {
+            Value::Nil => symbol.clone(),
+            t => self.display(&t),
+        };
+        let mut fields = vec![];
+        let list_v = self.get_prop(form, &Name::from("fieldList"))?;
+        for fld in items(&list_v).to_vec() {
+            let fld = match &fld {
+                Value::List(l) => l[0].clone(),
+                x => x.clone(),
+            };
+            let Value::Sym(name) = self.get_prop(&fld, &Name::from("name"))? else { continue };
+            let kind_v = self.get_prop(&fld, &Name::from("hiFieldType"))?;
+            let kind_name = self.display(&kind_v);
+            let value = self.get_prop(&fld, &Name::from("value"))?;
+            let prompt = match self.get_prop(&fld, &Name::from("prompt"))? {
+                Value::Nil => name.to_string(),
+                p => self.display(&p),
+            };
+            let choices_v = self.get_prop(&fld, &Name::from("choices"))?;
+            let choices: Vec<String> = items(&choices_v).iter().map(|c| self.display(c)).collect();
+            let kind = match kind_name.as_str() {
+                "hiCreateFloatField" => FieldKind::Float,
+                "hiCreateIntField" => FieldKind::Int,
+                "hiCreateBooleanButton" | "hiCreateToggleField" => FieldKind::Bool,
+                "hiCreateCyclicField" | "hiCreateRadioField" | "hiCreateComboField" | "hiCreateListBoxField" => {
+                    FieldKind::Choice(choices)
+                }
+                "hiCreateLabel" | "hiCreateButton" => FieldKind::Label,
+                _ => FieldKind::String,
+            };
+            let value = match (&kind, &value) {
+                (FieldKind::Bool, v) => {
+                    if truthy(v) {
+                        "t".into()
+                    } else {
+                        "nil".into()
+                    }
+                }
+                (_, Value::Nil) => String::new(),
+                (_, v) => self.display(v),
+            };
+            fields.push(FormField { name: name.to_string(), prompt, kind, value });
+        }
+        Ok(FormRequest { symbol, title, fields })
+    }
+
+    /// Relative Object Design shapes: `rodCreateRect`, `rodCreatePath`, `rodCreatePolygon` with
+    /// keyword arguments (`?cvId ?layer ?bBox | ?width ?length ?origin`, `?pts ?width`).
+    fn rod_call(&mut self, f: &str, pos: &[Value], keys: &[(Name, Value)]) -> R<Value> {
+        let key = |k: &str| keys.iter().find(|(n, _)| &**n == k).map(|(_, v)| v.clone());
+        let cv = match key("cvId").or_else(|| pos.first().cloned()) {
+            Some(c) => self.cv(&c)?,
+            None => match self.current.clone() {
+                Some(c) => {
+                    let o = self.open_cv(c, true);
+                    self.cv(&o)?
+                }
+                None => return fail(format!("{f}: ?cvId missing")),
+            },
+        };
+        let layer = match key("layer") {
+            Some(l) => self.layer(&l)?,
+            None => return fail(format!("{f}: ?layer missing")),
+        };
+        let geom = match f {
+            "rodCreateRect" => {
+                let r = match key("bBox") {
+                    Some(b) => self.bbox(&b)?,
+                    None => {
+                        let (Some(w), Some(h)) = (key("width"), key("length")) else {
+                            return fail(format!("{f}: give ?bBox, or ?width and ?length"));
+                        };
+                        let o = match key("origin") {
+                            Some(o) => self.point(&o)?,
+                            None => (0, 0),
+                        };
+                        IRect::new(o.0, o.1, o.0 + self.to_dbu(as_f64(&w)), o.1 + self.to_dbu(as_f64(&h)))
+                    }
+                };
+                Geometry::Rect(r)
+            }
+            "rodCreatePath" => {
+                let pts = match key("pts") {
+                    Some(p) => self.points(&p)?,
+                    None => return fail(format!("{f}: ?pts missing")),
+                };
+                let w = key("width").map_or(0, |w| self.to_dbu(as_f64(&w)));
+                let w = if w > 0 { w } else { self.p.tech.layer(layer).map_or(0, |d| d.min_width) };
+                if pts.len() < 2 {
+                    return fail(format!("{f}: a path needs at least 2 points"));
+                }
+                let subs = self.rod_subpaths(f, &pts, w, key("encSubPath"), key("offsetSubPath"), key("subRect"))?;
+                let l = self.layout_mut(cv)?;
+                for (layer, g) in subs {
+                    l.add(layer, g);
+                }
+                Geometry::Path { points: pts, width: w }
+            }
+            "rodCreatePolygon" => {
+                let pts = match key("pts") {
+                    Some(p) => self.points(&p)?,
+                    None => return fail(format!("{f}: ?pts missing")),
+                };
+                Geometry::Polygon { points: pts }
+            }
+            _ => return fail(format!("undefined function {f}")),
+        };
+        let id = self.layout_mut(cv)?.add(layer, geom);
+        Ok(Value::Obj(Obj::Shape(cv, id)))
+    }
+
+    /// Shapes of the sub-paths of a ROD multipart path along `pts` (master width `w`):
+    /// enclosing paths (`?layer ?enclosure`), offset paths (`?layer ?width ?sep
+    /// ?justification`) and rows of rectangles (`?layer ?width ?length ?space`).
+    fn rod_subpaths(
+        &self,
+        f: &str,
+        pts: &[(i64, i64)],
+        w: i64,
+        enc: Option<Value>,
+        offset: Option<Value>,
+        rects: Option<Value>,
+    ) -> R<Vec<(usize, Geometry)>> {
+        let specs = |v: Option<Value>| -> Vec<Vec<Value>> {
+            let Some(v) = v else { return vec![] };
+            let l = items(&v).to_vec();
+            // One spec, or a list of specs.
+            if l.first().is_some_and(|x| matches!(x, Value::Sym(s) if s.starts_with('?'))) {
+                vec![l]
+            } else {
+                l.iter().map(|x| items(x).to_vec()).collect()
+            }
+        };
+        let get = |spec: &[Value], k: &str| -> Option<Value> {
+            spec.iter()
+                .position(|x| matches!(x, Value::Sym(s) if s.strip_prefix('?') == Some(k)))
+                .and_then(|i| spec.get(i + 1).cloned())
+        };
+        let mut out = vec![];
+        for spec in specs(enc) {
+            let Some(lv) = get(&spec, "layer") else { return fail(format!("{f}: ?encSubPath needs ?layer")) };
+            let layer = self.layer(&lv)?;
+            let e = get(&spec, "enclosure").map_or(0, |v| self.to_dbu(as_f64(&v)));
+            if w + 2 * e > 0 {
+                out.push((layer, Geometry::Path { points: pts.to_vec(), width: w + 2 * e }));
+            }
+        }
+        for spec in specs(offset) {
+            let Some(lv) = get(&spec, "layer") else { return fail(format!("{f}: ?offsetSubPath needs ?layer")) };
+            let layer = self.layer(&lv)?;
+            let sw = get(&spec, "width").map_or(w, |v| self.to_dbu(as_f64(&v)));
+            let sep = get(&spec, "sep").map_or(0, |v| self.to_dbu(as_f64(&v)));
+            let right = get(&spec, "justification").is_some_and(|j| self.display(&j) == "right");
+            let d = (w / 2 + sep + sw / 2) * if right { -1 } else { 1 };
+            let Some(line) = crate::reshape::offset_polyline(pts, d, None) else {
+                return fail(format!("{f}: ?offsetSubPath needs a Manhattan path without U-turns"));
+            };
+            out.push((layer, Geometry::Path { points: line, width: sw }));
+        }
+        for spec in specs(rects) {
+            let Some(lv) = get(&spec, "layer") else { return fail(format!("{f}: ?subRect needs ?layer")) };
+            let layer = self.layer(&lv)?;
+            let rw = get(&spec, "width").map_or(0, |v| self.to_dbu(as_f64(&v)));
+            if rw <= 0 {
+                return fail(format!("{f}: ?subRect needs a ?width"));
+            }
+            let rl = get(&spec, "length").map_or(rw, |v| self.to_dbu(as_f64(&v)));
+            let space = get(&spec, "space").map_or(rw, |v| self.to_dbu(as_f64(&v)));
+            let pitch = (rl + space).max(1);
+            for seg in pts.windows(2) {
+                let (a, b) = (seg[0], seg[1]);
+                let len = (b.0 - a.0).abs() + (b.1 - a.1).abs();
+                // Keep clear of the segment ends (corners) by half the master width plus a space.
+                let usable = len - 2 * (w / 2 + space) - rl;
+                if usable < 0 {
+                    continue;
+                }
+                let n = usable / pitch + 1;
+                let start = w / 2 + space + (usable - (n - 1) * pitch) / 2;
+                let dir = ((b.0 - a.0).signum(), (b.1 - a.1).signum());
+                for k in 0..n {
+                    let t = start + k * pitch;
+                    let (cx, cy) = (a.0 + dir.0 * t, a.1 + dir.1 * t);
+                    let r = if dir.1 == 0 {
+                        IRect::new(cx.min(cx + dir.0 * rl), cy - rw / 2, cx.max(cx + dir.0 * rl), cy + rw / 2)
+                    } else {
+                        IRect::new(cx - rw / 2, cy.min(cy + dir.1 * rl), cx + rw / 2, cy.max(cy + dir.1 * rl))
+                    };
+                    out.push((layer, Geometry::Rect(r)));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// The IC Studio PCell for a parametric instance of master `cell` (`nmos`, `pmos`,
+    /// `poly_res`, `mom_cap`, `ntap`, `ptap`, `nring`, `pring`, or a `pcells` variant of one)
+    /// with CDF-style parameters `list(name type value)`; `None` for other masters.
+    fn param_pcell(&self, cell: &str, params: &[Value]) -> R<Option<crate::pcell::PCell>> {
+        use crate::pcell::PCell;
+        let kind = ["nmos", "pmos", "poly_res", "mom_cap", "ntap", "ptap", "nring", "pring"]
+            .into_iter()
+            .find(|k| cell == *k || cell.strip_prefix(k).is_some_and(|r| r.starts_with('_')));
+        let Some(kind) = kind else { return Ok(None) };
+        let get = |names: &[&str]| -> Option<Value> {
+            params.iter().find_map(|p| {
+                let it = items(p);
+                let n = match it.first() {
+                    Some(Value::Str(s) | Value::Sym(s)) => s.to_string(),
+                    _ => return None,
+                };
+                names.iter().any(|x| x.eq_ignore_ascii_case(&n)).then(|| it.last().cloned()).flatten()
+            })
+        };
+        let len =
+            |names: &[&str], default_um: f64| -> i64 { self.to_dbu(get(names).and_then(|v| param_um(&v)).unwrap_or(default_um)) };
+        let count = |names: &[&str]| -> u32 {
+            get(names)
+                .and_then(|v| match v {
+                    Value::Str(s) => s.parse::<f64>().ok(),
+                    x @ (Value::Int(_) | Value::Float(_)) => Some(as_f64(&x)),
+                    _ => None,
+                })
+                .map_or(1, |x| x.max(1.0) as u32)
+        };
+        Ok(Some(match kind {
+            "nmos" | "pmos" => {
+                let pmos = kind == "pmos";
+                let fingers = count(&["fingers", "nf", "nfing"]);
+                // w is per device in most CDFs; IC Studio's w is per finger.
+                let total = len(&["w", "width"], if pmos { 2.0 } else { 1.0 });
+                let per =
+                    if get(&["fw", "fingerWidth"]).is_some() { len(&["fw", "fingerWidth"], 1.0) } else { total / fingers as i64 };
+                PCell::mos(pmos, per.max(1), len(&["l", "length"], 0.18), fingers)
+            }
+            "poly_res" => PCell::PolyRes { w: len(&["w"], 0.4), l: len(&["l"], 5.0) },
+            "mom_cap" => PCell::MomCap { w: len(&["w"], 5.0), h: len(&["h", "l"], 5.0) },
+            "ntap" | "ptap" => PCell::Tap { well: kind == "ntap", w: len(&["w", "h"], 1.0) },
+            _ => PCell::GuardRing { well: kind == "nring", w: len(&["w"], 5.0), h: len(&["h", "l"], 5.0), width: 0, gap: 0 },
+        }))
+    }
+
+    /// The variant cell of SKILL PCell `master` for the instance parameters `given`
+    /// (`list(name type value)`, the others take their defaults), evaluated on first use.
+    fn skill_variant(&mut self, master: &CellRef, defaults: &[(String, String)], given: &[Value]) -> R<CellRef> {
+        let mut values: Vec<(String, String)> = defaults.to_vec();
+        for p in given {
+            let it = items(p);
+            let (Some(n), Some(val)) = (it.first(), it.last()) else { continue };
+            let n = self.display(n);
+            let text = self.repr(val);
+            match values.iter_mut().find(|(k, _)| *k == n) {
+                Some(slot) => slot.1 = text,
+                None => self.out.push_str(&format!("*WARNING* {}: no parameter {n}\n", master.cell)),
+            }
+        }
+        let variant =
+            crate::pcell::PCell::SkillVariant { master: format!("{}/{}", master.lib, master.cell), params: values.clone() };
+        let r = CellRef::new(&master.lib, variant.variant_name());
+        if self.p.cell(&r).is_none() {
+            let mut c = Cell::new(&r.cell);
+            c.description = variant.summary(1000);
+            c.pcell = Some(variant);
+            c.layout = Some(Layout::default());
+            self.p.add_cell(&master.lib, c).or_else(fail)?;
+            self.eval_skill_pcell(master, &r, &values)?;
+        }
+        Ok(r)
+    }
+
+    /// Run the body of SKILL PCell `master` into cell `into`, with `pcCellView` and the
+    /// parameters (SKILL text) bound.
+    fn eval_skill_pcell(&mut self, master: &CellRef, into: &CellRef, values: &[(String, String)]) -> R<()> {
+        let Some(crate::pcell::PCell::SkillDef { body, .. }) = self.p.cell(master).and_then(|c| c.pcell.clone()) else {
+            return fail(format!("{}/{} is not a SKILL PCell", master.lib, master.cell));
+        };
+        let cv = self.open_cv(into.clone(), true);
+        let mut frame: HashMap<Name, Value> = HashMap::new();
+        frame.insert("pcCellView".into(), cv);
+        for (n, text) in values {
+            let v = self.run_source(&format!("'{text}"), None)?;
+            frame.insert(n.as_str().into(), v);
+        }
+        self.with_frame(frame, |s| s.run_source(&body, None)).map(|_| ())
+    }
+
+    fn write_port(&mut self, k: u32, text: &str) -> R<()> {
+        use std::io::Write;
+        match self.ports.get(k as usize - 1) {
+            Some(PortFile::Out(path)) => {
+                let mut f = std::fs::OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open(path)
+                    .or_else(|e| fail(format!("fprintf: {}: {e}", path.display())))?;
+                f.write_all(text.as_bytes()).or_else(|e| fail(format!("fprintf: {e}")))
+            }
+            _ => fail("fprintf: the port is not open for output"),
+        }
     }
 
     fn int_arg(&self, f: &str, v: &Value) -> R<i64> {
@@ -3304,5 +4176,218 @@ mod tests {
         assert!(!is_complete("/* open"));
         assert!(is_complete("x = 1)"));
         assert!(is_complete(""));
+    }
+
+    /// Functions common in Virtuoso layout scripts: parametric instances, vias, ROD shapes,
+    /// nets and pins, properties, file ports and arrays.
+    #[test]
+    fn layout_script_extras() {
+        let dir = std::env::temp_dir().join(format!("ics-skill-extras-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("report.txt");
+        let src = format!(
+            r#"
+cv = dbOpenCellViewByType("work" "top" "layout" "maskLayout" "w")
+m = dbCreateParamInstByMasterName(cv "pcells" "nmos" "layout" "M1" 0:0 "R0" 1
+      list(list("w" "string" "2u") list("l" "float" 0.18e-6) list("nf" "int" 2)))
+r = rodCreateRect(?cvId cv ?layer "metal1" ?bBox list(10:0 12:1))
+w = rodCreatePath(?cvId cv ?layer "metal2" ?pts list(0:5 10:5) ?width 0.3)
+tf = techGetTechFile(cv)
+vd = techFindViaDefByName(tf "via1")
+v = dbCreateVia(cv vd 11:0.5 "R0")
+net = dbCreateNet(cv "out")
+dbCreateTerm(net "out" "output")
+dbCreatePin(net r)
+dbReplaceProp(m "matchGroup" "string" "A")
+declare(arr[3])
+arr[0] = 7
+p = outfile("{out}")
+fprintf(p "%s %d\n" m~>name arr[0])
+close(p)
+q = infile("{out}")
+gets(line q)
+close(q)
+list(m~>matchGroup dbFindNetByName(cv "out")~>name line arrayp(arr) w~>width)
+"#,
+            out = out.display()
+        );
+        let mut p = Project::new("t");
+        let r = run(&mut p, &src, None).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(r.value, "(\"A\" \"out\" \"M1 7\\n\" t 0.3)", "{}", r.output);
+        let top = p.cell(&CellRef::new("work", "top")).and_then(|c| c.layout.as_ref()).unwrap();
+        let inst = &top.instances[0];
+        assert_eq!(inst.name.as_deref(), Some("M1"));
+        assert_eq!(inst.cell.cell, "nmos_w1000_l180_nf2", "2 µm over 2 fingers");
+        assert!(top.shapes.iter().any(|s| matches!(&s.geom, Geometry::Label { text, .. } if text == "out")), "pin label");
+        let via1 = p.tech.layer_index("via1").unwrap();
+        assert!(top.shapes.iter().any(|s| s.layer == via1), "via cut");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A PCell written in SKILL: defined once, evaluated per parameter set, reused for equal
+    /// parameters, and kept with the project.
+    #[test]
+    fn skill_pcells() {
+        let src = r#"
+pcDefinePCell(list(ddGetObj("mylib") "plate" "layout")
+  ((w 1.0) (l 2.0) (layer "metal1"))
+  let((half)
+    half = w / 2
+    dbCreateRect(pcCellView layer list(-half:0 half:l))
+    when(l > 3 dbCreateLabel(pcCellView layer 0:0 "long" "centerCenter" "R0" "roman" 0.1))))
+cv = dbOpenCellViewByType("work" "top" "layout" "maskLayout" "w")
+a = dbCreateParamInstByMasterName(cv "mylib" "plate" "layout" "P1" 0:0 "R0" 1 list(list("w" "float" 2.0)))
+b = dbCreateParamInstByMasterName(cv "mylib" "plate" "layout" "P2" 10:0 "R0" 1 list(list("l" "float" 4.0) list("layer" "string" "metal2")))
+c = dbCreateParamInstByMasterName(cv "mylib" "plate" "layout" "P3" 20:0 "R0" 1 list(list("w" "float" 2.0)))
+list(a~>master~>cellName == c~>master~>cellName  a~>master~>cellName == b~>master~>cellName)
+"#;
+        let mut p = Project::new("t");
+        let r = run(&mut p, src, None).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(r.value, "(t nil)", "equal parameters share a variant: {}", r.output);
+        let k = p.tech.dbu_per_um;
+        let shapes = |p: &Project, cell: &CellRef| p.cell(cell).and_then(|c| c.layout.clone()).unwrap().shapes;
+        let master = CellRef::new("mylib", "plate");
+        let m = shapes(&p, &master);
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].bbox(), IRect::new(-k / 2, 0, k / 2, 2 * k), "the master is the PCell at its defaults");
+        let top = p.cell(&CellRef::new("work", "top")).and_then(|c| c.layout.clone()).unwrap();
+        let v1 = shapes(&p, &top.instances[0].cell);
+        assert_eq!(v1[0].bbox(), IRect::new(-k, 0, k, 2 * k));
+        let v2 = shapes(&p, &top.instances[1].cell);
+        assert_eq!(v2.len(), 2, "label for l > 3");
+        assert_eq!(v2[0].layer, p.tech.layer_index("metal2").unwrap());
+        // Saved and reopened, the definition is still there and new variants evaluate.
+        let dir = std::env::temp_dir().join(format!("ics-skill-pcell-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        p.save_as(&dir).unwrap();
+        let mut q = Project::open(&dir).unwrap();
+        assert!(matches!(q.cell(&master).and_then(|c| c.pcell.clone()), Some(crate::pcell::PCell::SkillDef { .. })));
+        let src2 = r#"cv = dbOpenCellViewByType("work" "top" "layout" "maskLayout" "a")
+x = dbCreateParamInstByMasterName(cv "mylib" "plate" "layout" "P4" 30:0 "R0" 1 list(list("w" "float" 3.0)))
+x~>master~>bBox"#;
+        let r2 = run(&mut q, src2, None).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(r2.value, "((-1.5 0.0) (1.5 2.0))");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A ROD multipart path as Virtuoso guard ring scripts write it: enclosing implant,
+    /// contact rows and an offset metal path.
+    #[test]
+    fn rod_multipart_path() {
+        let src = r#"
+cv = dbOpenCellViewByType("work" "mpp" "layout" "maskLayout" "w")
+rodCreatePath(?cvId cv ?layer "active" ?width 0.5 ?pts list(0:0 10:0 10:6)
+  ?encSubPath list(list(?layer "pplus" ?enclosure 0.12))
+  ?subRect list(list(?layer "contact" ?width 0.22 ?space 0.25))
+  ?offsetSubPath list(list(?layer "metal1" ?width 0.3 ?sep 0.2 ?justification "right")))
+length(cv~>shapes)
+"#;
+        let mut p = Project::new("t");
+        let r = run(&mut p, src, None).unwrap_or_else(|e| panic!("{e}"));
+        let l = p.cell(&CellRef::new("work", "mpp")).and_then(|c| c.layout.clone()).unwrap();
+        let on = |name: &str| {
+            let k = p.tech.layer_index(name).unwrap();
+            l.shapes.iter().filter(|s| s.layer == k).cloned().collect::<Vec<_>>()
+        };
+        assert_eq!(on("active").len(), 1);
+        assert!(matches!(&on("pplus")[0].geom, Geometry::Path { width, .. } if *width == 740), "{:?}", on("pplus"));
+        let cuts = on("contact");
+        assert!(cuts.len() > 20, "{} cuts", cuts.len());
+        assert!(cuts.iter().all(|c| c.bbox().width() == 220 && c.bbox().height() == 220));
+        // Right of the travel direction: below the first leg, 0.25 + 0.2 + 0.15 = 0.6 µm off centre.
+        let Geometry::Path { points, width } = &on("metal1")[0].geom else { panic!() };
+        assert_eq!((points[0], *width), ((0, -600), 300));
+        assert_eq!(r.value, (3 + cuts.len()).to_string());
+    }
+
+    /// SKILL++ (`.ils`): closures keep their variables, and functions do not see their
+    /// callers' locals; the same code in a `.il` file is dynamically scoped.
+    #[test]
+    fn skillpp_closures_are_lexical() {
+        let dir = std::env::temp_dir().join(format!("ics-skillpp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let code = r#"
+procedure(makeCounter() let(((n 0)) lambda(() n = n + 1)))
+c = makeCounter()
+funcall(c) funcall(c)
+a = funcall(c)
+d = makeCounter()
+procedure(inner() y)
+procedure(outer() let(((y 5)) inner()))
+b = car(errset(outer()))
+list(a funcall(d) b)
+"#;
+        let ils = dir.join("t.ils");
+        std::fs::write(&ils, code).unwrap();
+        let mut p = Project::new("t");
+        let r = run_file(&mut p, &ils).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(r.value, "(3 1 nil)");
+        // Dynamic scoping in .il: inner sees outer's y.
+        let il = dir.join("t.il");
+        std::fs::write(&il, "procedure(inner() y)\nprocedure(outer() let(((y 5)) inner()))\nouter()").unwrap();
+        assert_eq!(run_file(&mut Project::new("t"), &il).unwrap().value, "5");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A form-driven generator runs headless: the OK callback sees the field values.
+    #[test]
+    fn hi_forms_run_their_callback() {
+        let src = r#"
+procedure(myGenCB(form)
+  let((cv w)
+    w = form->wField->value
+    cv = dbOpenCellViewByType("work" "gen" "layout" "maskLayout" "w")
+    dbCreateRect(cv "metal1" list(0:0 w:form->hField->value))))
+hiCreateAppForm(?name 'myGenForm ?formTitle "Generator"
+  ?fields list(hiCreateFloatField(?name 'wField ?prompt "W" ?value 1.0)
+               hiCreateFloatField(?name 'hField ?prompt "H" ?value 2.0))
+  ?callback "myGenCB(hiGetCurrentForm())")
+myGenForm->wField->value = 3.0
+hiDisplayForm(myGenForm)
+"#;
+        let mut p = Project::new("t");
+        let r = run(&mut p, src, None).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(r.value, "t");
+        let l = p.cell(&CellRef::new("work", "gen")).and_then(|c| c.layout.clone()).unwrap();
+        let k = p.tech.dbu_per_um;
+        assert_eq!(l.shapes[0].bbox(), IRect::new(0, 0, 3 * k, 2 * k));
+    }
+
+    /// In an interactive session a displayed form comes back to the application, and OK with
+    /// the edited values runs its callback.
+    #[test]
+    fn interactive_forms_wait_for_ok() {
+        let src = r#"
+procedure(myGenCB(form)
+  let((cv)
+    cv = dbOpenCellViewByType("work" "gen" "layout" "maskLayout" "w")
+    when(form->big->value dbCreateRect(cv form->lay->value list(0:0 form->wField->value:1)))))
+hiCreateAppForm(?name 'myGenForm ?formTitle "Generator"
+  ?fields list(hiCreateFloatField(?name 'wField ?prompt "W" ?value 1.0)
+               hiCreateBooleanButton(?name 'big ?buttonText "Draw" ?value t)
+               hiCreateCyclicField(?name 'lay ?prompt "Layer" ?choices list("metal1" "metal2") ?value "metal1"))
+  ?callback "myGenCB(hiGetCurrentForm())")
+hiDisplayForm(myGenForm)
+"#;
+        let mut p = Project::new("t");
+        let mut s = Session::new();
+        s.interactive = true;
+        let r = s.eval(&mut p, src, None, None).unwrap_or_else(|e| panic!("{e}"));
+        assert!(p.cell(&CellRef::new("work", "gen")).is_none(), "nothing runs before OK");
+        let form = r.forms[0].clone();
+        assert_eq!(form.title, "Generator");
+        assert_eq!(
+            form.fields[0],
+            FormField { name: "wField".into(), prompt: "W".into(), kind: FieldKind::Float, value: "1.0".into() }
+        );
+        assert_eq!(form.fields[1].kind, FieldKind::Bool);
+        assert_eq!(form.fields[2].kind, FieldKind::Choice(vec!["metal1".into(), "metal2".into()]));
+        let mut fields = form.fields.clone();
+        fields[0].value = "4".into();
+        fields[2].value = "metal2".into();
+        s.form_ok(&mut p, &form, &fields, None).unwrap_or_else(|e| panic!("{e}"));
+        let l = p.cell(&CellRef::new("work", "gen")).and_then(|c| c.layout.clone()).unwrap();
+        assert_eq!(l.shapes[0].bbox().width(), 4 * p.tech.dbu_per_um);
+        assert_eq!(l.shapes[0].layer, p.tech.layer_index("metal2").unwrap());
     }
 }

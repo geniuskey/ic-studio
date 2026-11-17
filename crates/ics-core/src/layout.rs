@@ -362,6 +362,9 @@ pub struct Layout {
     /// the cellview. Not written to GDSII.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rulers: Vec<((i64, i64), (i64, i64))>,
+    /// Routing track patterns of the cell (width spacing patterns). Not written to GDSII.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tracks: Vec<crate::tracks::TrackPattern>,
 }
 
 impl Layout {

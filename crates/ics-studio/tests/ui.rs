@@ -947,7 +947,14 @@ fn layout_generators() {
     h.state_mut().apply_gen(GenAction::GuardRing(ring));
     h.run_steps(2);
     let ringed = shape_count(&h, "inv_chain");
-    assert!(ringed > before + 8, "{ringed}");
+    assert_eq!(ringed, before, "the ring is an instance, not loose shapes");
+    {
+        let p = h.state().project().unwrap();
+        let (_, c) = p.all_cells().find(|(_, c)| c.name == "inv_chain").unwrap();
+        let ring = c.layout.as_ref().unwrap().instances.last().unwrap();
+        let pc = p.cell(&ring.cell).and_then(|c| c.pcell.clone());
+        assert!(matches!(pc, Some(ics_core::pcell::PCell::GuardRing { well: false, .. })), "{pc:?}");
+    }
     h.state_mut().command(Command::FitView);
     h.run_steps(3);
     shot(&mut h, "40_layout_generators");
@@ -2843,4 +2850,150 @@ fn demo_memory_schematics() {
     for cell in ["sram6t", "dram1t1c", "nand_string", "aps4t"] {
         scenario(&format!("demo_{cell}_schematic"), true, Some(cell), "schematic", false);
     }
+}
+
+/// Layout XL ECO: a device widened in the schematic after layout is reported by Check Against
+/// Source, Update Components and Nets resizes it in place, and the check is clean again.
+#[test]
+fn layout_check_against_source() {
+    let args = LaunchArgs {
+        project: None,
+        demo: true,
+        workspace: Some("schematic".into()),
+        cell: Some("cmos_inverter".into()),
+        run: false,
+    };
+    let mut h = app(args);
+    h.state_mut().command(Command::GenerateLayout);
+    h.state_mut().command(Command::RouteFlylines);
+    h.run_steps(2);
+    let r = ics_core::CellRef::new("work", "cmos_inverter");
+    let sch = h.state_mut().project_mut().unwrap().cell_mut(&r).unwrap().schematic.as_mut().unwrap();
+    let m = sch.instances.iter_mut().find(|i| i.kind.is_mos()).unwrap();
+    m.params.insert("w".into(), "4u".into());
+    h.state_mut().command(Command::CheckAgainstSource);
+    h.run_steps(2);
+    let src = h.state().layout_editor(&r).and_then(|e| e.verify.source.clone()).expect("check result");
+    assert_eq!(src.count("parameters"), 1, "{:?}", src.issues);
+    settle(&mut h, "layout_check_against_source");
+    shot(&mut h, "layout_check_against_source");
+    h.state_mut().command(Command::UpdateFromSource(false));
+    h.run_steps(2);
+    let src = h.state().layout_editor(&r).and_then(|e| e.verify.source.clone()).expect("check result");
+    assert_eq!(src.count("parameters") + src.count("missing") + src.count("extra"), 0, "{:?}", src.issues);
+    h.state_mut().command(Command::Lay(ics_studio::layout_view::LayAction::Search));
+    h.run_steps(4);
+    shot(&mut h, "layout_search");
+}
+
+/// Routing tracks drawn for the active layer with the Tracks form open, and schematic pins.
+#[test]
+fn layout_tracks_and_schematic_pins() {
+    use ics_studio::layout_view::LayAction;
+    let args = LaunchArgs {
+        project: None,
+        demo: true,
+        workspace: Some("layout".into()),
+        cell: Some("cmos_inverter".into()),
+        run: false,
+    };
+    let mut h = app(args);
+    let r = ics_core::CellRef::new("work", "cmos_inverter");
+    let p = h.state_mut().project_mut().unwrap();
+    let m1 = p.tech.metal1().unwrap();
+    let t = ics_core::tracks::TrackPattern::from_rules(&p.tech, m1, true).unwrap();
+    p.cell_mut(&r).unwrap().layout.as_mut().unwrap().tracks.push(t);
+    let sch = p.cell_mut(&r).unwrap().schematic.as_mut().unwrap();
+    assert_eq!(sch.mark_ports(&[("in".into(), ics_core::PortDir::Input), ("out".into(), ics_core::PortDir::Output)]), 2);
+    h.run_steps(2);
+    h.state_mut().command(Command::Lay(LayAction::Tool(ics_studio::layout_view::LayTool::Path)));
+    h.state_mut().command(Command::Lay(LayAction::EditorOptions));
+    h.run_steps(4);
+    shot(&mut h, "layout_tracks");
+    h.state_mut().command(Command::SetWorkspace(Workspace::Schematic));
+    h.run_steps(4);
+    shot(&mut h, "schematic_pins");
+}
+
+/// Per-net electrical view: the highlighted net's capacitance, coupling and terminal resistance.
+#[test]
+fn layout_net_electrical() {
+    let args = LaunchArgs {
+        project: Some(demo_without_layout("net-elec", "cmos_inverter")),
+        demo: false,
+        workspace: Some("schematic".into()),
+        cell: Some("cmos_inverter".into()),
+        run: false,
+    };
+    let mut h = app(args);
+    h.state_mut().command(Command::GenerateLayout);
+    h.state_mut().command(Command::RouteFlylines);
+    h.run_steps(2);
+    h.state_mut().command(Command::ExtractNets);
+    h.run_steps(2);
+    settle(&mut h, "layout_net_electrical");
+    let r = ics_core::CellRef::new("work", "cmos_inverter");
+    let k = {
+        let ed = h.state().layout_editor(&r).unwrap();
+        let x = ed.verify.extraction.as_ref().expect("extracted");
+        x.nets.iter().position(|n| n.name == "out").expect("net out")
+    };
+    h.state_mut().layout_editor_mut(&r).unwrap().show_net(k);
+    h.run_steps(4);
+    shot(&mut h, "layout_net_electrical");
+}
+
+/// A drawn L-shaped outline becomes a guard ring path (MPP) in one undoable step.
+#[test]
+fn layout_guard_ring_along_shape() {
+    use ics_studio::layout_view::LayAction;
+    let mut h = app(demo_args("inv_chain", "layout", false));
+    let r = ics_core::CellRef::new("work", "inv_chain");
+    let id = {
+        let p = h.state_mut().project_mut().unwrap();
+        let l = p.cell_mut(&r).unwrap().layout.as_mut().unwrap();
+        let pts = vec![(-3000, -3000), (16000, -3000), (16000, 9000), (6000, 9000), (6000, 14000), (-3000, 14000)];
+        l.add(0, ics_core::Geometry::Polygon { points: pts })
+    };
+    h.run_steps(2);
+    let before = shape_count(&h, "inv_chain");
+    h.state_mut().layout_editor_mut(&r).unwrap().selection = [id].into();
+    h.state_mut().command(Command::Lay(LayAction::PRingAlong));
+    h.run_steps(4);
+    assert_eq!(shape_count(&h, "inv_chain"), before - 1, "the outline is replaced");
+    {
+        let p = h.state().project().unwrap();
+        let l = p.cell(&r).unwrap().layout.as_ref().unwrap();
+        let pc = p.cell(&l.instances.last().unwrap().cell).and_then(|c| c.pcell.clone());
+        assert!(matches!(pc, Some(ics_core::pcell::PCell::RingPath { closed: true, well: false, .. })), "{pc:?}");
+    }
+    h.state_mut().command(Command::FitView);
+    h.run_steps(3);
+    shot(&mut h, "layout_ring_path");
+    h.state_mut().command(Command::Undo);
+    h.run_steps(2);
+    assert_eq!(shape_count(&h, "inv_chain"), before, "one undo restores the outline");
+}
+
+/// A SKILL form displayed from the CIW appears as a dialog; OK runs its callback.
+#[test]
+fn skill_form_dialog() {
+    let mut h = app(demo_args("cmos_inverter", "layout", false));
+    let src = r#"procedure(genCB(form)
+  let((cv) cv = dbOpenCellViewByType("work" "formgen" "layout" "maskLayout" "w")
+    dbCreateRect(cv form->lay->value list(0:0 form->w->value:1))))
+hiCreateAppForm(?name 'genForm ?formTitle "Plate Generator"
+  ?fields list(hiCreateFloatField(?name 'w ?prompt "Width (um)" ?value 2.0)
+               hiCreateCyclicField(?name 'lay ?prompt "Layer" ?choices list("metal1" "metal2") ?value "metal1"))
+  ?callback "genCB(hiGetCurrentForm())")
+hiDisplayForm(genForm)"#;
+    h.state_mut().command(Command::CiwEval(src.into()));
+    h.run_steps(4);
+    assert_eq!(h.state().pending_skill_forms(), vec!["Plate Generator".to_string()]);
+    shot(&mut h, "skill_form_dialog");
+    assert!(h.state_mut().answer_skill_form(true, &[("w", "5")]));
+    let p = h.state().project().unwrap();
+    let l = p.cell(&ics_core::CellRef::new("work", "formgen")).and_then(|c| c.layout.clone()).expect("generated");
+    assert_eq!(l.shapes[0].bbox().width(), 5 * p.tech.dbu_per_um);
+    assert!(h.state().pending_skill_forms().is_empty());
 }

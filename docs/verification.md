@@ -98,6 +98,11 @@ How the extractor works:
 - Warnings report labels not on conducting geometry, two labels shorted together, and a
   label on several unconnected pieces.
 
+Highlighting a net (click it in **Nets**, or **Mark Net**) shows its electrical view under
+**Net ...: electrical**: capacitance to substrate, the largest coupling capacitances to
+other nets, the worst resistance of its wiring from the first device terminal to the others
+(solved on the extracted RC network), and R x C as a rough delay bound.
+
 ## Layout versus schematic (LVS)
 
 ![The layout and schematic netlists side by side, devices matched one by one](images/lvs-compare.svg)

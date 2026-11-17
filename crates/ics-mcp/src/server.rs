@@ -226,6 +226,9 @@ mod tests {
             "generate_layout",
             "flylines",
             "route",
+            "check_against_source",
+            "update_from_source",
+            "abut",
             "run_drc",
             "fix_drc",
             "compact",
@@ -423,6 +426,13 @@ mod tests {
         .unwrap();
         assert_eq!(m1["created_cell"], true);
         assert_eq!(m1["child"], "pcells/nmos_w1000_l180_nf2");
+        let ring = call(
+            &mut s,
+            "place_pcell",
+            json!({"cell": "rings", "kind": "pring_path", "x": 0, "y": 0, "params": {"points": [[0, 0], [8, 0], [8, 3], [4, 3], [4, 6], [0, 6]], "closed": true}}),
+        )
+        .unwrap();
+        assert!(ring["child"].as_str().is_some_and(|c| c.starts_with("pcells/pring_path_6pt_")), "{ring}");
         let dup = call(&mut s, "place_pcell", json!({"cell": "amp", "kind": "pmos", "x": 0, "y": 8, "name": "M1"}));
         assert!(dup.unwrap_err().contains("already exists"));
         call(&mut s, "place_pcell", json!({"cell": "amp", "kind": "pmos", "x": 0, "y": 8, "mirror": true, "name": "M2"}))
@@ -451,6 +461,15 @@ mod tests {
         let routed = call(&mut s, "route", json!({"cell": "cmos_inverter"})).unwrap();
         assert_eq!(routed["unrouted_flylines"], 0, "{routed}");
         assert!(routed["failed"].as_array().unwrap().is_empty() && routed["vias"].as_u64().unwrap() > 0, "{routed}");
+        let checked = call(&mut s, "check_against_source", json!({"cell": "cmos_inverter"})).unwrap();
+        assert_eq!(checked["clean"], true, "{checked}");
+        assert!(
+            call(&mut s, "abut", json!({"cell": "cmos_inverter", "instances": ["nope", "x"]}))
+                .unwrap_err()
+                .contains("no instance")
+        );
+        let updated = call(&mut s, "update_from_source", json!({"cell": "cmos_inverter"})).unwrap();
+        assert!(updated["placed"].as_array().unwrap().is_empty(), "{updated}");
         assert!(call(&mut s, "route", json!({"cell": "amp"})).unwrap_err().contains("no schematic"));
         assert!(call(&mut s, "generate_layout", json!({"cell": "amp"})).unwrap_err().contains("no schematic"));
 

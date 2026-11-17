@@ -87,6 +87,20 @@ generic 테크놀로지에서 1 dbu = 1 nm이고 y축은 위쪽을 향합니다.
   외곽선이 유지됩니다.
 - **패스**는 항상 맨해튼입니다. 왼쪽 패널의 **Width (nm)**가 폭을 정하며, `0`이면 레이어의 최소
   폭을 씁니다. 패스 끝은 폭의 절반만큼 연장됩니다.
+- **전기적 피드백**: 패스를 그리는 동안 길이, 저항(면저항), 기판 대비 용량(면적과 프린지), EM 전류
+  한계가 커서 옆에 표시됩니다(기술 파일의 레이어 데이터 기준). Path 옵션에 배선이 흘려야 할 DC
+  **Current (mA)**를 넣으면 EM 한계를 넘을 때 표시가 빨갛게 바뀌고, **Size for EM**은 그 전류를
+  견디는 최소 폭으로 맞춥니다. 선택한 패스는 인스펙터에 같은 값을 보여 줍니다.
+- **트랙**(width spacing pattern): **Layout Editor Options**(`Shift+E`) > **Tracks**에서 활성
+  레이어의 패턴을 셀에 추가합니다. 균일 트랙(시작, 피치, 폭), 레이어 최소 피치(**From layer
+  rules**), 또는 폭과 간격을 번갈아 적은 **WSP**(`0.2 0.2 0.6 0.3`). 이후 패스 점은 트랙에
+  스냅되고(수평 트랙은 y, 수직 트랙은 x) 배선은 시작한 트랙의 폭을 따릅니다. 트랙은 점선으로
+  표시됩니다. **Check wires against tracks**는 트랙을 벗어났거나 폭이 다른 배선을 선택합니다.
+  트랙은 셀과 함께 저장되며 GDSII에는 쓰지 않습니다.
+- **버스**: Path 옵션(`F3`)의 **Wires**를 1보다 크게 하면 클릭한 선을 중심으로 그 수만큼의 평행
+  배선을 **Pitch**(0이면 폭 + 레이어 간격) 간격으로, 모서리를 직각으로 유지하며 그립니다. `+` / `-`로
+  메탈을 바꾸면 배선마다 비아가 놓이고 같은 피치로 이어집니다. 비아에서는 곧게 나간 뒤 꺾으십시오
+  (비아 위에서 꺾으면 배선이 교차합니다).
 - 배선 레이어 위의 **라벨**은 그 아래 넷의 이름이 됩니다(추출과 LVS에서 사용).
 - **비아**는 테크놀로지에서 정의됩니다(아래 레이어, 컷, 위 레이어). 영역을 드래그하면 들어갈
   수 있는 만큼 컷을 채웁니다.
@@ -107,7 +121,9 @@ generic 테크놀로지에서 1 dbu = 1 nm이고 y축은 위쪽을 향합니다.
 | 박스 선택 | 빈 곳에서 드래그. 왼쪽에서 오른쪽은 완전히 안에 든 항목, 오른쪽에서 왼쪽(점선 박스)은 닿는 모든 항목을 선택. `Shift`는 추가 |
 | 모두 선택 | `Ctrl+A` |
 | 이동 | 선택한 항목을 드래그, 또는 `M` 후 기준점과 목적지를 클릭, 또는 `Shift`+방향키로 미세 이동(스냅 10칸). 이동 중 오른쪽 클릭은 90° 회전, `Shift`+오른쪽 클릭은 좌우 반전 |
-| 복사 | `C` 후 기준점을 클릭하고 목적지를 클릭(클릭할 때마다 복사본 추가, `Esc`로 종료). 회전 / 반전은 이동과 같음 |
+| 복사 | `C` 후 기준점을 클릭하고 목적지를 클릭(클릭할 때마다 복사본 추가, `Esc`로 종료). 회전 / 반전은 이동과 같음. Copy 옵션(`F3`)의 **Rows** / **Columns**를 지정하면 클릭마다 주어진 피치(0이면 맞닿게)로 배열 복사 |
+| 오프셋 이동 / 복사 | Move 또는 Copy 옵션(`F3`)에서 **Delta X** / **Delta Y**를 입력하고 **Move selection by offset**(또는 **Edit > Move / Copy by Offset**). Copy는 배열 설정을 따름 |
+| 검색 | **Edit > Search**(팝업 메뉴에도 있음): 종류, 레이어, 이름 또는 라벨 텍스트, 폭과 높이로 도형과 인스턴스를 찾음(현재 뷰로 한정 가능). **Select all**, **Zoom to next**, 찾은 도형의 레이어 변경(**Replace**) 또는 삭제 |
 | 늘이기 | `S` 후 변이나 꼭짓점, 목적지를 클릭. 부분 선택이 있으면 기준점, 목적지 순으로 클릭. 또는 여러 변 위로 박스를 드래그(아래 참고) |
 | Yank / 붙여넣기 | `y` 또는 `Ctrl+C`로 선택 항목을 복사(`Ctrl+X`는 잘라내기). `Shift+Y` 또는 `Ctrl+V`로 커서에 붙이고 클릭해 배치. 클립보드는 셀 사이에서도 동작 |
 | 병합 / 잘라내기 / 나누기 | `Shift+M` / `Shift+C` / `Shift+S` |
@@ -140,7 +156,7 @@ generic 테크놀로지에서 1 dbu = 1 nm이고 y축은 위쪽을 향합니다.
 | 키 | 폼 |
 |---|---|
 | `q` | **Edit Object Properties**: 선택 항목의 인스펙터 |
-| `F3` | 현재 명령의 옵션(패스 폭, 라벨 텍스트, 비아, 인스턴스 배치. 옵션이 없는 명령은 스냅과 그래비티) |
+| `F3` | 현재 명령의 옵션(패스 폭, 라벨 텍스트, 비아, 인스턴스 배치, 이동 / 복사 오프셋과 복사 배열. 옵션이 없는 명령은 스냅과 그래비티) |
 | `e` | **Display Options**: 그리드, 표시 레벨 **From** 0 **To** N, 플라이라인, 눈금자 지우기 |
 | `Shift+E` | **Layout Editor Options**: 스냅 간격, 그래비티, DRD, 인스턴스 선택 가능 여부, 부분 선택, 기본 패스 폭 |
 
@@ -302,12 +318,34 @@ printf("%d shapes\n" length(cv~>shapes))
   `layer`에 추가하고 새 도형을 반환(임의 각도 도형 포함); `dbSave`와 `dbClose`는 아무 일도 하지
   않음(프로젝트를 저장하세요). 도형, 인스턴스, 셀뷰의 속성(`bBox`, `points`, `layerName`, `xy`,
   `orient`, `shapes`, `instances` 등)은 읽을 수 있고, 기하 속성은 설정할 수도 있음.
+- 파라미터 인스턴스: 내장 PCell(`nmos`, `pmos`, `poly_res`, `mom_cap`, `ntap`, `ptap`, `nring`,
+  `pring`)에 대한 `dbCreateParamInst` / `dbCreateParamInstByMasterName`, CDF 파라미터
+  `list(name type value)`(`w`, `l`, `nf` / `fingers`, `h`. 길이는 미터나 µm 숫자, 또는 `"2u"` 같은
+  문자열). `w`는 소자 폭이며 핑거에 나눠짐;
+- 비아, 넷, 핀: `techGetTechFile`, `techFindViaDefByName`, `dbCreateVia`, `dbCreateNet`,
+  `dbMakeNet`, `dbFindNetByName`, `dbCreateTerm`, `dbCreatePin`, `dbAddFigToNet`(핀은 도형에 넷
+  이름 라벨을 붙이며 추출과 LVS가 이를 읽음); 속성은 `dbReplaceProp`, `dbCreateProp`,
+  `dbGetPropByName`, `obj~>name`;
+- ROD: `?cvId`와 `?layer`를 받는 `rodCreateRect`(`?bBox`, 또는 `?width ?length ?origin`),
+  `rodCreatePath`(`?pts ?width`, 멀티파트 서브 패스 `?encSubPath`(`?layer ?enclosure`),
+  `?offsetSubPath`(`?layer ?width ?sep ?justification`), `?subRect`(`?layer ?width ?length ?space`).
+  예: 가드 링의 임플란트와 콘택 열), `rodCreatePolygon`;
+- 파일과 배열: `outfile`, `infile`, 포트로 `fprintf`, `gets`, `close`, `declare(a[n])`;
+- SKILL PCell: `pcDefinePCell(list(ddGetObj("lib") "cell" "layout") ((w 1.0) (l 2.0)) body)`는
+  정의를 마스터 셀에 보관합니다(레이아웃은 기본값으로 만든 PCell). 이 셀에 대한 `dbCreateParamInst` /
+  `dbCreateParamInstByMasterName`은 파라미터 조합마다 같은 라이브러리에 변형 셀을 하나 만들고
+  (`pcCellView`와 파라미터를 바인딩해 본문 실행), 같은 파라미터에는 재사용합니다. 정의는 프로젝트와
+  함께 저장됩니다;
+- SKILL++: `.ils` 파일에서 `lambda`와 `procedure`는 만들어진 곳의 변수를 닫는 클로저가 되며(호출
+  사이에 유지), 호출한 쪽의 변수는 보지 않습니다;
+- 폼(`hi*`): 문자열, 실수, 정수, 불리언, cyclic / radio, 라벨 필드를 갖는 `hiCreateAppForm`.
+  `hiDisplayForm`은 앱에서(CIW나 **Load SKILL**) 폼을 대화 상자로 보여 주며, **OK**를 누르면 필드를
+  설정하고 콜백을 실행합니다. `ics skill`과 MCP 도구 `run_skill`에는 창이 없으므로 현재 값으로 콜백을
+  바로 실행합니다. 스크립트는 `form->field->value`로 값을 읽고 설정합니다.
 
 좌표 단위는 µm입니다. 레이어는 이름, `list(name purpose)` 또는 레이어 인덱스로 지정합니다.
 `drawing` 이외의 purpose는 먼저 `name.purpose` 또는 `name_purpose`라는 이름의 레이어를 찾습니다.
-변수는 `.il` 파일처럼 동적 스코프를 가집니다. 지원하지 않는 것: 회로도 뷰, PCell 정의
-(`pcDefinePCell`. [직접 만드는 소자 생성기](pcells.md#사용자-소자-생성기) 참고), 대화형
-`hi*` / `le*` 폼, SKILL++(`.ils`)의 렉시컬 스코프.
+`.il` 파일의 변수는 동적 스코프를 가집니다. 지원하지 않는 것: 회로도 뷰.
 
 ## GDSII
 

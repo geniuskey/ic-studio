@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, Rect, Stroke, StrokeKind};
 use ics_core::drc::{self, Deck, DrcReport};
+use ics_core::eco;
 use ics_core::emir::{self, EmirReport};
 use ics_core::extract::{self, DevKind, Extraction};
 use ics_core::geom::IRect;
@@ -19,6 +20,9 @@ use ics_mcp::tools::{self, Verified};
 use super::{LayCtx, LayRequest, LayoutEditor, screen_rect, um};
 use crate::canvas::View2D;
 use crate::theme::{self, Palette};
+
+/// Largest cell (top-level shapes and instances) checked against its schematic after every edit.
+const LIVE_SOURCE_ITEMS: usize = 5_000;
 
 static GENERATION: AtomicU64 = AtomicU64::new(1);
 
@@ -56,6 +60,14 @@ pub struct VerifyState {
     pub stale: bool,
     pub highlight: Option<usize>,
     pub pick_nets: bool,
+    /// Last check of the layout against its schematic (Layout XL "Check Against Source").
+    pub source: Option<eco::SourceCheck>,
+    /// The layout changed since [`Self::source`] was computed.
+    pub source_stale: bool,
+    /// Re-run the check against the schematic after every edit (small cells only).
+    pub source_live: bool,
+    /// Electrical view of the highlighted net: (layout generation, net, result).
+    net_elec: Option<(u64, usize, Option<ics_core::pex::NetElectrical>)>,
     marker: Option<IRect>,
     /// Changes whenever the layout does; unique across editors.
     generation: u64,
@@ -78,6 +90,10 @@ impl Default for VerifyState {
             runset: 0,
             stale: false,
             highlight: None,
+            source: None,
+            source_stale: false,
+            source_live: false,
+            net_elec: None,
             pick_nets: false,
             marker: None,
             generation: next_generation(),
@@ -92,6 +108,7 @@ impl VerifyState {
         {
             self.stale = true;
         }
+        self.source_stale |= self.source.is_some();
         self.highlight = None;
         self.generation = next_generation();
     }
@@ -503,6 +520,63 @@ impl LayoutEditor {
             });
         }
 
+        if let (Some(k), Some(x)) = (self.verify.highlight, self.verify.extraction.as_ref())
+            && !self.verify.stale
+        {
+            let gen_now = self.verify.generation;
+            if !matches!(&self.verify.net_elec, Some((g, n, _)) if *g == gen_now && *n == k) {
+                let taps: Vec<(i64, i64)> = cx
+                    .src
+                    .cell(cx.cell)
+                    .and_then(|c| c.schematic.as_ref())
+                    .map(|sch| {
+                        ics_core::sdl::terminals(sch, l, cx.src)
+                            .into_values()
+                            .flatten()
+                            .filter(|&p| ics_core::sdl::pin_net(x, tech, p) == Some(k))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let e = ics_core::pex::net_electrical(l, cx.src, x, tech, k, &taps);
+                self.verify.net_elec = Some((gen_now, k, e));
+            }
+            if let Some((_, _, Some(e))) = &self.verify.net_elec {
+                ui.add_space(8.0);
+                theme::section(ui, &format!("Net {}: electrical", e.net));
+                egui::Grid::new("net_elec").num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| {
+                    ui.label("C to substrate");
+                    ui.label(format_eng(e.farads, "F"));
+                    ui.end_row();
+                    for (n, c) in &e.coupling {
+                        ui.label(format!("Coupling to {n}"));
+                        ui.label(format_eng(*c, "F"));
+                        ui.end_row();
+                    }
+                    match e.worst_r {
+                        Some((r, at)) => {
+                            ui.label("Worst terminal R");
+                            ui.label(format_eng(r, "Ω")).on_hover_text(format!(
+                                "From the first terminal to the one at {}, {} µm",
+                                um(at.0, tech),
+                                um(at.1, tech)
+                            ));
+                            ui.end_row();
+                        }
+                        None => {
+                            ui.label("Terminal R");
+                            ui.label(egui::RichText::new("needs two terminals on resistive wiring").small().color(pal.text_weak));
+                            ui.end_row();
+                        }
+                    }
+                    if let Some(t) = e.rc() {
+                        ui.label("R x C");
+                        ui.label(format_eng(t, "s"));
+                        ui.end_row();
+                    }
+                });
+            }
+        }
+
         ui.add_space(12.0);
         theme::section(ui, "Layout vs Schematic");
         let schematic = cx.src.cell(cx.cell).and_then(|c| c.schematic.as_ref());
@@ -556,6 +630,74 @@ impl LayoutEditor {
                 });
             }
         }
+        ui.add_space(12.0);
+        theme::section(ui, "Check Against Source");
+        match schematic {
+            None => {
+                ui.label(egui::RichText::new("This cell has no schematic").small().color(pal.text_weak));
+            }
+            Some(sch) => {
+                let small = l.shapes.len() + l.instances.len() <= LIVE_SOURCE_ITEMS;
+                if self.verify.source_live && small && (self.verify.source_stale || self.verify.source.is_none()) {
+                    self.verify.source = Some(eco::check(sch, l, cx.src));
+                    self.verify.source_stale = false;
+                }
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("Check").on_hover_text("Missing, extra and changed devices, shorts and opens").clicked() {
+                        self.verify.source = Some(eco::check(sch, l, cx.src));
+                        self.verify.source_stale = false;
+                    }
+                    if ui
+                        .button("Update")
+                        .on_hover_text(
+                            "Place new schematic devices and resize changed ones in place (Update Components and Nets)",
+                        )
+                        .clicked()
+                    {
+                        self.requests.push(LayRequest::UpdateFromSource(false));
+                    }
+                    if ui
+                        .button("Update + delete extra")
+                        .on_hover_text("Also delete devices no longer in the schematic")
+                        .clicked()
+                    {
+                        self.requests.push(LayRequest::UpdateFromSource(true));
+                    }
+                    if self.verify.source.is_some() && ui.button("Clear").clicked() {
+                        self.verify.source = None;
+                        self.verify.source_live = false;
+                    }
+                });
+                ui.add_enabled(small, egui::Checkbox::new(&mut self.verify.source_live, "Live: check again after every edit"))
+                    .on_disabled_hover_text(format!("Only for cells of up to {LIVE_SOURCE_ITEMS} top-level items"));
+            }
+        }
+        if let Some(c) = &self.verify.source {
+            if self.verify.source_stale {
+                ui.label(egui::RichText::new("Out of date: the layout changed").small().color(pal.warning));
+            }
+            if c.is_clean() {
+                ui.colored_label(pal.ok, format!("✔ {}", c.summary()));
+            } else {
+                ui.colored_label(pal.danger, c.summary());
+                egui::ScrollArea::vertical().id_salt("eco").max_height(200.0).show(ui, |ui| {
+                    for i in &c.issues {
+                        let txt = egui::RichText::new(format!("[{}] {}", i.kind(), i.message())).small();
+                        match i.at() {
+                            Some(m) => {
+                                if ui.add(egui::Button::new(txt).frame(false)).on_hover_text("Click to zoom").clicked() {
+                                    zoom = Some(m);
+                                }
+                            }
+                            None => {
+                                ui.label(txt);
+                            }
+                        }
+                    }
+                });
+            }
+        }
+
         ui.add_space(12.0);
         theme::section(ui, "IR Drop / EM");
         ui.horizontal(|ui| {
@@ -727,6 +869,22 @@ impl LayoutEditor {
                 let sr = screen_rect(view, rect, v.marker).expand(2.0);
                 if sr.intersects(rect) {
                     painter.rect_stroke(sr, 1.0, Stroke::new(1.5, pal.danger), StrokeKind::Outside);
+                }
+            }
+        }
+        if let Some(c) = &self.verify.source {
+            // Opens are drawn as flylines already.
+            for i in c.issues.iter().filter(|i| !matches!(i, eco::Issue::Open { .. })) {
+                let (Some(at), color) = (i.at(), if matches!(i, eco::Issue::Short { .. }) { pal.danger } else { pal.warning })
+                else {
+                    continue;
+                };
+                let sr = screen_rect(view, rect, at).expand(4.0);
+                if sr.intersects(rect) {
+                    painter.rect_stroke(sr, 2.0, Stroke::new(1.5, color), StrokeKind::Outside);
+                    if matches!(i, eco::Issue::Short { .. } | eco::Issue::Extra { .. } | eco::Issue::Params { .. }) {
+                        painter.text(sr.left_top(), egui::Align2::LEFT_BOTTOM, i.kind(), egui::FontId::proportional(11.0), color);
+                    }
                 }
             }
         }

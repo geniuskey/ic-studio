@@ -67,6 +67,20 @@ without wires. Net names are chosen in this order: the **Ground** symbol (net `0
 **Supply Net** symbol's `net` parameter (blank means `vdd`), net labels, then automatic
 names (`net1`, `net2`, ...).
 
+### Pins
+
+A label becomes a **pin** of the cell (a Virtuoso schematic pin) when you set **Pin** to
+`input`, `output` or `inputOutput` in its inspector; it is drawn with a pin outline. Pins
+are the cell's ports:
+
+- The CDL netlist (and LVS) uses them as the `.SUBCKT` ports, sorted by name, with their
+  `*.PININFO` directions. Without pins, every named net is a port.
+- CDL import (and Virtuoso library import) turns `*.PININFO` pins into schematic pins, and
+  the SKILL export creates `basic` `ipin` / `opin` / `iopin` pins.
+- Check Against Source asks for a layout pin label on each pin's net (on every named net
+  when there are no pins).
+- MCP `write_schematic` takes `pins`, e.g. `{"in": "input", "out": "output"}`.
+
 Notes:
 
 - Only the Ground symbol makes net `0`. A label called `gnd` is an ordinary net.

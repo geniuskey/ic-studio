@@ -211,6 +211,13 @@ pub enum Command {
     ImportSignoffResults(Option<PathBuf>),
     GenerateLayout,
     RouteFlylines,
+    /// Compare the active layout with its schematic (Layout XL "Check Against Source"): missing,
+    /// extra and changed devices, shorts and opens, listed in the Verify panel.
+    CheckAgainstSource,
+    /// Bring the active layout in line with its schematic (Layout XL "Update Components and
+    /// Nets"): place new devices and resize changed ones in place; `true` also deletes devices
+    /// no longer in the schematic.
+    UpdateFromSource(bool),
     /// Import a GDSII or OASIS file (detected from its contents); `None` asks for the file.
     ImportGds(Option<PathBuf>),
     /// Import a GDSII or OASIS file through a Cadence Virtuoso layer map file (`RX drawing 2 0`
@@ -383,8 +390,10 @@ type McpArgs = serde_json::Map<String, serde_json::Value>;
 type McpSnapshot = (Project, McpArgs, Option<CellRef>);
 
 /// MCP tools that change layouts or the project; their edits invalidate editor state.
-const MCP_EDITS: [&str; 13] = [
+const MCP_EDITS: [&str; 15] = [
     "add_rect",
+    "abut",
+    "update_from_source",
     "load_pdk",
     "add_path",
     "add_label",
@@ -421,6 +430,9 @@ fn mcp_summary(tool: &str, res: &ToolResult) -> String {
         "simulate" | "run_spice" => format!("{} dataset(s)", len("datasets")),
         "generate_layout" => format!("placed {}, {} flyline(s)", len("placed"), n("unrouted_flylines")),
         "flylines" => format!("{} flyline(s)", n("count")),
+        "abut" => format!("{} abutment(s)", len("abutted")),
+        "check_against_source" => v["summary"].as_str().unwrap_or("checked").into(),
+        "update_from_source" => format!("placed {}, updated {}, removed {}", len("placed"), len("updated"), len("removed")),
         "route" => format!("{} connection(s), {} flyline(s) left", n("connections"), n("unrouted_flylines")),
         "delete_items" => format!("deleted {}", len("deleted")),
         "write_schematic" => format!("{} device(s), {} net(s)", n("devices"), len("nets")),
@@ -644,6 +656,8 @@ pub struct IcStudio {
     hier_browser: HierBrowser,
     gens: LayoutGenerators,
     ciw: Ciw,
+    /// SKILL forms displayed by scripts, waiting for OK or Cancel: the form and its edited fields.
+    skill_forms: Vec<(ics_core::skill::FormRequest, Vec<ics_core::skill::FormField>)>,
     tutorial: crate::tutorial::Tutorial,
 }
 
@@ -715,6 +729,7 @@ impl IcStudio {
             hier_browser: HierBrowser::default(),
             gens: LayoutGenerators::default(),
             ciw: Ciw::default(),
+            skill_forms: vec![],
             tutorial: Default::default(),
         };
         app.info(format!("IC Studio {} ready — renderer: wgpu", env!("CARGO_PKG_VERSION")));
@@ -1264,6 +1279,8 @@ impl IcStudio {
             Command::ImportSignoffResults(path) => self.import_signoff_results(path),
             Command::GenerateLayout => self.generate_layout(),
             Command::RouteFlylines => self.route_flylines(),
+            Command::CheckAgainstSource => self.check_against_source(),
+            Command::UpdateFromSource(remove) => self.update_from_source(remove),
             Command::ExportGds => self.export_stream(false, StreamFormat::Gds),
             Command::ExportLibraryGds => self.export_stream(true, StreamFormat::Gds),
             Command::ExportOasis => self.export_stream(false, StreamFormat::Oasis),
@@ -1437,6 +1454,7 @@ impl IcStudio {
         let ed = self.lay_eds.entry(r.clone()).or_default();
         ed.history.push(&lay);
         let res = ics_core::sdl::apply(p, &mut lay, &plan);
+        let pins = if res.is_ok() { ics_core::eco::place_pins(p, &mut lay, &sch) } else { vec![] };
         ed.layout_changed();
         ed.show_flylines = true;
         ed.request_fit();
@@ -1451,14 +1469,83 @@ impl IcStudio {
             self.info(format!("Matching: {n}"));
         }
         match res {
-            Ok(names) if names.is_empty() => self.info("Every schematic device is already placed".into()),
+            Ok(names) if names.is_empty() && pins.is_empty() => self.info("Every schematic device is already placed".into()),
+            Ok(names) if names.is_empty() => {
+                self.mark_dirty();
+                self.ok(format!("Placed pin(s) {}", pins.join(", ")));
+            }
             Ok(names) => {
                 self.mark_dirty();
-                self.ok(format!("Placed {} device(s): {}", names.len(), names.join(", ")));
+                let pins = if pins.is_empty() { String::new() } else { format!("; pins {}", pins.join(", ")) };
+                self.ok(format!("Placed {} device(s): {}{pins}", names.len(), names.join(", ")));
             }
             Err(e) => self.error(format!("Generate layout: {e}")),
         }
         self.workspace = Workspace::Layout;
+    }
+
+    fn check_against_source(&mut self) {
+        let (Some(r), Some(p)) = (self.active.clone(), self.project.as_ref()) else { return };
+        let Some(sch) = p.cell(&r).and_then(|c| c.schematic.as_ref()) else {
+            self.warn(format!("{r} has no schematic"));
+            return;
+        };
+        let Some(lay) = p.cell(&r).and_then(|c| c.layout.as_ref()) else {
+            self.warn(format!("{r} has no layout; generate it from the schematic first"));
+            return;
+        };
+        let check = ics_core::eco::check(sch, lay, p);
+        let summary = check.summary();
+        let clean = check.is_clean();
+        for i in &check.issues {
+            self.info(format!("Check against source: {}", i.message()));
+        }
+        let ed = self.lay_eds.entry(r.clone()).or_default();
+        ed.verify.source = Some(check);
+        ed.verify.source_stale = false;
+        self.workspace = Workspace::Layout;
+        if clean {
+            self.ok(format!("Check against source: {summary}"))
+        } else {
+            self.warn(format!("Check against source: {summary}"))
+        }
+    }
+
+    fn update_from_source(&mut self, remove_extra: bool) {
+        let (Some(r), Some(p)) = (self.active.clone(), self.project.as_mut()) else { return };
+        let Some(sch) = p.cell(&r).and_then(|c| c.schematic.clone()) else {
+            self.warn(format!("{r} has no schematic"));
+            return;
+        };
+        let mut lay = p.cell_mut(&r).and_then(|c| c.layout.take()).unwrap_or_default();
+        let ed = self.lay_eds.entry(r.clone()).or_default();
+        ed.history.push(&lay);
+        let res = ics_core::eco::update(p, &mut lay, &sch, ics_core::eco::UpdateOptions { remove_extra });
+        ed.layout_changed();
+        ed.show_flylines = true;
+        if let Some(c) = p.cell_mut(&r) {
+            c.layout = Some(lay);
+        }
+        self.hier.invalidate(&r);
+        match res {
+            Ok(rep) => {
+                for m in &rep.remaining {
+                    self.info(format!("Still to do: {m}"));
+                }
+                if rep.changed() {
+                    self.mark_dirty();
+                    self.ok(format!("Update from source: {}", rep.summary()));
+                } else {
+                    self.info(format!(
+                        "Update from source: nothing to change{}",
+                        if rep.remaining.is_empty() { "" } else { " (wiring left)" }
+                    ));
+                }
+            }
+            Err(e) => self.error(format!("Update from source: {e}")),
+        }
+        self.workspace = Workspace::Layout;
+        self.check_against_source();
     }
 
     fn route_flylines(&mut self) {
@@ -2533,6 +2620,9 @@ impl IcStudio {
         let res = self.ciw.session.load(p, &path, current.as_ref());
         self.ciw.push(CiwKind::Input, format!("load(\"{}\")", path.display().to_string().replace('\\', "/")));
         self.ciw.show(&res);
+        if let Ok(r) = &res {
+            self.skill_forms.extend(r.forms.iter().map(|f| (f.clone(), f.fields.clone())));
+        }
         let (output, err) = match &res {
             Ok(r) => (r.output.clone(), None),
             Err(e) => (e.output.clone(), Some(e.to_string())),
@@ -2567,6 +2657,9 @@ impl IcStudio {
         let before = layout_snapshot(p);
         let res = self.ciw.session.eval(p, src, None, current.as_ref());
         self.ciw.show(&res);
+        if let Ok(r) = &res {
+            self.skill_forms.extend(r.forms.iter().map(|f| (f.clone(), f.fields.clone())));
+        }
         let changed = self.layouts_edited(before);
         if self.active.is_none()
             && let Some(r) = changed.into_iter().next()
@@ -2881,6 +2974,15 @@ impl IcStudio {
                 }
                 if menu_item(ui, has_lay, "Route Flylines", NEED_LAY) {
                     q.push(Command::RouteFlylines);
+                }
+                if menu_item(ui, has_lay && has_sch, "Check Against Source", NEED_SCH) {
+                    q.push(Command::CheckAgainstSource);
+                }
+                if menu_item(ui, has_lay && has_sch, "Update Components and Nets", NEED_SCH) {
+                    q.push(Command::UpdateFromSource(false));
+                }
+                if menu_item(ui, has_lay && has_sch, "Update and Delete Extra Devices", NEED_SCH) {
+                    q.push(Command::UpdateFromSource(true));
                 }
             });
             ui.menu_button("Tools", |ui| {
@@ -3662,6 +3764,7 @@ impl IcStudio {
                             None => log.push((false, "Return: already at the top cell".into())),
                         },
                         LayRequest::OpenRuleDesigner => self.queue.push(Command::RuleDesigner),
+                        LayRequest::UpdateFromSource(remove) => self.queue.push(Command::UpdateFromSource(remove)),
                         LayRequest::EditLayerDisplay(name) => self.queue.push(Command::LayerDisplay(Some(name))),
                         LayRequest::SetDeck(text) => match project.set_drc_deck(text) {
                             Ok(msg) => {
@@ -3669,6 +3772,15 @@ impl IcStudio {
                                 log.push((true, msg));
                             }
                             Err(e) => log.push((false, e)),
+                        },
+                        LayRequest::ReplaceWithPCell { shape, pcell } => match project.ensure_pcell(&pcell) {
+                            Ok(cr) => {
+                                ed.history.push(&lay);
+                                lay.remove(shape);
+                                ed.selection = [lay.add_instance(cr, ics_core::Trans::IDENTITY, None)].into();
+                                touched = true;
+                            }
+                            Err(e) => log.push((false, format!("PCell: {e}"))),
                         },
                         LayRequest::PlacePCell { pcell, trans, array } => match project.ensure_pcell(&pcell) {
                             Ok(cr) => {
@@ -4115,6 +4227,9 @@ impl IcStudio {
             ("Import sign-off results (Calibre / KLayout / netgen)".into(), "", Command::ImportSignoffResults(None)),
             ("Generate layout from schematic".into(), "", Command::GenerateLayout),
             ("Route flylines".into(), "", Command::RouteFlylines),
+            ("Check layout against source (schematic)".into(), "", Command::CheckAgainstSource),
+            ("Update components and nets from schematic".into(), "", Command::UpdateFromSource(false)),
+            ("Update from schematic and delete extra devices".into(), "", Command::UpdateFromSource(true)),
             ("Export cell GDSII…".into(), "", Command::ExportGds),
             ("Export library GDSII…".into(), "", Command::ExportLibraryGds),
             ("Export cell OASIS…".into(), "", Command::ExportOasis),
@@ -5144,6 +5259,10 @@ impl IcStudio {
         self.lay_eds.get(r)
     }
 
+    pub fn layout_editor_mut(&mut self, r: &CellRef) -> Option<&mut LayoutEditor> {
+        self.lay_eds.get_mut(r)
+    }
+
     /// True while a simulation, a verification step or an MCP tool call is still running.
     pub fn is_busy(&self) -> bool {
         self.is_simulating()
@@ -5394,6 +5513,119 @@ impl IcStudio {
         out
     }
 
+    /// The first SKILL form waiting for the user, as a dialog: OK sets its fields and runs its
+    /// callback in the CIW session, Cancel drops it.
+    fn skill_form_window(&mut self, ctx: &egui::Context) {
+        use ics_core::skill::FieldKind;
+        let Some((form, fields)) = self.skill_forms.first_mut() else { return };
+        let mut ok = false;
+        let mut cancel = false;
+        let mut open = true;
+        egui::Window::new(form.title.clone())
+            .id(egui::Id::unique(format!("skill_form_{}", form.symbol)))
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.content_rect().center())
+            .collapsible(false)
+            .resizable(true)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                egui::Grid::new("skill_form_fields").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                    for (k, f) in fields.iter_mut().enumerate() {
+                        match &f.kind {
+                            FieldKind::Label => {
+                                ui.label(&f.prompt);
+                                ui.label("");
+                            }
+                            FieldKind::Bool => {
+                                ui.label("");
+                                let mut on = f.value == "t";
+                                if ui.checkbox(&mut on, &f.prompt).changed() {
+                                    f.value = if on { "t".into() } else { "nil".into() };
+                                }
+                            }
+                            FieldKind::Choice(choices) => {
+                                let l = ui.label(&f.prompt);
+                                let choices = choices.clone();
+                                egui::ComboBox::from_id_salt(("skill_form_choice", k))
+                                    .selected_text(f.value.clone())
+                                    .show_ui(ui, |ui| {
+                                        for c in choices {
+                                            ui.selectable_value(&mut f.value, c.clone(), c);
+                                        }
+                                    })
+                                    .response
+                                    .labelled_by(l.id);
+                            }
+                            FieldKind::String | FieldKind::Float | FieldKind::Int => {
+                                let l = ui.label(&f.prompt);
+                                ui.text_edit_singleline(&mut f.value).labelled_by(l.id);
+                            }
+                        }
+                        ui.end_row();
+                    }
+                });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ok = ui.button("OK").clicked();
+                    cancel = ui.button("Cancel").clicked();
+                });
+            });
+        if !(ok || cancel || !open) {
+            return;
+        }
+        let (form, fields) = self.skill_forms.remove(0);
+        if !ok {
+            self.ciw.push(CiwKind::Output, format!("{}: cancelled", form.title));
+            return;
+        }
+        let current = self.active.clone();
+        let Some(p) = self.project.as_mut() else { return };
+        let before = layout_snapshot(p);
+        let res = self.ciw.session.form_ok(p, &form, &fields, current.as_ref());
+        self.ciw.show(&res);
+        if let Ok(r) = &res {
+            self.skill_forms.extend(r.forms.iter().map(|f| (f.clone(), f.fields.clone())));
+        }
+        if let Err(e) = &res {
+            self.error(format!("SKILL error: {e}"));
+        }
+        let changed = self.layouts_edited(before);
+        if self.active.is_none()
+            && let Some(r) = changed.into_iter().next()
+        {
+            self.queue.push(Command::OpenCell(r, Some(Workspace::Layout)));
+        }
+    }
+
+    /// Answer the first displayed SKILL form as if its dialog's OK (or Cancel) was pressed with
+    /// `edits` (field name, value text) applied. For tests and automation.
+    pub fn answer_skill_form(&mut self, ok: bool, edits: &[(&str, &str)]) -> bool {
+        if self.skill_forms.is_empty() {
+            return false;
+        }
+        let (form, mut fields) = self.skill_forms.remove(0);
+        for (n, v) in edits {
+            if let Some(f) = fields.iter_mut().find(|f| f.name == *n) {
+                f.value = v.to_string();
+            }
+        }
+        if ok {
+            let current = self.active.clone();
+            let Some(p) = self.project.as_mut() else { return false };
+            let before = layout_snapshot(p);
+            let res = self.ciw.session.form_ok(p, &form, &fields, current.as_ref());
+            self.ciw.show(&res);
+            self.layouts_edited(before);
+            return res.is_ok();
+        }
+        true
+    }
+
+    /// Titles of the SKILL forms waiting for the user.
+    pub fn pending_skill_forms(&self) -> Vec<String> {
+        self.skill_forms.iter().map(|(f, _)| f.title.clone()).collect()
+    }
+
     fn gen_window(&mut self, ctx: &egui::Context) {
         if !self.gens.open {
             return;
@@ -5419,6 +5651,19 @@ impl IcStudio {
                 ics_core::matching::apply(p, &r, &spec).map(|names| format!("placed {} unit(s)", names.len()))
             }
             GenAction::PlaceLike { reference, route } => place_like(p, &reference, &r, route),
+            // A contacted, strapped ring is placed as a guard ring PCell, so it stays editable
+            // (stretch a side, or change its parameters).
+            GenAction::GuardRing(g) if g.contacts && g.metal => {
+                let grid = p.tech.grid.max(1);
+                let (x0, y0) = (g.area.x0.div_euclid(grid) * grid, g.area.y0.div_euclid(grid) * grid);
+                let (x1, y1) = ((g.area.x1 + grid - 1).div_euclid(grid) * grid, (g.area.y1 + grid - 1).div_euclid(grid) * grid);
+                let pc = ics_core::pcell::PCell::GuardRing { well: g.well, w: x1 - x0, h: y1 - y0, width: g.width, gap: g.gap };
+                p.ensure_pcell(&pc).and_then(|cell| {
+                    let l = p.cell_mut(&r).and_then(|c| c.layout.as_mut()).ok_or("no layout")?;
+                    l.add_instance(cell, ics_core::Trans::new(x0, y0), None);
+                    Ok(format!("placed {} (stretch a side to resize it)", pc.summary(p.tech.dbu_per_um)))
+                })
+            }
             other => {
                 let shapes = match other {
                     GenAction::GuardRing(g) => ics_core::layout_gen::guard_ring(&p.tech, &g),
@@ -5916,6 +6161,7 @@ impl eframe::App for IcStudio {
         self.net_window(&ctx);
         self.hier_window(&ctx);
         self.gen_window(&ctx);
+        self.skill_form_window(&ctx);
         let progress = self.tutorial_progress();
         self.tutorial.track(&progress);
         let cmds = self.tutorial.window(&ctx, &progress);

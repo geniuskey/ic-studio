@@ -151,9 +151,24 @@ bend_corner = 0.5   # 1(기본값): W = 평균 에지, 0: W = 더 짧은(안쪽)
 
 ## 사용자 소자 생성기
 
-사용자 정의 PCell(`pcDefinePCell`)은 지원하지 않습니다. 파라미터 조합마다 셀을 하나씩 만드는
-SKILL 프로시저로 같은 일을 할 수 있습니다. **Tools > Load SKILL (.il)**, `ics skill` 또는 MCP
-도구 `run_skill`로 실행한 다음, 생성된 셀을 다른 셀처럼 `I`(**Place cell**)로 배치합니다.
+`pcDefinePCell`로 작성한 SKILL PCell은 Virtuoso처럼 동작합니다. **Tools > Load SKILL (.il)**,
+`ics skill` 또는 MCP 도구 `run_skill`로 파일을 불러옵니다. 정의는 마스터 셀에 보관되고(레이아웃은
+기본값으로 만든 PCell), `dbCreateParamInst` / `dbCreateParamInstByMasterName`의 파라미터 조합마다
+같은 라이브러리에 변형 셀이 생깁니다(`pcCellView`와 파라미터를 바인딩해 본문 실행).
+
+```lisp
+pcDefinePCell(list(ddGetObj("mylib") "plate" "layout")
+  ((w 1.0) (l 2.0) (layer "metal1"))
+  let((half)
+    half = w / 2
+    dbCreateRect(pcCellView layer list(-half:0 half:l))))
+cv = dbOpenCellViewByType("work" "top" "layout" "maskLayout" "a")
+dbCreateParamInstByMasterName(cv "mylib" "plate" "layout" "P1" 0:0 "R0" 1
+  list(list("w" "float" 2.0)))
+```
+
+파라미터 조합마다 셀을 하나씩 만드는 일반 SKILL 프로시저로도 같은 일을 할 수 있으며, 생성된 셀은
+다른 셀처럼 `I`(**Place cell**)로 배치합니다.
 
 다음 생성기는 액티브가 L자형이고 소스 콘택이 좁은 세로 팔에 있는 NMOS를 그립니다(generic180
 레이어 이름 사용).

@@ -92,6 +92,24 @@ While drawing a polygon or path, `Backspace` removes the last point and `Esc` ca
   edge gets an extra corner so a Manhattan outline stays Manhattan.
 - **Paths** are always Manhattan. **Width (nm)** in the left panel sets the width; `0`
   uses the layer's minimum width. Path ends are extended by half the width.
+- **Electrical feedback**: while a path is drawn, its length, resistance (sheet
+  resistance), capacitance to substrate (area and fringe) and EM current limit show next to
+  the cursor, from the technology's layer data. Enter the DC **Current (mA)** the wire must
+  carry in the Path options: the readout turns red above the EM limit, and **Size for EM**
+  sets the narrowest width that carries it. A selected path shows the same values in the
+  inspector.
+- **Tracks** (width spacing patterns): in **Layout Editor Options** (`Shift+E`) >
+  **Tracks**, add patterns to the cell for the active layer: uniform tracks (start, pitch,
+  width), the layer's minimum pitch (**From layer rules**), or a **WSP** of alternating
+  widths and spaces (`0.2 0.2 0.6 0.3`). Path points then snap onto the tracks (y onto
+  horizontal ones, x onto vertical ones) and the wire takes the width of the track it starts
+  on; the tracks are drawn dashed. **Check wires against tracks** selects the wires that are
+  off their tracks or of the wrong width. Tracks are saved with the cell, not in GDSII.
+- **Buses**: set **Wires** above 1 in the Path options (`F3`) to draw that many parallel
+  wires centred on the clicked line, at **Pitch** (0 = width plus the layer's spacing),
+  with square corners. Changing metal with `+` / `-` puts a via on every wire and the bus
+  carries on at the same pitch; leave a via straight on and turn afterwards (turning on the
+  vias would cross the wires).
 - **Labels** on a routing layer name the net under them (used by extraction and LVS).
 - **Vias** come from the technology (bottom layer, cut, top layer); dragging an area
   fills it with as many cuts as fit.
@@ -112,7 +130,9 @@ While drawing a polygon or path, `Backspace` removes the last point and `Esc` ca
 | Box select | Drag on empty space: left to right selects items fully inside, right to left (dashed box) every item it touches; `Shift` adds |
 | Select all | `Ctrl+A` |
 | Move | Drag a selected item; or `M`, click a reference point, click the destination; or nudge with `Shift`+arrow keys (10 snap steps). Right-click while moving rotates 90°, `Shift`+right-click flips sideways |
-| Copy | `C`, click a reference point, then click destinations (each click places another copy, `Esc` ends); rotate / flip as for Move |
+| Copy | `C`, click a reference point, then click destinations (each click places another copy, `Esc` ends); rotate / flip as for Move. With **Rows** / **Columns** in the Copy options (`F3`) each click places an array of copies, at the given pitch or abutting (pitch 0) |
+| Move / copy by offset | In the Move or Copy options (`F3`), type **Delta X** / **Delta Y** and click **Move selection by offset** (or **Edit > Move / Copy by Offset**); Copy repeats it over the array |
+| Search | **Edit > Search** (also in the pop-up menu): find shapes and instances by kind, layer, name or label text, width and height, optionally only in the view; **Select all**, **Zoom to next**, change the layer of the shapes found (**Replace**) or delete them |
 | Stretch | `S`, click an edge or vertex, click the destination; with a partial selection, click a reference point, then the destination; or drag a box over several edges (see below) |
 | Yank / paste | `y` or `Ctrl+C` copies the selection (`Ctrl+X` cuts it); `Shift+Y` or `Ctrl+V` attaches it to the cursor, click to place. The clipboard also works between cells |
 | Merge / chop / split | `Shift+M` / `Shift+C` / `Shift+S` |
@@ -145,7 +165,7 @@ Each key opens a floating form and closes it again:
 | Key | Form |
 |---|---|
 | `q` | **Edit Object Properties**: the inspector for the selection |
-| `F3` | Options of the current command (path width, label text, via, instance placement; snap and gravity for commands without options) |
+| `F3` | Options of the current command (path width, label text, via, instance placement, move / copy offset and copy array; snap and gravity for commands without options) |
 | `e` | **Display Options**: grid, display levels **From** 0 **To** N, flylines, clear rulers |
 | `Shift+E` | **Layout Editor Options**: snap spacing, gravity, DRD, instances selectable, partial selection, default path width |
 
@@ -321,12 +341,37 @@ Supported:
   geometry included); `dbSave` and `dbClose` do nothing (save the project).
   Shape, instance and cellview properties (`bBox`, `points`, `layerName`, `xy`, `orient`,
   `shapes`, `instances`, ...) can be read, and the geometric ones set.
+- parametric instances: `dbCreateParamInst` / `dbCreateParamInstByMasterName` on the built-in
+  PCells (`nmos`, `pmos`, `poly_res`, `mom_cap`, `ntap`, `ptap`, `nring`, `pring`) with CDF
+  parameters `list(name type value)` (`w`, `l`, `nf` / `fingers`, `h`; lengths as numbers in
+  metres or µm, or strings such as `"2u"`); `w` is the device width, split over the fingers;
+- vias, nets and pins: `techGetTechFile`, `techFindViaDefByName`, `dbCreateVia`, `dbCreateNet`,
+  `dbMakeNet`, `dbFindNetByName`, `dbCreateTerm`, `dbCreatePin` and `dbAddFigToNet` (a pin
+  labels its figure with the net name, which extraction and LVS read); properties with
+  `dbReplaceProp`, `dbCreateProp`, `dbGetPropByName` and `obj~>name`;
+- ROD: `rodCreateRect` (`?bBox`, or `?width ?length ?origin`), `rodCreatePath` (`?pts ?width`,
+  with multipart sub-paths `?encSubPath` (`?layer ?enclosure`), `?offsetSubPath` (`?layer
+  ?width ?sep ?justification`) and `?subRect` (`?layer ?width ?length ?space`), e.g. a guard
+  ring's implant and contact row) and `rodCreatePolygon`, with `?cvId` and `?layer`;
+- files and arrays: `outfile`, `infile`, `fprintf` to a port, `gets`, `close`,
+  `declare(a[n])`;
+- SKILL PCells: `pcDefinePCell(list(ddGetObj("lib") "cell" "layout") ((w 1.0) (l 2.0)) body)`
+  keeps the definition with the master cell (its layout is the PCell at the defaults);
+  `dbCreateParamInst` / `dbCreateParamInstByMasterName` on it makes one variant cell per
+  parameter set in the same library, by running the body with `pcCellView` and the
+  parameters bound, and reuses it for equal parameters. Definitions are saved with the
+  project;
+- SKILL++: in `.ils` files `lambda` and `procedure` make closures over the variables in
+  scope where they are created (kept between calls) that do not see their callers' variables;
+- forms (`hi*`): `hiCreateAppForm` with string, float, integer, boolean, cyclic / radio and
+  label fields; `hiDisplayForm` shows the form as a dialog in the app (from the CIW or
+  **Load SKILL**), and **OK** sets the fields and runs its callback. In `ics skill` and the MCP
+  tool `run_skill` there is no window: the callback runs at once with the current values.
+  Scripts read and set values with `form->field->value`.
 
 Coordinates are in µm. A layer is a name, `list(name purpose)` or a layer index; a purpose
 other than `drawing` first looks for a layer named `name.purpose` or `name_purpose`.
-Variables are dynamically scoped as in `.il` files. Not supported: schematic views, PCell
-definitions (`pcDefinePCell`; see [Your own device generators](pcells.md#your-own-device-generators)), interactive `hi*` / `le*` forms and SKILL++ (`.ils`) lexical
-scoping.
+Variables are dynamically scoped in `.il` files. Not supported: schematic views.
 
 ## GDSII
 

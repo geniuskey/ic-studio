@@ -80,6 +80,16 @@ pub enum LayAction {
     CompareSaved,
     CompareHead,
     NextDifference,
+    /// Move / copy the selection by the offset typed in the Move / Copy options.
+    ApplyDelta,
+    /// Edit > Search: find objects by layer, kind, size or name.
+    Search,
+    /// Abut the selected MOS PCells on their shared source / drain nets (Layout XL Abut).
+    Abut,
+    /// Turn the selected path / polygon / rectangle into a p+ substrate guard ring path (MPP).
+    PRingAlong,
+    /// ... into an n+ guard ring path in an nwell.
+    NRingAlong,
 }
 
 impl LayAction {
@@ -153,6 +163,11 @@ impl LayAction {
             LayAction::CompareSaved => "Compare With Saved",
             LayAction::CompareHead => "Compare With Git HEAD",
             LayAction::NextDifference => "Next Difference",
+            LayAction::ApplyDelta => "Move / Copy by Offset",
+            LayAction::Search => "Search",
+            LayAction::Abut => "Abut MOS Devices",
+            LayAction::PRingAlong => "P+ Guard Ring Along Shape",
+            LayAction::NRingAlong => "N+ Guard Ring Along Shape",
         }
     }
 
@@ -213,7 +228,9 @@ impl LayAction {
             | LayAction::Compact
             | LayAction::CompareSaved
             | LayAction::CompareHead
-            | LayAction::NextDifference => "",
+            | LayAction::NextDifference
+            | LayAction::ApplyDelta => "",
+            LayAction::Search | LayAction::Abut | LayAction::PRingAlong | LayAction::NRingAlong => "",
         }
     }
 
@@ -243,6 +260,8 @@ impl LayAction {
                 None,
                 Some(LayAction::Yank),
                 Some(LayAction::Paste),
+                Some(LayAction::ApplyDelta),
+                Some(LayAction::Search),
                 None,
                 Some(LayAction::Tool(LayTool::Chop)),
                 Some(LayAction::Tool(LayTool::Split)),
@@ -309,6 +328,10 @@ impl LayAction {
                 Some(LayAction::InferConstraints),
                 Some(LayAction::ClearConstraints),
                 None,
+                Some(LayAction::Abut),
+                Some(LayAction::PRingAlong),
+                Some(LayAction::NRingAlong),
+                None,
                 Some(LayAction::Compact),
                 Some(LayAction::CompactLeft),
                 Some(LayAction::CompactRight),
@@ -340,11 +363,13 @@ impl LayAction {
                 LayAction::Chamfer,
                 LayAction::Tool(LayTool::Chop),
                 LayAction::Tool(LayTool::Split),
+                LayAction::PRingAlong,
+                LayAction::NRingAlong,
             ],
         ),
         PopupItem::A(LayAction::Yank),
         PopupItem::Sep,
-        PopupItem::Instances(&[LayAction::Descend, LayAction::EditInPlace]),
+        PopupItem::Instances(&[LayAction::Descend, LayAction::EditInPlace, LayAction::Abut]),
         PopupItem::Sub(
             "Constraints",
             &[
@@ -383,6 +408,7 @@ impl LayAction {
         ),
         PopupItem::A(LayAction::Paste),
         PopupItem::A(LayAction::SelectAll),
+        PopupItem::A(LayAction::Search),
         PopupItem::Sep,
         PopupItem::A(LayAction::Undo),
         PopupItem::A(LayAction::Redo),
@@ -557,6 +583,11 @@ impl LayoutEditor {
             LayAction::CompareSaved => self.compare_with(l, cx, None),
             LayAction::CompareHead => self.compare_with(l, cx, Some("HEAD")),
             LayAction::NextDifference => self.next_difference(),
+            LayAction::ApplyDelta => return self.apply_delta(l, cx),
+            LayAction::Search => self.show_search = !self.show_search,
+            LayAction::Abut => return self.abut_selection(l, cx),
+            LayAction::PRingAlong => return self.shape_to_ring(l, false),
+            LayAction::NRingAlong => return self.shape_to_ring(l, true),
         }
         false
     }
@@ -949,6 +980,7 @@ impl LayoutEditor {
                     theme::section(ui, "Editing");
                     ui.checkbox(&mut self.drd, "Design-rule-driven feedback (DRD)");
                     ui.checkbox(&mut self.inst_selectable, "Instances selectable");
+                    ui.checkbox(&mut self.auto_abut, "Auto-abut moved MOS devices on shared nets");
                     if ui.checkbox(&mut self.partial_mode, "Partial selection (F4)").changed() {
                         self.part = Partial::default();
                     }
@@ -956,9 +988,21 @@ impl LayoutEditor {
                         let w = ui.label("Default path width (nm)");
                         ui.add(egui::DragValue::new(&mut self.path_width).range(0..=100_000).speed(10)).labelled_by(w.id);
                     });
+                    theme::section(ui, "Tracks");
+                    changed |= self.tracks_form(ui, l, cx);
                 });
             rects.extend(shown.map(|r| r.response.rect));
             self.show_editor = open;
+        }
+        if self.show_search {
+            let mut open = true;
+            let view = super::world_view(&self.view, rect);
+            let shown =
+                window("Search", "lay_form_search", rect.left_top() + Vec2::new(12.0, 48.0)).open(&mut open).show(ctx, |ui| {
+                    changed |= self.search_form(ui, l, cx, view);
+                });
+            rects.extend(shown.map(|r| r.response.rect));
+            self.show_search = open;
         }
         if self.show_tree {
             let mut open = true;

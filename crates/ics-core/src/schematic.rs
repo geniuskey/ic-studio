@@ -470,6 +470,48 @@ pub struct NetLabel {
     pub id: u64,
     pub name: String,
     pub pos: Pt,
+    /// Set when the label is a pin of the cell (Virtuoso schematic pin): its net is a port.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<PortDir>,
+}
+
+/// Direction of a schematic pin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PortDir {
+    Input,
+    Output,
+    InOut,
+}
+
+impl PortDir {
+    pub const ALL: [PortDir; 3] = [PortDir::Input, PortDir::Output, PortDir::InOut];
+
+    /// From a CDL `*.PININFO` direction (`I`, `O`, `B`) or a Virtuoso one (`input`, ...).
+    pub fn parse(s: &str) -> PortDir {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "i" | "input" | "in" => PortDir::Input,
+            "o" | "output" | "out" => PortDir::Output,
+            _ => PortDir::InOut,
+        }
+    }
+
+    /// CDL `*.PININFO` letter.
+    pub fn cdl(self) -> &'static str {
+        match self {
+            PortDir::Input => "I",
+            PortDir::Output => "O",
+            PortDir::InOut => "B",
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            PortDir::Input => "input",
+            PortDir::Output => "output",
+            PortDir::InOut => "inputOutput",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -532,8 +574,76 @@ impl Schematic {
 
     pub fn add_label(&mut self, name: impl Into<String>, pos: Pt) -> u64 {
         let id = self.alloc_id();
-        self.labels.push(NetLabel { id, name: name.into(), pos });
+        self.labels.push(NetLabel { id, name: name.into(), pos, port: None });
         id
+    }
+
+    /// Add a pin: a net label marking its net as a port of the cell.
+    pub fn add_pin(&mut self, name: impl Into<String>, pos: Pt, dir: PortDir) -> u64 {
+        let id = self.add_label(name, pos);
+        if let Some(l) = self.labels.iter_mut().find(|l| l.id == id) {
+            l.port = Some(dir);
+        }
+        id
+    }
+
+    /// Make the first label of each named net a pin (case-insensitive). Nets without a label
+    /// (ground, say) are skipped. Returns how many pins were marked.
+    pub fn mark_ports(&mut self, pins: &[(String, PortDir)]) -> usize {
+        let mut n = 0;
+        for (name, dir) in pins {
+            if let Some(l) = self.labels.iter_mut().find(|l| l.name.eq_ignore_ascii_case(name)) {
+                l.port = Some(*dir);
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// The outward direction (a unit grid step) of the pin drawn at label `id`: a side no wire
+    /// or device pin at the label uses, preferring the one opposite its connection, then away
+    /// from the centre of the devices.
+    pub fn pin_outward(&self, id: u64) -> (i32, i32) {
+        let Some(l) = self.labels.iter().find(|l| l.id == id) else { return (-1, 0) };
+        let p = l.pos;
+        let axis = |dx: i32, dy: i32| if dx.abs() >= dy.abs() { (dx.signum(), 0) } else { (0, dy.signum()) };
+        // Directions taken at the label: towards each wire's other end and each device it touches.
+        let mut used: Vec<(i32, i32)> = Vec::new();
+        for w in &self.wires {
+            let other = if w.a == p {
+                w.b
+            } else if w.b == p {
+                w.a
+            } else {
+                continue;
+            };
+            used.push(axis(other.x - p.x, other.y - p.y));
+        }
+        for i in &self.instances {
+            if i.pin_positions().iter().any(|(_, q)| *q == p) {
+                used.push(axis(i.pos.x - p.x, i.pos.y - p.y));
+            }
+        }
+        let n = self.instances.len().max(1) as i32;
+        let (cx, cy) = self.instances.iter().fold((0, 0), |a, i| (a.0 + i.pos.x, a.1 + i.pos.y));
+        let away = axis(p.x - cx / n, p.y - cy / n);
+        let mut cands: Vec<(i32, i32)> = used.first().map(|d| (-d.0, -d.1)).into_iter().collect();
+        cands.extend([away, (-1, 0), (1, 0), (0, -1), (0, 1)]);
+        cands.into_iter().find(|d| *d != (0, 0) && !used.contains(d)).unwrap_or((-1, 0))
+    }
+
+    /// The cell's ports (pins) sorted by name, each once (the first pin's direction wins).
+    pub fn ports(&self) -> Vec<(String, PortDir)> {
+        let mut out: Vec<(String, PortDir)> = Vec::new();
+        for l in &self.labels {
+            if let Some(d) = l.port
+                && !out.iter().any(|(n, _)| n == &l.name)
+            {
+                out.push((l.name.clone(), d));
+            }
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
     }
 
     pub fn instance(&self, id: u64) -> Option<&Instance> {
@@ -640,5 +750,25 @@ impl Schematic {
 
     pub fn is_empty(&self) -> bool {
         self.instances.is_empty() && self.wires.is_empty() && self.labels.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod pin_tests {
+    use super::*;
+
+    #[test]
+    fn pins_point_away_from_their_wire() {
+        let mut s = Schematic::default();
+        s.add_wire(Pt::new(0, 0), Pt::new(4, 0));
+        s.add_wire(Pt::new(4, 0), Pt::new(4, 6));
+        let left = s.add_pin("in", Pt::new(0, 0), PortDir::Input);
+        let below = s.add_pin("out", Pt::new(4, 6), PortDir::Output);
+        assert_eq!(s.pin_outward(left), (-1, 0));
+        assert_eq!(s.pin_outward(below), (0, 1));
+        // On a corner (wires to the left and down), the pin takes a free side.
+        let corner = s.add_pin("x", Pt::new(4, 0), PortDir::InOut);
+        let d = s.pin_outward(corner);
+        assert!(d == (1, 0) || d == (0, -1), "{d:?}");
     }
 }

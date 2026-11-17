@@ -644,6 +644,179 @@ pub fn post_layout(project: &Project, cell: &CellRef) -> Result<PostLayout, Stri
     Ok(PostLayout { caps: text, junctions, resistors, terminals, summary })
 }
 
+/// Electrical view of one extracted net (Virtuoso EAD net view): capacitance to substrate,
+/// the largest coupling capacitances to other nets, and the resistance of its wiring between
+/// the points `taps` (e.g. its device terminals).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct NetElectrical {
+    pub net: String,
+    /// F to substrate.
+    pub farads: f64,
+    /// Coupling to other nets (net, F), largest first, at most five.
+    pub coupling: Vec<(String, f64)>,
+    /// Largest resistance (Ω) from the first tap to any other, and that tap; `None` with fewer
+    /// than two taps on resistive wiring.
+    pub worst_r: Option<(f64, (i64, i64))>,
+}
+
+impl NetElectrical {
+    /// The worst resistance times the total capacitance (s): a rough wire delay bound.
+    pub fn rc(&self) -> Option<f64> {
+        let cc: f64 = self.coupling.iter().map(|c| c.1).sum();
+        self.worst_r.map(|(r, _)| r * (self.farads + cc))
+    }
+}
+
+/// [`NetElectrical`] of extracted net `k` of `x` (from `top`).
+pub fn net_electrical(
+    top: &Layout,
+    src: &dyn LayoutSource,
+    x: &Extraction,
+    tech: &Tech,
+    k: usize,
+    taps: &[(i64, i64)],
+) -> Option<NetElectrical> {
+    let net = x.nets.get(k)?;
+    let farads = net_caps(x, tech).into_iter().find(|c| c.net == net.name).map_or(0.0, |c| c.farads);
+    let coupling: Vec<(String, f64)> = coupling_caps(x, tech)
+        .into_iter()
+        .filter_map(|c| {
+            if c.a == net.name {
+                Some((c.b, c.farads))
+            } else if c.b == net.name {
+                Some((c.a, c.farads))
+            } else {
+                None
+            }
+        })
+        .take(5)
+        .collect();
+    let worst_r = rc_networks(top, src, x, tech).into_iter().nth(k).flatten().and_then(|rc| {
+        let nodes: Vec<(usize, (i64, i64))> = taps.iter().filter_map(|&p| rc.node_at(p).map(|n| (n, p))).collect();
+        let (first, _) = *nodes.first()?;
+        nodes
+            .iter()
+            .skip(1)
+            .filter(|(n, _)| *n != first)
+            .filter_map(|&(n, p)| effective_resistance(&rc, first, n).map(|r| (r, p)))
+            .max_by(|a, b| a.0.total_cmp(&b.0))
+    });
+    Some(NetElectrical { net: net.name.clone(), farads, coupling, worst_r })
+}
+
+/// Resistance between nodes `a` and `b` of a resistor network: the voltage at `b` with `a`
+/// grounded and 1 A injected at `b` (dense elimination; nets have few nodes).
+fn effective_resistance(rc: &RcNet, a: usize, b: usize) -> Option<f64> {
+    let n = rc.nodes;
+    if a >= n || b >= n || a == b || n > 4000 {
+        return None;
+    }
+    // Conductance matrix without node `a`.
+    let idx = |i: usize| if i < a { i } else { i - 1 };
+    let m = n - 1;
+    let mut g = vec![0.0f64; m * m];
+    for &(i, j, r) in &rc.resistors {
+        if i == j || r <= 0.0 {
+            continue;
+        }
+        let c = 1.0 / r;
+        if i != a {
+            g[idx(i) * m + idx(i)] += c;
+        }
+        if j != a {
+            g[idx(j) * m + idx(j)] += c;
+        }
+        if i != a && j != a {
+            g[idx(i) * m + idx(j)] -= c;
+            g[idx(j) * m + idx(i)] -= c;
+        }
+    }
+    let mut rhs = vec![0.0f64; m];
+    rhs[idx(b)] = 1.0;
+    // Gaussian elimination with partial pivoting; floating nodes get a tiny leak.
+    for i in 0..m {
+        if g[i * m + i].abs() < 1e-30 {
+            g[i * m + i] = 1e-12;
+        }
+    }
+    for col in 0..m {
+        let piv = (col..m).max_by(|&p, &q| g[p * m + col].abs().total_cmp(&g[q * m + col].abs()))?;
+        if piv != col {
+            for k in 0..m {
+                g.swap(piv * m + k, col * m + k);
+            }
+            rhs.swap(piv, col);
+        }
+        let d = g[col * m + col];
+        if d.abs() < 1e-30 {
+            return None;
+        }
+        for row in col + 1..m {
+            let f = g[row * m + col] / d;
+            if f != 0.0 {
+                for k in col..m {
+                    g[row * m + k] -= f * g[col * m + k];
+                }
+                rhs[row] -= f * rhs[col];
+            }
+        }
+    }
+    let mut v = vec![0.0f64; m];
+    for row in (0..m).rev() {
+        let s: f64 = (row + 1..m).map(|k| g[row * m + k] * v[k]).sum();
+        v[row] = (rhs[row] - s) / g[row * m + row];
+    }
+    let r = v[idx(b)];
+    (r.is_finite() && r > 0.0 && r < 1e11).then_some(r)
+}
+
+/// Electrical estimate of one wire while it is drawn (Virtuoso EAD-style feedback): centre-line
+/// length, resistance from the sheet resistance, capacitance to substrate (area plus both
+/// edges' fringe) and the largest DC current the EM rule allows through its width.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct WireEstimate {
+    pub length_um: f64,
+    pub width_um: f64,
+    /// Ω (0 when the layer has no sheet resistance).
+    pub ohms: f64,
+    /// F (0 when the layer has no capacitance data).
+    pub farads: f64,
+    /// Largest DC current in A (0 = no EM rule).
+    pub em_amps: f64,
+}
+
+impl WireEstimate {
+    /// Width (dbu, grid-snapped up) that carries `amps` within the EM rule; `None` without one.
+    pub fn em_width(&self, amps: f64, tech: &Tech) -> Option<i64> {
+        if self.em_amps <= 0.0 || self.width_um <= 0.0 {
+            return None;
+        }
+        let per_um = self.em_amps / self.width_um;
+        let w = (amps / per_um * tech.dbu_per_um as f64).ceil() as i64;
+        let g = tech.grid.max(1);
+        Some((w + g - 1) / g * g)
+    }
+}
+
+/// [`WireEstimate`] of a path of `width` (dbu) along `points` on `layer`; `None` for a layer with
+/// no electrical data.
+pub fn wire_estimate(tech: &Tech, layer: usize, points: &[(i64, i64)], width: i64) -> Option<WireEstimate> {
+    let name = &tech.layers.get(layer)?.name;
+    let cap = tech.layer_cap(name)?;
+    let k = tech.dbu_per_um.max(1) as f64;
+    let len: f64 = points.windows(2).map(|w| ((w[1].0 - w[0].0) as f64).hypot((w[1].1 - w[0].1) as f64)).sum::<f64>() / k;
+    let wid = width as f64 / k;
+    // Path ends are extended by half the width: the drawn length is len + w.
+    let drawn = len + wid;
+    Some(WireEstimate {
+        length_um: len,
+        width_um: wid,
+        ohms: if wid > 0.0 { cap.resistance * len / wid } else { 0.0 },
+        farads: (cap.area * drawn * wid + cap.fringe * 2.0 * drawn) * 1e-18,
+        em_amps: cap.em * wid,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -990,5 +1163,51 @@ mod tests {
             }
             assert!(seen.contains(named), "{node} is not connected to {named}");
         }
+    }
+
+    #[test]
+    fn wire_estimate_from_layer_data() {
+        let tech = Tech::default();
+        let m1 = tech.metal1().unwrap();
+        let cap = tech.layer_cap(&tech.layers[m1].name).unwrap().clone();
+        let k = tech.dbu_per_um as f64;
+        let e = wire_estimate(&tech, m1, &[(0, 0), (10_000, 0), (10_000, 5_000)], 500).unwrap();
+        assert!((e.length_um - 15_000.0 / k).abs() < 1e-9);
+        assert!((e.ohms - cap.resistance * e.length_um / (500.0 / k)).abs() < 1e-9);
+        assert!(e.farads > 0.0);
+        if cap.em > 0.0 {
+            let w = e.em_width(2.0 * e.em_amps, &tech).unwrap();
+            assert!((w - 1000).abs() <= tech.grid, "{w}");
+        }
+    }
+
+    #[test]
+    fn effective_resistance_of_series_and_parallel() {
+        // 0 -1Ω- 1 -2Ω- 2, plus 3Ω from 0 to 2 in parallel with the series pair.
+        let rc = RcNet { segments: vec![], node: vec![], nodes: 3, resistors: vec![(0, 1, 1.0), (1, 2, 2.0), (0, 2, 3.0)] };
+        let r = effective_resistance(&rc, 0, 2).unwrap();
+        assert!((r - 1.5).abs() < 1e-9, "{r}");
+        let r = effective_resistance(&rc, 2, 1).unwrap();
+        assert!((r - 2.0 * 4.0 / 6.0).abs() < 1e-9, "{r}");
+    }
+
+    #[test]
+    fn net_electrical_of_a_routed_net() {
+        let mut p = crate::examples::demo_project();
+        let r = p.all_cells().map(|(r, _)| r).find(|r| r.cell == "cmos_inverter").unwrap();
+        let sch = p.cell(&r).and_then(|c| c.schematic.clone()).unwrap();
+        let mut lay = Layout::default();
+        let plan = crate::sdl::plan(&sch, &p.tech);
+        crate::sdl::apply(&mut p, &mut lay, &plan).unwrap();
+        crate::route::route(&sch, &mut lay, &p, &p.tech).unwrap();
+        let x = extract(&lay, &p, &p.tech);
+        let terms = crate::sdl::terminals(&sch, &lay, &p);
+        let taps = &terms["out"];
+        let k = crate::sdl::pin_net(&x, &p.tech, taps[0]).unwrap();
+        let e = net_electrical(&lay, &p, &x, &p.tech, k, taps).unwrap();
+        assert!(e.farads > 0.0, "{e:?}");
+        let (r, _) = e.worst_r.expect("resistance between the drains");
+        assert!(r > 0.0 && r < 1e4, "{r}");
+        assert!(e.rc().unwrap() > 0.0);
     }
 }

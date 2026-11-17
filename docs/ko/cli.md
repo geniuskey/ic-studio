@@ -47,6 +47,7 @@
 | `ics opc <PROJECT> <CELL> --layer LAYER [--apply] [--sigma UM] [--threshold T] [--fragment UM] [--max-out UM] [--max-in UM] [--iterations N] [--gain G] [--json]` | 레이어의 광근접 보정. 보정 전후 EPE 출력. `--apply`는 마스크를 `<LAYER>_opc`에 쓰고(이전 마스크 교체, 그린 레이어는 바뀌지 않음) 저장 |
 | `ics signoff <PROJECT> <CELL> [RUNSET]` | 외부 KLayout / Calibre / netgen 런셋 실행(RUNSET이 없으면 목록 출력). 위반이나 불일치가 있으면 1로 종료 |
 | `ics route <PROJECT> <CELL> [--place]` | 플라이라인을 배선하고 저장. 배선되지 않은 넷이 남으면 1로 종료 |
+| `ics eco <PROJECT> <CELL> [--update] [--remove-extra] [--allow-opens]` | 레이아웃을 회로도와 대조(누락, 잉여, 변경된 소자, short, open). `--update`는 소자를 배치하고 재사이징한 뒤 저장. 차이가 있으면 1로 종료 |
 | `ics compact <PROJECT> <CELL> [--dir left,down] [--no-infer]` | 지정한 방향으로 레이아웃을 압축하고 저장 |
 | `ics diff <PROJECT> <CELL> [--rev REV \| --against DIR]` | 레이아웃을 git 리비전(기본 `HEAD`) 또는 다른 프로젝트와 비교. 다르면 1로 종료 |
 | `ics verify <PROJECT> [--test NAME]... [--junit FILE] [--against RUN] [--no-history] [--json]` | 검증 계획 실행(모든 테스트의 코너, 스윕, 몬테카를로), 스펙별 요약, 이전 실행과 비교. `--add CELL`은 테스트 추가, `--list`는 목록. 실패하거나 측정 못 한 스펙이 있으면 1로 종료 |

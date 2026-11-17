@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, HashMap};
 use serde::{Deserialize, Serialize};
 
 use crate::connectivity;
-use crate::schematic::{DeviceKind, Schematic};
+use crate::schematic::{DeviceKind, PortDir, Schematic};
 use crate::spice_import::{self, Imported};
 use crate::tech::Tech;
 use crate::units::parse_spice;
@@ -471,6 +471,8 @@ pub fn import_cdl(text: &str, tech: &Tech, top: Option<&str>) -> Result<CdlImpor
     }
     let mut imported = spice_import::import(&flat.netlist, tech)?;
     imported.warnings.splice(0..0, flat.warnings.iter().cloned());
+    let pins: Vec<(String, crate::schematic::PortDir)> = flat.pins.iter().map(|(n, d)| (n.clone(), PortDir::parse(d))).collect();
+    imported.schematic.mark_ports(&pins);
     Ok(CdlImport { imported, subckts: cdl.subckts.iter().map(|s| s.name.clone()).collect(), flat })
 }
 
@@ -661,6 +663,25 @@ pub fn skill_schematic(sch: &Schematic, lib: &str, cell: &str, map: &SymbolMap, 
             s += &format!("  icsConnect(cv inst {} {})\n", skill_str(term), skill_str(&net));
         }
     }
+    // Schematic pins: basic ipin / opin / iopin at the pin label, joined to the net by name.
+    for (k, l) in sch.labels.iter().filter(|l| l.port.is_some()).enumerate() {
+        if sch.labels.iter().take_while(|o| o.id != l.id).any(|o| o.port.is_some() && o.name == l.name) {
+            continue;
+        }
+        let dir = l.port.expect("filtered");
+        let sym = match dir {
+            PortDir::Input => "ipin",
+            PortDir::Output => "opin",
+            PortDir::InOut => "iopin",
+        };
+        let (x, y) = (l.pos.x as f64 * scale, -(l.pos.y as f64) * scale);
+        s += &format!(
+            "  schCreatePin(cv dbOpenCellViewByType(\"basic\" \"{sym}\" \"symbol\") {} {} nil list({} {y}) \"R0\") ; pin {k}\n",
+            skill_str(&l.name),
+            skill_str(dir.name()),
+            x - 0.25
+        );
+    }
     s += "  schCheck(cv)\n  dbSave(cv)\n  dbClose(cv)\n  printf(\"IC Studio: wrote %s/%s schematic\\n\" ";
     s += &format!("{} {}))\n", skill_str(lib), skill_str(cell));
     // Declare the master variables in the let list.
@@ -781,5 +802,26 @@ CC0 mid gnd! 10f $[mimcap]
                 assert_eq!(i.param("w"), j.param("w"), "{cell} {}", i.name);
             }
         }
+    }
+
+    /// Schematic pins survive CDL export and import, and become Virtuoso pins in SKILL.
+    #[test]
+    fn schematic_pins_round_trip() {
+        let p = crate::examples::demo_project();
+        let r = p.all_cells().map(|(r, _)| r).find(|r| r.cell == "cmos_inverter").expect("inverter");
+        let mut sch = p.cell(&r).and_then(|c| c.schematic.clone()).expect("schematic");
+        let names: Vec<String> = sch.labels.iter().map(|l| l.name.clone()).collect();
+        assert!(names.iter().any(|n| n == "in") && names.iter().any(|n| n == "out"), "{names:?}");
+        let marked = sch.mark_ports(&[("in".into(), PortDir::Input), ("out".into(), PortDir::Output)]);
+        assert_eq!(marked, 2);
+        let cdl = crate::signoff::cdl(&sch, &p.tech, "inv");
+        assert!(cdl.contains(".subckt inv in out\n*.PININFO in:I out:O"), "{cdl}");
+        let back = import_cdl(&cdl, &p.tech, Some("inv")).expect("import");
+        assert_eq!(
+            back.imported.schematic.ports(),
+            vec![("in".to_string(), PortDir::Input), ("out".to_string(), PortDir::Output)]
+        );
+        let (il, _) = skill_schematic(&sch, "lib", "inv", &SymbolMap::analog_lib(), 0.0625);
+        assert!(il.contains("schCreatePin(cv dbOpenCellViewByType(\"basic\" \"ipin\" \"symbol\") \"in\" \"input\""), "{il}");
     }
 }

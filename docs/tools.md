@@ -285,6 +285,20 @@ and **Gap to area** of 0 use the minimum from the layer and contact rules. Set t
 µm, or press **Use selection** to take the bounding box of the selected shapes and
 instances. With contacts and the strap, the ring is DRC clean on its own.
 
+With contacts and the strap (the default) the ring is placed as a guard ring PCell
+(`pring` / `nring`, like a Virtuoso fluid guard ring): select it and stretch (`S`) any side
+to resize the area it surrounds, or change **Inner W**, **Inner H**, **Ring width** and
+**Gap** in its properties. Without them it is added as plain shapes.
+
+For a ring of any Manhattan outline (a Virtuoso multi-part path), draw its centre line as a
+path (open ring) or a polygon or rectangle (closed ring), select it and choose **Edit >
+Modify Shapes > P+ Guard Ring Along Shape** or **N+ Guard Ring Along Shape** (also in the
+Assist menu). The shape becomes a ring path PCell (`pring_path` / `nring_path`) with the
+diffusion band, implant, contacts along every segment, the metal1 strap and, for n+, the
+nwell over the band and everything a closed ring encloses. Stretching a side moves the
+vertices on that side; its properties edit the band width and whether it is closed. MCP
+`place_pcell` takes `pring_path` / `nring_path` with `points`.
+
 ### Via Array
 
 Pick a via, then either:

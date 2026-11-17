@@ -154,10 +154,25 @@ generator.
 
 ## Your own device generators
 
-User-defined PCells (`pcDefinePCell`) are not supported. A SKILL procedure that writes one
-cell per parameter set does the same job: run it with **Tools > Load SKILL (.il)**,
-`ics skill` or the MCP tool `run_skill`, then place the generated cells with `I`
-(**Place cell**) like any other cell.
+PCells written in SKILL with `pcDefinePCell` work as in Virtuoso: load the file with
+**Tools > Load SKILL (.il)**, `ics skill` or the MCP tool `run_skill`. The definition is kept
+with its master cell (whose layout is the PCell at its defaults), and each
+`dbCreateParamInst` / `dbCreateParamInstByMasterName` parameter set becomes a variant cell
+in the same library, made by running the body with `pcCellView` and the parameters bound:
+
+```lisp
+pcDefinePCell(list(ddGetObj("mylib") "plate" "layout")
+  ((w 1.0) (l 2.0) (layer "metal1"))
+  let((half)
+    half = w / 2
+    dbCreateRect(pcCellView layer list(-half:0 half:l))))
+cv = dbOpenCellViewByType("work" "top" "layout" "maskLayout" "a")
+dbCreateParamInstByMasterName(cv "mylib" "plate" "layout" "P1" 0:0 "R0" 1
+  list(list("w" "float" 2.0)))
+```
+
+A plain SKILL procedure that writes one cell per parameter set does the same job; place
+the generated cells with `I` (**Place cell**) like any other cell.
 
 This generator draws an NMOS whose active is L-shaped, with the source contact in a
 narrow vertical arm (generic180 layer names):

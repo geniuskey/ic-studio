@@ -19,6 +19,7 @@ mod compare;
 mod edit;
 mod live;
 pub(crate) mod packet;
+mod search;
 mod smart;
 mod verify;
 pub use assist::Clip;
@@ -224,6 +225,26 @@ pub struct LayoutEditor {
     drag: Option<LDrag>,
     path_pts: Vec<(i64, i64)>,
     pub path_width: i64,
+    /// Path tool: number of parallel wires drawn together (a bus), and their centre pitch in
+    /// dbu (0 = wire width plus the layer's spacing).
+    pub bus_wires: u32,
+    pub bus_pitch: i64,
+    /// DC current the wire being drawn must carry, in mA (0 = not checked against EM).
+    pub wire_ma: f64,
+    /// Net of the conductor the wire being drawn started on, and the shorts (sorted net lists)
+    /// the cell had then, to report the shorts the new wire makes.
+    wire_net: Option<(String, Vec<Vec<String>>)>,
+    /// Path points snap onto the active layer's tracks, and the wire takes the track's width.
+    pub snap_tracks: bool,
+    /// Draw the active layer's tracks.
+    pub show_tracks: bool,
+    /// Track pattern form: horizontal, start, pitch, width (dbu); WSP widths and spaces (µm).
+    track_form: (bool, i64, i64, i64, String),
+    /// Direction of the wire that led into the current path's first point (after a via), so
+    /// the bus lines continue where they ended.
+    bus_lead: Option<(i64, i64)>,
+    /// Pitch of the bus that led in through vias, kept so the wires stay on them.
+    bus_run: Option<i64>,
     pub label_text: String,
     pub verify: verify::VerifyState,
     pub live: live::LiveDrc,
@@ -270,6 +291,15 @@ pub struct LayoutEditor {
     box_start: Option<(i64, i64)>,
     /// Next box zooms the view (Z).
     zoom_box: bool,
+    /// Copy as an array of rows × columns (Virtuoso Copy form), element pitch in dbu
+    /// (0 = the selection's extent, so copies abut).
+    pub copy_rows: u32,
+    pub copy_cols: u32,
+    pub copy_pitch: (i64, i64),
+    /// Offset of Move / Copy by typed coordinates (dbu).
+    pub delta: (i64, i64),
+    /// A moved MOS PCell dropped next to a compatible one abuts it.
+    pub auto_abut: bool,
     /// Reference point of the move / copy tool.
     xfer: Option<(i64, i64)>,
     /// Rotation / mirror picked up during move / copy (right-click), about the reference point.
@@ -303,6 +333,9 @@ pub struct LayoutEditor {
     pub show_display: bool,
     pub show_editor: bool,
     pub show_tree: bool,
+    /// Edit > Search form.
+    pub show_search: bool,
+    search: search::SearchState,
 }
 
 impl Default for LayoutEditor {
@@ -317,6 +350,15 @@ impl Default for LayoutEditor {
             history: History::default(),
             drag: None,
             path_pts: vec![],
+            bus_wires: 1,
+            bus_pitch: 0,
+            wire_ma: 0.0,
+            wire_net: None,
+            snap_tracks: true,
+            show_tracks: true,
+            track_form: (true, 0, 0, 0, String::new()),
+            bus_lead: None,
+            bus_run: None,
             path_width: 0,
             label_text: "net".into(),
             verify: verify::VerifyState::default(),
@@ -329,6 +371,11 @@ impl Default for LayoutEditor {
             place_mirror: false,
             place_cols: 1,
             place_rows: 1,
+            copy_rows: 1,
+            copy_cols: 1,
+            copy_pitch: (0, 0),
+            delta: (0, 0),
+            auto_abut: true,
             stats: DrawStats::default(),
             poly_pts: vec![],
             hot: None,
@@ -372,6 +419,8 @@ impl Default for LayoutEditor {
             show_display: false,
             show_editor: false,
             show_tree: false,
+            show_search: false,
+            search: search::SearchState::default(),
         }
     }
 }
@@ -1038,6 +1087,9 @@ impl LayoutEditor {
     pub fn set_tool(&mut self, t: LayTool) {
         self.tool = t;
         self.path_pts.clear();
+        self.wire_net = None;
+        self.bus_lead = None;
+        self.bus_run = None;
         self.poly_pts.clear();
         self.box_start = None;
         self.xfer = None;
@@ -1292,9 +1344,90 @@ impl LayoutEditor {
         }
         self.history.push(l);
         let w = self.wire_width(tech);
-        let id = l.add(self.active_layer, Geometry::Path { points: pts, width: w });
-        self.selection = [id].into();
+        let lines = match self.bus_lines(&pts, tech) {
+            Some(lines) => lines,
+            None => {
+                self.note(
+                    false,
+                    "Bus: drew the centre wire only; a bus needs Manhattan wires without U-turns that leave a via straight on",
+                );
+                vec![pts]
+            }
+        };
+        self.selection = lines.into_iter().map(|points| l.add(self.active_layer, Geometry::Path { points, width: w })).collect();
+        self.bus_lead = None;
+        self.bus_run = None;
         true
+    }
+
+    /// Connectivity-aware wiring: the schematic net of the conductor under `p` (by the device
+    /// terminals on it, else its label), with the cell's current shorts. `None` for cells
+    /// without a schematic or larger than the live check handles.
+    fn net_under(&self, l: &Layout, cx: &mut LayCtx, p: (i64, i64)) -> Option<(String, Vec<Vec<String>>)> {
+        let sch = cx.src.cell(cx.cell)?.schematic.as_ref()?;
+        if l.shapes.len() + l.instances.len() > 5_000 {
+            return None;
+        }
+        let tech = cx.tech;
+        let ex = ics_core::extract::extract(l, cx.src, tech);
+        let k = ex.net_at(self.active_layer, p).or_else(|| ex.net_at_any(p))?;
+        let terms = ics_core::sdl::terminals(sch, l, cx.src);
+        let net = terms
+            .iter()
+            .find(|(_, pts)| pts.iter().any(|&q| ics_core::sdl::pin_net(&ex, tech, q) == Some(k)))
+            .map(|(n, _)| n.clone())
+            .or_else(|| ex.nets.get(k).filter(|n| n.labelled).map(|n| n.name.clone()))?;
+        Some((net, shorts(&ics_core::eco::check(sch, l, cx.src))))
+    }
+
+    /// After a wire started on a known net: report (and mark) the shorts it added.
+    fn check_wire_shorts(&mut self, l: &Layout, cx: &mut LayCtx) {
+        let Some((net, before)) = self.wire_net.take() else { return };
+        let Some(sch) = cx.src.cell(cx.cell).and_then(|c| c.schematic.as_ref()) else { return };
+        let check = ics_core::eco::check(sch, l, cx.src);
+        let new: Vec<Vec<String>> = shorts(&check).into_iter().filter(|s| !before.contains(s) && s.contains(&net)).collect();
+        if !new.is_empty() {
+            let others: Vec<String> = new.iter().flatten().filter(|n| **n != net).cloned().collect();
+            self.note(false, format!("This wire on net {net} shorts it to {} (u undoes)", others.join(", ")));
+            self.verify.source = Some(check);
+            self.verify.source_stale = false;
+        }
+    }
+
+    /// `p` moved onto the nearest tracks of the active layer (y onto horizontal tracks, x onto
+    /// vertical ones), with the width of the track it landed on (horizontal first).
+    fn track_point(&self, l: &Layout, p: (i64, i64)) -> ((i64, i64), Option<i64>) {
+        let (mut q, mut w) = (p, None);
+        for t in l.tracks.iter().filter(|t| t.layer == self.active_layer) {
+            if t.horizontal {
+                if let Some((c, tw)) = t.nearest(p.1) {
+                    q.1 = c;
+                    w = Some(tw);
+                }
+            } else if let Some((c, tw)) = t.nearest(p.0) {
+                q.0 = c;
+                w = w.or(Some(tw));
+            }
+        }
+        (q, w)
+    }
+
+    /// Centre offsets of the bus wires (one wire: just 0), grid-snapped.
+    fn bus_offsets(&self, tech: &Tech) -> Vec<i64> {
+        let n = self.bus_wires.max(1) as i64;
+        let g = tech.grid.max(1);
+        let space = tech.layer(self.active_layer).map_or(0, |d| d.min_spacing);
+        let pitch = if self.bus_pitch > 0 { self.bus_pitch } else { self.wire_width(tech) + space };
+        let pitch = self.bus_run.unwrap_or((pitch + g - 1) / g * g);
+        (0..n).map(|k| (((2 * k - (n - 1)) * pitch) as f64 / 2.0 / g as f64).round() as i64 * g).collect()
+    }
+
+    /// The wires of the bus along the centre line `pts`; `None` when the line cannot be offset.
+    fn bus_lines(&self, pts: &[(i64, i64)], tech: &Tech) -> Option<Vec<Vec<(i64, i64)>>> {
+        if self.bus_wires <= 1 {
+            return Some(vec![pts.to_vec()]);
+        }
+        self.bus_offsets(tech).into_iter().map(|d| ics_core::reshape::offset_polyline(pts, d, self.bus_lead)).collect()
     }
 
     fn wire_width(&self, tech: &Tech) -> i64 {
@@ -1443,7 +1576,12 @@ impl LayoutEditor {
                         None
                     }
                     Key::Enter => {
-                        changed |= self.finish_path(l, tech) || self.finish_polygon(l);
+                        if self.finish_path(l, tech) {
+                            self.check_wire_shorts(l, cx);
+                            changed = true;
+                        } else {
+                            changed |= self.finish_polygon(l);
+                        }
                         None
                     }
                     Key::Delete | Key::Backspace => {
@@ -1535,6 +1673,9 @@ impl LayoutEditor {
             self.part_ref = None;
         } else if !self.path_pts.is_empty() || !self.poly_pts.is_empty() {
             self.path_pts.clear();
+            self.wire_net = None;
+            self.bus_lead = None;
+            self.bus_run = None;
             self.poly_pts.clear();
         } else if !self.part.is_empty() {
             self.part = Partial::default();
@@ -1663,22 +1804,267 @@ impl LayoutEditor {
         Some(Trans::with(to.0 - r.0, to.1 - r.1, self.xfer_t.rot, self.xfer_t.mirror))
     }
 
-    fn finish_xfer(&mut self, l: &mut Layout, to: (i64, i64)) -> bool {
+    fn finish_xfer(&mut self, l: &mut Layout, cx: &mut LayCtx, to: (i64, i64)) -> bool {
         let Some(t) = self.xfer_trans(to) else { return false };
-        if t.is_identity() {
+        if t.is_identity() && self.copy_rows.max(1) * self.copy_cols.max(1) == 1 {
             return false;
         }
         self.history.push(l);
         if self.tool == LayTool::Copy {
-            let ids = self.copy_by(l, (0, 0));
-            l.transform_items(&ids, &t);
-            self.note(true, format!("Copied {} item(s)", ids.len()));
+            let n = self.copy_array(l, cx, &t);
+            self.note(true, format!("Copied {n} item(s)"));
         } else {
             l.transform_items(&self.selection, &t);
             self.xfer = None;
             self.xfer_t = Trans::IDENTITY;
+            self.snap_abut(l, cx);
         }
         true
+    }
+
+    /// Auto-abutment after a move: a single MOS PCell dropped close to a compatible neighbour
+    /// slides onto its shared source / drain column (within the largest layer spacing).
+    fn snap_abut(&mut self, l: &mut Layout, cx: &mut LayCtx) {
+        if !self.auto_abut || self.selection.len() != 1 {
+            return;
+        }
+        let id = *self.selection.first().unwrap();
+        if l.instance(id).is_none() {
+            return;
+        }
+        let reach = cx.tech.layers.iter().map(|d| d.min_spacing).max().unwrap_or(0).max(4 * cx.tech.grid.max(1));
+        let sch = cx.src.cell(cx.cell).and_then(|c| c.schematic.as_ref());
+        if let Some(note) = ics_core::abut::auto_abut(l, id, cx.src, sch, reach) {
+            self.note(true, note);
+        }
+    }
+
+    /// Copy the selection with `t`, repeated over the copy array (rows × columns); returns the
+    /// number of items made. The history entry is the caller's.
+    fn copy_array(&mut self, l: &mut Layout, cx: &mut LayCtx, t: &Trans) -> usize {
+        let (rows, cols) = (self.copy_rows.max(1), self.copy_cols.max(1));
+        let ext = if rows * cols > 1 { self.selection_bbox(l, cx).map(|b| t.apply_rect(b)) } else { None };
+        let px = if self.copy_pitch.0 != 0 { self.copy_pitch.0 } else { ext.map_or(0, |b| b.width()) };
+        let py = if self.copy_pitch.1 != 0 { self.copy_pitch.1 } else { ext.map_or(0, |b| b.height()) };
+        let mut n = 0;
+        for j in 0..rows as i64 {
+            for i in 0..cols as i64 {
+                let ids = self.copy_by(l, (0, 0));
+                let at = Trans { x: t.x + i * px, y: t.y + j * py, ..*t };
+                l.transform_items(&ids, &at);
+                n += ids.len();
+            }
+        }
+        n
+    }
+
+    /// Move or copy (with the copy array) the selection by [`Self::delta`], as typed in the
+    /// Move / Copy options.
+    pub(super) fn apply_delta(&mut self, l: &mut Layout, cx: &mut LayCtx) -> bool {
+        if self.selection.is_empty() {
+            self.note(false, "Move / copy by offset: select something first");
+            return false;
+        }
+        let (dx, dy) = self.delta;
+        let copy = self.tool == LayTool::Copy;
+        if !copy && dx == 0 && dy == 0 {
+            return false;
+        }
+        self.history.push(l);
+        let t = Trans::with(dx, dy, 0, false);
+        if copy {
+            let n = self.copy_array(l, cx, &t);
+            self.note(true, format!("Copied {n} item(s) by ({}, {}) µm", um(dx, cx.tech), um(dy, cx.tech)));
+        } else {
+            let ids = self.selection.clone();
+            l.transform_items(&ids, &t);
+            self.note(true, format!("Moved {} item(s) by ({}, {}) µm", ids.len(), um(dx, cx.tech), um(dy, cx.tech)));
+        }
+        cx.touched();
+        true
+    }
+
+    /// Replace the selected path, polygon or rectangle by a guard ring along it (a ring path
+    /// PCell, Virtuoso MPP): paths stay open, polygons and rectangles close.
+    pub(super) fn shape_to_ring(&mut self, l: &Layout, well: bool) -> bool {
+        let one = (self.selection.len() == 1).then(|| *self.selection.first().unwrap()).and_then(|id| l.shape(id).cloned());
+        let Some(s) = one else {
+            self.note(false, "Guard ring: select one path, polygon or rectangle as its centre line");
+            return false;
+        };
+        let (points, closed) = match &s.geom {
+            Geometry::Path { points, .. } => (points.clone(), false),
+            Geometry::Polygon { points } => (points.clone(), true),
+            Geometry::Rect(r) => (vec![(r.x0, r.y0), (r.x1, r.y0), (r.x1, r.y1), (r.x0, r.y1)], true),
+            Geometry::Label { .. } => {
+                self.note(false, "Guard ring: a label has no centre line");
+                return false;
+            }
+        };
+        if points.windows(2).any(|w| w[0].0 != w[1].0 && w[0].1 != w[1].1) {
+            self.note(false, "Guard ring: the centre line must be Manhattan");
+            return false;
+        }
+        let pcell = ics_core::pcell::PCell::RingPath { well, points, closed, width: 0 };
+        self.requests.push(LayRequest::ReplaceWithPCell { shape: s.id, pcell });
+        self.note(true, "Guard ring along the shape: stretch a side to move it, q edits width and closure");
+        false
+    }
+
+    /// Abut the selected MOS instances left to right on their shared nets.
+    pub(super) fn abut_selection(&mut self, l: &mut Layout, cx: &mut LayCtx) -> bool {
+        let ids: Vec<u64> = l.instances.iter().filter(|i| self.selection.contains(&i.id)).map(|i| i.id).collect();
+        let sch = cx.src.cell(cx.cell).and_then(|c| c.schematic.as_ref());
+        let mut next = l.clone();
+        match ics_core::abut::abut_chain(&mut next, &ids, cx.src, sch) {
+            Ok(notes) => {
+                self.history.push(l);
+                *l = next;
+                let checked = if sch.is_some() { "" } else { " (no schematic: nets not checked)" };
+                self.note(true, format!("{}{checked}", notes.join("; ")));
+                cx.touched();
+                self.layout_changed();
+                true
+            }
+            Err(e) => {
+                self.note(false, format!("Abut: {e}"));
+                false
+            }
+        }
+    }
+
+    /// Tracks of the cell (width spacing patterns): list, add, remove, check. Returns true when
+    /// the layout changed.
+    pub(super) fn tracks_form(&mut self, ui: &mut egui::Ui, l: &mut Layout, cx: &mut LayCtx) -> bool {
+        use ics_core::tracks::{self, TrackPattern};
+        let tech = cx.tech;
+        let pal = theme::palette(ui.ctx());
+        let k = tech.dbu_per_um.max(1) as f64;
+        let g = tech.grid.max(1);
+        let mut changed = false;
+        ui.checkbox(&mut self.snap_tracks, "Snap wires to tracks (and take their width)");
+        ui.checkbox(&mut self.show_tracks, "Show the active layer's tracks");
+        let mut remove = None;
+        for (i, t) in l.tracks.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(t.describe(tech)).small());
+                if ui.small_button("Remove").clicked() {
+                    remove = Some(i);
+                }
+            });
+        }
+        if let Some(i) = remove {
+            self.history.push(l);
+            l.tracks.remove(i);
+            changed = true;
+        }
+        let layer = self.active_layer;
+        let name = tech.layer(layer).map_or("?", |d| d.name.as_str()).to_string();
+        ui.label(egui::RichText::new(format!("New pattern on the active layer, {name}")).small().color(pal.text_weak));
+        let (h, start, pitch, width, wsp) = &mut self.track_form;
+        if *pitch == 0
+            && let Some(t) = TrackPattern::from_rules(tech, layer, *h)
+        {
+            (*pitch, *width) = (t.period, t.tracks[0].1);
+        }
+        ui.horizontal(|ui| {
+            ui.radio_value(h, true, "Horizontal");
+            ui.radio_value(h, false, "Vertical");
+        });
+        let um_value = |ui: &mut egui::Ui, label: &str, v: &mut i64| {
+            let lb = ui.label(label);
+            let mut f = *v as f64 / k;
+            ui.add(egui::DragValue::new(&mut f).speed(0.01).max_decimals(4).suffix(" µm")).labelled_by(lb.id);
+            *v = ((f * k / g as f64).round() as i64) * g;
+        };
+        ui.horizontal(|ui| {
+            um_value(ui, "Start", start);
+            um_value(ui, "Pitch", pitch);
+            um_value(ui, "Width", width);
+        });
+        let mut add: Option<TrackPattern> = None;
+        ui.horizontal(|ui| {
+            if ui.button("Add uniform").clicked() && *pitch > 0 && *width > 0 {
+                add = Some(TrackPattern::uniform(layer, *h, *start, *pitch, *width));
+            }
+            if ui.button("From layer rules").on_hover_text("Minimum width at the minimum pitch").clicked() {
+                add = TrackPattern::from_rules(tech, layer, *h);
+            }
+        });
+        ui.horizontal(|ui| {
+            let lb = ui.label("WSP");
+            ui.add(egui::TextEdit::singleline(wsp).hint_text("w s w s ... (µm)").desired_width(140.0)).labelled_by(lb.id);
+            if ui.button("Add WSP").on_hover_text("Widths and spaces alternating, e.g. 0.2 0.2 0.6 0.3").clicked() {
+                let v: Vec<i64> = wsp
+                    .split_whitespace()
+                    .filter_map(|x| x.parse::<f64>().ok())
+                    .map(|f| ((f * k / g as f64).round() as i64) * g)
+                    .collect();
+                let (ws, ss): (Vec<i64>, Vec<i64>) =
+                    (v.iter().step_by(2).copied().collect(), v.iter().skip(1).step_by(2).copied().collect());
+                add = TrackPattern::wsp(layer, *h, *start, &ws, &ss);
+                if add.is_none() {
+                    self.ed.msg = Some((false, "WSP: give positive width and space pairs, e.g. 0.2 0.2 0.6 0.3".into()));
+                }
+            }
+        });
+        if let Some(t) = add {
+            self.history.push(l);
+            l.tracks.push(t);
+            changed = true;
+        }
+        if !l.tracks.is_empty() && ui.button("Check wires against tracks").clicked() {
+            let off = tracks::off_track(l, &l.tracks);
+            self.selection = off.iter().map(|(id, _)| *id).collect();
+            let m = if off.is_empty() {
+                "Every wire on a patterned layer is on a track".to_string()
+            } else {
+                format!("{} wire(s) off their tracks or of the wrong width: selected", off.len())
+            };
+            self.note(off.is_empty(), m);
+        }
+        if changed {
+            cx.touched();
+        }
+        changed
+    }
+
+    /// Move / Copy options: offset entry and the copy array.
+    fn xfer_options(&mut self, ui: &mut egui::Ui, cx: &mut LayCtx) {
+        let tech = cx.tech;
+        let k = tech.dbu_per_um.max(1) as f64;
+        let g = tech.grid.max(1);
+        let um_value = |ui: &mut egui::Ui, label: &str, v: &mut i64| {
+            let lb = ui.label(label);
+            let mut f = *v as f64 / k;
+            ui.add(egui::DragValue::new(&mut f).speed(0.01).max_decimals(4).suffix(" µm")).labelled_by(lb.id);
+            *v = ((f * k / g as f64).round() as i64) * g;
+            ui.end_row();
+        };
+        theme::section(ui, "Offset");
+        egui::Grid::new("xfer_delta").num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| {
+            um_value(ui, "Delta X", &mut self.delta.0);
+            um_value(ui, "Delta Y", &mut self.delta.1);
+        });
+        let verb = if self.tool == LayTool::Copy { "Copy" } else { "Move" };
+        if ui.button(format!("{verb} selection by offset")).clicked() {
+            self.actions.push(LayAction::ApplyDelta);
+        }
+        if self.tool == LayTool::Copy {
+            theme::section(ui, "Array");
+            egui::Grid::new("copy_array").num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| {
+                let r = ui.label("Rows");
+                ui.add(egui::DragValue::new(&mut self.copy_rows).range(1..=1000)).labelled_by(r.id);
+                ui.end_row();
+                let c = ui.label("Columns");
+                ui.add(egui::DragValue::new(&mut self.copy_cols).range(1..=1000)).labelled_by(c.id);
+                ui.end_row();
+                um_value(ui, "Column pitch", &mut self.copy_pitch.0);
+                um_value(ui, "Row pitch", &mut self.copy_pitch.1);
+            });
+            let pal = theme::palette(ui.ctx());
+            ui.label(egui::RichText::new("Pitch 0 = the selection's extent (copies abut)").small().color(pal.text_weak));
+        }
     }
 
     /// First click of stretch: grab the nearest edge or vertex of the shape under the point.
@@ -1757,7 +2143,10 @@ impl LayoutEditor {
         // Which axis of the cell runs along the dragged direction.
         let local_x_is_world_x = s.trans.apply_vec((1, 0)).1 == 0;
         let along_x = (s.side.1 == 0) == local_x_is_world_x;
-        let pcell = s.pcell.stretched(along_x, grow)?;
+        // Which end of the cell's own axis is dragged (ring paths move only that side's vertices).
+        let lv = s.trans.inverse().apply_vec(s.side);
+        let low = lv.0 < 0 || lv.1 < 0;
+        let pcell = s.pcell.stretched_side(along_x, grow, low)?;
         let child = pcell.generate(tech).ok()?.shapes_bbox()?;
         let mut trans = s.trans;
         let nb = trans.apply_rect(child);
@@ -1914,6 +2303,9 @@ impl LayoutEditor {
         let world = hover.map(|p| self.view.to_world(rect, p));
         self.snapped = None;
         self.cursor = world.map(|w| self.pick_point(l, cx, w));
+        if self.tool == LayTool::Path && self.snap_tracks {
+            self.cursor = self.cursor.map(|c| self.track_point(l, c).0);
+        }
         let tol = (5.0 / self.view.scale) as i64;
         let shift = ui.input(|i| i.modifiers.shift || i.modifiers.command);
         let pick = self.pickable();
@@ -2094,7 +2486,7 @@ impl LayoutEditor {
                         && let Some(c) = self.cursor
                     {
                         if self.xfer.is_some() {
-                            if self.finish_xfer(l, c) {
+                            if self.finish_xfer(l, cx, c) {
                                 out.changed = true;
                                 cx.touched();
                             }
@@ -2124,16 +2516,30 @@ impl LayoutEditor {
                                 Some(&last) => manhattan(last, c),
                                 None => c,
                             };
+                            if self.path_pts.is_empty()
+                                && self.snap_tracks
+                                && let (_, Some(w)) = self.track_point(l, p)
+                            {
+                                self.path_width = w;
+                            }
+                            if self.path_pts.is_empty() {
+                                self.wire_net = self.net_under(l, cx, p);
+                                if let Some((n, _)) = &self.wire_net {
+                                    self.note(true, format!("Wire on net {n}"));
+                                }
+                            }
                             if self.path_pts.last() != Some(&p) {
                                 self.path_pts.push(p);
                             }
                         }
                         if resp.double_clicked() && self.finish_path(l, tech) {
+                            self.check_wire_shorts(l, cx);
                             out.changed = true;
                             cx.touched();
                         }
                     }
                     if resp.secondary_clicked() && self.finish_path(l, tech) {
+                        self.check_wire_shorts(l, cx);
                         out.changed = true;
                         cx.touched();
                     }
@@ -2207,6 +2613,7 @@ impl LayoutEditor {
                         for id in &self.selection {
                             l.translate_item(*id, offset.0, offset.1);
                         }
+                        self.snap_abut(l, cx);
                         out.changed = true;
                         cx.touched();
                     }
@@ -2226,7 +2633,7 @@ impl LayoutEditor {
                             false
                         }
                         Some(c) if self.tool == LayTool::Stretch => self.finish_stretch(l, c),
-                        Some(c) => self.finish_xfer(l, c),
+                        Some(c) => self.finish_xfer(l, cx, c),
                         None => false,
                     };
                     if done {
@@ -2534,13 +2941,43 @@ impl LayoutEditor {
                 painter.rect_stroke(r, 0.0, Stroke::new(1.0, pal.selection), StrokeKind::Inside);
             }
         }
+        if self.show_tracks && l.tracks.iter().any(|t| t.layer == self.active_layer) {
+            let wv = world_view(&self.view, rect);
+            let col = layer_color(def, pal.dark).gamma_multiply(0.35);
+            for t in l.tracks.iter().filter(|t| t.layer == self.active_layer) {
+                let (lo, hi) = if t.horizontal { (wv.y0, wv.y1) } else { (wv.x0, wv.x1) };
+                let cs = t.centres(lo, hi, 400);
+                if cs.len() >= 400 {
+                    continue; // too dense to be useful at this zoom
+                }
+                for (c, _) in cs {
+                    let (a, b) = if t.horizontal { ((wv.x0, c), (wv.x1, c)) } else { ((c, wv.y0), (c, wv.y1)) };
+                    let (pa, pb) =
+                        (self.view.to_screen(rect, a.0 as f64, a.1 as f64), self.view.to_screen(rect, b.0 as f64, b.1 as f64));
+                    painter.add(egui::Shape::dashed_line(&[pa, pb], Stroke::new(1.0, col), 6.0, 4.0));
+                }
+            }
+        }
         if !self.path_pts.is_empty() {
             let mut pts = self.path_pts.clone();
             if let Some(c) = self.cursor {
                 pts.push(manhattan(*pts.last().unwrap(), c));
             }
             let w = self.wire_width(tech);
-            for q in path_quads(&pts, w) {
+            if let Some(e) = ics_core::pex::wire_estimate(tech, self.active_layer, &pts, w)
+                && let Some(c) = hover
+            {
+                let over = self.wire_ma > 0.0 && e.em_amps > 0.0 && self.wire_ma * 1e-3 > e.em_amps;
+                painter.text(
+                    c + Vec2::new(14.0, 14.0),
+                    egui::Align2::LEFT_TOP,
+                    wire_text(&e, self.wire_ma),
+                    egui::FontId::monospace(11.0),
+                    if over { pal.danger } else { pal.text },
+                );
+            }
+            let lines = self.bus_lines(&pts, tech).unwrap_or_else(|| vec![pts.clone()]);
+            for q in lines.iter().flat_map(|line| path_quads(line, w)) {
                 let sp: Vec<Pos2> = q.iter().map(|p| self.view.to_screen(rect, p.0, p.1)).collect();
                 painter.add(egui::Shape::convex_polygon(
                     sp,
@@ -2622,6 +3059,37 @@ impl LayoutEditor {
             ui.label(
                 egui::RichText::new("0 = layer minimum width · Enter / double-click to finish").small().color(pal.text_weak),
             );
+            ui.horizontal(|ui| {
+                let l = ui.label("Wires");
+                ui.add(egui::DragValue::new(&mut self.bus_wires).range(1..=64)).labelled_by(l.id);
+                let l = ui.label("Pitch (nm)");
+                ui.add(egui::DragValue::new(&mut self.bus_pitch).range(0..=1_000_000).speed(10)).labelled_by(l.id);
+            });
+            ui.label(
+                egui::RichText::new("Wires > 1 draws a bus centred on the clicks · pitch 0 = width + spacing")
+                    .small()
+                    .color(pal.text_weak),
+            );
+            ui.horizontal(|ui| {
+                let l = ui.label("Current (mA)");
+                ui.add(egui::DragValue::new(&mut self.wire_ma).range(0.0..=10_000.0).speed(0.05).max_decimals(3))
+                    .labelled_by(l.id);
+                let est = ics_core::pex::wire_estimate(tech, self.active_layer, &[(0, 0), (0, 0)], self.wire_width(tech));
+                let need = est.and_then(|e| e.em_width(self.wire_ma * 1e-3, tech)).filter(|_| self.wire_ma > 0.0);
+                if ui
+                    .add_enabled(need.is_some(), egui::Button::new("Size for EM"))
+                    .on_hover_text("Set the width to the narrowest that carries this current within the layer's EM rule")
+                    .clicked()
+                    && let Some(w) = need
+                {
+                    self.path_width = w.max(tech.layers[self.active_layer].min_width);
+                }
+            });
+            ui.label(
+                egui::RichText::new("Length, R, C and the EM limit show next to the cursor while drawing")
+                    .small()
+                    .color(pal.text_weak),
+            );
         }
         if self.tool == LayTool::Label {
             theme::section(ui, "Label");
@@ -2638,6 +3106,9 @@ impl LayoutEditor {
                     .color(pal.text_weak),
             );
         }
+        if matches!(self.tool, LayTool::Move | LayTool::Copy) {
+            self.xfer_options(ui, cx);
+        }
         if self.tool == LayTool::Via {
             self.via_panel(ui, tech);
         }
@@ -2645,7 +3116,10 @@ impl LayoutEditor {
             self.pcell_panel(ui, tech);
             self.placement_panel(ui, cx);
         }
-        matches!(self.tool, LayTool::Path | LayTool::Label | LayTool::Polygon | LayTool::Via | LayTool::Instance)
+        matches!(
+            self.tool,
+            LayTool::Path | LayTool::Label | LayTool::Polygon | LayTool::Via | LayTool::Instance | LayTool::Move | LayTool::Copy
+        )
     }
 
     /// Left panel: tool options, cell placement, hierarchy tree and layers. Returns a cell to open.
@@ -3005,6 +3479,22 @@ impl LayoutEditor {
                         ui.label("Points");
                         ui.label(points.len().to_string());
                         ui.end_row();
+                        if let Some(e) = ics_core::pex::wire_estimate(tech, s.layer, points, *width) {
+                            ui.label("Length");
+                            ui.label(format!("{:.3} µm", e.length_um));
+                            ui.end_row();
+                            ui.label("Resistance");
+                            ui.label(ics_core::units::format_eng(e.ohms, "Ω"));
+                            ui.end_row();
+                            ui.label("Capacitance");
+                            ui.label(ics_core::units::format_eng(e.farads, "F"));
+                            ui.end_row();
+                            if e.em_amps > 0.0 {
+                                ui.label("EM limit");
+                                ui.label(ics_core::units::format_eng(e.em_amps, "A"));
+                                ui.end_row();
+                            }
+                        }
                     }
                     Geometry::Label { text, size, .. } => {
                         let l = ui.label("Text");
@@ -3109,6 +3599,30 @@ impl LayoutEditor {
         }
         (changed, open)
     }
+}
+
+/// The shorts of a check, as sorted net lists.
+fn shorts(c: &ics_core::eco::SourceCheck) -> Vec<Vec<String>> {
+    c.issues
+        .iter()
+        .filter_map(|i| match i {
+            ics_core::eco::Issue::Short { nets, .. } => Some(nets.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// One-line electrical readout of a wire being drawn; flags a current above the EM limit.
+fn wire_text(e: &ics_core::pex::WireEstimate, ma: f64) -> String {
+    use ics_core::units::format_eng;
+    let mut t = format!("L {:.2} µm  R {}  C {}", e.length_um, format_eng(e.ohms, "Ω"), format_eng(e.farads, "F"));
+    if e.em_amps > 0.0 {
+        t += &format!("  EM max {}", format_eng(e.em_amps, "A"));
+        if ma > 0.0 {
+            t += &format!(" ({:.0}% of it)", ma * 1e-3 / e.em_amps * 100.0);
+        }
+    }
+    t
 }
 
 pub fn fmt_count(n: u64) -> String {
@@ -3290,6 +3804,120 @@ mod tests {
         let inside = [(m, IRect::new(-2000, 0, -sp / 2, 1000))];
         let marks = assist::drd_marks(&ll, &mut cx, &inside, &[ll.shapes[0].id].into(), false);
         assert!(marks.is_empty(), "the edited placement itself is not context: {marks:?}");
+    }
+
+    /// Copy with a rows × columns array (pitch 0 = abutting extent), and move by a typed offset.
+    #[test]
+    fn copy_array_and_move_by_offset() {
+        let p = Project::new("t");
+        let tech = p.tech.clone();
+        let cell = ics_core::CellRef::new("work", "t");
+        let mut hier = Hier::default();
+        let mut cx = LayCtx { cell: &cell, src: &p, hier: &mut hier, tech: &tech, cells: &[], context: None };
+        let mut l = Layout::default();
+        let id = l.add_rect(0, 0, 0, 100, 40);
+        let mut ed = LayoutEditor { tool: LayTool::Copy, copy_rows: 2, copy_cols: 3, ..Default::default() };
+        ed.selection.insert(id);
+        assert_eq!(ed.copy_array(&mut l, &mut cx, &Trans::new(1000, 0)), 6);
+        let mut boxes: Vec<IRect> = l.shapes.iter().skip(1).map(|s| s.bbox()).collect();
+        boxes.sort_by_key(|b| (b.y0, b.x0));
+        let want: Vec<IRect> =
+            (0..2).flat_map(|j| (0..3).map(move |i| IRect::new(1000 + 100 * i, 40 * j, 1100 + 100 * i, 40 + 40 * j))).collect();
+        assert_eq!(boxes, want);
+
+        ed.copy_pitch = (500, 0);
+        ed.copy_rows = 1;
+        ed.delta = (0, -300);
+        assert!(ed.apply_delta(&mut l, &mut cx));
+        assert!(l.shapes.iter().any(|s| s.bbox() == IRect::new(1000, -300, 1100, -260)), "third column at pitch 500");
+
+        ed.tool = LayTool::Move;
+        ed.delta = (10, 20);
+        assert!(ed.apply_delta(&mut l, &mut cx));
+        assert_eq!(l.shape(id).unwrap().bbox(), IRect::new(10, 20, 110, 60));
+        assert!(ed.undo(&mut l));
+        assert_eq!(l.shape(id).unwrap().bbox(), IRect::new(0, 0, 100, 40));
+    }
+
+    /// A three-wire bus on metal1 changes to metal2 with a via per wire and continues on.
+    #[test]
+    fn bus_wires_follow_the_path_through_a_layer_change() {
+        let tech = Project::new("t").tech.clone();
+        let m1 = tech.metal1().unwrap();
+        let mut ed = LayoutEditor { bus_wires: 3, ..Default::default() };
+        ed.sync_layers(&tech);
+        ed.active_layer = m1;
+        let mut l = Layout::default();
+        ed.path_pts = vec![(0, 0), (5000, 0)];
+        let offs = ed.bus_offsets(&tech);
+        assert!(ed.switch_wire_layer(&mut l, &tech, true));
+        assert_eq!(ed.bus_offsets(&tech), offs, "the pitch carries over to the next layer");
+        assert_eq!(offs.len(), 3);
+        assert_eq!(offs[1], 0);
+        let m1_paths: Vec<&Vec<(i64, i64)>> = l
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.geom {
+                Geometry::Path { points, .. } if s.layer == m1 => Some(points),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(m1_paths.len(), 3);
+        for d in &offs {
+            assert!(m1_paths.iter().any(|p| p.as_slice() == [(0, *d), (5000, *d)]), "wire at {d}: {m1_paths:?}");
+        }
+        let m2 = ed.active_layer;
+        assert_ne!(m2, m1);
+        ed.path_pts.push((9000, 0));
+        assert!(ed.finish_path(&mut l, &tech));
+        let m2_paths = l.shapes.iter().filter(|s| s.layer == m2 && matches!(s.geom, Geometry::Path { .. })).count();
+        assert_eq!(m2_paths, 3);
+        for d in &offs {
+            assert!(l.shapes.iter().any(|s| s.layer == m2
+                && s.geom == Geometry::Path { points: vec![(5000, *d), (9000, *d)], width: ed.wire_width(&tech) }));
+        }
+    }
+
+    /// Path points land on the active layer's tracks and take the track's width (WSP).
+    #[test]
+    fn path_points_snap_to_tracks() {
+        let mut l = Layout::default();
+        l.tracks.push(ics_core::tracks::TrackPattern::wsp(7, true, 0, &[200, 600], &[200, 200]).unwrap());
+        l.tracks.push(ics_core::tracks::TrackPattern::uniform(7, false, 0, 500, 200));
+        l.tracks.push(ics_core::tracks::TrackPattern::uniform(8, true, 50, 300, 100));
+        let ed = LayoutEditor { active_layer: 7, ..Default::default() };
+        assert_eq!(ed.track_point(&l, (1180, 660)), ((1000, 700), Some(600)));
+        assert_eq!(ed.track_point(&l, (1180, 1290)), ((1000, 1300), Some(200)));
+        let ed = LayoutEditor { active_layer: 3, ..Default::default() };
+        assert_eq!(ed.track_point(&l, (1180, 660)), ((1180, 660), None), "no tracks on this layer");
+    }
+
+    /// A wire started on a terminal knows its net; drawn onto another net, the short is reported.
+    #[test]
+    fn wires_know_their_net_and_report_shorts() {
+        let mut p = ics_core::examples::demo_project();
+        let cell = ics_core::CellRef::new("work", "cmos_inverter");
+        let sch = p.cell(&cell).unwrap().schematic.clone().unwrap();
+        let mut l = Layout::default();
+        let plan = ics_core::sdl::plan(&sch, &p.tech);
+        ics_core::sdl::apply(&mut p, &mut l, &plan).unwrap();
+        p.cell_mut(&cell).unwrap().layout = None;
+        let tech = p.tech.clone();
+        let terms = ics_core::sdl::terminals(&sch, &l, &p);
+        let (a, b) = (terms["in"][0], terms["out"][0]);
+        let mut hier = Hier::default();
+        let mut cx = LayCtx { cell: &cell, src: &p, hier: &mut hier, tech: &tech, cells: &[], context: None };
+        let mut ed = LayoutEditor { active_layer: tech.metal1().unwrap(), ..Default::default() };
+        ed.sync_layers(&tech);
+        ed.active_layer = tech.metal1().unwrap();
+        ed.wire_net = ed.net_under(&l, &mut cx, a);
+        assert_eq!(ed.wire_net.as_ref().map(|w| w.0.as_str()), Some("in"));
+        ed.path_pts = vec![a, (b.0, a.1), b];
+        assert!(ed.finish_path(&mut l, &tech));
+        ed.check_wire_shorts(&l, &mut cx);
+        let msg = ed.ed.msg.clone().unwrap();
+        assert!(!msg.0 && msg.1.contains("shorts it to out"), "{msg:?}");
+        assert!(ed.verify.source.as_ref().is_some_and(|c| c.count("short") > 0));
     }
 
     #[test]

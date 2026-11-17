@@ -30,6 +30,7 @@
 - [PCell과 사용자 정의 소자](pcells.md)
 - [검증: DRC, 추출, LVS](verification.md)
 - [회로도 기반 레이아웃](schematic-driven-layout.md)
+- [Virtuoso Layout XL과의 비교](layout-xl-comparison.md)
 - [공정 기술(Technology)](technology.md)
 - [도구: 계산기, 스윕, 생성기 등](tools.md)
 - [픽셀 광학: QE, 크로스토크, 광전류](pixel-optics.md)

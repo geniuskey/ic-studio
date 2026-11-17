@@ -91,6 +91,8 @@ Linux needs the usual windowing libraries:
   coupling between nets, MOS drain / source junctions (`ad as pd ps`) and an RC network of
   wire, via and gate resistance extracted from the layout are added to the matching
   schematic nets and devices
+- Schematic pins (input / output / inout) as the cell's ports, kept through CDL, SKILL and
+  Virtuoso import / export, and placed as boundary pins in the generated layout
 - Schematic checker (Check and Save): missing ground, bad names, missing values, shorted
   devices, voltage-source loops, floating nets and dangling wires, live in the Problems tab
 
@@ -100,7 +102,12 @@ Linux needs the usual windowing libraries:
 - Scales to large designs: cached per-cell R-tree indices, view culling and level of
   detail (small cells collapse to boxes, tiny shapes to dots), bounded work per frame
 - Editing: rectangles, Manhattan or any-angle polygons, paths, labels, rulers; vertex and
-  edge handles that keep Manhattan outlines Manhattan; rotate / flip; µm-accurate inspector
+  edge handles that keep Manhattan outlines Manhattan; rotate / flip; µm-accurate inspector;
+  buses of parallel wires that follow metal changes with a via per wire; routing tracks and
+  width spacing patterns that wires snap to, with a conformance check; live R, C and EM
+  limit while drawing a wire, with EM-driven sizing; copy as a
+  rows × columns array, move / copy by a typed offset; search by kind, layer,
+  name and size with select, zoom, change layer or delete
 - Boolean engines: AND / OR / NOT / XOR, grow / shrink, merge, layer operations; a fast
   Manhattan region engine and an exact any-angle polygon engine (45° sizing, holes) used
   for non-Manhattan input by layer operations, SKILL `dbLayer*` and layout compare
@@ -159,6 +166,12 @@ Linux needs the usual windowing libraries:
 - Flylines show schematic connections that are not yet routed; a maze router (A* on a
   terminal-aligned grid over metal1 and up) wires them DRC-clean around existing geometry,
   ripping up and rerouting nets that block each other
+- Check against source and update (Layout XL ECO): missing, extra and resized devices,
+  missing pins, shorts and opens against the schematic, optionally live after every edit; new devices are
+  placed and changed ones resized in place (`ics eco --update`, MCP `update_from_source`)
+- Abutment: selected MOS devices slide together onto a shared source / drain column of the
+  same net, flipped when needed, also automatically when a device is dropped next to one
+  (MCP `abut`)
 - Cross-probing: selecting a device in one view selects it in the other
 
 **Image sensor pixels** ([guide](https://pages.euiyun.com/ic-studio/pixel-optics.html))
@@ -249,6 +262,7 @@ ics diff myproj cmos_inverter --rev HEAD~1              # XOR against a git revi
 ics optimize myproj ota2s --post-layout --apply         # size devices to meet the specs
 ics place-like myproj nand2_b --from nand2 --route      # reuse a finished placement
 ics route myproj nand2 --place                          # place devices, route flylines, save
+ics eco myproj nand2 --update                           # update the layout from the schematic
 ics extract myproj inv_chain                            # extracted SPICE netlist
 ics lvs myproj cmos_inverter                            # non-zero exit on differences
 ics emir myproj ring_osc5 --net vdd                     # IR drop / EM; non-zero exit on EM violations

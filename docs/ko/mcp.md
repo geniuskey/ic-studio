@@ -70,6 +70,9 @@ npx skills add geniuskey/ic-studio
 | `generate_layout` | 매칭을 고려한 회로도 기반 배치(배선 없음) |
 | `flylines` | 배선되지 않은 연결 목록 |
 | `route` | 메탈 레이어에서 플라이라인 배선 |
+| `check_against_source` | 레이아웃을 회로도와 비교: 누락, 잉여, 변경된 소자, short, open |
+| `abut` | MOS PCell 인스턴스를 공유 소스 / 드레인 넷으로 맞붙임 |
+| `update_from_source` | 새 회로도 소자 배치, 변경된 소자를 제자리에서 재사이징, 선택적으로 잉여 소자 삭제 |
 | `run_drc` | 테크놀로지 덱으로 DRC |
 | `fix_drc` | 더 고칠 것이 없을 때까지 셀의 최상위 지오메트리에 검증된 빠른 수정 적용 |
 | `compact` | 최상위 항목을 각 방향으로 룰에 막힐 때까지 밀기. 제약 조건 유지 |

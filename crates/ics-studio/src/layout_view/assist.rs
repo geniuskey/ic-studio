@@ -722,9 +722,30 @@ impl LayoutEditor {
         if p != last {
             self.path_pts.push(p);
         }
+        // Where the bus wires end, and the direction they arrive in (kept for the next layer).
+        let n = self.path_pts.len();
+        let lead = if n >= 2 {
+            Some((self.path_pts[n - 1].0 - self.path_pts[n - 2].0, self.path_pts[n - 1].1 - self.path_pts[n - 2].1))
+        } else {
+            self.bus_lead
+        };
+        let ends: Vec<(i64, i64)> = match self.bus_lines(&self.path_pts, tech) {
+            Some(lines) if n >= 2 => lines.iter().filter_map(|w| w.last().copied()).collect(),
+            _ => vec![p],
+        };
+        let offs = self.bus_offsets(tech);
+        let run = (offs.len() > 1).then(|| offs[1] - offs[0]);
         let mut changed = self.finish_path(l, tech);
         self.ed.via = via;
-        changed |= self.place_via(l, tech, p, None);
+        changed |= self.place_via(l, tech, ends[0], None);
+        let def = &tech.vias[via];
+        for &at in &ends[1..] {
+            if let Ok(items) = ics_core::pcell::via_at(tech, def, at) {
+                self.selection.extend(items.into_iter().map(|(layer, g)| l.add(layer, g)));
+            }
+        }
+        self.bus_lead = if ends.len() > 1 { lead } else { None };
+        self.bus_run = if ends.len() > 1 { run } else { None };
         let min = tech.layer(next).map_or(0, |d| d.min_width);
         if self.path_width > 0 && self.path_width < min {
             self.path_width = 0;

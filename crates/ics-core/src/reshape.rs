@@ -128,6 +128,59 @@ pub fn segment_hits(r: IRect, a: Point, b: Point) -> bool {
     t0 <= t1
 }
 
+/// A Manhattan polyline shifted sideways by `d` (positive: to the left of the direction of
+/// travel), corners kept square, as the outer or inner wire of a bus. `lead` is the direction
+/// of a segment leading into the first point (e.g. the bus before a via): the first segment
+/// must continue straight on, since bus wires turning on their vias would cross. `None` for a
+/// non-Manhattan polyline, a U-turn or a turn at the lead.
+pub fn offset_polyline(pts: &[(i64, i64)], d: i64, lead: Option<(i64, i64)>) -> Option<Vec<(i64, i64)>> {
+    let mut p: Vec<(i64, i64)> = Vec::with_capacity(pts.len());
+    for &q in pts {
+        if p.last() != Some(&q) {
+            p.push(q);
+        }
+    }
+    if p.len() < 2 {
+        return None;
+    }
+    let dir = |a: (i64, i64), b: (i64, i64)| -> Option<(i64, i64)> {
+        match (b.0 - a.0, b.1 - a.1) {
+            (0, dy) => Some((0, dy.signum())),
+            (dx, 0) => Some((dx.signum(), 0)),
+            _ => None,
+        }
+    };
+    let dirs: Vec<(i64, i64)> = p.windows(2).map(|w| dir(w[0], w[1])).collect::<Option<_>>()?;
+    let normal = |u: (i64, i64)| (-u.1, u.0);
+    let corner = |a: (i64, i64), b: (i64, i64)| -> Option<(i64, i64)> {
+        if a == b {
+            Some(normal(a))
+        } else if a == (-b.0, -b.1) {
+            None
+        } else {
+            let (n, m) = (normal(a), normal(b));
+            Some((n.0 + m.0, n.1 + m.1))
+        }
+    };
+    let lead = lead.and_then(|u| dir((0, 0), u));
+    if lead.is_some_and(|l| l != dirs[0]) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(p.len());
+    for (k, &q) in p.iter().enumerate() {
+        let v = match k {
+            0 => match lead {
+                Some(l) => corner(l, dirs[0])?,
+                None => normal(dirs[0]),
+            },
+            k if k == p.len() - 1 => normal(dirs[k - 1]),
+            k => corner(dirs[k - 1], dirs[k])?,
+        };
+        out.push((q.0 + d * v.0, q.1 + d * v.1));
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,5 +247,23 @@ mod tests {
         assert!(segment_hits(b, (5, 5), (6, 6)));
         assert!(!segment_hits(b, (-5, 20), (15, 20)));
         assert!(!segment_hits(b, (-5, -5), (-1, 20)));
+    }
+
+    #[test]
+    fn polyline_offsets_keep_square_corners() {
+        // Right then up: the left-hand wire turns inside the corner, the right-hand one outside.
+        let pts = [(0, 0), (100, 0), (100, 100)];
+        assert_eq!(offset_polyline(&pts, 10, None), Some(vec![(0, 10), (90, 10), (90, 100)]));
+        assert_eq!(offset_polyline(&pts, -10, None), Some(vec![(0, -10), (110, -10), (110, 100)]));
+        // Collinear vertices and duplicates are fine; a U-turn or a diagonal is not.
+        assert_eq!(offset_polyline(&[(0, 0), (50, 0), (50, 0), (100, 0)], 5, None), Some(vec![(0, 5), (50, 5), (100, 5)]));
+        assert_eq!(offset_polyline(&[(0, 0), (100, 0), (0, 0)], 5, None), None);
+        assert_eq!(offset_polyline(&[(0, 0), (100, 50)], 5, None), None);
+        // After a via the bus continues straight on; turning there would cross its wires.
+        assert_eq!(
+            offset_polyline(&[(100, 0), (200, 0), (200, 50)], 10, Some((1, 0))),
+            Some(vec![(100, 10), (190, 10), (190, 50)])
+        );
+        assert_eq!(offset_polyline(&[(100, 0), (100, 100)], 10, Some((1, 0))), None);
     }
 }

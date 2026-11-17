@@ -5,7 +5,7 @@ use std::collections::{BTreeSet, HashMap};
 use eframe::egui::{self, Align2, Color32, FontId, Key, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use ics_core::connectivity::{Connectivity, extract};
 use ics_core::geom::{Orient, Pt};
-use ics_core::schematic::{DeviceKind, Instance, Prim, SchObj, Schematic};
+use ics_core::schematic::{DeviceKind, Instance, PortDir, Prim, SchObj, Schematic};
 use ics_core::units::format_eng;
 
 use crate::canvas::View2D;
@@ -347,6 +347,21 @@ pub fn draw_schematic(painter: &egui::Painter, view: &View2D, rect: Rect, sch: &
         let p = screen(view, rect, l.pos.x as f32, l.pos.y as f32);
         let color = if sel(SchObj::Label(l.id)) { pal.selection } else { pal.label };
         painter.circle_filled(p, (s * 0.12).clamp(1.5, 4.0), color);
+        if let Some(dir) = l.port {
+            // Pin: a pentagon beyond the label point on the side away from its wire, pointing
+            // into the circuit for an input, out of it for an output, both ways for inout.
+            let (h, w) = ((s * 0.3).clamp(3.0, 9.0), (s * 0.6).clamp(5.0, 16.0));
+            let (ox, oy) = sch.pin_outward(l.id);
+            // Screen y points down like schematic y.
+            let (u, n) = (Vec2::new(ox as f32, oy as f32), Vec2::new(-oy as f32, ox as f32));
+            let at = |a: f32, b: f32| p + u * (3.0 + a) + n * b;
+            let pts = match dir {
+                PortDir::Input => vec![at(0.0, 0.0), at(h, -h), at(w, -h), at(w, h), at(h, h)],
+                PortDir::Output => vec![at(0.0, -h), at(w - h, -h), at(w, 0.0), at(w - h, h), at(0.0, h)],
+                PortDir::InOut => vec![at(0.0, 0.0), at(h, -h), at(w - h, -h), at(w, 0.0), at(w - h, h), at(h, h)],
+            };
+            painter.add(egui::Shape::closed_line(pts, Stroke::new(1.2, color)));
+        }
         if !o.thumbnail {
             painter.text(p + Vec2::new(3.0, -3.0), Align2::LEFT_BOTTOM, &l.name, font.clone(), color);
         }
@@ -561,7 +576,11 @@ impl SchematicEditor {
                 }
                 SchObj::Label(id) => {
                     if let Some(l) = sch.labels.iter().find(|l| l.id == id).cloned() {
-                        new_sel.insert(SchObj::Label(sch.add_label(l.name, l.pos + d)));
+                        let nid = match l.port {
+                            Some(dir) => sch.add_pin(l.name, l.pos + d, dir),
+                            None => sch.add_label(l.name, l.pos + d),
+                        };
+                        new_sel.insert(SchObj::Label(nid));
                     }
                 }
             }
@@ -1308,6 +1327,23 @@ impl SchematicEditor {
                     }
                     if r.changed() {
                         sch.labels[idx].name = name;
+                        changed = true;
+                    }
+                    let mut port = sch.labels[idx].port;
+                    let lb = ui.label("Pin");
+                    egui::ComboBox::from_id_salt("label_port")
+                        .selected_text(port.map_or("not a pin", PortDir::name))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut port, None, "not a pin");
+                            for d in PortDir::ALL {
+                                ui.selectable_value(&mut port, Some(d), d.name());
+                            }
+                        })
+                        .response
+                        .labelled_by(lb.id);
+                    if port != sch.labels[idx].port {
+                        self.history.push(sch);
+                        sch.labels[idx].port = port;
                         changed = true;
                     }
                 }

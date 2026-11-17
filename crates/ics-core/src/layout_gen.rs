@@ -102,6 +102,92 @@ pub fn guard_ring(tech: &Tech, g: &GuardRing) -> Result<Vec<(usize, Geometry)>, 
     Ok(out)
 }
 
+/// A multi-part path guard ring (Virtuoso MPP / fluid guard ring of any outline): a contacted,
+/// metal-strapped diffusion band of `width` centred on a Manhattan centre line, with its
+/// implant, and for `well` an nwell over the band and (when `closed`) everything it encloses.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RingPath {
+    /// Centre line vertices (dbu); Manhattan.
+    pub points: Vec<(i64, i64)>,
+    /// The last vertex joins the first.
+    pub closed: bool,
+    /// n+ ring in an nwell (`true`) or p+ substrate ring.
+    pub well: bool,
+    /// Band width; 0 = the minimum for one contact row and the strap.
+    pub width: i64,
+}
+
+pub fn ring_path(tech: &Tech, g: &RingPath) -> Result<Vec<(usize, Geometry)>, String> {
+    use crate::region::Region;
+    let grid = tech.grid.max(1);
+    let active = tech.tap_layer().ok_or_else(|| format!("technology '{}' has no tap layer", tech.name))?;
+    let con = tech
+        .diff_contact()
+        .ok_or_else(|| format!("technology '{}' has no diffusion contact '{}'", tech.name, tech.roles.diff_contact))?;
+    let (_, cut, m1) = via_layers(tech, con)?;
+    let imp = implant(tech, !g.well)?;
+    let enc = con.enc_bottom.max(con.enc_top);
+    let need = snap_up(min_width(tech, active).max(con.cut_size + 2 * enc).max(min_width(tech, m1)), grid);
+    let w = if g.width <= 0 { need } else { snap_up(g.width, grid) };
+    if w < need {
+        return Err(format!("ring width {w} is below the minimum {need}"));
+    }
+    let mut pts: Vec<(i64, i64)> = Vec::with_capacity(g.points.len() + 1);
+    for &p in &g.points {
+        let p = (snap_down(p.0, grid), snap_down(p.1, grid));
+        if pts.last() != Some(&p) {
+            pts.push(p);
+        }
+    }
+    if g.closed && pts.len() > 2 && pts.first() != pts.last() {
+        pts.push(pts[0]);
+    }
+    if pts.len() < 2 {
+        return Err("a ring path needs at least two distinct points".into());
+    }
+    if pts.windows(2).any(|s| s[0].0 != s[1].0 && s[0].1 != s[1].1) {
+        return Err("ring path segments must be horizontal or vertical".into());
+    }
+    let h = w / 2;
+    let seg =
+        |a: (i64, i64), b: (i64, i64), e: i64| IRect::new(a.0.min(b.0) - e, a.1.min(b.1) - e, a.0.max(b.0) + e, a.1.max(b.1) + e);
+    let band = Region::from_rects(pts.windows(2).map(|s| seg(s[0], s[1], h)));
+    let mut out: Vec<(usize, Geometry)> = band.to_geometry().into_iter().map(|geo| (active, geo)).collect();
+    out.extend(band.to_geometry().into_iter().map(|geo| (m1, geo)));
+    if let Some(imp) = imp {
+        let e = snap_up(tech.rules.implant_enc, grid);
+        out.extend(band.sized(e).to_geometry().into_iter().map(|geo| (imp, geo)));
+    }
+    if g.well {
+        let nwell = tech.nwell().ok_or_else(|| format!("technology '{}' has no nwell layer", tech.name))?;
+        let mut cover = band.clone();
+        if g.closed && pts.len() > 3 {
+            cover = cover.boolean(
+                &Region::from_geometry(&Geometry::Polygon { points: pts[..pts.len() - 1].to_vec() })?,
+                crate::region::BoolOp::Or,
+            );
+        }
+        out.extend(cover.sized(snap_up(tech.rules.nwell_enc, grid)).to_geometry().into_iter().map(|geo| (nwell, geo)));
+    }
+    // Contacts: a cut row along each segment, kept clear of the corners so rows of adjacent
+    // segments never come closer than the cut spacing.
+    let pitch = snap_up(con.cut_size + con.cut_spacing, grid);
+    let clear = h + con.cut_spacing;
+    for s in pts.windows(2) {
+        let (a, b) = (s[0], s[1]);
+        let r = seg(a, b, h - enc);
+        let inner = if a.1 == b.1 {
+            IRect::new(r.x0 + clear, r.y0, r.x1 - clear, r.y1)
+        } else {
+            IRect::new(r.x0, r.y0 + clear, r.x1, r.y1 - clear)
+        };
+        if inner.x1 - inner.x0 >= con.cut_size && inner.y1 - inner.y0 >= con.cut_size {
+            out.extend(cut_grid(inner, con.cut_size, pitch, grid).into_iter().map(|c| (cut, Geometry::Rect(c))));
+        }
+    }
+    Ok(out)
+}
+
 /// Cuts (and enclosure pads) filling `area` with the via's cut array; fails if the area is too small for one cut.
 ///
 /// The cuts are the largest grid that keeps both enclosures inside `area` (snapped inward to the

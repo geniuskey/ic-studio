@@ -43,6 +43,41 @@ pub enum PCell {
         well: bool,
         w: i64,
     },
+    /// Contacted, metal-strapped guard ring around a `w` × `h` keep area (Virtuoso fluid
+    /// guard ring, rectangular): n+ in an nwell (`well`) or p+ substrate. Stretching a side
+    /// resizes the area. `width` and `gap` of 0 take the minimum.
+    GuardRing {
+        well: bool,
+        w: i64,
+        h: i64,
+        #[serde(default)]
+        width: i64,
+        #[serde(default)]
+        gap: i64,
+    },
+    /// Multi-part path guard ring of any Manhattan outline (Virtuoso MPP): a contacted,
+    /// strapped diffusion band along `points` (closed into a loop when `closed`). Stretching a
+    /// side moves the vertices on that side.
+    RingPath {
+        well: bool,
+        points: Vec<(i64, i64)>,
+        #[serde(default)]
+        closed: bool,
+        #[serde(default)]
+        width: i64,
+    },
+    /// A PCell defined in SKILL with `pcDefinePCell` (kept on its master cell): parameter
+    /// names with their defaults and the body, both as SKILL text, which [`crate::skill`]
+    /// runs for each parameter set.
+    SkillDef {
+        params: Vec<(String, String)>,
+        body: String,
+    },
+    /// A variant of a SKILL PCell: its master (`lib/cell`) and parameter values (SKILL text).
+    SkillVariant {
+        master: String,
+        params: Vec<(String, String)>,
+    },
 }
 
 impl PCell {
@@ -70,6 +105,12 @@ impl PCell {
             PCell::MomCap { .. } => "mom_cap",
             PCell::Tap { well: true, .. } => "ntap",
             PCell::Tap { well: false, .. } => "ptap",
+            PCell::GuardRing { well: true, .. } => "nring",
+            PCell::GuardRing { well: false, .. } => "pring",
+            PCell::RingPath { well: true, .. } => "nring_path",
+            PCell::RingPath { well: false, .. } => "pring_path",
+            PCell::SkillDef { .. } => "skill_pcell",
+            PCell::SkillVariant { .. } => "skill_variant",
         }
     }
 
@@ -82,6 +123,34 @@ impl PCell {
             PCell::PolyRes { w, l } => format!("{k}_w{w}_l{l}"),
             PCell::MomCap { w, h } => format!("{k}_w{w}_h{h}"),
             PCell::Tap { w, .. } => format!("{k}_w{w}"),
+            PCell::GuardRing { w, h, width, gap, .. } => format!("{k}_w{w}_h{h}_rw{width}_g{gap}"),
+            PCell::RingPath { points, closed, width, .. } => {
+                // FNV-1a of the outline: the vertex list is too long for a name.
+                let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+                for v in points.iter().flat_map(|p| [p.0, p.1]).chain([*closed as i64, *width]) {
+                    for b in v.to_le_bytes() {
+                        h = (h ^ b as u64).wrapping_mul(0x100_0000_01b3);
+                    }
+                }
+                format!("{k}_{}pt_{h:016x}", points.len())
+            }
+            PCell::SkillDef { .. } => k.to_string(),
+            PCell::SkillVariant { master, params } => {
+                let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+                for (n, v) in params {
+                    for b in n.bytes().chain([0]).chain(v.bytes()).chain([1]) {
+                        h = (h ^ b as u64).wrapping_mul(0x100_0000_01b3);
+                    }
+                }
+                let base: String = master
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(master)
+                    .chars()
+                    .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect();
+                format!("{base}_{h:016x}")
+            }
         }
         .replace('-', "m")
     }
@@ -98,6 +167,15 @@ impl PCell {
             PCell::PolyRes { w, l } => format!("{k} W={} L={}", um(*w), um(*l)),
             PCell::MomCap { w, h } => format!("{k} W={} H={}", um(*w), um(*h)),
             PCell::Tap { w, .. } => format!("{k} W={}", um(*w)),
+            PCell::GuardRing { w, h, .. } => format!("{k} guard ring around {} x {}", um(*w), um(*h)),
+            PCell::RingPath { points, closed, .. } => {
+                format!("{k} guard ring path, {} vertices{}", points.len(), if *closed { ", closed" } else { "" })
+            }
+            PCell::SkillDef { params, .. } => format!("SKILL PCell, {} parameter(s)", params.len()),
+            PCell::SkillVariant { master, params } => {
+                let p: Vec<String> = params.iter().map(|(n, v)| format!("{n}={v}")).collect();
+                format!("{master} {}", p.join(" "))
+            }
         }
     }
 
@@ -116,6 +194,34 @@ impl PCell {
             PCell::MomCap { h, .. } => *h = add(*h, d)?,
             PCell::Tap { w, .. } if !along_x => *w = add(*w, d)?,
             PCell::Tap { .. } => return None,
+            PCell::GuardRing { w, .. } if along_x => *w = add(*w, d)?,
+            PCell::GuardRing { h, .. } => *h = add(*h, d)?,
+            PCell::RingPath { .. } => return self.stretched_side(along_x, d, false),
+            PCell::SkillDef { .. } | PCell::SkillVariant { .. } => return None,
+        }
+        (p != *self).then_some(p)
+    }
+
+    /// [`Self::stretched`] from the low (left / bottom, `low`) or high side of the cell's own
+    /// axis. Only a ring path cares: the vertices on that side move, the others stay.
+    pub fn stretched_side(&self, along_x: bool, d: i64, low: bool) -> Option<PCell> {
+        let PCell::RingPath { points, .. } = self else { return self.stretched(along_x, d) };
+        let coord = |p: &(i64, i64)| if along_x { p.0 } else { p.1 };
+        let (lo, hi) = (points.iter().map(coord).min()?, points.iter().map(coord).max()?);
+        let edge = if low { lo } else { hi };
+        let shift = if low { -d } else { d };
+        if hi - lo + d <= 0 {
+            return None;
+        }
+        let mut p = self.clone();
+        if let PCell::RingPath { points, .. } = &mut p {
+            for q in points.iter_mut().filter(|q| coord(q) == edge) {
+                if along_x {
+                    q.0 += shift;
+                } else {
+                    q.1 += shift;
+                }
+            }
         }
         (p != *self).then_some(p)
     }
@@ -127,6 +233,26 @@ impl PCell {
             PCell::PolyRes { w, l } => gen_poly_res(tech, w, l),
             PCell::MomCap { w, h } => gen_mom_cap(tech, w, h),
             PCell::Tap { well, w } => gen_tap(tech, well, w),
+            PCell::GuardRing { well, w, h, width, gap } => {
+                let ring =
+                    crate::layout_gen::GuardRing { area: IRect::new(0, 0, w, h), well, width, gap, contacts: true, metal: true };
+                let mut lay = Layout::default();
+                for (l, g) in crate::layout_gen::guard_ring(tech, &ring)? {
+                    lay.add(l, g);
+                }
+                Ok(lay)
+            }
+            PCell::SkillDef { .. } | PCell::SkillVariant { .. } => {
+                Err("SKILL PCells are evaluated by the SKILL interpreter (dbCreateParamInst)".to_string())
+            }
+            PCell::RingPath { well, ref points, closed, width } => {
+                let ring = crate::layout_gen::RingPath { points: points.clone(), closed, well, width };
+                let mut lay = Layout::default();
+                for (l, g) in crate::layout_gen::ring_path(tech, &ring)? {
+                    lay.add(l, g);
+                }
+                Ok(lay)
+            }
         }?;
         add_pcell_layers(&mut lay, tech, self.kind_name())?;
         Ok(lay)
@@ -561,6 +687,9 @@ mod tests {
         assert_eq!(PCell::PolyRes { w: 400, l: 5000 }.stretched(false, -1000), Some(PCell::PolyRes { w: 400, l: 4000 }));
         assert_eq!(PCell::MomCap { w: 5000, h: 5000 }.stretched(true, 10), Some(PCell::MomCap { w: 5010, h: 5000 }));
         assert_eq!(PCell::Tap { well: true, w: 1000 }.stretched(true, 10), None);
+        let ring = PCell::GuardRing { well: false, w: 4000, h: 3000, width: 0, gap: 0 };
+        assert_eq!(ring.stretched(true, 500), Some(PCell::GuardRing { well: false, w: 4500, h: 3000, width: 0, gap: 0 }));
+        assert_eq!(ring.stretched(false, -1000), Some(PCell::GuardRing { well: false, w: 4000, h: 2000, width: 0, gap: 0 }));
     }
 
     use super::*;
@@ -639,6 +768,11 @@ mod tests {
             for w in [420, 1000, 5000] {
                 all.push(PCell::Tap { well, w });
             }
+            all.push(PCell::GuardRing { well, w: 4000, h: 3000, width: 0, gap: 0 });
+            // An L-shaped closed ring and an open U.
+            let l_shape = vec![(0, 0), (8000, 0), (8000, 3000), (4000, 3000), (4000, 6000), (0, 6000)];
+            all.push(PCell::RingPath { well, points: l_shape, closed: true, width: 0 });
+            all.push(PCell::RingPath { well, points: vec![(0, 6000), (0, 0), (6000, 0), (6000, 6000)], closed: false, width: 0 });
         }
         for p in &all {
             let lay = p.generate(&tech).unwrap_or_else(|e| panic!("{p:?}: {e}"));
@@ -695,5 +829,27 @@ mod tests {
         assert_eq!(PCell::mos(false, 1000, 180, 2).summary(1000), "nmos W=1um L=0.18um nf=2");
         let kinds: Vec<_> = PCell::defaults().iter().map(|p| p.kind_name()).collect();
         assert_eq!(kinds, ["nmos", "pmos", "poly_res", "mom_cap"]);
+    }
+
+    /// Ring paths of any Manhattan outline are DRC clean, and stretching moves one side only.
+    #[test]
+    fn ring_paths_are_drc_clean_and_stretch_one_side() {
+        let tech = Tech::default();
+        let l_shape = vec![(0, 0), (8000, 0), (8000, 3000), (4000, 3000), (4000, 6000), (0, 6000)];
+        for well in [false, true] {
+            for (points, closed) in [(l_shape.clone(), true), (vec![(0, 6000), (0, 0), (6000, 0), (6000, 6000)], false)] {
+                let p = PCell::RingPath { well, points, closed, width: 0 };
+                let lay = p.generate(&tech).unwrap();
+                let rep = crate::drc::run_tech_deck(&lay, &crate::hier::NoCells, &tech).unwrap();
+                assert!(rep.violations.is_empty(), "{p:?}: {:?}", rep.violations.iter().map(|v| &v.rule).collect::<Vec<_>>());
+            }
+        }
+        let p = PCell::RingPath { well: false, points: l_shape.clone(), closed: true, width: 0 };
+        let Some(PCell::RingPath { points, .. }) = p.stretched_side(true, 1000, false) else { panic!() };
+        assert_eq!(points, vec![(0, 0), (9000, 0), (9000, 3000), (4000, 3000), (4000, 6000), (0, 6000)]);
+        let Some(PCell::RingPath { points, .. }) = p.stretched_side(false, 500, true) else { panic!() };
+        assert_eq!(points[0], (0, -500));
+        assert_eq!(points[1], (8000, -500));
+        assert_ne!(p.variant_name(), p.stretched_side(true, 1000, false).unwrap().variant_name());
     }
 }

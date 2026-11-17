@@ -73,6 +73,9 @@ The server has 40 tools:
 | `generate_layout` | Schematic-driven placement with matching (no wiring) |
 | `flylines` | List unrouted connections |
 | `route` | Route the flylines on the metal layers |
+| `check_against_source` | Compare a layout with its schematic: missing, extra and changed devices, shorts, opens |
+| `abut` | Abut MOS PCell instances on their shared source / drain nets |
+| `update_from_source` | Place new schematic devices, resize changed ones in place, optionally delete extra ones |
 | `run_drc` | DRC with the technology deck |
 | `fix_drc` | Apply verified quick fixes to the cell's top-level geometry until nothing more can be fixed |
 | `compact` | Slide top-level items toward each direction until the rules stop them; constraints hold |

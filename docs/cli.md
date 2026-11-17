@@ -47,6 +47,7 @@ it with `cargo build --release -p ics-cli` (binary `target/release/ics`) or run 
 | `ics opc <PROJECT> <CELL> --layer LAYER [--apply] [--sigma UM] [--threshold T] [--fragment UM] [--max-out UM] [--max-in UM] [--iterations N] [--gain G] [--json]` | Optical proximity correction of a layer: EPE without and with correction; `--apply` writes the mask to `<LAYER>_opc` (replacing the previous mask; the drawn layer is never changed) and saves |
 | `ics signoff <PROJECT> <CELL> [RUNSET]` | Run an external KLayout / Calibre / netgen runset (list them without RUNSET); exit 1 on violations or a mismatch |
 | `ics route <PROJECT> <CELL> [--place]` | Route flylines and save; exit 1 if nets stay unrouted |
+| `ics eco <PROJECT> <CELL> [--update] [--remove-extra] [--allow-opens]` | Check the layout against its schematic (missing, extra, changed devices, shorts, opens); `--update` places and resizes devices and saves; exit 1 on differences |
 | `ics compact <PROJECT> <CELL> [--dir left,down] [--no-infer]` | Compact the layout toward the given directions and save |
 | `ics diff <PROJECT> <CELL> [--rev REV \| --against DIR]` | Compare the layout with a git revision (default `HEAD`) or another project; exit 1 if they differ |
 | `ics verify <PROJECT> [--test NAME]... [--junit FILE] [--against RUN] [--no-history] [--json]` | Run the verification plan (every test's corners, sweeps and Monte Carlo), summarise each spec, compare with the previous run; `--add CELL` adds a test, `--list` lists them; exit 1 on a failing or unmeasured spec |

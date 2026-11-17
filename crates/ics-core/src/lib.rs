@@ -3,6 +3,7 @@
 //! This crate is UI-independent so it can back the desktop app, the CLI and future
 //! Python / MCP automation interfaces.
 
+pub mod abut;
 pub mod by_example;
 pub mod cadence;
 pub mod compact;
@@ -11,6 +12,7 @@ pub mod constraints;
 pub mod dopants;
 pub mod drc;
 pub mod drc_fix;
+pub mod eco;
 pub mod emir;
 pub mod examples;
 pub mod extract;
@@ -56,6 +58,7 @@ pub mod svrf;
 pub mod sweep;
 pub mod tech;
 pub mod tech_import;
+pub mod tracks;
 pub mod units;
 pub mod verify;
 pub mod virtuoso;
@@ -64,6 +67,6 @@ pub mod virtuoso_dump;
 pub use geom::{IRect, Orient, Pt};
 pub use layout::{ArraySpec, CellInst, Geometry, Layout, Shape, Trans};
 pub use project::{Cell, CellRef, LibStorage, Library, Project, ViewKind};
-pub use schematic::{DeviceKind, Instance, NetLabel, SchObj, Schematic, Wire};
+pub use schematic::{DeviceKind, Instance, NetLabel, PortDir, SchObj, Schematic, Wire};
 pub use sim_setup::{Analysis, AnalysisEntry, Backend, SimSetup};
 pub use tech::{FillStyle, LayerDef, LineStyle, Stipple, Tech};
