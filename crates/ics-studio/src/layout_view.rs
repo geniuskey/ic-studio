@@ -323,7 +323,7 @@ impl Default for LayoutEditor {
             live: live::LiveDrc::default(),
             cursor: None,
             show_grid: true,
-            max_depth: 32,
+            max_depth: 0,
             place: None,
             place_rot: 0,
             place_mirror: false,
