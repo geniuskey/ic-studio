@@ -228,7 +228,7 @@ IC Studio → 프로그램:
 }
 ```
 
-인덱스 항목 규칙은
+`index.json`만 바꾸는 pull request에는 CLA 서명이 필요 없습니다. 인덱스 항목 규칙은
 [`extensions/README.md`](https://github.com/geniuskey/ic-studio/blob/main/extensions/README.md)에
 있습니다. `ICS_EXTENSION_INDEX`로 다른 인덱스(URL이나 파일), 예를 들어 회사 내부 인덱스를 쓸 수
 있습니다.

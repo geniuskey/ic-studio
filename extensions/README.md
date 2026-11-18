@@ -52,6 +52,9 @@ How to use and write extensions: [Extensions](https://pages.euiyun.com/ic-studio
 `id` must equal the `id` in `extension.toml`. To publish a new version, open a pull request
 that changes `rev`.
 
+A pull request that changes only `index.json` needs no CLA ([CLA.md](../CLA.md) covers code and
+documentation contributed to IC Studio itself; your extension stays yours, under your license).
+
 ### Review checklist
 
 Maintainers check, and authors should check before opening the pull request:

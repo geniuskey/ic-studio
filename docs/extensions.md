@@ -249,7 +249,7 @@ A minimal exchange (`>` to the program, `<` from it):
 }
 ```
 
-The rules for index entries are in
+A pull request that changes only `index.json` needs no CLA. The rules for index entries are in
 [`extensions/README.md`](https://github.com/geniuskey/ic-studio/blob/main/extensions/README.md).
 `ICS_EXTENSION_INDEX` points IC Studio at another index (a URL or a file), for example a
 company's internal one.

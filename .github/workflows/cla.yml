@@ -16,8 +16,23 @@ jobs:
   cla:
     runs-on: ubuntu-latest
     steps:
+      # Pull requests that only change the extension index (extensions/index.json: listing an
+      # extension kept in its author's repository) need no CLA. Only the file list is read; the
+      # pull request's code is never checked out.
+      - name: Index-only pull request?
+        id: scope
+        if: github.event_name == 'pull_request_target' || github.event.issue.pull_request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number || github.event.issue.number }}
+        run: |
+          files=$(gh api "repos/${{ github.repository }}/pulls/$PR/files" --paginate --jq '.[].filename' || true)
+          if [ "$files" = "extensions/index.json" ]; then
+            echo "exempt=true" >> "$GITHUB_OUTPUT"
+            echo "Only extensions/index.json changed: no CLA needed."
+          fi
       - name: CLA Assistant
-        if: (github.event.comment.body == 'recheck' || github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA') || github.event_name == 'pull_request_target'
+        if: steps.scope.outputs.exempt != 'true' && ((github.event.comment.body == 'recheck' || github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA') || github.event_name == 'pull_request_target')
         uses: contributor-assistant/github-action@v2.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
