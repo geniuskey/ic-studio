@@ -220,8 +220,11 @@ A modified nodal analysis engine written in Rust. It supports:
 
 - elements `R C L V I D M`, bipolar transistors `Q` (Gummel-Poon: Early voltages, knee
   currents, non-ideal base currents, junction and diffusion charges, series resistances,
-  temperature through `eg xti xtb`), linear controlled sources `E F G H`, and subcircuit
-  instances `X` (no behavioural `B` sources or `POLY` / `VALUE` forms: those decks go to
+  temperature through `eg xti xtb`), linear controlled sources `E F G H`, behavioural sources
+  `B` (`V=` or `I=` expressions of `v(a)`, `v(a, b)`, `i(vname)` and `time`), mutual inductance
+  `K`, voltage and current switches `S` / `W` (`.model sw` / `csw` with `vt vh ron roff` /
+  `it ih ron roff`; the switch turns on smoothly across `vt ± vh` rather than with
+  hysteresis), and subcircuit instances `X` (no `POLY` / `VALUE` forms: those decks go to
   ngspice under **Auto**),
 - sources: `DC`, `AC mag [phase]`, `PULSE(v1 v2 td tr tf pw per)`,
   `SIN(vo va freq td theta phase)`, `PWL(t v ...)` with `r=` and `td=`,

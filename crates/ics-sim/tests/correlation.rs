@@ -169,6 +169,30 @@ fn suite() -> Vec<(&'static str, String, f64)> {
             0.03,
         ),
         (
+            "behavioural_sources",
+            "* B sources\nV1 in 0 dc 1 ac 1 sin(1 0.5 1meg)\nVs in s 0\nRs s 0 1k\n\
+             B1 b1 0 V=v(in)*v(in) + 0.5*v(in, s) + 0.1*sin(2*pi*2meg*time)\nRb1 b1 0 1k\n\
+             B2 0 b2 I=1m*tanh(v(in)) + 0.2*i(Vs)\nRb2 b2 0 1k\n.op\n.ac dec 5 1k 10meg\n.tran 10n 2u\n.end\n"
+                .into(),
+            1e-3,
+        ),
+        (
+            "mutual_inductance",
+            "* transformer\nV1 in 0 dc 0 ac 1 pulse(0 1 0 10n 10n 1u 2u)\nR1 in a 50\nL1 a 0 10u\nL2 b 0 40u\nK1 L1 L2 0.9\n\
+             R2 b 0 200\n.ac dec 10 10k 100meg\n.tran 5n 4u\n.end\n"
+                .into(),
+            1e-2,
+        ),
+        (
+            "switches",
+            "* S and W\nV1 a 0 1\nVc ctl 0 dc 0.2 pulse(0 1 0.5u 10n 10n 1u 2u)\nS1 a out ctl 0 sw\nRo out 0 1k\n\
+             Vs ctl m 0\nRm m 0 500\nW1 a out2 Vs csw\nRo2 out2 0 1k\n\
+             .model sw sw vt=0.5 ron=10 roff=1meg\n.model csw csw it=1m ron=5 roff=10meg\n\
+             .dc Vc 0 0.9 0.15\n.tran 5n 3u\n.end\n"
+                .into(),
+            1e-2,
+        ),
+        (
             "cs_amp",
             format!(
                 "* cs\nVDD vdd 0 1.8\nVIN in 0 DC 0.6 AC 1\nRD vdd out 10k\nM1 out in 0 0 nmos w=2u l=1u\nCL out 0 100f\n{m}\n.op\n.ac dec 10 1k 10g\n.end\n"

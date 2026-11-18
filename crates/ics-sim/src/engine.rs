@@ -11,7 +11,7 @@ use ics_core::Analysis;
 use ics_core::units::parse_spice;
 
 use crate::SimError;
-use crate::circuit::{BjtModel, Circuit, CtrlKind, DiodeModel, Element, MosModel, Node};
+use crate::circuit::{BjtModel, Circuit, CtrlKind, DiodeModel, Element, MosModel, Node, Ref};
 use crate::linalg::{Matrix, solve};
 use crate::results::{Dataset, DeviceOp, VecKind, Vector};
 
@@ -90,6 +90,13 @@ struct TranState {
     qdev_i: Vec<[f64; 4]>,
 }
 
+/// A linear combination of unknowns: (column, coefficient).
+type Lin = Vec<(usize, f64)>;
+
+fn lin_value(x: &[f64], l: &Lin) -> f64 {
+    l.iter().map(|&(c, s)| s * x[c]).sum()
+}
+
 /// Consecutive sign flips of a branch current's second difference taken as trapezoidal ringing.
 const RING_FLIPS: usize = 8;
 
@@ -118,6 +125,11 @@ pub struct Engine {
     size: usize,
     caps: Vec<Cap>,
     inductors: Vec<usize>,
+    /// For B sources: each reference as a signed sum of unknowns (`v(a, b)`: two node columns,
+    /// `i(vname)`: one branch column), by element.
+    lin: Vec<Vec<Lin>>,
+    /// Mutual inductances: the two inductors' branch rows, their positions in `inductors`, and M.
+    mutual: Vec<(usize, usize, usize, usize, f64)>,
     /// Charge-based MOS devices (BSIM4): element index and (d, g, s, b) nodes.
     qdevs: Vec<(usize, [Node; 4])>,
     vt: f64,
@@ -494,7 +506,7 @@ impl Engine {
                     size += 1;
                     inductors.push(i);
                 }
-                Element::Ctrl { kind: CtrlKind::E | CtrlKind::H, .. } => {
+                Element::Ctrl { kind: CtrlKind::E | CtrlKind::H, .. } | Element::B { voltage: true, .. } => {
                     branch[i] = Some(size);
                     size += 1;
                 }
@@ -588,6 +600,57 @@ impl Engine {
                     .ok_or_else(|| SimError::Engine(format!("{name}: no voltage source '{vctl}' to sense the current of")))?;
                 ctrl[i] = branch[k];
             }
+            if let Element::S { name, vctl, .. } = e
+                && !vctl.is_empty()
+            {
+                let k = c
+                    .elements
+                    .iter()
+                    .position(|v| matches!(v, Element::V { .. }) && v.name().eq_ignore_ascii_case(vctl))
+                    .ok_or_else(|| SimError::Engine(format!("{name}: no voltage source '{vctl}' to sense the current of")))?;
+                ctrl[i] = branch[k];
+            }
+        }
+        // A branch current by element name, for i(...) in B sources.
+        let branch_of = |n: &str| c.elements.iter().position(|e| e.name().eq_ignore_ascii_case(n)).and_then(|k| branch[k]);
+        let mut lin = vec![vec![]; c.elements.len()];
+        let mut mutual = vec![];
+        for (i, e) in c.elements.iter().enumerate() {
+            match e {
+                Element::B { name, refs, .. } => {
+                    for r in refs {
+                        lin[i].push(match r {
+                            Ref::V(p, n) => {
+                                [(*p, 1.0), (*n, -1.0)].into_iter().filter(|q| q.0 != 0).map(|(n, s)| (n - 1, s)).collect()
+                            }
+                            Ref::I(v) => vec![(
+                                branch_of(v)
+                                    .ok_or_else(|| SimError::Engine(format!("{name}: no source or inductor '{v}' for i({v})")))?,
+                                1.0,
+                            )],
+                        });
+                    }
+                }
+                Element::K { name, l1, l2, k } => {
+                    let find = |n: &str| {
+                        inductors
+                            .iter()
+                            .position(|&q| c.elements[q].name().eq_ignore_ascii_case(n))
+                            .ok_or_else(|| SimError::Engine(format!("{name}: no inductor '{n}'")))
+                    };
+                    let (p1, p2) = (find(l1)?, find(l2)?);
+                    if k.is_nan() || k.abs() > 1.0 {
+                        return Err(SimError::Engine(format!("{name}: coupling {k} must lie within [-1, 1]")));
+                    }
+                    let l = |p: usize| match &c.elements[inductors[p]] {
+                        Element::L { l, .. } => *l,
+                        _ => unreachable!(),
+                    };
+                    let m = k * (l(p1) * l(p2)).abs().sqrt();
+                    mutual.push((branch[inductors[p1]].unwrap(), branch[inductors[p2]].unwrap(), p1, p2, m));
+                }
+                _ => {}
+            }
         }
         Ok(Self {
             nn,
@@ -596,6 +659,8 @@ impl Engine {
             size,
             caps,
             inductors,
+            lin,
+            mutual,
             qdevs,
             vt,
             log: vec![],
@@ -605,6 +670,28 @@ impl Engine {
             damp: c.elements.iter().any(|e| matches!(e, Element::M { .. })),
             c,
         })
+    }
+
+    /// A B source's value at `x` and time `t`, its derivatives by reference and the reference values.
+    fn b_eval(&self, ei: usize, expr: &str, x: &[f64], t: f64) -> (f64, Vec<f64>, Vec<f64>) {
+        let u: Vec<f64> = self.lin[ei].iter().map(|l| lin_value(x, l)).collect();
+        let f = |u: &[f64]| {
+            let mut p: crate::expr::Params = u.iter().enumerate().map(|(k, v)| (format!("__x{k}"), *v)).collect();
+            p.insert("time".into(), t);
+            crate::expr::eval(expr, &p).unwrap_or(f64::NAN)
+        };
+        let f0 = f(&u);
+        let d = (0..u.len())
+            .map(|k| {
+                let h = 1e-6 * (1.0 + u[k].abs());
+                let mut up = u.clone();
+                let mut dn = u.clone();
+                up[k] += h;
+                dn[k] -= h;
+                (f(&up) - f(&dn)) / (2.0 * h)
+            })
+            .collect();
+        (f0, d, u)
     }
 
     /// Bulk junction diodes of a MOS at `x`: (anode, cathode, current, conductance).
@@ -732,6 +819,59 @@ impl Engine {
                 Element::R { a, b, r, .. } => cond(&mut m, *a, *b, 1.0 / r),
                 Element::Ctrl { kind, a, b, cp, cn, gain, .. } => {
                     stamp_ctrl(&mut m, *kind, [*a, *b, *cp, *cn], self.branch[ei], self.ctrl[ei], *gain, 1.0, |g| g);
+                }
+                Element::B { a, b, voltage, expr, .. } => {
+                    let (f0, d, u0) = self.b_eval(ei, expr, x, t.unwrap_or(0.0));
+                    let k0 = f0 - d.iter().zip(&u0).map(|(d, u)| d * u).sum::<f64>();
+                    if *voltage {
+                        let br = self.branch[ei].unwrap();
+                        for (n, s) in [(*a, 1.0), (*b, -1.0)] {
+                            if let Some(i) = idx(n) {
+                                m.add(i, br, s);
+                                m.add(br, i, s);
+                            }
+                        }
+                        for (k, l) in self.lin[ei].iter().enumerate() {
+                            for &(col, s) in l {
+                                m.add(br, col, -d[k] * s);
+                            }
+                        }
+                        rhs[br] += k0;
+                    } else {
+                        for (n, rs) in [(*a, 1.0), (*b, -1.0)] {
+                            let Some(i) = idx(n) else { continue };
+                            for (k, l) in self.lin[ei].iter().enumerate() {
+                                for &(col, s) in l {
+                                    m.add(i, col, rs * d[k] * s);
+                                }
+                            }
+                        }
+                        cur(&mut rhs, *a, *b, k0);
+                    }
+                }
+                Element::K { .. } => {}
+                Element::S { a, b, cp, cn, model, .. } => {
+                    let current = self.ctrl[ei].is_some();
+                    let (cl, cv): (Lin, f64) = match self.ctrl[ei] {
+                        Some(br) => (vec![(br, 1.0)], x[br]),
+                        None => {
+                            let l: Lin =
+                                [(*cp, 1.0), (*cn, -1.0)].into_iter().filter(|q| q.0 != 0).map(|(n, s)| (n - 1, s)).collect();
+                            let v = lin_value(x, &l);
+                            (l, v)
+                        }
+                    };
+                    let (g, dg) = model.g(cv, current);
+                    let vab = self.v(x, *a) - self.v(x, *b);
+                    cond(&mut m, *a, *b, g);
+                    for (n, rs) in [(*a, 1.0), (*b, -1.0)] {
+                        if let Some(i) = idx(n) {
+                            for &(col, s) in &cl {
+                                m.add(i, col, rs * vab * dg * s);
+                            }
+                        }
+                    }
+                    cur(&mut rhs, *a, *b, -vab * dg * cv);
                 }
                 Element::Q { c, b, e, model, area, .. } => {
                     let nodes = [*c, *b, *e];
@@ -905,6 +1045,16 @@ impl Engine {
                     }
                     rhs[r] -= lin;
                 }
+            }
+            let f = match method {
+                Integ::Trapezoidal => 2.0 / h,
+                Integ::BackwardEuler => 1.0 / h,
+            };
+            for &(b1, b2, p1, p2, mm) in &self.mutual {
+                m.add(b1, b2, -f * mm);
+                m.add(b2, b1, -f * mm);
+                rhs[b1] -= f * mm * state.ind_i[p2];
+                rhs[b2] -= f * mm * state.ind_i[p1];
             }
         }
         (m, rhs)
@@ -1235,6 +1385,50 @@ impl Engine {
                     Complex64::new(1.0, 0.0),
                     |g| Complex64::new(g, 0.0),
                 ),
+                Element::B { a, b, voltage, expr, .. } => {
+                    let (_, d, _) = self.b_eval(ei, expr, x0, 0.0);
+                    if *voltage {
+                        let br = self.branch[ei].unwrap();
+                        branch(&mut m, *a, *b, br);
+                        for (k, l) in self.lin[ei].iter().enumerate() {
+                            for &(col, s) in l {
+                                m.add(br, col, Complex64::new(-d[k] * s, 0.0));
+                            }
+                        }
+                    } else {
+                        for (n, rs) in [(*a, 1.0), (*b, -1.0)] {
+                            let Some(i) = idx(n) else { continue };
+                            for (k, l) in self.lin[ei].iter().enumerate() {
+                                for &(col, s) in l {
+                                    m.add(i, col, Complex64::new(rs * d[k] * s, 0.0));
+                                }
+                            }
+                        }
+                    }
+                }
+                Element::K { .. } => {}
+                Element::S { a, b, cp, cn, model, .. } => {
+                    let current = self.ctrl[ei].is_some();
+                    let (cl, cv): (Lin, f64) = match self.ctrl[ei] {
+                        Some(br) => (vec![(br, 1.0)], x0[br]),
+                        None => {
+                            let l: Lin =
+                                [(*cp, 1.0), (*cn, -1.0)].into_iter().filter(|q| q.0 != 0).map(|(n, s)| (n - 1, s)).collect();
+                            let v = lin_value(x0, &l);
+                            (l, v)
+                        }
+                    };
+                    let (g, dg) = model.g(cv, current);
+                    let vab = self.v(x0, *a) - self.v(x0, *b);
+                    y(&mut m, *a, *b, Complex64::new(g, 0.0));
+                    for (n, rs) in [(*a, 1.0), (*b, -1.0)] {
+                        if let Some(i) = idx(n) {
+                            for &(col, s) in &cl {
+                                m.add(i, col, Complex64::new(rs * vab * dg * s, 0.0));
+                            }
+                        }
+                    }
+                }
                 Element::C { .. } => {}
                 Element::L { a, b, l, .. } => {
                     let br = self.branch[ei].unwrap();
@@ -1293,6 +1487,10 @@ impl Engine {
         }
         for (cp, c) in self.caps.iter().zip(caps_at_op) {
             y(&mut m, cp.a, cp.b, Complex64::new(0.0, w * c));
+        }
+        for &(b1, b2, _, _, mm) in &self.mutual {
+            m.add(b1, b2, Complex64::new(0.0, -w * mm));
+            m.add(b2, b1, Complex64::new(0.0, -w * mm));
         }
         for (k, (_, nodes)) in self.qdevs.iter().enumerate() {
             let (_, c) = self.qdev_qc(k, x0);
@@ -1818,6 +2016,28 @@ mod tests {
         assert!((ac.get("v(f)").unwrap().re[0] - 3.0).abs() < 1e-6, "the same in AC");
         assert!(parse_deck("* t\nE1 a 0 POLY(1) b 0 0 1\nR1 a 0 1\n.end").is_err());
         assert!(Engine::new(parse_deck("* t\nF1 a 0 Vx 1\nR1 a 0 1\n.end").unwrap()).is_err(), "no Vx");
+    }
+
+    #[test]
+    fn behavioural_sources_switches_and_coupling() {
+        let deck = "* t\nV1 in 0 2\nVs in s 0\nRs s 0 1k\nB1 b 0 V={v(in)*v(in) - 1}\nRb b 0 1k\n\
+                    B2 0 c I=i(Vs)*2\nRc c 0 1k\n.end";
+        let op = engine(deck).run_op().unwrap();
+        let v = |n: &str| op.get(n).unwrap().re[0];
+        assert!((v("v(b)") - 3.0).abs() < 1e-6, "v(in)^2 - 1");
+        assert!((v("v(c)") - 4.0).abs() < 1e-6, "2 x 2 mA into 1k");
+        for bad in ["B1 a 0 v(a)", "B1 a 0 V=foo(v(a))", "B1 a 0 V=v(a", "S1 a 0 c 0 nomodel", "W1 a 0 V1 sw\n.model sw sw"] {
+            assert!(parse_deck(&format!("* t\nV1 c 0 1\n{bad}\nR1 a 0 1\n.end")).is_err(), "{bad}");
+        }
+        assert!(Engine::new(parse_deck("* t\nB1 a 0 V=i(vx)\nR1 a 0 1\n.end").unwrap()).is_err(), "no vx");
+        assert!(Engine::new(parse_deck("* t\nV1 a 0 1\nL1 a 0 1u\nK1 L1 L9 0.5\n.end").unwrap()).is_err(), "no L9");
+        assert!(Engine::new(parse_deck("* t\nV1 a 0 1\nL1 a 0 1u\nL2 a 0 1u\nK1 L1 L2 1.5\n.end").unwrap()).is_err(), "|k| > 1");
+        // A voltage switch: on above vt, off below.
+        let sw = |vc: f64| {
+            let d = format!("* t\nV1 a 0 1\nVc c 0 {vc}\nS1 a o c 0 sw\nR1 o 0 1k\n.model sw sw vt=0.5 ron=1 roff=1g\n.end");
+            engine(&d).run_op().unwrap().get("v(o)").unwrap().re[0]
+        };
+        assert!(sw(1.0) > 0.99 && sw(0.0) < 1e-5);
     }
     use crate::circuit::parse_deck;
 

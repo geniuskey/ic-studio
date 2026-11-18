@@ -410,6 +410,66 @@ pub enum Element {
         model: BjtModel,
         area: f64,
     },
+    /// A behavioural source between `a` (+) and `b`: a voltage (`v`) or a current from `a` to
+    /// `b` given by `expr`, whose variables `__x0`, `__x1`, ... are `refs` (and `time`).
+    B {
+        name: String,
+        a: Node,
+        b: Node,
+        voltage: bool,
+        expr: String,
+        refs: Vec<Ref>,
+    },
+    /// Mutual inductance between inductors `l1` and `l2` (element names), coefficient `k`.
+    K {
+        name: String,
+        l1: String,
+        l2: String,
+        k: f64,
+    },
+    /// A switch between `a` and `b`, closed (`ron`) above the threshold of its control and
+    /// open (`roff`) below: the voltage `cp` − `cn` (S) or the current of source `vctl` (W).
+    /// The transition is smooth over the hysteresis band (no hysteresis state).
+    S {
+        name: String,
+        a: Node,
+        b: Node,
+        cp: Node,
+        cn: Node,
+        vctl: String,
+        model: SwitchModel,
+    },
+}
+
+/// What a behavioural expression reads.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Ref {
+    /// `v(p)` or `v(p, n)`.
+    V(Node, Node),
+    /// `i(vname)`: the current through a voltage source.
+    I(String),
+}
+
+/// Voltage- (`sw`) or current-controlled (`csw`) switch model.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SwitchModel {
+    pub vt: f64,
+    pub vh: f64,
+    pub ron: f64,
+    pub roff: f64,
+}
+
+impl SwitchModel {
+    /// Conductance at control value `c` and its derivative: log-conductance follows a tanh
+    /// from `1/roff` to `1/ron` across `vt ± max(vh, 1 % of |vt|, 1 mV or 1 µA)`.
+    pub fn g(&self, c: f64, current: bool) -> (f64, f64) {
+        let w = self.vh.abs().max(0.01 * self.vt.abs()).max(if current { 1e-6 } else { 1e-3 });
+        let (lo, hi) = ((1.0 / self.roff).ln(), (1.0 / self.ron).ln());
+        let t = ((c - self.vt) / w).tanh();
+        let lg = lo + (hi - lo) * 0.5 * (1.0 + t);
+        let g = lg.exp();
+        (g, g * (hi - lo) * 0.5 * (1.0 - t * t) / w)
+    }
 }
 
 /// SPICE Gummel-Poon bipolar transistor model (`.model q npn` / `pnp`).
@@ -515,7 +575,10 @@ impl Element {
             | Element::D { name, .. }
             | Element::M { name, .. }
             | Element::Ctrl { name, .. }
-            | Element::Q { name, .. } => name,
+            | Element::Q { name, .. }
+            | Element::B { name, .. }
+            | Element::K { name, .. }
+            | Element::S { name, .. } => name,
         }
     }
 }
@@ -617,6 +680,48 @@ fn series(c: &mut Circuit, node: &mut impl FnMut(&str, &mut Circuit) -> Node, de
     let int = node(&format!("{dev}#{tag}"), c);
     c.elements.push(Element::R { name: format!("{dev}#r{tag}"), a: ext, b: int, r });
     int
+}
+
+/// `expr` with each `v(a)`, `v(a, b)` and `i(vname)` replaced by a variable `__x<k>`, and the
+/// references in that order. `node` resolves node names.
+fn behavioural_refs(expr: &str, node: &mut dyn FnMut(&str) -> Node) -> Result<(String, Vec<Ref>), String> {
+    let mut out = String::new();
+    let mut refs: Vec<Ref> = vec![];
+    let b = expr.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        let ch = b[i] as char;
+        let prev_ident = i > 0 && ((b[i - 1] as char).is_ascii_alphanumeric() || b[i - 1] == b'_');
+        let head = ch.to_ascii_lowercase();
+        if (head == 'v' || head == 'i') && !prev_ident && expr[i + 1..].trim_start().starts_with('(') {
+            let open = i + 1 + expr[i + 1..].find('(').expect("checked");
+            let close = open + expr[open..].find(')').ok_or("missing ')'")?;
+            let args: Vec<&str> = expr[open + 1..close].split(',').map(str::trim).collect();
+            let r = match (head, args.as_slice()) {
+                ('v', [p]) => Ref::V(node(p), 0),
+                ('v', [p, n]) => Ref::V(node(p), node(n)),
+                ('i', [v]) => Ref::I(v.to_ascii_lowercase()),
+                _ => return Err(format!("cannot read '{}'", &expr[i..=close])),
+            };
+            let k = match refs.iter().position(|q| *q == r) {
+                Some(k) => k,
+                None => {
+                    refs.push(r);
+                    refs.len() - 1
+                }
+            };
+            out += &format!("__x{k}");
+            i = close + 1;
+            continue;
+        }
+        out.push(ch);
+        i += 1;
+    }
+    // Check that the expression evaluates (unknown names, syntax).
+    let mut probe: crate::expr::Params = (0..refs.len()).map(|k| (format!("__x{k}"), 0.5)).collect();
+    probe.insert("time".into(), 0.0);
+    crate::expr::eval(&out, &probe).map_err(|e| e.to_string())?;
+    Ok((out, refs))
 }
 
 fn ignored_params(p: &HashMap<String, f64>, known: &[&str]) -> Vec<String> {
@@ -843,6 +948,7 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
     // First pass: models.
     let mut diode_models: HashMap<String, DiodeModel> = HashMap::new();
     let mut bjt_models: HashMap<String, BjtModel> = HashMap::new();
+    let mut switch_models: HashMap<String, (SwitchModel, bool)> = HashMap::new();
     let mut mos_models: HashMap<String, MosModel> = HashMap::new();
     let mut in_control = false;
     for (model_line, l) in &lines {
@@ -869,6 +975,8 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
             "d" => Some(DIODE_PARAMS),
             "nmos" | "pmos" => Some(MOS_PARAMS),
             "npn" | "pnp" => Some(BJT_PARAMS),
+            "sw" => Some(&["vt", "vh", "ron", "roff"][..]),
+            "csw" => Some(&["it", "ih", "ron", "roff"][..]),
             _ => None,
         };
         let bsim4_card = known == Some(MOS_PARAMS) && matches!(g("level", 1.0) as i64, 14 | 54);
@@ -929,6 +1037,16 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
             });
         }
         match ty.as_str() {
+            "sw" | "csw" => {
+                let cur = ty == "csw";
+                let m = SwitchModel {
+                    vt: g(if cur { "it" } else { "vt" }, 0.0),
+                    vh: g(if cur { "ih" } else { "vh" }, 0.0),
+                    ron: g("ron", 1.0).max(1e-9),
+                    roff: g("roff", 1e12).max(1e-9),
+                };
+                switch_models.insert(name, (m, cur));
+            }
             "npn" | "pnp" => {
                 let inf = |k: &str, alt: &str| {
                     let v = g(k, g(alt, 0.0));
@@ -1284,6 +1402,49 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
                 let en = series(&mut c, &mut node, &name, "e", en, model.re / area);
                 Element::Q { name, c: cn, b: bn, e: en, model, area }
             }
+            'b' => {
+                // B n+ n- V=expr | I=expr
+                need(4)?;
+                let (a, b) = (node(t[1], &mut c), node(t[2], &mut c));
+                let rest = t[3..].join(" ");
+                let (voltage, body) = match rest.split_once('=') {
+                    Some((k, e)) if k.trim().eq_ignore_ascii_case("v") => (true, e),
+                    Some((k, e)) if k.trim().eq_ignore_ascii_case("i") => (false, e),
+                    _ => return Err(err(ln, format!("{name}: write V=<expression> or I=<expression>"))),
+                };
+                let body = body.trim().trim_matches(|ch| ch == '{' || ch == '}' || ch == '\'');
+                let (expr, refs) =
+                    behavioural_refs(body, &mut |n| node(n, &mut c)).map_err(|m| err(ln, format!("{name}: {m}")))?;
+                Element::B { name, a, b, voltage, expr, refs }
+            }
+            'k' => {
+                need(4)?;
+                Element::K { name, l1: t[1].to_ascii_lowercase(), l2: t[2].to_ascii_lowercase(), k: value(3)? }
+            }
+            's' | 'w' => {
+                // S n+ n- nc+ nc- model [on|off], W n+ n- vname model [on|off]
+                let current = first == 'w';
+                need(if current { 5 } else { 6 })?;
+                let (a, b) = (node(t[1], &mut c), node(t[2], &mut c));
+                let mi = if current { 4 } else { 5 };
+                let (model, is_current) = switch_models
+                    .get(&t[mi].to_ascii_lowercase())
+                    .cloned()
+                    .ok_or_else(|| err(ln, format!("unknown switch model '{}'", t[mi])))?;
+                if is_current != current {
+                    let what = if is_current { "current" } else { "voltage" };
+                    return Err(err(ln, format!("{name}: model '{}' is a {what} switch", t[mi])));
+                }
+                if model.vh != 0.0 {
+                    c.warnings.push(format!("{name}: hysteresis is modelled as a smooth transition over the band"));
+                }
+                if current {
+                    Element::S { name, a, b, cp: 0, cn: 0, vctl: t[3].to_ascii_lowercase(), model }
+                } else {
+                    let (cp, cn) = (node(t[3], &mut c), node(t[4], &mut c));
+                    Element::S { name, a, b, cp, cn, vctl: String::new(), model }
+                }
+            }
             'e' | 'f' | 'g' | 'h' => {
                 // Linear forms only: E/G n+ n- nc+ nc- gain, F/H n+ n- vname gain.
                 if t.iter().skip(3).any(|w| {
@@ -1314,7 +1475,7 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
             _ => {
                 return Err(err(
                     ln,
-                    format!("unsupported element '{}' (built-in engine supports R C L V I D M Q E F G H)", t[0]),
+                    format!("unsupported element '{}' (built-in engine supports R C L V I D M Q E F G H B K S W)", t[0]),
                 ));
             }
         };

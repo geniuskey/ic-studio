@@ -211,8 +211,10 @@ Rust로 작성한 수정 절점 해석(MNA) 엔진입니다. 다음을 지원합
 
 - 소자 `R C L V I D M`, 바이폴라 트랜지스터 `Q`(Gummel-Poon: Early 전압, knee 전류, 비이상
   베이스 전류, 접합·확산 전하, 직렬 저항, `eg xti xtb` 온도 특성), 선형 제어 전원 `E F G H`,
-  서브서킷 인스턴스 `X`(동작 모델 `B` 소스와 `POLY` / `VALUE` 형식은 미지원: 이런 덱은 **Auto**에서
-  ngspice로 실행),
+  동작 모델 소스 `B`(`v(a)`, `v(a, b)`, `i(vname)`, `time`으로 쓴 `V=` 또는 `I=` 수식), 상호
+  인덕턴스 `K`, 전압·전류 스위치 `S` / `W`(`vt vh ron roff` / `it ih ron roff`를 쓰는
+  `.model sw` / `csw`. 히스테리시스 대신 `vt ± vh` 구간에서 부드럽게 켜짐), 서브서킷 인스턴스
+  `X`(`POLY` / `VALUE` 형식은 미지원: 이런 덱은 **Auto**에서 ngspice로 실행),
 - 소스: `DC`, `AC mag [phase]`, `PULSE(v1 v2 td tr tf pw per)`,
   `SIN(vo va freq td theta phase)`, `r=` / `td=`가 있는 `PWL(t v ...)`,
 - `m`이 있는 `R` / `C` / `L`(저항은 `tc1` / `tc2`도), `area`와 `m`이 있는 다이오드와 `Q`,
