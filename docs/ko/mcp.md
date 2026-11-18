@@ -53,7 +53,7 @@ npx skills add geniuskey/ic-studio
 
 ## 도구
 
-서버에는 57개의 도구가 있습니다.
+서버에는 59개의 도구가 있습니다.
 
 | 도구 | 용도 |
 |---|---|
@@ -103,6 +103,7 @@ npx skills add geniuskey/ic-studio
 | `export_lef`, `import_lef` | 셀의 LEF 추상 쓰기(`obs`: `detailed`, `block`, `none`; `class`), 또는 LEF 매크로를 새 라이브러리의 레이아웃 셀로 가져오기([LEF와 DEF](layout.md#lef와-def) 참고) |
 | `export_def`, `import_def` | 최상위 셀을 DEF로 쓰기(배치된 셀의 추상용 선택 인자 `lef_path`), 또는 DEF를 새 최상위 셀로 가져오기 |
 | `run_skill` | Cadence SKILL 코드(`code`) 또는 `.il` 파일(`file`) 실행. `output`, `value`, `modified` 셀을 반환 |
+| `docs_search`, `docs_read` | 사용자 매뉴얼(영어, 한국어) 검색과 읽기: 메뉴, 단축키, 작업 흐름, 파일 형식. 프로젝트 없이도 동작 |
 | `gui_status` | 데스크톱 앱 연결 여부와 그 프로젝트 |
 
 ### run_skill

@@ -2379,6 +2379,44 @@ fn copilot_optimizes_rc_filter() {
     shot(&mut h, "45_optimizer");
 }
 
+/// A usage question: the copilot searches and reads the user manual (also in plan mode, as
+/// the docs tools only read) and the system prompt tells it to answer from the manual.
+#[test]
+fn copilot_answers_from_the_manual() {
+    use ics_studio::copilot::Entry;
+    use serde_json::json;
+    let mut h = app(demo_args("cmos_inverter", "layout", false));
+    let step = |name: &str, args: serde_json::Value| json!({"candidates": [{"content": {"role": "model", "parts": [{"functionCall": {"name": name, "args": args}}]}}]});
+    let answer =
+        json!({"candidates": [{"content": {"role": "model", "parts": [{"text": "**File > Import > GDSII / OASIS...**"}]}}]});
+    let script = std::sync::Arc::new(std::sync::Mutex::new(vec![
+        step("docs_search", json!({"query": "GDS 파일 가져오기"})),
+        step("docs_read", json!({"page": "ko/layout", "section": "GDSII"})),
+        answer,
+    ]));
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
+    let (s2, seen2) = (script.clone(), seen.clone());
+    let cp = h.state_mut().copilot_mut();
+    cp.plan_mode = true;
+    cp.set_llm(Box::new(move |_, _| Ok(Box::new(Recorded { script: s2.clone(), seen: seen2.clone() }))));
+    h.state_mut().command(Command::CopilotAsk("GDS 파일은 어떻게 가져오나요?".into()));
+    h.run_steps(2);
+    settle(&mut h, "copilot");
+    let log = h.state_mut().copilot_mut().log.clone();
+    let tool = |n: &str| {
+        log.iter().find_map(|e| match e {
+            Entry::Tool { name, result, error: false, .. } if name == n => Some(result.clone()),
+            _ => None,
+        })
+    };
+    let found = tool("docs_search").unwrap_or_else(|| panic!("{log:?}"));
+    assert!(found.contains("ko/"), "{found}");
+    let read = tool("docs_read").unwrap_or_else(|| panic!("{log:?}"));
+    assert!(read.contains("GDSII"), "{read}");
+    let req = seen.lock().unwrap()[0].to_string();
+    assert!(req.contains("answer from the user") && req.contains("docs_search"), "system prompt");
+}
+
 /// A scripted model that also records the requests it gets.
 struct Recorded {
     script: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,

@@ -22,8 +22,10 @@ const TOOL_TIMEOUT: Duration = Duration::from_secs(600);
 /// Tools the copilot does not get: it works on the project already open in the window.
 const HIDDEN: [&str; 3] = ["new_project", "open_project", "gui_status"];
 /// Design tools that only read the project: the ones plan mode runs.
-const READ_ONLY: [&str; 14] = [
+const READ_ONLY: [&str; 16] = [
     "project_info",
+    "docs_search",
+    "docs_read",
     "pcell_design_check",
     "get_netlist",
     "simulate",
@@ -232,6 +234,13 @@ fn system_prompt(context: &str, plan_mode: bool) -> String {
          tools return. If a tool fails, read the error and try a different approach; do not repeat the same failing \
          call more than twice. If you are stuck, say so and ask the user.\n\
          5. Finish with a short report: what changed, the verified numbers, and anything left open.\n\n\
+         Questions about using IC Studio (where a menu item or button is, shortcuts, how to do a task in the \
+         window, settings, file formats, the PDK / technology files, the CLI, MCP or Python API): answer from the user \
+         manual. Call docs_search (in the user's language; try other words or lang en when little comes back), then \
+         docs_read the best one or two sections, and answer with the manual's exact menu paths (**File > Import > \
+         ...**), buttons and shortcuts, naming the page and section you used. Never invent a menu, button or \
+         shortcut the manual does not describe: say it is not documented. A pure question needs no task list and no \
+         edits; offer to do the task with the tools when that helps.\n\n\
          Parametric cells (PCell Designer): pcell_design_create makes one from a drawn layout (source, plus suggest \
          [contacts, fingers, width, length] for a MOS) or from nothing (add_shapes, set_params, add_ops); inspect the \
          drawing with pcell_design_check list_source before placing stretch lines and regions, refine with \
@@ -805,8 +814,9 @@ impl Copilot {
                     egui::Label::new(
                         egui::RichText::new(
                             "Ask for a design task, e.g. \"place and route nand2, then fix DRC and run LVS\" or \
-                             \"size the OTA for 60 dB gain and check the phase margin\". Turn on Plan mode to review \
-                             a plan before anything is edited.",
+                             \"size the OTA for 60 dB gain and check the phase margin\", or ask how to use IC Studio, \
+                             e.g. \"how do I import a GDS file?\": answers come from the user manual. Turn on Plan mode \
+                             to review a plan before anything is edited.",
                         )
                         .weak(),
                     )

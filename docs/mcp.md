@@ -56,7 +56,7 @@ or copy `skills/ic-studio` into `~/.claude/skills/`.
 
 ## Tools
 
-The server has 57 tools:
+The server has 59 tools:
 
 | Tool | Purpose |
 |---|---|
@@ -106,6 +106,7 @@ The server has 57 tools:
 | `export_lef`, `import_lef` | Write a cell's LEF abstract (`obs`: `detailed`, `block` or `none`; `class`), or import LEF macros as layout cells of a new library (see [LEF and DEF](layout.md#lef-and-def)) |
 | `export_def`, `import_def` | Write a top cell as DEF (optional `lef_path` for the placed cells' abstracts), or import a DEF as a new top cell |
 | `run_skill` | Run Cadence SKILL code (`code`) or a `.il` file (`file`); returns `output`, `value` and the `modified` cells |
+| `docs_search`, `docs_read` | Search and read the user manual (English and Korean): menus, shortcuts, workflows, file formats; work without a project |
 | `gui_status` | Whether a desktop app is connected, and its project |
 
 ### run_skill

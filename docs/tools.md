@@ -10,7 +10,7 @@ back; the choice is remembered per tool. Every tool is also in the command palet
 
 | Tool | Virtuoso counterpart | Works on |
 |---|---|---|
-| Design Copilot, AI Models | - | An AI agent working on the open project through the [MCP](mcp.md) tools; AI Models sets its provider, model and API key |
+| Design Copilot, AI Models | - | An AI agent working on the open project through the [MCP](mcp.md) tools, which also answers how-to questions from this manual; AI Models sets its provider, model and API key |
 | [Optimizer](#optimizer) | ADE GXL Optimization | Active cell's schematic and specs |
 | [Waveform Calculator](#waveform-calculator) | ViVA Calculator | Simulation results of the active cell |
 | [Corner / Sweep Manager](#corner--sweep-manager) | ADE Explorer | Active cell's schematic |

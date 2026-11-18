@@ -280,6 +280,8 @@ mod tests {
             "pcell_design_edit",
             "pcell_design_check",
             "pcell_design_export_skill",
+            "docs_search",
+            "docs_read",
         ];
         assert_eq!(names, expected);
         for t in tools {

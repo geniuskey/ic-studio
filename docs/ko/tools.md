@@ -10,7 +10,7 @@
 
 | 도구 | Virtuoso 대응 기능 | 대상 |
 |---|---|---|
-| Design Copilot, AI Models | - | [MCP](mcp.md) 도구로 열린 프로젝트를 다루는 AI 에이전트. AI Models에서 제공자, 모델, API 키를 설정 |
+| Design Copilot, AI Models | - | [MCP](mcp.md) 도구로 열린 프로젝트를 다루고, 이 매뉴얼을 바탕으로 사용법 질문에도 답하는 AI 에이전트. AI Models에서 제공자, 모델, API 키를 설정 |
 | [Optimizer](#optimizer) | ADE GXL Optimization | 활성 셀의 회로도와 스펙 |
 | [Waveform Calculator](#waveform-calculator) | ViVA Calculator | 활성 셀의 시뮬레이션 결과 |
 | [Corner / Sweep Manager](#corner--sweep-manager) | ADE Explorer | 활성 셀의 회로도 |

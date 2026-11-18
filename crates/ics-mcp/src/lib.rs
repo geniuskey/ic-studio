@@ -2,6 +2,7 @@
 
 pub mod bridge;
 pub mod confine;
+pub mod docs;
 pub mod server;
 pub mod tools;
 

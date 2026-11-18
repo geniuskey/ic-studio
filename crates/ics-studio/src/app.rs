@@ -465,8 +465,10 @@ type PinsAndSymbol = (Vec<(String, PortDir)>, Option<ics_core::schematic::Symbol
 
 /// MCP tools that change neither layouts nor schematics. Every other tool runs between
 /// snapshots of the project, so whatever it changes is undoable and redrawn.
-const MCP_READ_ONLY: [&str; 27] = [
+const MCP_READ_ONLY: [&str; 29] = [
     "project_info",
+    "docs_search",
+    "docs_read",
     "pcell_design_check",
     "pcell_design_export_skill",
     "gui_status",

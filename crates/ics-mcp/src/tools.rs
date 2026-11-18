@@ -1155,6 +1155,28 @@ pub fn definitions() -> Vec<Value> {
     ]
     .into_iter()
     .chain(pcell_design::definitions())
+    .chain([
+        tool(
+            "docs_search",
+            "Search the IC Studio user manual (the same pages as the online docs, in English and Korean) for how to use the app: menus, toolbar buttons, shortcuts, workflows, dialogs, file formats, the technology / PDK files, the CLI, MCP and Python API, and the IC design tutorials. Returns the best sections with page, section heading and a snippet; read them with docs_read. Works without a project.",
+            json!({
+                "query": {"type": "string", "description": "Words to look for, e.g. 'stretch shortcut', 'run LVS', 'PCell 배치'. Menu and tool names work best."},
+                "lang": {"type": "string", "enum": ["en", "ko", "all"], "description": "Manual language (default: ko when the query has Korean, else en)."},
+                "max_results": {"type": "integer", "minimum": 1, "maximum": 20, "description": "Sections returned (default 6)."},
+            }),
+            &["query"],
+        ),
+        tool(
+            "docs_read",
+            "Read the IC Studio user manual: one section with its subsections (page + section heading or anchor, as docs_search returns them), a whole page (long pages are cut short with their outline), or without a page the list of pages of a language. Works without a project.",
+            json!({
+                "page": {"type": "string", "description": "Page, e.g. 'layout', 'pcells', 'ko/pcells', 'learn/glossary'."},
+                "section": {"type": "string", "description": "Section heading or anchor on that page, e.g. 'PCell Designer'."},
+                "lang": {"type": "string", "enum": ["en", "ko", "all"], "description": "For the page list: language (default en)."},
+            }),
+            &[],
+        ),
+    ])
     .collect()
 }
 
@@ -1219,6 +1241,8 @@ impl State {
             "add_label" => self.add_label(a),
             "place_instance" => self.place_instance(a),
             "place_pcell" => self.place_pcell(a),
+            "docs_search" => docs_search(a),
+            "docs_read" => docs_read(a),
             "pcell_design_create" => self.pcell_design_create(a),
             "pcell_design_edit" => self.pcell_design_edit(a),
             "pcell_design_check" => self.pcell_design_check(a),
@@ -2886,6 +2910,22 @@ impl State {
                 Err(msg)
             }
         }
+    }
+}
+
+fn docs_search(a: &Args) -> Result<Value, String> {
+    let lang = a.opt_str("lang")?;
+    if let Some(l) = lang.filter(|l| !matches!(*l, "en" | "ko" | "all")) {
+        return Err(format!("unknown lang '{l}' (use en, ko or all)"));
+    }
+    let max = a.opt_num("max_results")?.map_or(6, |n| n.max(1.0) as usize);
+    Ok(crate::docs::search(a.str("query")?, lang, max))
+}
+
+fn docs_read(a: &Args) -> Result<Value, String> {
+    match a.opt_str("page")? {
+        Some(p) => crate::docs::read(p, a.opt_str("section")?),
+        None => Ok(crate::docs::pages(a.opt_str("lang")?.unwrap_or("en"))),
     }
 }
 
