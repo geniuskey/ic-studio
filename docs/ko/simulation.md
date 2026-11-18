@@ -227,7 +227,7 @@ Rust로 작성한 수정 절점 해석(MNA) 엔진입니다. 다음을 지원합
 - 지시어 `.model`, `.op`, `.dc`, `.ac`, `.tran`, `.noise`, `.temp`, `.title`, `.end`.
   `.ic v(node)=value`(ngspice처럼 과도 해석의 초기 동작점에서 노드를 고정, `.tran ... uic`면 동작점
   없이 그 값에서 시작), `.nodeset`(동작점 계산의 시작값), `.option`의 `reltol abstol vntol gmin trtol
-  itl1 itl4 temp`(그 밖의 옵션은 경고)를 지원합니다. 그 밖의 점(dot) 라인은 무시되며, 컴파일된 Verilog-A 모델(`pre_osdi`)을
+  chgtol itl1 itl4 temp`(그 밖의 옵션은 경고)를 지원합니다. 그 밖의 점(dot) 라인은 무시되며, 컴파일된 Verilog-A 모델(`pre_osdi`)을
   읽는 덱은 ngspice가 필요합니다.
 - PDK 형식의 계층 덱은 시뮬레이션 전에 평탄화됩니다.
   - `.include` / `.inc` 파일과 `.lib <file> <section>` 라이브러리 섹션(경로는 포함하는 파일
@@ -277,7 +277,10 @@ level 1 모델은 SPICE level 1과 SPICE 다이오드를 따릅니다.
 - **온도**: MOS `kp`, `phi`, `vto`와 벌크 접합, 다이오드 `is`(`eg`, `xti` 사용), `vj`,
   `cjo`는 `tnom`에서 해석 온도로 스케일링됩니다.
 - **과도 해석 스텝 제어**: 국소 절단 오차(LTE) 추정으로 스텝 채택 여부와 크기를 정하므로,
-  **Step**을 크게 잡아도 빠른 에지가 정확히 계산됩니다.
+  **Step**을 크게 잡아도 빠른 에지가 정확히 계산됩니다. ngspice처럼 모든 커패시터와 전하 기반
+  소자 단자의 전하, 인덕터 자속으로 오차를 추정하고(허용치 `reltol`, `abstol`, `chgtol`,
+  `trtol`), 노드 전압도 1 mV 단위로 확인합니다. 스위치는 제어 값이 문턱에 가까워지면 스텝을
+  줄입니다. 스텝 수는 ngspice와 비슷합니다.
 
 넷리스터가 출력하는 범용 `nmos` / `pmos` 모델은 `vto = ±0.45`, `kp = 280u` / `70u`,
 `tox = 4n`을 사용합니다. 생략한 MOS 파라미터는 SPICE 기본값을 따릅니다

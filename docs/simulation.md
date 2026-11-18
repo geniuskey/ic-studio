@@ -239,8 +239,8 @@ A modified nodal analysis engine written in Rust. It supports:
 - directives `.model`, `.op`, `.dc`, `.ac`, `.tran`, `.noise`, `.temp`, `.title`, `.end`;
   `.ic v(node)=value` (held for the transient's initial operating point, as in ngspice;
   with `.tran ... uic` the transient starts from it without one), `.nodeset` (a starting
-  guess for the operating point) and `.option` with `reltol abstol vntol gmin trtol itl1
-  itl4 temp` (other options are reported); other dot lines are ignored, and decks that load compiled
+  guess for the operating point) and `.option` with `reltol abstol vntol gmin trtol
+  chgtol itl1 itl4 temp` (other options are reported); other dot lines are ignored, and decks that load compiled
   Verilog-A models (`pre_osdi`) need ngspice,
 - hierarchical decks as PDKs write them, flattened before simulation:
   - `.include` / `.inc` files and `.lib <file> <section>` library sections, with paths
@@ -298,7 +298,11 @@ The level-1 models follow SPICE level 1 and the SPICE diode:
 - **Temperature**: MOS `kp`, `phi`, `vto` and the bulk junctions, and diode `is` (with `eg`,
   `xti`), `vj` and `cjo` scale from `tnom` to the analysis temperature.
 - **Transient step control**: steps are accepted and sized by a local truncation error
-  estimate, so fast edges are resolved even with a coarse **Step**.
+  estimate, so fast edges are resolved even with a coarse **Step**. As in ngspice, the
+  estimate works on the charge of every capacitor and charge-based device terminal and on
+  inductor flux (tolerances `reltol`, `abstol`, `chgtol`, `trtol`), with a check of node
+  voltages to 1 mV; switches limit the step as their control nears the threshold. Step
+  counts stay close to ngspice's.
 
 The generic `nmos` / `pmos` models the netlister writes use `vto = ±0.45` and
 `kp = 280u` / `70u` with `tox = 4n`. A MOS parameter left out takes its SPICE default

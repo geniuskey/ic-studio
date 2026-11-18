@@ -460,10 +460,15 @@ pub struct SwitchModel {
 }
 
 impl SwitchModel {
+    /// Half-width of the transition band around `vt`.
+    pub fn band(&self, current: bool) -> f64 {
+        self.vh.abs().max(0.01 * self.vt.abs()).max(if current { 1e-6 } else { 1e-3 })
+    }
+
     /// Conductance at control value `c` and its derivative: log-conductance follows a tanh
     /// from `1/roff` to `1/ron` across `vt ± max(vh, 1 % of |vt|, 1 mV or 1 µA)`.
     pub fn g(&self, c: f64, current: bool) -> (f64, f64) {
-        let w = self.vh.abs().max(0.01 * self.vt.abs()).max(if current { 1e-6 } else { 1e-3 });
+        let w = self.band(current);
         let (lo, hi) = ((1.0 / self.roff).ln(), (1.0 / self.ron).ln());
         let t = ((c - self.vt) / w).tanh();
         let lg = lo + (hi - lo) * 0.5 * (1.0 + t);
@@ -616,6 +621,8 @@ pub struct Options {
     pub lte_reltol: f64,
     /// Truncation error overestimation factor.
     pub trtol: f64,
+    /// Charge tolerance (C) of the truncation error estimate.
+    pub chgtol: f64,
     pub gmin: f64,
     /// Newton iteration limits: DC and per transient step.
     pub itl1: usize,
@@ -624,7 +631,17 @@ pub struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Options { reltol: 1e-4, abstol: 1e-12, vntol: 1e-6, lte_reltol: 1e-3, trtol: 7.0, gmin: 1e-12, itl1: 150, itl4: 60 }
+        Options {
+            reltol: 1e-4,
+            abstol: 1e-12,
+            vntol: 1e-6,
+            lte_reltol: 1e-3,
+            trtol: 7.0,
+            chgtol: 1e-14,
+            gmin: 1e-12,
+            itl1: 150,
+            itl4: 60,
+        }
     }
 }
 
@@ -641,6 +658,7 @@ impl Options {
             "abstol" => self.abstol = v,
             "vntol" => self.vntol = v,
             "trtol" => self.trtol = v,
+            "chgtol" => self.chgtol = v,
             "gmin" => self.gmin = v,
             "itl1" => self.itl1 = v.max(1.0) as usize,
             "itl4" => self.itl4 = v.max(1.0) as usize,
