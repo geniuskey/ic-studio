@@ -2500,8 +2500,19 @@ fn run(cli: Cli) -> Result<(), String> {
             for w in &x.warnings {
                 eprintln!("warning: {w}");
             }
+            for sc in &x.soft_conflicts {
+                let names: Vec<&str> = sc.nets.iter().map(|&n| x.nets[n].name.as_str()).collect();
+                let what = if sc.well.is_some() { "an nwell" } else { "the substrate" };
+                eprintln!("warning: soft connection: {what} is tapped from nets {}; taken as {}", names.join(", "), names[0]);
+            }
             print!("{}", x.spice(&r.to_string(), p.tech.dbu_per_um));
-            println!("* {} nets, {} transistors, {} resistors/capacitors", x.nets.len(), x.devices.len(), x.passives.len());
+            println!(
+                "* {} nets, {} transistors, {} resistors/capacitors, {} bipolar transistors",
+                x.nets.len(),
+                x.devices.len(),
+                x.passives.len(),
+                x.bjts.len()
+            );
         }
         Cmd::Lvs { project, cell } => {
             let p = Project::open(&project).map_err(|e| e.to_string())?;

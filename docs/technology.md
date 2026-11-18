@@ -240,6 +240,7 @@ The main sections:
 | `[[device]]` | `name`, `type` (`nmos` / `pmos`), `layers`, `exclude`, `subckt` |
 | `[[resistor]]` | Resistor: marked body of a conducting layer: `name`, `layer`, `layers` (markers), `exclude`, `sheet` (Ω per square). `poly_res` draws the markers of the resistor on the poly layer |
 | `[[capacitor]]` | Capacitor: marked overlap of two conducting layers: `name`, `bottom`, `top`, `layers`, `area` (fF/µm²), optional `perimeter` (fF/µm). `mom_cap` draws the markers of the metal1 / metal2 capacitor |
+| `[[bjt]]` | Bipolar transistor, a vertical PNP (p+ emitter in nwell, nwell base, substrate collector): `name`, `type = "pnp"`, `layers` (markers over the emitter), `exclude`, optional `unit_area` (µm²) for the area factor |
 | `[models]` | `path`, `extra` (more model files loaded at the same corner), `corners`, `default`, `length_unit` (`m` or `um`), `osdi` (compiled Verilog-A models, OpenVAF `.osdi`, that ngspice loads first), `lde` (`true` when the models take the layout-dependent parameters `nf sa sb sd`; post-layout decks then [back-annotate them](simulation.md#post-layout-simulation)) |
 | `drc_deck` | Optional DRC deck file |
 | `[[signoff]]` | External DRC / LVS runsets: `name`, `tool` (`klayout`, `calibre`, `netgen`, `builtin`), `check` (`drc`, `lvs`), `deck`, `vars`, `klayout`, `skip`, `ground` (see [Verification](verification.md#sign-off-with-external-tools)) |

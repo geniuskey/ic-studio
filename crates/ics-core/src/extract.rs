@@ -9,8 +9,13 @@
 //! - Each edge-connected piece of a conducting layer is a node; via cuts join the bottom and
 //!   top pieces they overlap. A cut shared by several vias (contact on active, polycon on poly)
 //!   joins whichever bottom it lands on; contacts on a gate connect nothing.
-//! - Well taps: `n+` diffusion inside nwell joins the well, `p+` diffusion outside it joins the
-//!   global substrate net "sub".
+//! - Well taps: `n+` diffusion inside nwell taps the well, `p+` diffusion outside it the global
+//!   substrate net "sub". Wells and substrate are soft connections: a tap gives its well the
+//!   net it is on but never joins two nets through the well. A well (or the substrate) tapped
+//!   from several nets takes the one with the most taps and is reported in
+//!   [`Extraction::soft_conflicts`].
+//! - Bipolar transistors ([`Tech::bjts`]): vertical PNPs, a marked p+ emitter inside an nwell
+//!   (base) over the substrate (collector).
 //! - Gates are the pieces of `diffusion AND poly`. PMOS when inside the p implant (or, without an
 //!   implant, inside nwell). For a rectangular gate L is measured across the two diffusion
 //!   pieces and W = area / L. Any other gate (bent, ring, any-angle) must touch exactly two
@@ -41,7 +46,7 @@ use crate::hier::{LayoutSource, flatten};
 use crate::layout::{Geometry, Layout};
 use crate::polybool::PolySet;
 use crate::region::{BoolOp, Region};
-use crate::tech::{MosType, Tech};
+use crate::tech::{BjtType, MosType, Tech};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DevKind {
@@ -177,12 +182,46 @@ impl Passive {
     }
 }
 
+/// An extracted bipolar transistor.
+#[derive(Debug, Clone)]
+pub struct Bjt {
+    pub pnp: bool,
+    /// The PDK device ([`Tech::bjts`]).
+    pub model: String,
+    /// "Q1", "Q2", ... in a deterministic (position based) order.
+    pub name: String,
+    /// Collector, base and emitter nets.
+    pub c: usize,
+    pub b: usize,
+    pub e: usize,
+    /// Area factor: the emitter area over the device's unit area, else 1.
+    pub area: f64,
+    /// Emitter area in µm².
+    pub emitter_area: f64,
+    /// Extent of the emitter.
+    pub emitter: IRect,
+}
+
+/// A well (or the substrate) tapped from more than one net. Taps do not join nets through
+/// it; it is taken as the net with the most taps.
+#[derive(Debug, Clone)]
+pub struct SoftConflict {
+    /// Extent of the well; `None` for the substrate.
+    pub well: Option<IRect>,
+    /// The nets its taps are on (net indices), the one it is taken as first.
+    pub nets: Vec<usize>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Extraction {
     pub nets: Vec<Net>,
     pub devices: Vec<Device>,
     /// Resistors and capacitors.
     pub passives: Vec<Passive>,
+    /// Bipolar transistors.
+    pub bjts: Vec<Bjt>,
+    /// Wells and substrate tapped from several nets.
+    pub soft_conflicts: Vec<SoftConflict>,
     pub warnings: Vec<String>,
     /// Conducting layers, topmost first (the order `net_at_any` and labels use).
     pub layers: Vec<usize>,
@@ -222,6 +261,11 @@ impl Extraction {
         }
         for p in &self.passives {
             s += &format!("{} {} {} {}\n", p.name, net(p.a), net(p.b), p.spice_value());
+        }
+        for q in &self.bjts {
+            let area = format!("{:.6}", q.area);
+            let area = area.trim_end_matches('0').trim_end_matches('.');
+            s += &format!("{} {} {} {} {} area={area}\n", q.name, net(q.c), net(q.b), net(q.e), q.model);
         }
         s
     }
@@ -613,6 +657,8 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
     let sub = total;
     let mut uf = Dsu::new(total + 1);
     let mut sub_used = false;
+    // Well taps: (tap diffusion piece, well piece or `sub`), joined after the hard connections.
+    let mut soft: Vec<(usize, usize)> = Vec::new();
 
     let mut cuts: HashMap<usize, Region> = HashMap::new();
     for &(b, c, t) in &vias {
@@ -660,13 +706,13 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
         let ntap = diff.boolean(&nwell_r, BoolOp::And).boolean(&nplus_p.region, BoolOp::And);
         for p in component_anchors(ntap) {
             if let (Some(x), Some(w)) = (planes[dp].comp_at(p, false), planes[nwell_pi].comp_at(p, false)) {
-                uf.union(offset[dp] + x, offset[nwell_pi] + w);
+                soft.push((offset[dp] + x, offset[nwell_pi] + w));
             }
         }
         let ptap = diff.boolean(&pplus_p.region, BoolOp::And).boolean(&nwell_r, BoolOp::Not);
         for p in component_anchors(ptap) {
             if let Some(x) = planes[dp].comp_at(p, false) {
-                uf.union(offset[dp] + x, sub);
+                soft.push((offset[dp] + x, sub));
                 sub_used = true;
             }
         }
@@ -934,6 +980,72 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
         }
     }
 
+    // Vertical PNPs: marked p+ emitters inside an nwell, apart from MOS source / drain pieces.
+    struct BjtProto {
+        model: String,
+        e: usize,
+        b: usize,
+        area: f64,
+        emitter_area: f64,
+        bbox: IRect,
+    }
+    let mut bjt_protos: Vec<BjtProto> = Vec::new();
+    if let Some(dp) = diff_pi {
+        let gate_sd: BTreeSet<usize> = gates.iter().flat_map(|g| [g.sd.0, g.sd.1]).collect();
+        let mut taken = BTreeSet::new();
+        let um2 = (tech.dbu_per_um.max(1) as f64).powi(2);
+        for bd in &tech.bjts {
+            if bd.kind == BjtType::Npn {
+                warnings.push(format!("bjt '{}': only vertical PNPs are extracted; ignored", bd.name));
+                continue;
+            }
+            if bd.layers.is_empty() {
+                warnings.push(format!("bjt '{}' has no marker layers; ignored", bd.name));
+                continue;
+            }
+            let em = marked(planes[dp].region.clone(), &bd.layers, &bd.exclude)
+                .boolean(&pplus_p.region, BoolOp::And)
+                .boolean(&nwell_r, BoolOp::And);
+            for p in component_anchors(em) {
+                let Some(c) = planes[dp].comp_at(p, false) else { continue };
+                let Some(w) = planes[nwell_pi].comp_at(p, false) else { continue };
+                if gate_sd.contains(&c) || !taken.insert(c) {
+                    continue;
+                }
+                let rs: Vec<IRect> = planes[dp].comp_rects(c).collect();
+                let Some(bbox) = rs.iter().copied().reduce(|a, b| a.union(&b)) else { continue };
+                let emitter_area = rs.iter().map(|r| (r.width() * r.height()) as f64).sum::<f64>() / um2;
+                let area = bd.unit_area.filter(|u| *u > 0.0).map_or(1.0, |u| emitter_area / u);
+                sub_used = true;
+                bjt_protos.push(BjtProto {
+                    model: bd.name.clone(),
+                    e: offset[dp] + c,
+                    b: offset[nwell_pi] + w,
+                    area,
+                    emitter_area,
+                    bbox,
+                });
+            }
+        }
+    }
+
+    // Soft connections: each well (and the substrate) takes the net of its taps, the one with
+    // the most taps when they are on several nets.
+    let mut by_well: BTreeMap<usize, BTreeMap<usize, usize>> = BTreeMap::new();
+    for &(t, w) in &soft {
+        *by_well.entry(uf.find(w)).or_default().entry(uf.find(t)).or_default() += 1;
+    }
+    let mut conflicts: Vec<(usize, Vec<usize>)> = Vec::new();
+    for (w, taps) in by_well {
+        let mut order: Vec<(usize, usize)> = taps.into_iter().collect();
+        order.sort_by_key(|&(r, n)| (std::cmp::Reverse(n), r));
+        if order.len() > 1 {
+            conflicts.push((w, order.iter().map(|o| o.0).collect()));
+        }
+        let (a, b) = (uf.find(w), uf.find(order[0].0));
+        uf.union(a, b);
+    }
+
     // Nets: group pieces by root, ordered by position.
     let mut roots: BTreeMap<usize, Vec<(usize, usize)>> = BTreeMap::new();
     for (pi, p) in planes.iter().enumerate() {
@@ -1033,6 +1145,29 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
 
     gates.sort_by_key(|g| (g.rect.y0, g.rect.x0));
     let mut net = |piece: usize| net_of_root[&uf.find(piece)];
+    let soft_conflicts = conflicts
+        .into_iter()
+        .map(|(w, taps)| SoftConflict {
+            well: (w != sub).then(|| planes[nwell_pi].comp_rects(w - offset[nwell_pi]).reduce(|a, b| a.union(&b))).flatten(),
+            nets: taps.into_iter().map(&mut net).collect(),
+        })
+        .collect();
+    bjt_protos.sort_by_key(|q| (q.bbox.y0, q.bbox.x0));
+    let bjts = bjt_protos
+        .into_iter()
+        .enumerate()
+        .map(|(i, q)| Bjt {
+            pnp: true,
+            model: q.model,
+            name: format!("Q{}", i + 1),
+            c: net(sub),
+            b: net(q.b),
+            e: net(q.e),
+            area: q.area,
+            emitter_area: q.emitter_area,
+            emitter: q.bbox,
+        })
+        .collect();
     let devices = gates
         .into_iter()
         .enumerate()
@@ -1087,7 +1222,7 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
     if has_nwell && let Some(nw) = nwell {
         layers.push(nw);
     }
-    Extraction { nets, devices, passives, warnings, layers, dbu_per_um: tech.dbu_per_um }
+    Extraction { nets, devices, passives, bjts, soft_conflicts, warnings, layers, dbu_per_um: tech.dbu_per_um }
 }
 
 /// The generic technology with a marked poly resistor (7.5 Ω/sq) and a marked metal1 / metal2

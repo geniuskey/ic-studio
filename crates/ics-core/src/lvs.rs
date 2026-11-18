@@ -101,6 +101,9 @@ enum Role {
     Gate,
     SourceDrain,
     Bulk,
+    /// BJT emitter and collector (the base takes `Gate`).
+    Emitter,
+    Collector,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -109,6 +112,8 @@ enum Kind {
     Pmos,
     Res,
     Cap,
+    Npn,
+    Pnp,
 }
 
 impl Kind {
@@ -118,11 +123,17 @@ impl Kind {
             Kind::Pmos => "pmos",
             Kind::Res => "resistor",
             Kind::Cap => "capacitor",
+            Kind::Npn => "npn",
+            Kind::Pnp => "pnp",
         }
     }
 
     fn mos(self) -> bool {
         matches!(self, Kind::Nmos | Kind::Pmos)
+    }
+
+    fn bjt(self) -> bool {
+        matches!(self, Kind::Npn | Kind::Pnp)
     }
 }
 
@@ -134,10 +145,11 @@ struct Dev {
     /// MOS W and L in µm.
     w: f64,
     l: f64,
-    /// Resistance in Ω or capacitance in F.
+    /// Resistance in Ω, capacitance in F or BJT area factor.
     value: f64,
-    /// Gate (MOS only).
+    /// Gate (MOS) or base (BJT).
     g: Option<usize>,
+    /// Source and drain, resistor and capacitor terminals, or BJT emitter and collector.
     s: usize,
     d: usize,
     b: Option<usize>,
@@ -178,8 +190,9 @@ impl Side {
             if let Some(g) = d.g {
                 self.nets[g].conns.push((i, Role::Gate));
             }
-            self.nets[d.s].conns.push((i, Role::SourceDrain));
-            self.nets[d.d].conns.push((i, Role::SourceDrain));
+            let (rs, rd) = if d.kind.bjt() { (Role::Emitter, Role::Collector) } else { (Role::SourceDrain, Role::SourceDrain) };
+            self.nets[d.s].conns.push((i, rs));
+            self.nets[d.d].conns.push((i, rd));
             if let Some(b) = d.b {
                 self.nets[b].conns.push((i, Role::Bulk));
             }
@@ -191,7 +204,8 @@ impl Side {
         let key = |d: &Dev| {
             let model = d.model.as_ref().map(|m| m.to_ascii_lowercase());
             let l = if d.kind.mos() { (d.l * 1e6).round() as i64 } else { 0 };
-            (d.kind, model, d.g, d.s.min(d.d), d.s.max(d.d), d.b, l)
+            let (s, dd) = if d.kind.bjt() { (d.s, d.d) } else { (d.s.min(d.d), d.s.max(d.d)) };
+            (d.kind, model, d.g, s, dd, d.b, l)
         };
         let before = self.devs.len();
         let mut groups: Vec<Dev> = Vec::new();
@@ -203,7 +217,7 @@ impl Side {
                     match d.kind {
                         Kind::Nmos | Kind::Pmos => m.w += d.w,
                         Kind::Res => m.value = 1.0 / (1.0 / m.value + 1.0 / d.value),
-                        Kind::Cap => m.value += d.value,
+                        Kind::Cap | Kind::Npn | Kind::Pnp => m.value += d.value,
                     }
                     m.absorb(&d);
                 }
@@ -280,6 +294,7 @@ fn um(v: f64) -> String {
 fn value(kind: Kind, v: f64) -> String {
     match kind {
         Kind::Res => format!("R={}", format_eng(v, " ohm")),
+        Kind::Npn | Kind::Pnp => format!("area={}", format_eng(v, "")),
         _ => format!("C={}", format_eng(v, "F")),
     }
 }
@@ -331,7 +346,8 @@ impl State {
                     return self.dev[i];
                 }
                 let (a, b) = (net[d.s], net[d.d]);
-                hash((self.dev[i], d.g.map(|g| net[g]), a.min(b), a.max(b), d.b.map(|b| net[b])))
+                let (a, b) = if d.kind.bjt() { (a, b) } else { (a.min(b), a.max(b)) };
+                hash((self.dev[i], d.g.map(|g| net[g]), a, b, d.b.map(|b| net[b])))
             })
             .collect();
         let net: Vec<u64> = side
@@ -395,11 +411,13 @@ fn schematic_side(sch: &Schematic, opts: &LvsOptions, errors: &mut Vec<LvsError>
             DeviceKind::Pmos | DeviceKind::Pmos3 => Kind::Pmos,
             DeviceKind::Resistor => Kind::Res,
             DeviceKind::Capacitor => Kind::Cap,
+            DeviceKind::Npn => Kind::Npn,
+            DeviceKind::Pnp => Kind::Pnp,
             k => {
                 errors.push(LvsError {
                     kind: LvsErrorKind::MissingDevice,
                     message: format!(
-                        "{} ({}): not extracted from layout (only MOS transistors, resistors and capacitors are recognised)",
+                        "{} ({}): not extracted from layout (only MOS and bipolar transistors, resistors and capacitors are recognised)",
                         inst.name,
                         k.label().to_ascii_lowercase()
                     ),
@@ -413,6 +431,35 @@ fn schematic_side(sch: &Schematic, opts: &LvsOptions, errors: &mut Vec<LvsError>
             let seed = (!is_auto_name(&name) && name != "?").then(|| normalize(&name));
             side.net(&name, seed, None)
         };
+        if kind.bjt() {
+            let area = inst.param("area").trim();
+            let a = if area.is_empty() { Some(1.0) } else { parse_spice(area) };
+            if a.is_none() {
+                errors.push(LvsError {
+                    kind: LvsErrorKind::Parameter,
+                    message: format!("{}: cannot read area='{area}'", inst.name),
+                    marker: None,
+                });
+            }
+            let m = parse_spice(inst.param("m")).map_or(1.0, |m| m.round().max(1.0));
+            let model = inst.param("model").trim();
+            let (b, e, c) = (net("b"), net("e"), net("c"));
+            side.devs.push(Dev {
+                kind,
+                // The generic model names match any PDK device.
+                model: (!model.is_empty() && !model.eq_ignore_ascii_case(kind.label())).then(|| model.to_string()),
+                w: f64::NAN,
+                l: f64::NAN,
+                value: a.map_or(f64::NAN, |a| a * m),
+                g: Some(b),
+                s: e,
+                d: c,
+                b: None,
+                name: inst.name.clone(),
+                gate: None,
+            });
+            continue;
+        }
         if !kind.mos() {
             let key = if kind == Kind::Res { "r" } else { "c" };
             let v = parse_spice(inst.param(key));
@@ -508,6 +555,22 @@ fn layout_side(lay: &Extraction, opts: &LvsOptions) -> Side {
             b,
             name: d.name.clone(),
             gate: Some(d.gate),
+        });
+    }
+    for q in &lay.bjts {
+        let (b, e, c) = (net(&mut side, q.b), net(&mut side, q.e), net(&mut side, q.c));
+        side.devs.push(Dev {
+            kind: if q.pnp { Kind::Pnp } else { Kind::Npn },
+            model: Some(q.model.clone()),
+            w: f64::NAN,
+            l: f64::NAN,
+            value: q.area,
+            g: Some(b),
+            s: e,
+            d: c,
+            b: None,
+            name: q.name.clone(),
+            gate: Some(q.emitter),
         });
     }
     for p in &lay.passives {
@@ -689,14 +752,22 @@ pub fn compare(sch: &Schematic, lay: &Extraction, opts: &LvsOptions) -> LvsRepor
         if let (Some(x), Some(y)) = (d.g, e.g)
             && m(x) != Some(y)
         {
-            let msg = format!("{who}: gate on {} in the schematic but {} in the layout", net_name(&sa, x), net_name(&sb, y));
+            let what = if d.kind.bjt() { "base" } else { "gate" };
+            let msg = format!("{who}: {what} on {} in the schematic but {} in the layout", net_name(&sa, x), net_name(&sb, y));
             errors.push(err(LvsErrorKind::Net, msg, e.gate));
         }
         let (ms, md) = (m(d.s), m(d.d));
-        if !((ms == Some(e.s) && md == Some(e.d)) || (ms == Some(e.d) && md == Some(e.s))) {
+        let swapped = !d.kind.bjt() && ms == Some(e.d) && md == Some(e.s);
+        if !((ms == Some(e.s) && md == Some(e.d)) || swapped) {
             let msg = format!(
                 "{who}: {} on {}, {} in the schematic but {}, {} in the layout",
-                if d.kind.mos() { "source/drain" } else { "terminals" },
+                if d.kind.mos() {
+                    "source/drain"
+                } else if d.kind.bjt() {
+                    "emitter/collector"
+                } else {
+                    "terminals"
+                },
                 net_name(&sa, d.s),
                 net_name(&sa, d.d),
                 net_name(&sb, e.s),
@@ -758,10 +829,21 @@ pub fn compare(sch: &Schematic, lay: &Extraction, opts: &LvsOptions) -> LvsRepor
         }
     }
     let mut warnings = floating_bulks(lay);
+    for sc in &lay.soft_conflicts {
+        let names: Vec<String> = sc.nets.iter().map(|&n| format!("'{}'", lay.nets[n].name)).collect();
+        let what = if sc.well.is_some() { "an nwell" } else { "the substrate" };
+        let msg = format!(
+            "soft connection: {what} is tapped from nets {}; the well does not join them and is taken as {}",
+            names.join(", "),
+            names[0]
+        );
+        warnings.push(err(LvsErrorKind::Net, msg, sc.well));
+    }
     warnings.extend(lay.warnings.iter().map(|w| err(LvsErrorKind::Net, format!("extraction: {w}"), None)));
     devices.sort();
     nets.sort();
-    let layout_devices = lay.devices.iter().filter(|d| !(opts.filter_off && d.g == d.b)).count() + lay.passives.len();
+    let layout_devices =
+        lay.devices.iter().filter(|d| !(opts.filter_off && d.g == d.b)).count() + lay.passives.len() + lay.bjts.len();
     LvsReport { matched: errors.is_empty(), devices, nets, errors, warnings, schematic_devices, layout_devices }
 }
 
@@ -784,6 +866,13 @@ fn floating_bulks(lay: &Extraction) -> Vec<LvsError> {
     }
     for p in &lay.passives {
         for n in [p.a, p.b] {
+            if let Some(o) = other.get_mut(n) {
+                *o = true;
+            }
+        }
+    }
+    for q in &lay.bjts {
+        for n in [q.c, q.b, q.e] {
             if let Some(o) = other.get_mut(n) {
                 *o = true;
             }
@@ -1092,5 +1181,88 @@ mod tests {
         let r = compare(&inverter_schematic("2u"), &x, &opts);
         assert!(!r.matched);
         assert!(r.errors.iter().any(|e| e.message.contains("bulk on 'vdd' in the schematic but 'nwell1'")), "{:#?}", r.errors);
+    }
+
+    /// A diffusion tap or emitter: `implant` diffusion with a contact and a metal1 pad labelled `net`.
+    fn contacted(lay: &mut Layout, tech: &Tech, implant: &str, r: (i64, i64, i64, i64), net: &str) {
+        let l = |n: &str| tech.layer_index(n).unwrap();
+        let (x0, y0, x1, y1) = r;
+        lay.add_rect(l("active"), x0, y0, x1, y1);
+        lay.add_rect(l(implant), x0 - 200, y0 - 200, x1 + 200, y1 + 200);
+        let (cx, cy) = ((x0 + x1) / 2, (y0 + y1) / 2);
+        lay.add_rect(l("contact"), cx - 110, cy - 110, cx + 110, cy + 110);
+        lay.add_rect(l("metal1"), cx - 200, cy - 200, cx + 200, cy + 200);
+        label(lay, tech, net, (cx, cy));
+    }
+
+    /// Substrate taps on `vss` and `agnd`, and a vertical PNP: a marked p+ emitter (1 µm²) on
+    /// `e` in an nwell tapped on `base`.
+    fn pnp_layout(tech: &mut Tech) -> Layout {
+        let mut m = crate::tech::LayerDef::generated(30, 0, tech.layers.len());
+        m.name = "pnpmark".into();
+        tech.layers.push(m);
+        tech.bjts = vec![crate::tech::BjtDef {
+            name: "pnp_vert".into(),
+            kind: crate::tech::BjtType::Pnp,
+            layers: vec!["pnpmark".into()],
+            exclude: vec![],
+            unit_area: Some(0.25),
+        }];
+        let mut lay = Layout::default();
+        contacted(&mut lay, tech, "pplus", (0, 0, 500, 500), "vss");
+        contacted(&mut lay, tech, "pplus", (0, 3000, 500, 3500), "vss");
+        contacted(&mut lay, tech, "pplus", (2000, 0, 2500, 500), "agnd");
+        let l = |n: &str| tech.layer_index(n).unwrap();
+        lay.add_rect(l("metal1"), 50, 50, 450, 3450);
+        lay.add_rect(l("nwell"), 4000, 0, 9000, 4000);
+        contacted(&mut lay, tech, "nplus", (4600, 600, 5100, 1100), "base");
+        contacted(&mut lay, tech, "pplus", (6500, 1500, 7500, 2500), "e");
+        lay.add_rect(l("pnpmark"), 6000, 1000, 8000, 3000);
+        lay
+    }
+
+    #[test]
+    fn taps_are_soft_connections() {
+        let mut tech = Tech::generic();
+        let lay = pnp_layout(&mut tech);
+        let x = extract(&lay, &NoCells, &tech);
+        let net = |n: &str| x.nets.iter().position(|q| q.name == n).unwrap();
+        // The substrate does not short vss and agnd; it is taken as vss (two taps against one).
+        assert!(!x.warnings.iter().any(|w| w.contains("shorted")), "{:?}", x.warnings);
+        assert_eq!(x.soft_conflicts.len(), 1);
+        assert_eq!((x.soft_conflicts[0].well, x.soft_conflicts[0].nets.clone()), (None, vec![net("vss"), net("agnd")]));
+        let q = &x.bjts[0];
+        assert_eq!((q.c, q.b, q.e, q.model.as_str()), (net("vss"), net("base"), net("e"), "pnp_vert"));
+        assert!((q.emitter_area - 1.0).abs() < 1e-9 && (q.area - 4.0).abs() < 1e-9);
+        assert!(x.spice("t", 1000).contains("Q1 vss base e pnp_vert area=4\n"), "{}", x.spice("t", 1000));
+
+        // LVS: a PNP of area 4 between the same nets matches; area and terminals are compared.
+        let sch = |area: &str, e: &str| {
+            let mut s = Schematic::default();
+            let id = s.add_instance(DeviceKind::Pnp, Pt::new(0, 0), Orient::default());
+            s.instance_mut(id).unwrap().params.insert("area".into(), area.into());
+            let pins = s.instance(id).unwrap().pin_positions();
+            for (pin, n) in [("c", "vss"), ("b", "base"), ("e", e)] {
+                s.add_label(n, pins.iter().find(|(p, _)| *p == pin).unwrap().1);
+            }
+            s
+        };
+        let r = compare(&sch("4", "e"), &x, &LvsOptions::default());
+        assert!(r.matched, "{:#?}", r.errors);
+        assert!(
+            r.warnings.iter().any(|w| w.message.contains("soft connection: the substrate is tapped from nets 'vss', 'agnd'"))
+        );
+        let r = compare(&sch("1", "e"), &x, &LvsOptions::default());
+        assert!(r.errors.iter().any(|e| e.message.contains("area=4 (layout)")), "{:#?}", r.errors);
+        let r = compare(&sch("4", "vss"), &x, &LvsOptions::default());
+        assert!(!r.matched);
+
+        // A second nwell tap on another net: the well is a soft-connect conflict too.
+        let mut lay2 = lay.clone();
+        contacted(&mut lay2, &tech, "nplus", (4600, 2600, 5100, 3100), "base2");
+        let x = extract(&lay2, &NoCells, &tech);
+        let well = x.soft_conflicts.iter().find(|c| c.well.is_some()).expect("well conflict");
+        assert_eq!(well.nets.len(), 2);
+        assert_ne!(x.nets.iter().position(|n| n.name == "base"), x.nets.iter().position(|n| n.name == "base2"));
     }
 }

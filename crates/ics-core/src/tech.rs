@@ -585,6 +585,32 @@ pub struct CapDef {
     pub perimeter: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BjtType {
+    Npn,
+    Pnp,
+}
+
+/// A bipolar transistor of the PDK, recognised under its markers. Extraction knows the vertical
+/// PNP of CMOS processes: the emitter is p+ diffusion inside an nwell (not under a gate) that
+/// every `layers` marker covers and no `exclude` marker does, the base that nwell and the
+/// collector the substrate. With `unit_area` (µm²) the extracted area factor is the emitter
+/// area over it, else 1 per emitter.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BjtDef {
+    /// Model (or subcircuit) name used in netlists and LVS.
+    pub name: String,
+    #[serde(rename = "type")]
+    pub kind: BjtType,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub layers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit_area: Option<f64>,
+}
+
 /// SPICE model library of the PDK.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct ModelLib {
@@ -753,6 +779,9 @@ pub struct Tech {
     /// PDK capacitors recognised by extraction and LVS.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capacitors: Vec<CapDef>,
+    /// PDK bipolar transistors recognised by extraction and LVS.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bjts: Vec<BjtDef>,
     /// PDK model library; `None` uses the built-in generic models.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub models: Option<ModelLib>,
@@ -1137,6 +1166,7 @@ impl Tech {
                 area: 2.65,
                 perimeter: 0.0,
             }],
+            bjts: vec![],
             models: None,
             signoff: vec![],
             pcell_layers: vec![],

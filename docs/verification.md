@@ -93,6 +93,16 @@ How the extractor works:
   marker layers. C = area × area capacitance (+ perimeter × perimeter capacitance). See
   [Technology](technology.md#pdk-files) and the `poly_res` / `mom_cap`
   [PCells](pcells.md).
+- **Bipolar transistors** are the technology's `[[bjt]]` devices, vertical PNPs: a p+
+  emitter inside an `nwell` under the marker layers, with the well as base and the
+  substrate as collector. The area factor is the emitter area over `unit_area` (1 per
+  emitter without it). LVS compares them with the schematic's `Pnp` instances: base,
+  emitter and collector, area, and the model unless the schematic keeps the generic `pnp`.
+- **Well taps are soft connections**: an n+ tap in an `nwell` (or a p+ tap in the substrate)
+  gives the well the net it is on, but never joins two nets through the well, as Calibre's
+  `SOFT CONNECT`. A well or substrate tapped from several nets (`vss` and `agnd`, two
+  supplies in one well) is taken as the net with the most taps, and LVS warns
+  `soft connection: ... is tapped from nets ...`.
 - Net names come from labels in the top cell on conducting layers. Unnamed nets are called
   `netN`.
 - Warnings report labels not on conducting geometry, two labels shorted together, and a

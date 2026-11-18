@@ -439,12 +439,25 @@ fn extraction_json(x: &Extraction, tech: &Tech, title: &str) -> Value {
         .take(MAX_LISTED)
         .map(|p| json!({"name": p.name, "kind": p.kind.label(), "model": p.model, "value": sig(p.value), "a": net(p.a), "b": net(p.b)}))
         .collect();
+    let bjts: Vec<Value> = x
+        .bjts
+        .iter()
+        .take(MAX_LISTED)
+        .map(|q| json!({"name": q.name, "model": q.model, "area": sig(q.area), "c": net(q.c), "b": net(q.b), "e": net(q.e)}))
+        .collect();
+    let soft: Vec<Value> = x
+        .soft_conflicts
+        .iter()
+        .map(|c| json!({"well": if c.well.is_some() { "nwell" } else { "substrate" }, "nets": c.nets.iter().map(|&n| net(n)).collect::<Vec<_>>(), "bbox_um": c.well.map(|b| rect_um(tech, b))}))
+        .collect();
     json!({
         "net_count": x.nets.len(),
         "device_count": x.devices.len(),
         "nets": nets,
         "devices": devices,
         "passives": passives,
+        "bjts": bjts,
+        "soft_conflicts": soft,
         "warnings": x.warnings,
         "spice": x.spice(title, tech.dbu_per_um),
     })

@@ -224,6 +224,7 @@ length_unit = "um"   # 모델이 W / L을 µm로 받음
 | `[[device]]` | `name`, `type`(`nmos` / `pmos`), `layers`, `exclude`, `subckt` |
 | `[[resistor]]` | 저항: 도전 레이어의 마커로 표시된 본체: `name`, `layer`, `layers`(마커), `exclude`, `sheet`(스퀘어당 Ω). `poly_res`는 poly 레이어 저항의 마커를 그림 |
 | `[[capacitor]]` | 커패시터: 두 도전 레이어의 마커로 표시된 겹침: `name`, `bottom`, `top`, `layers`, `area`(fF/µm²), 선택적 `perimeter`(fF/µm). `mom_cap`은 metal1 / metal2 커패시터의 마커를 그림 |
+| `[[bjt]]` | 바이폴라 트랜지스터, vertical PNP(nwell 안 p+ 이미터, nwell 베이스, 기판 컬렉터): `name`, `type = "pnp"`, `layers`(이미터를 덮는 마커), `exclude`, 면적 계수용 선택적 `unit_area`(µm²) |
 | `[models]` | `path`, `extra`(같은 코너로 함께 불러올 모델 파일), `corners`, `default`, `length_unit`(`m` 또는 `um`), `osdi`(ngspice가 먼저 불러오는 컴파일된 Verilog-A 모델, OpenVAF `.osdi`), `lde`(모델이 레이아웃 의존 파라미터 `nf sa sb sd`를 받으면 `true`. 이 경우 레이아웃 후 덱이 [이를 백어노테이션](simulation.md#포스트-레이아웃-시뮬레이션)) |
 | `drc_deck` | DRC 덱 파일(선택) |
 | `[[signoff]]` | 외부 DRC / LVS 런셋: `name`, `tool`(`klayout`, `calibre`, `netgen`, `builtin`), `check`(`drc`, `lvs`), `deck`, `vars`, `klayout`, `skip`, `ground`([검증](verification.md#외부-도구로-사인오프) 참고) |

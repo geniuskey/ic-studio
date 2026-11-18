@@ -86,6 +86,12 @@
 //! area = 2.0                   # fF/µm²
 //! perimeter = 0.0              # fF/µm, optional
 //!
+//! [[bjt]]                      # vertical PNP: p+ emitter in nwell, nwell base, substrate collector (see BjtDef)
+//! name = "pnp_vert"
+//! type = "pnp"
+//! layers = ["pnpmark"]         # marker layers covering the emitter
+//! unit_area = 4.0              # µm², optional: area factor = emitter area / unit_area
+//!
 //! [models]
 //! path = "${PDK_ROOT}/sky130A/libs.tech/ngspice/sky130.lib.spice"
 //! corners = ["tt", "ff", "ss", "sf", "fs"]
@@ -122,7 +128,7 @@ use serde::Deserialize;
 
 use crate::signoff::Runset;
 use crate::tech::{
-    CapDef, DeviceRules, FillStyle, LayerCap, LayerDef, LayerRoles, LengthUnit, LineStyle, ModelLib, MosDef, PcellLayer,
+    BjtDef, CapDef, DeviceRules, FillStyle, LayerCap, LayerDef, LayerRoles, LengthUnit, LineStyle, ModelLib, MosDef, PcellLayer,
     PinLabel, ResDef, Stipple, Tech, ViaDef,
 };
 use crate::tech_import::{apply_lyt, from_lyp};
@@ -149,6 +155,8 @@ struct PdkFile {
     resistor: Vec<ResDef>,
     #[serde(default)]
     capacitor: Vec<CapDef>,
+    #[serde(default)]
+    bjt: Vec<BjtDef>,
     models: Option<ModelsEntry>,
     drc_deck: Option<String>,
     #[serde(default)]
@@ -384,6 +392,7 @@ pub fn parse(text: &str, base: &Path, env: &dyn Fn(&str) -> Option<String>) -> R
     tech.devices = f.device;
     tech.resistors = f.resistor;
     tech.capacitors = f.capacitor;
+    tech.bjts = f.bjt;
     tech.pcell_layers = f
         .pcell_layer
         .into_iter()
@@ -491,6 +500,13 @@ pub fn check(tech: &Tech) -> Vec<String> {
         for n in [&c.bottom, &c.top].into_iter().chain(&c.layers).chain(&c.exclude) {
             if !has(n) {
                 w.push(format!("capacitor '{}' uses unknown layer '{n}'", c.name));
+            }
+        }
+    }
+    for b in &tech.bjts {
+        for n in b.layers.iter().chain(&b.exclude) {
+            if !has(n) {
+                w.push(format!("bjt '{}' uses unknown layer '{n}'", b.name));
             }
         }
     }
@@ -673,11 +689,19 @@ name = "cm"
 bottom = "poly"
 top = "m9"
 area = 2.0
+[[bjt]]
+name = "pnp5"
+type = "pnp"
+layers = ["pmark"]
+unit_area = 25.0
 "#;
         let p = parse(text, Path::new("."), &|_| None).unwrap();
         assert_eq!((p.tech.resistors[0].name.as_str(), p.tech.resistors[0].sheet), ("rp", 7.5));
         assert_eq!((p.tech.capacitors[0].area, p.tech.capacitors[0].perimeter), (2.0, 0.0));
         assert!(p.warnings.iter().any(|w| w == "capacitor 'cm' uses unknown layer 'm9'"), "{:?}", p.warnings);
+        let b = &p.tech.bjts[0];
+        assert_eq!((b.name.as_str(), b.kind, b.unit_area), ("pnp5", crate::tech::BjtType::Pnp, Some(25.0)));
+        assert!(p.warnings.iter().any(|w| w == "bjt 'pnp5' uses unknown layer 'pmark'"), "{:?}", p.warnings);
     }
 
     /// The demo inverter in SKY130, placed and routed from its schematic.
