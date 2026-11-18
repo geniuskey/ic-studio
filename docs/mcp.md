@@ -139,3 +139,9 @@ every call, so you can start or close the app at any time.
 Without a running app, or with `ICS_MCP_STANDALONE=1`, the server works on its own
 in-memory project; start with `open_project` or `new_project`. `ICS_LIVE_DIR` overrides
 the folder of the discovery file.
+
+**Folders an agent may use.** File arguments (`path`, `file`, `lef_path`, `svg_path`, ...)
+must lie inside the folder `ics mcp` was started in, or the open project's folder; other
+paths are refused, `..` and symbolic links included. Relative paths resolve against that
+folder, also in live mode. To allow more folders, list them in `ICS_MCP_ROOTS` (separated
+like `PATH`). The copilot inside the app is held to the open project's folder the same way.

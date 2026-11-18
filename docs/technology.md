@@ -231,7 +231,7 @@ The main sections:
 | `name`, `dbu_per_um`, `grid` | Technology name, database unit, snap grid (µm) |
 | `lyp`, `lyt` | Optional KLayout files supplying layers and colours |
 | `[[layer]]` | `name`, `gds`, `datatype`, `width`, `space`, `area` (µm²), `routing`, `color` (`#rrggbb`), `fill`, `stipple`, `outline`, `line`. Adds a layer, or sets rules on a layer from the `.lyp` |
-| `[roles]` | `diffusion` (list), `tap`, `poly`, `nwell`, `nimplant` (empty when the process draws no n+ implant: n+ is diffusion outside `pimplant`), `pimplant`, `diff_contact`, `poly_contact` (via names), `label` |
+| `[roles]` | `diffusion` (list), `tap`, `poly`, `nwell`, `dnwell` (optional deep n-well of a triple-well process: inside it and outside `nwell` are isolated p-wells, which take their own p+ taps and NMOS bodies), `nimplant` (empty when the process draws no n+ implant: n+ is diffusion outside `pimplant`), `pimplant`, `diff_contact`, `poly_contact` (via names), `label` |
 | `[rules]` | `gate_contact_space`, `poly_endcap`, `implant_enc`, `nwell_enc`, `marker_enc` (device marker layers around the diffusion), `bend_corner` (share of a bent gate's corner squares counted in W, 0 to 1, default 1; see [PCells](pcells.md#device-shapes-extraction-understands)) |
 | `[[pin_label]]` | Net label layer of a conducting layer: `layer`, `label` (e.g. `Metal1` and `Metal1.text`). Routing labels named nets there, extraction reads labels there as names of that layer's nets |
 | `[[pcell_layer]]` | Extra layer the PCells draw: `layer`, `around` (`poly_contact`, `diff_contact`, `gate`, `diffusion`, `poly` or a layer name), `enc`, optional `kinds` (`nmos`, `pmos`, `poly_res`, `mom_cap`, `ntap`, `ptap`) |
@@ -240,7 +240,7 @@ The main sections:
 | `[[device]]` | `name`, `type` (`nmos` / `pmos`), `layers`, `exclude`, `subckt` |
 | `[[resistor]]` | Resistor: marked body of a conducting layer: `name`, `layer`, `layers` (markers), `exclude`, `sheet` (Ω per square). `poly_res` draws the markers of the resistor on the poly layer |
 | `[[capacitor]]` | Capacitor: marked overlap of two conducting layers: `name`, `bottom`, `top`, `layers`, `area` (fF/µm²), optional `perimeter` (fF/µm). `mom_cap` draws the markers of the metal1 / metal2 capacitor |
-| `[[bjt]]` | Bipolar transistor, a vertical PNP (p+ emitter in nwell, nwell base, substrate collector): `name`, `type = "pnp"`, `layers` (markers over the emitter), `exclude`, optional `unit_area` (µm²) for the area factor |
+| `[[bjt]]` | Bipolar transistor: a vertical PNP (p+ emitter in nwell, nwell base, substrate collector) or, with a `dnwell` role, a vertical NPN (n+ emitter in an isolated p-well, p-well base, deep n-well collector): `name`, `type` (`"pnp"` / `"npn"`), `layers` (markers over the emitter), `exclude`, optional `unit_area` (µm²) for the area factor |
 | `[models]` | `path`, `extra` (more model files loaded at the same corner), `corners`, `default`, `length_unit` (`m` or `um`), `osdi` (compiled Verilog-A models, OpenVAF `.osdi`, that ngspice loads first), `lde` (`true` when the models take the layout-dependent parameters `nf sa sb sd`; post-layout decks then [back-annotate them](simulation.md#post-layout-simulation)) |
 | `drc_deck` | Optional DRC deck file |
 | `[[signoff]]` | External DRC / LVS runsets: `name`, `tool` (`klayout`, `calibre`, `netgen`, `builtin`), `check` (`drc`, `lvs`), `deck`, `vars`, `klayout`, `skip`, `ground` (see [Verification](verification.md#sign-off-with-external-tools)) |

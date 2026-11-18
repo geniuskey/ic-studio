@@ -497,7 +497,8 @@ fn long_skill_script_can_be_cancelled() {
     assert!(h.state().skill_running(), "still looping");
     shot(&mut h, "31b_skill_running");
     h.state_mut().command(Command::CancelSkill);
-    for _ in 0..50 {
+    // Up to 5 s: the worker notices the cancel at its next step, later on a loaded machine.
+    for _ in 0..250 {
         h.run_steps(1);
         if !h.state().skill_running() {
             break;

@@ -213,7 +213,8 @@ Rust로 작성한 수정 절점 해석(MNA) 엔진입니다. 다음을 지원합
   베이스 전류, 접합·확산 전하, 직렬 저항, `eg xti xtb` 온도 특성), 선형 제어 전원 `E F G H`,
   동작 모델 소스 `B`(`v(a)`, `v(a, b)`, `i(vname)`, `time`으로 쓴 `V=` 또는 `I=` 수식), 상호
   인덕턴스 `K`, 전압·전류 스위치 `S` / `W`(`vt vh ron roff` / `it ih ron roff`를 쓰는
-  `.model sw` / `csw`. 히스테리시스 대신 `vt ± vh` 구간에서 부드럽게 켜짐), 서브서킷 인스턴스
+  `.model sw` / `csw`와 초기 상태 `on` / `off`. 히스테리시스가 있으면 `vt + vh` 위에서 닫히고
+  `vt − vh` 아래에서 열리며, 한 스텝이 아니라 `vt`의 1 % 폭에 걸쳐 바뀜), 서브서킷 인스턴스
   `X`(`POLY` / `VALUE` 형식은 미지원: 이런 덱은 **Auto**에서 ngspice로 실행),
 - 소스: `DC`, `AC mag [phase]`, `PULSE(v1 v2 td tr tf pw per)`,
   `SIN(vo va freq td theta phase)`, `r=` / `td=`가 있는 `PWL(t v ...)`,
@@ -313,6 +314,11 @@ ngspice가 덱을 직접 읽으므로 서브서킷 소자(`X`), PDK의 `.include
 PDK 모델 라이브러리는 컴파일된 Verilog-A 모델을 나열할 수 있으며(PDK 파일 `[models]`의
 `osdi = [...]`), ngspice는 덱보다 먼저 `pre_osdi`로 이를 로드합니다. IHP SG13G2 PDK 파일은
 PSP 103 모델에 이 방식을 사용합니다.
+
+덱 자체의 `.control` 블록은 IC Studio의 블록으로 바뀝니다(그 안의 `pre_osdi` 줄만 유지하며
+`pre_shell` 같은 다른 명령은 버림). 덱이 `.include`하거나 `.lib`으로 읽는 파일 안의 `.control`
+블록은 ngspice에서 그대로 실행되므로, 그런 덱은 해당 파일 이름과 함께 거부합니다. 블록을 뺀
+라이브러리 사본을 include하세요.
 
 ### 내장 엔진과 ngspice 비교
 

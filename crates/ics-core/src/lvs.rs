@@ -33,8 +33,10 @@ pub struct LvsOptions {
     pub ignore_kinds: Vec<DeviceKind>,
     /// Relative tolerance for W / L and resistance / capacitance comparison.
     pub tolerance: f64,
-    /// Drop MOS devices whose gate is on their bulk net (always off: dummies, tie-offs) from
-    /// both sides.
+    /// Leave MOS devices whose gate is on their bulk net (always off: dummies, tie-offs, ESD
+    /// clamps such as a GGNMOS) out of the matching. Layout ones need no schematic
+    /// counterpart, but each schematic one whose drain or source is on another net must still
+    /// have an off layout device of its type between the same nets, of the same total W.
     pub filter_off: bool,
     /// PDK devices ([`Tech::devices`]): when given, device models must match too (schematic
     /// models resolved as in [`Tech::mos_device`]).
@@ -386,7 +388,25 @@ fn pair_net(a: &mut State, b: &mut State, i: usize, j: usize, tag: u64) {
     (a.net[i], b.net[j]) = (tag, tag);
 }
 
-fn schematic_side(sch: &Schematic, opts: &LvsOptions, errors: &mut Vec<LvsError>, count: &mut usize) -> Side {
+/// A schematic MOS left out of the matching by [`LvsOptions::filter_off`].
+struct OffDev {
+    name: String,
+    kind: Kind,
+    d: String,
+    s: String,
+    g: String,
+    /// W (times m) and L in µm.
+    w: f64,
+    l: f64,
+}
+
+fn schematic_side(
+    sch: &Schematic,
+    opts: &LvsOptions,
+    errors: &mut Vec<LvsError>,
+    count: &mut usize,
+    off: &mut Vec<OffDev>,
+) -> Side {
     let conn = connectivity::extract(sch);
     let mut side = Side::default();
     let mut insts: Vec<_> = sch.instances.iter().collect();
@@ -402,6 +422,11 @@ fn schematic_side(sch: &Schematic, opts: &LvsOptions, errors: &mut Vec<LvsError>
             let floating = inst.pin_positions().iter().any(|(n, p)| *n == "b" && conn.unconnected_pins.contains(p));
             let bulk = conn.net_of(inst.id, if floating { "s" } else { "b" });
             if bulk.is_some() && conn.net_of(inst.id, "g") == bulk {
+                let n = |pin: &str| conn.net_of(inst.id, pin).unwrap_or("?").to_string();
+                let p = |k: &str| parse_spice(inst.param(k)).map_or(f64::NAN, |v| v * 1e6);
+                let m = parse_spice(inst.param("m")).map_or(1.0, |m| m.round().max(1.0));
+                let kind = if matches!(inst.kind, DeviceKind::Pmos | DeviceKind::Pmos3) { Kind::Pmos } else { Kind::Nmos };
+                off.push(OffDev { name: inst.name.clone(), kind, d: n("d"), s: n("s"), g: n("g"), w: p("w") * m, l: p("l") });
                 continue;
             }
         }
@@ -725,7 +750,8 @@ fn match_graphs(sa: &Side, sb: &Side, a: &mut State, b: &mut State) {
 pub fn compare(sch: &Schematic, lay: &Extraction, opts: &LvsOptions) -> LvsReport {
     let mut errors = Vec::new();
     let mut schematic_devices = 0;
-    let mut sa = schematic_side(sch, opts, &mut errors, &mut schematic_devices);
+    let mut off = Vec::new();
+    let mut sa = schematic_side(sch, opts, &mut errors, &mut schematic_devices, &mut off);
     let mut sb = layout_side(lay, opts);
     sa.finish();
     sb.finish();
@@ -828,10 +854,11 @@ pub fn compare(sch: &Schematic, lay: &Extraction, opts: &LvsOptions) -> LvsRepor
             errors.push(err(LvsErrorKind::Net, format!("layout net '{}' has no schematic counterpart", n.name), n.marker));
         }
     }
+    check_off_devices(&off, lay, &nets, opts, &mut errors);
     let mut warnings = floating_bulks(lay);
     for sc in &lay.soft_conflicts {
         let names: Vec<String> = sc.nets.iter().map(|&n| format!("'{}'", lay.nets[n].name)).collect();
-        let what = if sc.well.is_some() { "an nwell" } else { "the substrate" };
+        let what = if sc.well.is_some() { "a well" } else { "the substrate" };
         let msg = format!(
             "soft connection: {what} is tapped from nets {}; the well does not join them and is taken as {}",
             names.join(", "),
@@ -845,6 +872,49 @@ pub fn compare(sch: &Schematic, lay: &Extraction, opts: &LvsOptions) -> LvsRepor
     let layout_devices =
         lay.devices.iter().filter(|d| !(opts.filter_off && d.g == d.b)).count() + lay.passives.len() + lay.bjts.len();
     LvsReport { matched: errors.is_empty(), devices, nets, errors, warnings, schematic_devices, layout_devices }
+}
+
+/// Each schematic off device ([`LvsOptions::filter_off`]) that is not a plain dummy (drain or
+/// source off its gate net) needs off layout devices of its type between the same nets (through
+/// the matched net names), of the same total W.
+fn check_off_devices(off: &[OffDev], lay: &Extraction, nets: &[(String, String)], opts: &LvsOptions, errors: &mut Vec<LvsError>) {
+    let to_layout: HashMap<String, String> = nets.iter().map(|(a, b)| (normalize(a), normalize(b))).collect();
+    let layout = |n: &str| to_layout.get(&normalize(n)).cloned().unwrap_or_else(|| normalize(n));
+    let dbu = if lay.dbu_per_um > 0 { lay.dbu_per_um } else { 1000 } as f64;
+    let mut used = vec![false; lay.devices.len()];
+    for o in off.iter().filter(|o| o.d != o.g || o.s != o.g) {
+        let mut want = [layout(&o.d), layout(&o.s)];
+        want.sort();
+        let mut w = 0.0;
+        let mut found = None;
+        for (j, d) in lay.devices.iter().enumerate() {
+            let kind = if d.kind == DevKind::Pmos { Kind::Pmos } else { Kind::Nmos };
+            if used[j] || d.g != d.b || kind != o.kind {
+                continue;
+            }
+            let mut have = [normalize(&lay.nets[d.d].name), normalize(&lay.nets[d.s].name)];
+            have.sort();
+            if have == want && (!o.l.is_finite() || (d.l as f64 / dbu - o.l).abs() <= opts.tolerance * o.l.abs()) {
+                used[j] = true;
+                w += d.w as f64 / dbu;
+                found.get_or_insert(d.gate);
+            }
+        }
+        let what = format!("{} ({} W={} L={}, gate on its bulk)", o.name, o.kind.label(), um(o.w), um(o.l));
+        match found {
+            None => errors.push(LvsError {
+                kind: LvsErrorKind::MissingDevice,
+                message: format!("schematic device {what} has no off layout device between '{}' and '{}'", o.d, o.s),
+                marker: None,
+            }),
+            Some(gate) if o.w.is_finite() && (w - o.w).abs() > opts.tolerance * o.w.abs() => errors.push(LvsError {
+                kind: LvsErrorKind::Parameter,
+                message: format!("{}: W {} (schematic) vs {} (layout, gate on its bulk)", o.name, um(o.w), um(w)),
+                marker: Some(gate),
+            }),
+            Some(_) => {}
+        }
+    }
 }
 
 /// Wells and substrate regions that only MOS bulks connect to: no tap ties them to a supply
@@ -1264,5 +1334,95 @@ mod tests {
         let well = x.soft_conflicts.iter().find(|c| c.well.is_some()).expect("well conflict");
         assert_eq!(well.nets.len(), 2);
         assert_ne!(x.nets.iter().position(|n| n.name == "base"), x.nets.iter().position(|n| n.name == "base2"));
+    }
+
+    #[test]
+    fn triple_well_npn_and_isolated_nmos() {
+        let mut tech = Tech::generic();
+        for (k, name) in ["dnwell", "npnmark"].into_iter().enumerate() {
+            let mut m = crate::tech::LayerDef::generated(40 + k as u16, 0, tech.layers.len());
+            m.name = name.into();
+            tech.layers.push(m);
+        }
+        tech.roles.dnwell = "dnwell".into();
+        tech.bjts = vec![crate::tech::BjtDef {
+            name: "npn_vert".into(),
+            kind: crate::tech::BjtType::Npn,
+            layers: vec!["npnmark".into()],
+            exclude: vec![],
+            unit_area: None,
+        }];
+        let l = |n: &str| tech.layer_index(n).unwrap();
+        let mut lay = Layout::default();
+        contacted(&mut lay, &tech, "pplus", (0, 0, 500, 500), "vss");
+        lay.add_rect(l("dnwell"), 10000, 0, 16000, 6000);
+        // An nwell strip over the deep n-well's edge, tapped on `coll`.
+        lay.add_rect(l("nwell"), 9500, 0, 11000, 6000);
+        contacted(&mut lay, &tech, "nplus", (10000, 500, 10500, 1000), "coll");
+        // The isolated p-well: a tap on `pb`, an emitter on `ne` and an NMOS.
+        contacted(&mut lay, &tech, "pplus", (12000, 500, 12500, 1000), "pb");
+        contacted(&mut lay, &tech, "nplus", (13500, 2500, 14500, 3500), "ne");
+        lay.add_rect(l("npnmark"), 13000, 2000, 15000, 4000);
+        lay.add_rect(l("active"), 12000, 4500, 13000, 5500);
+        lay.add_rect(l("nplus"), 11800, 4300, 13200, 5700);
+        lay.add_rect(l("poly"), 12410, 4300, 12590, 5700);
+        let x = extract(&lay, &NoCells, &tech);
+        let net = |n: &str| x.nets.iter().position(|q| q.name == n).unwrap();
+        assert_eq!(x.bjts.len(), 1, "{:?}", x.warnings);
+        let q = &x.bjts[0];
+        assert!(!q.pnp);
+        assert_eq!((q.c, q.b, q.e), (net("coll"), net("pb"), net("ne")));
+        assert_eq!(x.devices[0].b, net("pb"), "the NMOS body is the isolated p-well, not the substrate");
+        assert!(x.soft_conflicts.is_empty());
+
+        let mut sch = Schematic::default();
+        let id = sch.add_instance(DeviceKind::Npn, Pt::new(0, 0), Orient::default());
+        let pins = sch.instance(id).unwrap().pin_positions();
+        for (pin, n) in [("c", "coll"), ("b", "pb"), ("e", "ne")] {
+            sch.add_label(n, pins.iter().find(|(p, _)| *p == pin).unwrap().1);
+        }
+        let opts = LvsOptions { filter_off: false, ..LvsOptions::default() };
+        let r = compare(&sch, &x, &opts);
+        assert!(r.devices.contains(&("Q1".into(), "Q1".into())), "{:#?} {:#?}", r.devices, r.errors);
+        assert!(!r.errors.iter().any(|e| e.message.contains("Q1")), "{:#?}", r.errors);
+    }
+
+    #[test]
+    fn schematic_ggnmos_needs_an_off_layout_device() {
+        // An ESD clamp: drain on the pad, gate, source and body on ground. Off devices are left
+        // out of the matching, but this one must still be in the layout.
+        let sch = schematic(&[(DeviceKind::Nmos, "10u", ["pad", "0", "0"])]);
+        let finger = |x: i64| crate::extract::Device {
+            kind: DevKind::Nmos,
+            model: "nmos".into(),
+            name: format!("M{x}"),
+            w: 5000,
+            l: 180,
+            d: 0,
+            g: 1,
+            s: 1,
+            b: 1,
+            gate: IRect::new(x, 0, x + 180, 5000),
+            jd: Default::default(),
+            js: Default::default(),
+            od: None,
+        };
+        let net = |n: &str| crate::extract::Net { name: n.into(), labelled: true, shapes: vec![], bbox: None };
+        let lay = |fingers: &[i64]| Extraction {
+            nets: vec![net("pad"), net("gnd")],
+            devices: fingers.iter().map(|&x| finger(x)).collect(),
+            dbu_per_um: 1000,
+            ..Default::default()
+        };
+        let r = compare(&sch, &lay(&[0, 1000]), &LvsOptions::default());
+        assert!(r.matched, "{:#?}", r.errors);
+        let r = compare(&sch, &lay(&[0]), &LvsOptions::default());
+        assert_eq!(kinds(&r), [LvsErrorKind::Parameter], "{:#?}", r.errors);
+        assert!(r.errors[0].message.contains("W 10µm (schematic) vs 5µm"), "{}", r.errors[0].message);
+        let r = compare(&sch, &lay(&[]), &LvsOptions::default());
+        assert_eq!(kinds(&r), [LvsErrorKind::MissingDevice], "{:#?}", r.errors);
+        // A plain dummy (every pin on one net) needs no layout device.
+        let dummy = schematic(&[(DeviceKind::Nmos, "1u", ["0", "0", "0"])]);
+        assert!(compare(&dummy, &lay(&[]), &LvsOptions::default()).matched);
     }
 }

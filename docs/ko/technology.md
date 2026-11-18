@@ -215,7 +215,7 @@ length_unit = "um"   # 모델이 W / L을 µm로 받음
 | `name`, `dbu_per_um`, `grid` | 테크놀로지 이름, 데이터베이스 단위, 스냅 그리드(µm) |
 | `lyp`, `lyt` | 레이어와 색상을 제공하는 KLayout 파일(선택) |
 | `[[layer]]` | `name`, `gds`, `datatype`, `width`, `space`, `area`(µm²), `routing`, `color`(`#rrggbb`), `fill`, `stipple`, `outline`, `line`. 레이어를 추가하거나 `.lyp`에서 온 레이어에 룰을 설정 |
-| `[roles]` | `diffusion`(리스트), `tap`, `poly`, `nwell`, `nimplant`(공정이 n+ 임플란트를 그리지 않으면 비움: n+는 `pimplant` 밖의 확산), `pimplant`, `diff_contact`, `poly_contact`(비아 이름), `label` |
+| `[roles]` | `diffusion`(리스트), `tap`, `poly`, `nwell`, `dnwell`(선택: triple-well 공정의 deep n-well. 그 안이면서 `nwell` 밖은 isolated p-well이 되어 자체 p+ 탭과 NMOS 바디를 가짐), `nimplant`(공정이 n+ 임플란트를 그리지 않으면 비움: n+는 `pimplant` 밖의 확산), `pimplant`, `diff_contact`, `poly_contact`(비아 이름), `label` |
 | `[rules]` | `gate_contact_space`, `poly_endcap`, `implant_enc`, `nwell_enc`, `marker_enc`(확산 둘레의 소자 마커 레이어), `bend_corner`(꺾인 게이트의 모서리 스퀘어 중 W에 포함하는 비율, 0~1, 기본값 1. [PCell](pcells.md#추출이-인식하는-소자-형상) 참고) |
 | `[[pin_label]]` | 도전 레이어의 넷 라벨 레이어: `layer`, `label`(예: `Metal1`과 `Metal1.text`). 라우팅은 이름 붙은 넷의 라벨을 여기에 두고, 추출은 여기의 라벨을 그 레이어 넷의 이름으로 읽음 |
 | `[[pcell_layer]]` | PCell이 그리는 추가 레이어: `layer`, `around`(`poly_contact`, `diff_contact`, `gate`, `diffusion`, `poly` 또는 레이어 이름), `enc`, 선택적 `kinds`(`nmos`, `pmos`, `poly_res`, `mom_cap`, `ntap`, `ptap`) |
@@ -224,7 +224,7 @@ length_unit = "um"   # 모델이 W / L을 µm로 받음
 | `[[device]]` | `name`, `type`(`nmos` / `pmos`), `layers`, `exclude`, `subckt` |
 | `[[resistor]]` | 저항: 도전 레이어의 마커로 표시된 본체: `name`, `layer`, `layers`(마커), `exclude`, `sheet`(스퀘어당 Ω). `poly_res`는 poly 레이어 저항의 마커를 그림 |
 | `[[capacitor]]` | 커패시터: 두 도전 레이어의 마커로 표시된 겹침: `name`, `bottom`, `top`, `layers`, `area`(fF/µm²), 선택적 `perimeter`(fF/µm). `mom_cap`은 metal1 / metal2 커패시터의 마커를 그림 |
-| `[[bjt]]` | 바이폴라 트랜지스터, vertical PNP(nwell 안 p+ 이미터, nwell 베이스, 기판 컬렉터): `name`, `type = "pnp"`, `layers`(이미터를 덮는 마커), `exclude`, 면적 계수용 선택적 `unit_area`(µm²) |
+| `[[bjt]]` | 바이폴라 트랜지스터: vertical PNP(nwell 안 p+ 이미터, nwell 베이스, 기판 컬렉터) 또는 `dnwell` 역할이 있으면 vertical NPN(isolated p-well 안 n+ 이미터, p-well 베이스, deep n-well 컬렉터): `name`, `type`(`"pnp"` / `"npn"`), `layers`(이미터를 덮는 마커), `exclude`, 면적 계수용 선택적 `unit_area`(µm²) |
 | `[models]` | `path`, `extra`(같은 코너로 함께 불러올 모델 파일), `corners`, `default`, `length_unit`(`m` 또는 `um`), `osdi`(ngspice가 먼저 불러오는 컴파일된 Verilog-A 모델, OpenVAF `.osdi`), `lde`(모델이 레이아웃 의존 파라미터 `nf sa sb sd`를 받으면 `true`. 이 경우 레이아웃 후 덱이 [이를 백어노테이션](simulation.md#포스트-레이아웃-시뮬레이션)) |
 | `drc_deck` | DRC 덱 파일(선택) |
 | `[[signoff]]` | 외부 DRC / LVS 런셋: `name`, `tool`(`klayout`, `calibre`, `netgen`, `builtin`), `check`(`drc`, `lvs`), `deck`, `vars`, `klayout`, `skip`, `ground`([검증](verification.md#외부-도구로-사인오프) 참고) |

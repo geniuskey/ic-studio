@@ -1,6 +1,7 @@
 //! IC Studio MCP tool layer and stdio server, shared by `ics mcp` and the desktop app (live mode).
 
 pub mod bridge;
+pub mod confine;
 pub mod server;
 pub mod tools;
 

@@ -501,6 +501,9 @@ pub struct LayerRoles {
     pub tap: String,
     pub poly: String,
     pub nwell: String,
+    /// Deep n-well of a triple-well process; empty when there is none. Inside it and outside
+    /// `nwell` the surface is an isolated p-well; the nwell over it connects to it.
+    pub dnwell: String,
     /// N+ implant; empty when the process draws none (n+ is diffusion outside the p implant).
     pub nimplant: String,
     pub pimplant: String,
@@ -519,6 +522,7 @@ impl Default for LayerRoles {
             tap: String::new(),
             poly: "poly".into(),
             nwell: "nwell".into(),
+            dnwell: String::new(),
             nimplant: "nplus".into(),
             pimplant: "pplus".into(),
             diff_contact: "contact".into(),
@@ -592,11 +596,16 @@ pub enum BjtType {
     Pnp,
 }
 
-/// A bipolar transistor of the PDK, recognised under its markers. Extraction knows the vertical
-/// PNP of CMOS processes: the emitter is p+ diffusion inside an nwell (not under a gate) that
-/// every `layers` marker covers and no `exclude` marker does, the base that nwell and the
-/// collector the substrate. With `unit_area` (µm²) the extracted area factor is the emitter
-/// area over it, else 1 per emitter.
+/// A bipolar transistor of the PDK, recognised under its markers: every `layers` marker covers
+/// the emitter and no `exclude` marker does. Extraction knows the vertical devices of CMOS
+/// processes:
+/// - PNP: the emitter is p+ diffusion inside an nwell (not under a gate), the base that nwell
+///   and the collector the substrate.
+/// - NPN (triple well, [`LayerRoles::dnwell`]): the emitter is n+ diffusion inside an isolated
+///   p-well, the base that p-well and the collector the deep n-well.
+///
+/// With `unit_area` (µm²) the extracted area factor is the emitter area over it, else 1 per
+/// emitter.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BjtDef {
     /// Model (or subcircuit) name used in netlists and LVS.
@@ -1005,6 +1014,10 @@ impl Tech {
 
     pub fn nwell(&self) -> Option<usize> {
         self.layer_index(&self.roles.nwell)
+    }
+
+    pub fn dnwell(&self) -> Option<usize> {
+        if self.roles.dnwell.is_empty() { None } else { self.layer_index(&self.roles.dnwell) }
     }
 
     pub fn implant(&self, pmos: bool) -> Option<usize> {

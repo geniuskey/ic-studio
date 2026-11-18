@@ -6792,7 +6792,22 @@ impl eframe::App for IcStudio {
         }
         self.copilot.poll();
         if let Some(rx) = &self.copilot.calls {
-            let calls: Vec<Pending> = rx.try_iter().collect();
+            // The copilot's file arguments must stay in the project's folder (or ICS_MCP_ROOTS),
+            // as `ics mcp` keeps an outside agent's in its working directory.
+            let roots = ics_mcp::confine::Roots::for_project(self.project.as_ref().and_then(|p| p.root.as_deref()));
+            let calls: Vec<Pending> = rx
+                .try_iter()
+                .filter_map(|mut c| match roots.check(&c.arguments, None) {
+                    Ok(a) => {
+                        c.arguments = a;
+                        Some(c)
+                    }
+                    Err(e) => {
+                        let _ = c.reply.send(ToolResult::error(e));
+                        None
+                    }
+                })
+                .collect();
             if !calls.is_empty() {
                 let b = self.bridge.get_or_insert_with(|| Bridge {
                     rx: std::sync::mpsc::channel().1,

@@ -21,6 +21,8 @@ struct Rpc {
     standalone: bool,
     /// Pid of the app calls were last forwarded to (`None`: ran locally), for logging mode switches.
     live: Option<Option<u32>>,
+    /// Folders file arguments must lie in.
+    roots: crate::confine::Roots,
 }
 
 impl Default for Rpc {
@@ -29,6 +31,7 @@ impl Default for Rpc {
             state: tools::State::default(),
             standalone: std::env::var_os("ICS_MCP_STANDALONE").is_some_and(|v| v == "1"),
             live: None,
+            roots: crate::confine::Roots::from_env(),
         }
     }
 }
@@ -106,6 +109,12 @@ impl Rpc {
 
     /// Forward to a running IC Studio window if there is one, else run on the local state.
     fn run(&mut self, name: &str, args: &Map<String, Value>) -> ToolResult {
+        let project = self.state.current().and_then(|p| p.root.clone());
+        let args = match self.roots.check(args, project.as_deref()) {
+            Ok(a) => a,
+            Err(e) => return ToolResult::error(e),
+        };
+        let args = &args;
         let client = if self.standalone { None } else { Client::discover() };
         let mode = client.as_ref().map(Client::pid);
         if self.live != Some(mode) {
@@ -154,7 +163,18 @@ mod tests {
     use super::*;
 
     fn standalone() -> Rpc {
-        Rpc { standalone: true, ..Rpc::default() }
+        // The tests write under the temp directory and read the repository's process files.
+        let cwd = std::env::current_dir().unwrap();
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let roots = crate::confine::Roots::new(cwd.clone(), vec![cwd, repo, std::env::temp_dir()]);
+        Rpc { standalone: true, roots, ..Rpc::default() }
+    }
+
+    #[test]
+    fn file_arguments_are_confined() {
+        let mut s = Rpc { standalone: true, ..Rpc::default() };
+        let e = call(&mut s, "new_project", json!({"path": "/ics-confine-test/p"})).unwrap_err();
+        assert!(e.contains("outside the folders"), "{e}");
     }
 
     fn request(s: &mut Rpc, method: &str, params: Value) -> Value {

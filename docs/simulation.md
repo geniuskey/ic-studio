@@ -223,8 +223,9 @@ A modified nodal analysis engine written in Rust. It supports:
   temperature through `eg xti xtb`), linear controlled sources `E F G H`, behavioural sources
   `B` (`V=` or `I=` expressions of `v(a)`, `v(a, b)`, `i(vname)` and `time`), mutual inductance
   `K`, voltage and current switches `S` / `W` (`.model sw` / `csw` with `vt vh ron roff` /
-  `it ih ron roff`; the switch turns on smoothly across `vt ± vh` rather than with
-  hysteresis), and subcircuit instances `X` (no `POLY` / `VALUE` forms: those decks go to
+  `it ih ron roff`, and an `on` / `off` initial state; with hysteresis a switch closes
+  above `vt + vh` and opens below `vt − vh`, changing over 1 % of `vt` rather than in one
+  step), and subcircuit instances `X` (no `POLY` / `VALUE` forms: those decks go to
   ngspice under **Auto**),
 - sources: `DC`, `AC mag [phase]`, `PULSE(v1 v2 td tr tf pw per)`,
   `SIN(vo va freq td theta phase)`, `PWL(t v ...)` with `r=` and `td=`,
@@ -336,6 +337,11 @@ from the deck when the setup lists none.
 A PDK model library can list compiled Verilog-A models (`osdi = [...]` in the PDK file's
 `[models]`), which ngspice loads with `pre_osdi` before the deck; the IHP SG13G2 PDK file
 uses this for its PSP 103 models.
+
+The deck's own `.control` blocks are replaced by IC Studio's (only their `pre_osdi` lines
+are kept, never `pre_shell` and other commands). A `.control` block inside a file the deck
+`.include`s or `.lib`s would still run in ngspice, so such a deck is refused with the file
+named: include a copy of the library without the block.
 
 ### Built-in engine versus ngspice
 

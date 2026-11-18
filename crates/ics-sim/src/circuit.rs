@@ -429,7 +429,8 @@ pub enum Element {
     },
     /// A switch between `a` and `b`, closed (`ron`) above the threshold of its control and
     /// open (`roff`) below: the voltage `cp` − `cn` (S) or the current of source `vctl` (W).
-    /// The transition is smooth over the hysteresis band (no hysteresis state).
+    /// With hysteresis (`vh`) it closes above `vt + vh` and opens below `vt − vh`; `on` is its
+    /// state before the operating point.
     S {
         name: String,
         a: Node,
@@ -438,6 +439,7 @@ pub enum Element {
         cn: Node,
         vctl: String,
         model: SwitchModel,
+        on: bool,
     },
 }
 
@@ -460,17 +462,26 @@ pub struct SwitchModel {
 }
 
 impl SwitchModel {
-    /// Half-width of the transition band around `vt`.
+    /// Half-width of the transition around the threshold: 1 % of `vt` (at least 1 mV or 1 µA),
+    /// at most half the hysteresis.
     pub fn band(&self, current: bool) -> f64 {
-        self.vh.abs().max(0.01 * self.vt.abs()).max(if current { 1e-6 } else { 1e-3 })
+        let w = (0.01 * self.vt.abs()).max(if current { 1e-6 } else { 1e-3 });
+        if self.vh != 0.0 { w.min(0.5 * self.vh.abs()) } else { w }
     }
 
-    /// Conductance at control value `c` and its derivative: log-conductance follows a tanh
-    /// from `1/roff` to `1/ron` across `vt ± max(vh, 1 % of |vt|, 1 mV or 1 µA)`.
-    pub fn g(&self, c: f64, current: bool) -> (f64, f64) {
+    /// The threshold a switch in state `on` changes state at: `vt − vh` to open, `vt + vh` to
+    /// close.
+    pub fn center(&self, on: bool) -> f64 {
+        if on { self.vt - self.vh.abs() } else { self.vt + self.vh.abs() }
+    }
+
+    /// Conductance at control value `c` in state `on` and its derivative: log-conductance
+    /// follows a tanh from `1/roff` to `1/ron` across the state's threshold ± [`Self::band`].
+    pub fn g(&self, c: f64, current: bool, on: bool) -> (f64, f64) {
         let w = self.band(current);
+        let vt = self.center(on);
         let (lo, hi) = ((1.0 / self.roff).ln(), (1.0 / self.ron).ln());
-        let t = ((c - self.vt) / w).tanh();
+        let t = ((c - vt) / w).tanh();
         let lg = lo + (hi - lo) * 0.5 * (1.0 + t);
         let g = lg.exp();
         (g, g * (hi - lo) * 0.5 * (1.0 - t * t) / w)
@@ -1453,14 +1464,12 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
                     let what = if is_current { "current" } else { "voltage" };
                     return Err(err(ln, format!("{name}: model '{}' is a {what} switch", t[mi])));
                 }
-                if model.vh != 0.0 {
-                    c.warnings.push(format!("{name}: hysteresis is modelled as a smooth transition over the band"));
-                }
+                let on = t.get(mi + 1).is_some_and(|v| v.eq_ignore_ascii_case("on"));
                 if current {
-                    Element::S { name, a, b, cp: 0, cn: 0, vctl: t[3].to_ascii_lowercase(), model }
+                    Element::S { name, a, b, cp: 0, cn: 0, vctl: t[3].to_ascii_lowercase(), model, on }
                 } else {
                     let (cp, cn) = (node(t[3], &mut c), node(t[4], &mut c));
-                    Element::S { name, a, b, cp, cn, vctl: String::new(), model }
+                    Element::S { name, a, b, cp, cn, vctl: String::new(), model, on }
                 }
             }
             'e' | 'f' | 'g' | 'h' => {

@@ -28,6 +28,7 @@
 //! tap = "tap"
 //! poly = "poly"
 //! nwell = "nwell"
+//! dnwell = "dnwell"            # optional deep n-well (triple well): isolated p-wells, vertical NPNs
 //! nimplant = "nsdm"
 //! pimplant = "psdm"
 //! diff_contact = "licon"
@@ -86,7 +87,7 @@
 //! area = 2.0                   # fF/µm²
 //! perimeter = 0.0              # fF/µm, optional
 //!
-//! [[bjt]]                      # vertical PNP: p+ emitter in nwell, nwell base, substrate collector (see BjtDef)
+//! [[bjt]]                      # vertical PNP (p+ emitter in nwell) or, with dnwell, NPN (see BjtDef)
 //! name = "pnp_vert"
 //! type = "pnp"
 //! layers = ["pnpmark"]         # marker layers covering the emitter
@@ -472,6 +473,7 @@ pub fn check(tech: &Tech) -> Vec<String> {
         .chain([("poly", &r.poly), ("nwell", &r.nwell), ("pimplant", &r.pimplant), ("label", &r.label)])
         .chain((!r.nimplant.is_empty()).then_some(("nimplant", &r.nimplant)))
         .chain((!r.tap.is_empty()).then_some(("tap", &r.tap)))
+        .chain((!r.dnwell.is_empty()).then_some(("dnwell", &r.dnwell)))
     {
         if !has(n) {
             w.push(format!("role {role}: unknown layer '{n}'"));

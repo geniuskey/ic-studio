@@ -57,7 +57,51 @@ fn strip_analyses(deck: &str) -> (String, Vec<String>) {
     (out, pre)
 }
 
+/// The files a deck `.include`s or `.lib`s, and theirs, relative to the including file's
+/// folder (as ngspice resolves them) or to `base`. ngspice runs the `.control` blocks of
+/// included files as its own, so one there is refused: only the deck's own blocks are replaced.
+fn check_includes(deck: &str, base: &Path) -> Result<(), SimError> {
+    let mut seen = std::collections::HashSet::new();
+    let mut todo: Vec<(String, PathBuf, Option<PathBuf>)> = vec![(deck.to_string(), base.to_path_buf(), None)];
+    while let Some((text, dir, file)) = todo.pop() {
+        for l in text.lines() {
+            let t = l.trim_start();
+            let low = t.to_ascii_lowercase();
+            if let Some(f) = &file
+                && low.starts_with(".control")
+            {
+                return Err(SimError::Backend(format!(
+                    "{} has a .control block, which ngspice would run: include a copy without it",
+                    f.display()
+                )));
+            }
+            let mut words = t.split_whitespace();
+            let path = match words.next().map(str::to_ascii_lowercase).as_deref() {
+                Some(".include" | ".inc") => words.next(),
+                // `.lib file section`; `.lib section` alone opens a section of this file.
+                Some(".lib") => words.next().filter(|_| words.next().is_some()),
+                _ => None,
+            };
+            let Some(path) = path.map(|w| w.trim_matches(|c| c == '"' || c == '\'')) else { continue };
+            let p = Path::new(path);
+            let full = if p.is_absolute() { p.to_path_buf() } else { dir.join(p) };
+            let full = if full.exists() || p.is_absolute() { full } else { base.join(p) };
+            let Ok(canon) = full.canonicalize() else { continue };
+            if !seen.insert(canon.clone()) {
+                continue;
+            }
+            // Model files are text; anything unreadable is left to ngspice to report.
+            if let Ok(t) = std::fs::read_to_string(&canon) {
+                let d = canon.parent().map_or_else(|| base.to_path_buf(), Path::to_path_buf);
+                todo.push((t, d, Some(canon)));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn run(exe: &str, deck: &str, analyses: &[Analysis]) -> Result<(Vec<Dataset>, String), SimError> {
+    check_includes(deck, &std::env::current_dir().unwrap_or_default())?;
     let dir = work_dir().map_err(|e| SimError::Backend(format!("cannot create temp dir: {e}")))?;
     let (mut text, pre) = strip_analyses(deck);
     text += ".control\n";
@@ -261,6 +305,23 @@ pub fn default_exe() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn control_blocks_in_included_files_are_refused() {
+        let dir = ics_core::tmp::private_dir("ics-inc-test").unwrap();
+        std::fs::write(dir.join("models.lib"), ".lib tt\n.include sub/nested.sp\n.endl tt\n").unwrap();
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/nested.sp"), ".model n nmos level=1\n").unwrap();
+        let deck = format!("* t\n.lib \"{}\" tt\nR1 a 0 1k\n.end\n", dir.join("models.lib").display());
+        assert!(check_includes(&deck, &dir).is_ok());
+        std::fs::write(dir.join("sub/nested.sp"), ".model n nmos level=1\n.control\nshell touch x\n.endc\n").unwrap();
+        let e = check_includes(&deck, &dir).unwrap_err().to_string();
+        assert!(e.contains("nested.sp") && e.contains(".control"), "{e}");
+        // Relative includes resolve against the deck's base folder too; cycles end.
+        std::fs::write(dir.join("a.sp"), ".include a.sp\n").unwrap();
+        assert!(check_includes(".include a.sp\n", &dir).is_ok());
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn keeps_pre_commands_of_control_blocks() {

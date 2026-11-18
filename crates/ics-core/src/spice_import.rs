@@ -178,6 +178,13 @@ pub fn import(text: &str, tech: &Tech) -> Result<Imported, String> {
             }
             continue;
         }
+        // Behavioural sources, couplings and switches have no symbol: they go to the simulation
+        // setup as SPICE lines, on the same node and element names as the schematic.
+        if matches!(head.chars().next(), Some('b' | 'k' | 's' | 'w')) {
+            out.warnings.push(format!("{}: kept as a SPICE line of the simulation setup (simulated, not drawn)", t[0]));
+            out.extra.push(l.to_string());
+            continue;
+        }
         match element(&t, tech, &model_types, &bjt_types, &mut out.warnings) {
             Ok(Some(d)) => devs.push(d),
             Ok(None) => {}
@@ -415,7 +422,7 @@ fn element(
             dev(kind, nets(2), params)
         }
         _ => Err(format!(
-            "{name}: element type '{letter}' is not supported (use R, C, L, V, I, D, M, Q, E, F, G, H, or X for PDK MOS devices)"
+            "{name}: element type '{letter}' is not supported (use R, C, L, V, I, D, M, Q, E, F, G, H, or X for PDK MOS devices; B, K, S and W lines go to the simulation setup)"
         )),
     }
 }
@@ -529,6 +536,22 @@ V2 in 0 DC 0 PULSE(0 1.8 1n 100p 100p 4n 10n)
         assert!(nl.contains("Q1 c b 0 npn 8") && nl.contains("E1 o 0 c 0 10") && nl.contains("F1 o 0 V1 2"), "{nl}");
         assert!(import("M1 d g s b weird w=1u l=1u\n", &Tech::generic()).unwrap_err().contains("NMOS or PMOS"));
         assert!(import("R1 a 0 1k\nR1 b 0 1k\n", &Tech::generic()).unwrap_err().contains("duplicate"));
+    }
+
+    #[test]
+    fn behavioural_coupling_and_switch_lines_go_to_the_setup() {
+        let deck = "V1 in 0 1\nL1 in 0 1u\nL2 out 0 4u\nR1 out 0 1k\nK1 L1 L2 0.9\nB1 b 0 V=v(in)*2\n\
+                    S1 out s c 0 sw\nW1 s 0 V1 csw\n.model sw sw vt=0.5\n.model csw csw it=1m\n";
+        let imp = import(deck, &Tech::generic()).unwrap();
+        for k in ["K1", "B1", "S1", "W1"] {
+            assert!(imp.schematic.instance_by_name(k).is_none(), "{k} is not drawn");
+            assert!(imp.extra.iter().any(|l| l.starts_with(k)), "{k} in {:?}", imp.extra);
+            assert!(imp.warnings.iter().any(|w| w.starts_with(&format!("{k}:"))), "{:?}", imp.warnings);
+        }
+        assert!(imp.extra.iter().any(|l| l.starts_with(".model sw")));
+        // The lines they refer to keep their names in the netlist.
+        let nl = crate::netlist::netlist(&imp.schematic).body;
+        assert!(nl.contains("L1 in 0") && nl.contains("L2 out 0") && nl.contains("V1 in 0"), "{nl}");
     }
 
     #[test]

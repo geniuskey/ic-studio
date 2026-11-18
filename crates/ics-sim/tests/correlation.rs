@@ -193,6 +193,15 @@ fn suite() -> Vec<(&'static str, String, f64)> {
             1e-2,
         ),
         (
+            "switch_hysteresis",
+            "* S with hysteresis, driven by a triangle\nV1 a 0 1\nVc ctl 0 dc 0 pwl(0 0 1u 1 2u 0 3u 1 4u 0)\nS1 a out ctl 0 swh\nRo out 0 1k\n\
+             .model swh sw vt=0.5 vh=0.2 ron=10 roff=1meg\n.tran 5n 4u\n.end\n"
+                .into(),
+            // ngspice switches in one step, the built-in engine over a few ns: one point
+            // inside each transition differs.
+            5e-2,
+        ),
+        (
             "cs_amp",
             format!(
                 "* cs\nVDD vdd 0 1.8\nVIN in 0 DC 0.6 AC 1\nRD vdd out 10k\nM1 out in 0 0 nmos w=2u l=1u\nCL out 0 100f\n{m}\n.op\n.ac dec 10 1k 10g\n.end\n"

@@ -71,7 +71,18 @@ curl -fsSL https://github.com/geniuskey/ic-studio/releases/latest/download/insta
 ```
 
 Release builds exist for Windows x86_64, Linux x86_64 and macOS on Apple silicon. On an
-Intel Mac, build from source.
+Intel Mac, build from source. The Linux build is made on Rocky Linux 8 and needs glibc 2.28
+or newer, so it runs on RHEL / Rocky / Alma Linux 8 and later and on current Ubuntu,
+Debian and Fedora.
+
+**Signed releases.** Every release lists the SHA-256 of each file in `SHA256SUMS`, which
+the installers and the in-app updater check. When the repository has signing secrets, the
+release workflow also signs the binaries: `APPLE_CERT_P12` (a base64 Developer ID
+Application certificate), `APPLE_CERT_PASSWORD`, `APPLE_SIGN_IDENTITY`, and `APPLE_ID`,
+`APPLE_TEAM_ID`, `APPLE_APP_PASSWORD` for notarization on macOS; `WINDOWS_CERT_PFX` (a
+base64 code signing certificate) and `WINDOWS_CERT_PASSWORD` on Windows. Without them the
+binaries are unsigned: macOS asks to confirm the first start (right-click > **Open**) and
+Windows SmartScreen shows **More info > Run anyway**.
 
 **Manual download.** Each [release](https://github.com/geniuskey/ic-studio/releases) has
 an archive with both programs, `ic-studio-<platform>.zip` (Windows) or

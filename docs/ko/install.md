@@ -67,7 +67,16 @@ curl -fsSL https://github.com/geniuskey/ic-studio/releases/latest/download/insta
 ```
 
 릴리스 빌드는 Windows x86_64, Linux x86_64, Apple silicon macOS용으로 제공됩니다. Intel Mac에서는
-소스에서 빌드하세요.
+소스에서 빌드하세요. Linux 빌드는 Rocky Linux 8에서 만들어 glibc 2.28 이상이면 동작하므로, RHEL /
+Rocky / Alma Linux 8 이상과 최신 Ubuntu, Debian, Fedora에서 실행됩니다.
+
+**서명된 릴리스.** 모든 릴리스는 `SHA256SUMS`에 각 파일의 SHA-256을 담고, 설치 스크립트와 앱 내
+업데이트가 이를 확인합니다. 저장소에 서명용 secret이 있으면 릴리스 워크플로가 바이너리에 서명도
+합니다. macOS는 `APPLE_CERT_P12`(base64로 인코딩한 Developer ID Application 인증서),
+`APPLE_CERT_PASSWORD`, `APPLE_SIGN_IDENTITY`와 notarization용 `APPLE_ID`, `APPLE_TEAM_ID`,
+`APPLE_APP_PASSWORD`, Windows는 `WINDOWS_CERT_PFX`(base64 코드 서명 인증서)와
+`WINDOWS_CERT_PASSWORD`를 씁니다. 이 secret이 없으면 서명되지 않은 바이너리가 나가며, macOS는 첫 실행
+때 확인을 요구하고(오른쪽 클릭 > **열기**) Windows SmartScreen은 **추가 정보 > 실행**을 보여 줍니다.
 
 **수동 다운로드.** 각 [릴리스](https://github.com/geniuskey/ic-studio/releases)에는 두 프로그램이
 들어 있는 압축 파일 `ic-studio-<platform>.zip`(Windows) 또는 `ic-studio-<platform>.tar.gz`(macOS,

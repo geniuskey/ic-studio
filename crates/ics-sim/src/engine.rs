@@ -144,6 +144,8 @@ pub struct Engine {
     /// Junction voltages (vbe, vbc / vd) each BJT and diode was last evaluated at, by element:
     /// the next iteration limits their change logarithmically (SPICE's pnjlim).
     jct: std::cell::RefCell<std::collections::HashMap<usize, [f64; 2]>>,
+    /// Switch states (closed), by element: they change at the accepted points of an analysis.
+    sw_on: std::cell::RefCell<Vec<bool>>,
     /// Set by `assemble` when a junction voltage was limited: the iteration has not converged.
     limited: std::cell::Cell<bool>,
     /// Newton steps of node voltages are clipped to 0.5 V when the circuit has MOS devices
@@ -670,6 +672,7 @@ impl Engine {
             init_jct: std::cell::Cell::new(false),
             jct: Default::default(),
             limited: std::cell::Cell::new(false),
+            sw_on: std::cell::RefCell::new(c.elements.iter().map(|e| matches!(e, Element::S { on: true, .. })).collect()),
             damp: c.elements.iter().any(|e| matches!(e, Element::M { .. })),
             c,
         })
@@ -697,7 +700,7 @@ impl Engine {
                 continue;
             }
             let w = model.band(self.ctrl[ei].is_some());
-            let dist = model.vt - c;
+            let dist = model.center(self.sw_on.borrow()[ei]) - c;
             if dist.abs() <= 2.0 * w {
                 step = step.min(0.25 * w / rate.abs());
             } else if dist * rate > 0.0 {
@@ -705,6 +708,22 @@ impl Engine {
             }
         }
         step
+    }
+
+    /// Update the switch states from their control values at the accepted point `x`; whether
+    /// any changed.
+    fn settle_switches(&self, x: &[f64]) -> bool {
+        let mut changed = false;
+        for (ei, e) in self.c.elements.iter().enumerate() {
+            let Element::S { model, .. } = e else { continue };
+            let on = self.sw_on.borrow()[ei];
+            let now = self.switch_ctl(ei, x) > model.center(on);
+            if now != on {
+                self.sw_on.borrow_mut()[ei] = now;
+                changed = true;
+            }
+        }
+        changed
     }
 
     /// A B source's value at `x` and time `t`, its derivatives by reference and the reference values.
@@ -896,7 +915,7 @@ impl Engine {
                             (l, v)
                         }
                     };
-                    let (g, dg) = model.g(cv, current);
+                    let (g, dg) = model.g(cv, current, self.sw_on.borrow()[ei]);
                     let vab = self.v(x, *a) - self.v(x, *b);
                     cond(&mut m, *a, *b, g);
                     for (n, rs) in [(*a, 1.0), (*b, -1.0)] {
@@ -1047,8 +1066,10 @@ impl Engine {
                             rhs[r] -= lin;
                         }
                     }
-                    // small drain-source conductance for robustness
-                    cond(&mut m, *d, *s, gmin);
+                    // gmin across the bulk junctions, as ngspice: an internal node of an off
+                    // stack settles at the bulk, not between the stack's ends.
+                    cond(&mut m, *d, *b, gmin);
+                    cond(&mut m, *s, *b, gmin);
                 }
             }
         }
@@ -1176,7 +1197,19 @@ impl Engine {
         self.op_forced_from(vec![0.0; self.size], force)
     }
 
-    fn op_forced_from(&mut self, mut x: Vec<f64>, force: &[(Node, f64)]) -> Result<Vec<f64>, SimError> {
+    fn op_forced_from(&mut self, x: Vec<f64>, force: &[(Node, f64)]) -> Result<Vec<f64>, SimError> {
+        // Solve again while switches change state at the solution.
+        let mut x = self.op_solve(x, force)?;
+        for _ in 0..20 {
+            if !self.settle_switches(&x) {
+                break;
+            }
+            x = self.op_solve(x, force)?;
+        }
+        Ok(x)
+    }
+
+    fn op_solve(&mut self, mut x: Vec<f64>, force: &[(Node, f64)]) -> Result<Vec<f64>, SimError> {
         let (gmin0, itl) = (self.c.options.gmin, self.c.options.itl1);
         let start = x.clone();
         if self.newton(&mut x, Mode::Dc { src_scale: 1.0, force }, gmin0, itl).is_ok() {
@@ -1453,7 +1486,7 @@ impl Engine {
                             (l, v)
                         }
                     };
-                    let (g, dg) = model.g(cv, current);
+                    let (g, dg) = model.g(cv, current, self.sw_on.borrow()[ei]);
                     let vab = self.v(x0, *a) - self.v(x0, *b);
                     y(&mut m, *a, *b, Complex64::new(g, 0.0));
                     for (n, rs) in [(*a, 1.0), (*b, -1.0)] {
@@ -1516,7 +1549,8 @@ impl Engine {
                             }
                         }
                     }
-                    y(&mut m, *d, *s, Complex64::new(self.c.options.gmin, 0.0));
+                    y(&mut m, *d, *b, Complex64::new(self.c.options.gmin, 0.0));
+                    y(&mut m, *s, *b, Complex64::new(self.c.options.gmin, 0.0));
                 }
             }
         }
@@ -1777,7 +1811,9 @@ impl Engine {
         self.push_point(&mut ds, Some(0.0), &x);
 
         let mut t = 0.0;
-        let mut h = hmax / 10.0;
+        // As ngspice: the first step, and the first after each breakpoint, is a tenth of the
+        // planned step or of the gap to the next breakpoint.
+        let mut h = 0.1 * (hmax / 10.0).min(bps.iter().copied().find(|&b| b > hmax * 1e-9).unwrap_or(tstop));
         let mut method = Integ::BackwardEuler;
         let mut bp_i = 0;
         let mut steps = 0usize;
@@ -1863,6 +1899,7 @@ impl Engine {
             }
             t += hs;
             x = xn;
+            self.settle_switches(&x);
             self.push_point(&mut ds, Some(t), &x);
             steps += 1;
             ring.push(x[self.nn..].to_vec());
@@ -1874,7 +1911,8 @@ impl Engine {
             let at_bp = (next_bp - t).abs() <= hmax * 1e-9;
             if at_bp {
                 method = Integ::BackwardEuler;
-                h = hs.clamp(hmax * 1e-4, hmax / 20.0);
+                let gap = bps.get(bp_i + 1).copied().unwrap_or(tstop) - t;
+                h = hs.min(0.1 * h.min(hmax).min(if gap > 0.0 { gap } else { hmax })).clamp(hmax * 1e-4, hmax / 20.0);
                 hist.clear();
                 ring.clear();
             } else {
@@ -2011,6 +2049,8 @@ impl Engine {
     }
 
     pub fn run(&mut self, a: &Analysis) -> Result<Dataset, SimError> {
+        // Each analysis starts from the switches' initial states.
+        *self.sw_on.borrow_mut() = self.c.elements.iter().map(|e| matches!(e, Element::S { on: true, .. })).collect();
         let num = |s: &str| parse_spice(s).ok_or_else(|| SimError::Engine(format!("invalid number '{s}'")));
         match a {
             Analysis::Op => self.run_op(),
@@ -2125,6 +2165,27 @@ mod tests {
         assert!((ac.get("v(f)").unwrap().re[0] - 3.0).abs() < 1e-6, "the same in AC");
         assert!(parse_deck("* t\nE1 a 0 POLY(1) b 0 0 1\nR1 a 0 1\n.end").is_err());
         assert!(Engine::new(parse_deck("* t\nF1 a 0 Vx 1\nR1 a 0 1\n.end").unwrap()).is_err(), "no Vx");
+    }
+
+    #[test]
+    fn off_stack_internal_node_sits_at_the_bulk() {
+        // Both NMOS off: only gmin defines `mid`. As in ngspice it goes across the bulk
+        // junctions, so `mid` sits at the bulk (0 V), not between vdd and ground.
+        let d = "* t\nV1 vdd 0 1.8\nM1 vdd 0 mid 0 nmos w=1u l=1u\nM2 mid 0 0 0 nmos w=1u l=1u\n\
+                 .model nmos nmos (level=1 vto=0.45 kp=280u)\n.end";
+        let v = engine(d).run_op().unwrap().get("v(mid)").unwrap().re[0];
+        assert!(v.abs() < 1e-3, "{v}");
+    }
+
+    #[test]
+    fn switch_hysteresis_keeps_its_state() {
+        // vt 0.5, vh 0.2: closes above 0.7, opens below 0.3. At 0.5 the state decides.
+        let d = |vc: f64, init: &str| {
+            format!("* t\nV1 a 0 1\nVc c 0 {vc}\nS1 a o c 0 sw {init}\nR1 o 0 1k\n.model sw sw vt=0.5 vh=0.2 ron=1 roff=1g\n.end")
+        };
+        let v = |deck: String| engine(&deck).run_op().unwrap().get("v(o)").unwrap().re[0];
+        assert!(v(d(0.5, "off")) < 1e-5 && v(d(0.5, "on")) > 0.99);
+        assert!(v(d(0.8, "off")) > 0.99 && v(d(0.2, "on")) < 1e-5);
     }
 
     #[test]

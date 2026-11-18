@@ -2502,7 +2502,7 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             for sc in &x.soft_conflicts {
                 let names: Vec<&str> = sc.nets.iter().map(|&n| x.nets[n].name.as_str()).collect();
-                let what = if sc.well.is_some() { "an nwell" } else { "the substrate" };
+                let what = if sc.well.is_some() { "a well" } else { "the substrate" };
                 eprintln!("warning: soft connection: {what} is tapped from nets {}; taken as {}", names.join(", "), names[0]);
             }
             print!("{}", x.spice(&r.to_string(), p.tech.dbu_per_um));

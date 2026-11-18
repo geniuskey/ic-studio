@@ -645,6 +645,15 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
     let has_nwell = nwell.is_some() && !nwell_r.is_empty();
     planes.push(Plane::new(nwell_r.clone()));
     let nwell_pi = planes.len() - 1;
+    // Triple well: the deep n-well, and the isolated p-wells inside it (outside nwell).
+    let dnwell = tech.dnwell();
+    let dn_r = region(dnwell);
+    let has_dnwell = dnwell.is_some() && !dn_r.is_empty();
+    let pwell_r = dn_r.boolean(&nwell_r, BoolOp::Not);
+    planes.push(Plane::new(dn_r.clone()));
+    let dn_pi = planes.len() - 1;
+    planes.push(Plane::new(pwell_r.clone()));
+    let pw_pi = planes.len() - 1;
     let pi_of = |l: Option<usize>| l.and_then(|l| conducting.iter().position(|&c| c == l));
     let (diff_pi, poly_pi) = (pi_of(active), pi_of(poly));
 
@@ -659,6 +668,12 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
     let mut sub_used = false;
     // Well taps: (tap diffusion piece, well piece or `sub`), joined after the hard connections.
     let mut soft: Vec<(usize, usize)> = Vec::new();
+    // The nwell over a deep n-well is the same n region.
+    for p in component_anchors(dn_r.boolean(&nwell_r, BoolOp::And)) {
+        if let (Some(d), Some(w)) = (planes[dn_pi].comp_at(p, false), planes[nwell_pi].comp_at(p, false)) {
+            uf.union(offset[dn_pi] + d, offset[nwell_pi] + w);
+        }
+    }
 
     let mut cuts: HashMap<usize, Region> = HashMap::new();
     for &(b, c, t) in &vias {
@@ -712,8 +727,13 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
         let ptap = diff.boolean(&pplus_p.region, BoolOp::And).boolean(&nwell_r, BoolOp::Not);
         for p in component_anchors(ptap) {
             if let Some(x) = planes[dp].comp_at(p, false) {
-                soft.push((offset[dp] + x, sub));
-                sub_used = true;
+                match planes[pw_pi].comp_at(p, false) {
+                    Some(w) => soft.push((offset[dp] + x, offset[pw_pi] + w)),
+                    None => {
+                        soft.push((offset[dp] + x, sub));
+                        sub_used = true;
+                    }
+                }
             }
         }
     }
@@ -786,10 +806,13 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
                     sub_used = true;
                     sub
                 }
-                (false, _) => {
-                    sub_used = true;
-                    sub
-                }
+                (false, _) => match planes[pw_pi].comp_at(anchor, false) {
+                    Some(w) => offset[pw_pi] + w,
+                    None => {
+                        sub_used = true;
+                        sub
+                    }
+                },
             };
             let kind = if pmos { DevKind::Pmos } else { DevKind::Nmos };
             let ty = if pmos { MosType::Pmos } else { MosType::Nmos };
@@ -982,7 +1005,9 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
 
     // Vertical PNPs: marked p+ emitters inside an nwell, apart from MOS source / drain pieces.
     struct BjtProto {
+        pnp: bool,
         model: String,
+        c: usize,
         e: usize,
         b: usize,
         area: f64,
@@ -995,32 +1020,44 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
         let mut taken = BTreeSet::new();
         let um2 = (tech.dbu_per_um.max(1) as f64).powi(2);
         for bd in &tech.bjts {
-            if bd.kind == BjtType::Npn {
-                warnings.push(format!("bjt '{}': only vertical PNPs are extracted; ignored", bd.name));
+            let pnp = bd.kind == BjtType::Pnp;
+            if !pnp && dnwell.is_none() {
+                warnings.push(format!("bjt '{}': an npn needs a deep n-well (the dnwell layer role); ignored", bd.name));
                 continue;
             }
             if bd.layers.is_empty() {
                 warnings.push(format!("bjt '{}' has no marker layers; ignored", bd.name));
                 continue;
             }
+            // PNP: p+ in nwell (base) over the substrate; NPN: n+ in an isolated p-well (base)
+            // over the deep n-well.
+            let (implant, base_pi) = if pnp { (&pplus_p, nwell_pi) } else { (&nplus_p, pw_pi) };
             let em = marked(planes[dp].region.clone(), &bd.layers, &bd.exclude)
-                .boolean(&pplus_p.region, BoolOp::And)
-                .boolean(&nwell_r, BoolOp::And);
+                .boolean(&implant.region, BoolOp::And)
+                .boolean(&planes[base_pi].region, BoolOp::And);
             for p in component_anchors(em) {
                 let Some(c) = planes[dp].comp_at(p, false) else { continue };
-                let Some(w) = planes[nwell_pi].comp_at(p, false) else { continue };
+                let Some(w) = planes[base_pi].comp_at(p, false) else { continue };
                 if gate_sd.contains(&c) || !taken.insert(c) {
                     continue;
                 }
+                let coll = if pnp {
+                    sub_used = true;
+                    sub
+                } else {
+                    let Some(d) = planes[dn_pi].comp_at(p, false) else { continue };
+                    offset[dn_pi] + d
+                };
                 let rs: Vec<IRect> = planes[dp].comp_rects(c).collect();
                 let Some(bbox) = rs.iter().copied().reduce(|a, b| a.union(&b)) else { continue };
                 let emitter_area = rs.iter().map(|r| (r.width() * r.height()) as f64).sum::<f64>() / um2;
                 let area = bd.unit_area.filter(|u| *u > 0.0).map_or(1.0, |u| emitter_area / u);
-                sub_used = true;
                 bjt_protos.push(BjtProto {
+                    pnp,
                     model: bd.name.clone(),
+                    c: coll,
                     e: offset[dp] + c,
-                    b: offset[nwell_pi] + w,
+                    b: offset[base_pi] + w,
                     area,
                     emitter_area,
                     bbox,
@@ -1060,7 +1097,8 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
         root: usize,
         shapes: Vec<(usize, Region)>,
         bbox: Option<IRect>,
-        well_only: bool,
+        /// Only well pieces: the well's name prefix.
+        well: Option<&'static str>,
     }
     let mut protos: Vec<Proto> = roots
         .into_iter()
@@ -1069,16 +1107,26 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
             for (pi, c) in pieces {
                 per_plane.entry(pi).or_default().extend(planes[pi].comp_rects(c));
             }
-            let well_only = per_plane.keys().all(|&pi| pi == nwell_pi) && !per_plane.is_empty();
+            let well = match () {
+                _ if per_plane.is_empty() || !per_plane.keys().all(|pi| [nwell_pi, dn_pi, pw_pi].contains(pi)) => None,
+                _ if per_plane.keys().all(|&pi| pi == pw_pi) => Some("pwell"),
+                _ => Some("nwell"),
+            };
+            let bbox = per_plane.values().flatten().copied().reduce(|a, b| a.union(&b));
+            // Isolated p-wells are derived (dnwell not nwell): no layer of their own.
             let shapes: Vec<(usize, Region)> = per_plane
                 .into_iter()
                 .filter_map(|(pi, rs)| {
-                    let layer = if pi == nwell_pi { nwell? } else { conducting[pi] };
+                    let layer = match pi {
+                        _ if pi == nwell_pi => nwell?,
+                        _ if pi == dn_pi => dnwell?,
+                        _ if pi == pw_pi => return None,
+                        _ => conducting[pi],
+                    };
                     Some((layer, Region::from_rects(rs)))
                 })
                 .collect();
-            let bbox = shapes.iter().filter_map(|(_, r)| r.bbox()).reduce(|a, b| a.union(&b));
-            Proto { root, shapes, bbox, well_only }
+            Proto { root, shapes, bbox, well }
         })
         .collect();
     protos.sort_by_key(|p| (p.bbox.is_none(), p.bbox.map(|b| (b.y0, b.x0, b.y1, b.x1)), p.root));
@@ -1121,7 +1169,7 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
         }
     }
 
-    let (mut auto, mut wells) = (0, 0);
+    let (mut auto, mut wells, mut pwells) = (0, 0, 0);
     let sub_root = sub_used.then(|| uf.find(sub));
     let nets: Vec<Net> = protos
         .into_iter()
@@ -1130,7 +1178,11 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
             let (name, labelled) = match net_labels.get(&i).and_then(|s| s.iter().next()) {
                 Some(t) => (t.clone(), true),
                 None if Some(p.root) == sub_root => ("sub".to_string(), false),
-                None if p.well_only => {
+                None if p.well == Some("pwell") => {
+                    pwells += 1;
+                    (format!("pwell{pwells}"), false)
+                }
+                None if p.well.is_some() => {
                     wells += 1;
                     (format!("nwell{wells}"), false)
                 }
@@ -1148,7 +1200,12 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
     let soft_conflicts = conflicts
         .into_iter()
         .map(|(w, taps)| SoftConflict {
-            well: (w != sub).then(|| planes[nwell_pi].comp_rects(w - offset[nwell_pi]).reduce(|a, b| a.union(&b))).flatten(),
+            well: (w != sub)
+                .then(|| {
+                    let pi = (0..planes.len()).find(|&pi| offset[pi] <= w && w < offset[pi] + planes[pi].count())?;
+                    planes[pi].comp_rects(w - offset[pi]).reduce(|a, b| a.union(&b))
+                })
+                .flatten(),
             nets: taps.into_iter().map(&mut net).collect(),
         })
         .collect();
@@ -1157,10 +1214,10 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
         .into_iter()
         .enumerate()
         .map(|(i, q)| Bjt {
-            pnp: true,
+            pnp: q.pnp,
             model: q.model,
             name: format!("Q{}", i + 1),
-            c: net(sub),
+            c: net(q.c),
             b: net(q.b),
             e: net(q.e),
             area: q.area,
@@ -1221,6 +1278,9 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
     let mut layers = conducting;
     if has_nwell && let Some(nw) = nwell {
         layers.push(nw);
+    }
+    if has_dnwell && let Some(dn) = dnwell {
+        layers.push(dn);
     }
     Extraction { nets, devices, passives, bjts, soft_conflicts, warnings, layers, dbu_per_um: tech.dbu_per_um }
 }

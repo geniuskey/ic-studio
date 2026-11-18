@@ -93,11 +93,17 @@ How the extractor works:
   marker layers. C = area × area capacitance (+ perimeter × perimeter capacitance). See
   [Technology](technology.md#pdk-files) and the `poly_res` / `mom_cap`
   [PCells](pcells.md).
-- **Bipolar transistors** are the technology's `[[bjt]]` devices, vertical PNPs: a p+
-  emitter inside an `nwell` under the marker layers, with the well as base and the
-  substrate as collector. The area factor is the emitter area over `unit_area` (1 per
-  emitter without it). LVS compares them with the schematic's `Pnp` instances: base,
-  emitter and collector, area, and the model unless the schematic keeps the generic `pnp`.
+- **Bipolar transistors** are the technology's `[[bjt]]` devices under their marker layers:
+  vertical PNPs (a p+ emitter inside an `nwell`, the well as base, the substrate as
+  collector) and, in a triple-well technology (a `dnwell` role), vertical NPNs (an n+
+  emitter inside an isolated p-well, the p-well as base, the deep n-well as collector). The
+  area factor is the emitter area over `unit_area` (1 per emitter without it). LVS compares
+  them with the schematic's `Npn` / `Pnp` instances: base, emitter and collector, area, and
+  the model unless the schematic keeps the generic `npn` / `pnp`.
+- **Triple well**: with a `dnwell` role, the area inside the deep n-well and outside `nwell`
+  is an isolated p-well (`pwellN` when unlabelled). Its p+ taps and the bodies of the NMOS
+  inside it go to the p-well instead of the substrate, and the nwell over the deep n-well
+  joins it.
 - **Well taps are soft connections**: an n+ tap in an `nwell` (or a p+ tap in the substrate)
   gives the well the net it is on, but never joins two nets through the well, as Calibre's
   `SOFT CONNECT`. A well or substrate tapped from several nets (`vss` and `agnd`, two
@@ -145,7 +151,11 @@ Comparison rules:
   joined by `+`.
 - A resistor's or capacitor's model is compared only when the schematic names one.
 - Bulk terminals are ignored.
-- Devices that are always off (gate tied to bulk), such as dummy fingers, are dropped.
+- Devices that are always off (gate tied to bulk), such as dummy fingers, are left out of
+  the matching, and layout ones need no schematic counterpart. A schematic one whose drain
+  or source is on another net, such as a GGNMOS ESD clamp, must still have off layout
+  devices of its type between the same nets with the same total W; otherwise it is reported
+  `[missing]` (or `[param]` for the W).
 - Net names are compared case-insensitively; `0`, `gnd` and `vss` are treated as the same.
 
 The demo cell `cmos_inverter` deliberately has LVS findings (a PMOS width and the load
