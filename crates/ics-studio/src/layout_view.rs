@@ -1368,7 +1368,8 @@ impl LayoutEditor {
     /// terminals on it, else its label), with the cell's current shorts. `None` for cells
     /// without a schematic or larger than the live check handles.
     fn net_under(&self, l: &Layout, cx: &mut LayCtx, p: (i64, i64)) -> Option<(String, Vec<Vec<String>>)> {
-        let sch = cx.src.cell(cx.cell)?.schematic.as_ref()?;
+        let circuit = cx.src.circuit(cx.cell).ok()?;
+        let sch = &*circuit;
         if l.shapes.len() + l.instances.len() > 5_000 {
             return None;
         }
@@ -1387,7 +1388,8 @@ impl LayoutEditor {
     /// After a wire started on a known net: report (and mark) the shorts it added.
     fn check_wire_shorts(&mut self, l: &Layout, cx: &mut LayCtx) {
         let Some((net, before)) = self.wire_net.take() else { return };
-        let Some(sch) = cx.src.cell(cx.cell).and_then(|c| c.schematic.as_ref()) else { return };
+        let circuit = cx.src.circuit(cx.cell).ok();
+        let Some(sch) = circuit.as_deref() else { return };
         let check = ics_core::eco::check(sch, l, cx.src);
         let new: Vec<Vec<String>> = shorts(&check).into_iter().filter(|s| !before.contains(s) && s.contains(&net)).collect();
         if !new.is_empty() {
@@ -1837,7 +1839,8 @@ impl LayoutEditor {
             return;
         }
         let reach = cx.tech.layers.iter().map(|d| d.min_spacing).max().unwrap_or(0).max(4 * cx.tech.grid.max(1));
-        let sch = cx.src.cell(cx.cell).and_then(|c| c.schematic.as_ref());
+        let circuit = cx.src.circuit(cx.cell).ok();
+        let sch = circuit.as_deref();
         if let Some(note) = ics_core::abut::auto_abut(l, id, cx.src, sch, reach) {
             self.note(true, note);
         }
@@ -1918,7 +1921,8 @@ impl LayoutEditor {
     /// Abut the selected MOS instances left to right on their shared nets.
     pub(super) fn abut_selection(&mut self, l: &mut Layout, cx: &mut LayCtx) -> bool {
         let ids: Vec<u64> = l.instances.iter().filter(|i| self.selection.contains(&i.id)).map(|i| i.id).collect();
-        let sch = cx.src.cell(cx.cell).and_then(|c| c.schematic.as_ref());
+        let circuit = cx.src.circuit(cx.cell).ok();
+        let sch = circuit.as_deref();
         let mut next = l.clone();
         match ics_core::abut::abut_chain(&mut next, &ids, cx.src, sch) {
             Ok(notes) => {
@@ -2737,9 +2741,9 @@ impl LayoutEditor {
         self.draw_live(&painter, &self.view, rect, &pal, hover);
         if self.show_flylines {
             if self.flylines.is_none()
-                && let Some(sch) = cx.src.cell(cx.cell).and_then(|c| c.schematic.as_ref())
+                && let Ok(sch) = cx.src.circuit(cx.cell)
             {
-                self.flylines = Some(ics_core::sdl::ratsnest(sch, l, cx.src, tech));
+                self.flylines = Some(ics_core::sdl::ratsnest(&sch, l, cx.src, tech));
             }
             let st = Stroke::new(1.2, pal.warning.gamma_multiply(0.9));
             for f in self.flylines.iter().flatten() {

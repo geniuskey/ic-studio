@@ -154,6 +154,13 @@ pub fn netlist_for(sch: &Schematic, tech: &Tech, corner: &str) -> Netlist {
                 needs_diode = true;
                 format!("{name} {} {} {}", net("a"), net("k"), inst.param("model"))
             }
+            // A placed cell: its pins in subcircuit order. Simulation and LVS flatten the
+            // hierarchy first ([`crate::sch_hier::flatten`]); this line is for netlist exports.
+            DeviceKind::Cell => {
+                let sub = inst.cell.as_ref().map_or("?".to_string(), |c| c.cell.clone());
+                let nets: Vec<String> = inst.ports.iter().map(|(p, _)| net(p)).collect();
+                format!("{name} {} {sub}", nets.join(" "))
+            }
             DeviceKind::Nmos | DeviceKind::Pmos | DeviceKind::Nmos3 | DeviceKind::Pmos3 => {
                 needs_mos = true;
                 let bulk_pin = inst.pin_positions().into_iter().find(|(n, _)| *n == "b").map(|(_, p)| p);

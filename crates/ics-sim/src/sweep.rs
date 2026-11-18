@@ -42,7 +42,8 @@ pub fn run(
     progress: &(dyn Fn(usize, usize) + Sync),
 ) -> Result<SweepRun, String> {
     let c = project.cell(cell).ok_or_else(|| format!("no cell {cell}"))?;
-    let sch = c.schematic.as_ref().ok_or_else(|| format!("{cell} has no schematic to sweep"))?;
+    let circuit = project.circuit(cell)?;
+    let sch = &*circuit;
     let setup = &c.sim;
     let analyses: Vec<_> = setup.enabled().cloned().collect();
     if analyses.is_empty() {

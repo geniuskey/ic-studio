@@ -98,6 +98,10 @@ enum Cmd {
         /// Import every subcircuit as its own cell (each flattened from itself).
         #[arg(long)]
         all: bool,
+        /// Keep the hierarchy: a cell per subcircuit (in the library of --cell, default work),
+        /// subcircuit instances as cell instances, a variant cell per other parameter values.
+        #[arg(long, conflicts_with = "all")]
+        hier: bool,
     },
     /// Write a cell's schematic as a SKILL script that recreates it in Virtuoso (load it in the
     /// CIW), with analogLib symbols or the symbols of a map file.
@@ -901,7 +905,8 @@ fn run(cli: Cli) -> Result<(), String> {
             let p = Project::open(&project).map_err(|e| e.to_string())?;
             let r = resolve(&p, &cell)?;
             let c = p.cell(&r).unwrap();
-            let sch = c.schematic.as_ref().ok_or("cell has no schematic")?;
+            let circuit = p.circuit(&r)?;
+            let sch = &*circuit;
             let (text, warnings) = ics_core::netlist::write(sch, &p.tech, &c.sim, &r.to_string(), format);
             for w in &warnings {
                 eprintln!("warning: {w}");
@@ -932,16 +937,33 @@ fn run(cli: Cli) -> Result<(), String> {
                 eprintln!("warning: {w}");
             }
             let c = p.cell(&r).unwrap();
-            let nl = ics_core::netlist::netlist_for(c.schematic.as_ref().unwrap(), &p.tech, &c.sim.corner);
+            let circuit = p.circuit(&r)?;
+            let nl = ics_core::netlist::netlist_for(&circuit, &p.tech, &c.sim.corner);
             for w in &nl.warnings {
                 eprintln!("warning: {w}");
             }
             print!("{}", nl.deck(&r.to_string(), &c.sim));
             p.save().map_err(|e| e.to_string())?;
         }
-        Cmd::ImportCdl { project, cdl, top, cell, overwrite, all } => {
+        Cmd::ImportCdl { project, cdl, top, cell, overwrite, all, hier } => {
             let mut p = Project::open(&project).map_err(|e| e.to_string())?;
             let text = std::fs::read_to_string(&cdl).map_err(|e| format!("{}: {e}", cdl.display()))?;
+            if hier {
+                let lib = cell.as_deref().and_then(|c| c.split_once('/')).map_or("work", |(l, _)| l).to_string();
+                let h = ics_core::cadence::import_cdl_hier(&text, &p.tech, top.as_deref(), &lib)?;
+                let cells = h.add_to(&mut p, &lib, overwrite)?;
+                for (r, c) in cells.iter().zip(&h.cells) {
+                    let sch = &c.imported.schematic;
+                    let xs = sch.instances.iter().filter(|i| i.kind == ics_core::DeviceKind::Cell).count();
+                    let devices = sch.instances.iter().filter(|i| i.kind.spice_prefix().is_some()).count() - xs;
+                    println!("{r}: {devices} device(s), {xs} cell instance(s), {} pin(s)", sch.ports().len());
+                }
+                for w in h.warnings.iter().chain(h.cells.iter().flat_map(|c| &c.imported.warnings)) {
+                    eprintln!("warning: {w}");
+                }
+                p.save().map_err(|e| e.to_string())?;
+                return Ok(());
+            }
             let parsed = ics_core::cadence::Cdl::parse(&text)?;
             let tops: Vec<Option<String>> =
                 if all { parsed.subckts.iter().map(|s| Some(s.name.clone())).collect() } else { vec![top.clone()] };
@@ -1056,7 +1078,8 @@ fn run(cli: Cli) -> Result<(), String> {
             let p = Project::open(&project).map_err(|e| e.to_string())?;
             let r = resolve(&p, &cell)?;
             let c = p.cell(&r).unwrap();
-            let sch = c.schematic.as_ref().ok_or("cell has no schematic")?;
+            let circuit = p.circuit(&r)?;
+            let sch = &*circuit;
             let mut deck = ics_core::netlist::netlist_for(sch, &p.tech, &c.sim.corner).deck(&r.to_string(), &c.sim);
             if parasitics || c.sim.parasitics {
                 deck = ics_core::pex::post_layout(&p, &r)?.apply(&deck);
@@ -1140,7 +1163,8 @@ fn run(cli: Cli) -> Result<(), String> {
             let p = Project::open(&project).map_err(|e| e.to_string())?;
             let r = resolve(&p, &cell)?;
             let c = p.cell(&r).unwrap();
-            let sch = c.schematic.as_ref().ok_or("cell has no schematic")?;
+            let circuit = p.circuit(&r)?;
+            let sch = &*circuit;
             let nl = ics_core::netlist::netlist_for(sch, &p.tech, &c.sim.corner);
             let mut deck = nl.deck(&r.to_string(), &c.sim);
             if parasitics || c.sim.parasitics {
@@ -1204,7 +1228,7 @@ fn run(cli: Cli) -> Result<(), String> {
         Cmd::Route { project, cell, place } => {
             let mut p = Project::open(&project).map_err(|e| e.to_string())?;
             let r = resolve(&p, &cell)?;
-            let sch = p.cell(&r).unwrap().schematic.clone().ok_or("cell has no schematic")?;
+            let sch = p.circuit(&r)?.into_owned();
             let mut lay = p.cell_mut(&r).unwrap().layout.take().unwrap_or_default();
             if place {
                 let plan = ics_core::sdl::plan(&sch, &p.tech);
@@ -1228,7 +1252,7 @@ fn run(cli: Cli) -> Result<(), String> {
         Cmd::Eco { project, cell, update, remove_extra, allow_opens } => {
             let mut p = Project::open(&project).map_err(|e| e.to_string())?;
             let r = resolve(&p, &cell)?;
-            let sch = p.cell(&r).unwrap().schematic.clone().ok_or("cell has no schematic")?;
+            let sch = p.circuit(&r)?.into_owned();
             if update {
                 let mut lay = p.cell_mut(&r).unwrap().layout.take().unwrap_or_default();
                 let res = ics_core::eco::update(&mut p, &mut lay, &sch, ics_core::eco::UpdateOptions { remove_extra });
@@ -1525,8 +1549,8 @@ fn run(cli: Cli) -> Result<(), String> {
                 .collect::<Result<Vec<_>, _>>()?;
             let deck = ics_core::drc::parse_any(&p.tech.deck_text(), &p.tech).ok().map(|d| d.deck);
             let mut lay = p.cell_mut(&r).unwrap().layout.take().ok_or("cell has no layout")?;
-            if !no_infer && let Some(sch) = p.cell(&r).and_then(|c| c.schematic.as_ref()) {
-                let n = ics_core::constraints::infer(&mut lay, &p, sch);
+            if !no_infer && let Ok(sch) = p.circuit(&r) {
+                let n = ics_core::constraints::infer(&mut lay, &p, &sch);
                 if n > 0 {
                     println!("inferred {n} symmetry constraint(s)");
                 }
@@ -2443,7 +2467,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 }
             }
             if apply {
-                let sch = c.schematic.clone().ok_or("cell has no schematic")?;
+                let sch = p.circuit(&r)?.into_owned();
                 p.cell_mut(&r).unwrap().schematic = Some(ics_sim::optimize::apply_values(&sch, &setup, &best.values));
                 p.save().map_err(|e| e.to_string())?;
             }
@@ -2460,7 +2484,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 eprintln!("note: {n}");
             }
             if route {
-                let sch = p.cell(&target).unwrap().schematic.clone().ok_or("cell has no schematic")?;
+                let sch = p.circuit(&target)?.into_owned();
                 let mut lay = p.cell_mut(&target).unwrap().layout.take().unwrap_or_default();
                 let res = ics_core::route::route(&sch, &mut lay, &p, &p.tech);
                 p.cell_mut(&target).unwrap().layout = Some(lay);
@@ -2484,7 +2508,8 @@ fn run(cli: Cli) -> Result<(), String> {
             let r = resolve(&p, &cell)?;
             let c = p.cell(&r).unwrap();
             let lay = c.layout.as_ref().ok_or("cell has no layout")?;
-            let sch = c.schematic.as_ref().ok_or("cell has no schematic")?;
+            let circuit = p.circuit(&r)?;
+            let sch = &*circuit;
             let x = ics_core::extract::extract(lay, &p, &p.tech);
             let rep = ics_core::lvs::compare(sch, &x, &ics_core::lvs::LvsOptions::for_tech(&p.tech));
             println!(

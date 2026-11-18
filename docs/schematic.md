@@ -88,6 +88,31 @@ Notes:
 - Two different names on one net produce the warning
   "Net names 'a' and 'b' are shorted together".
 
+## Hierarchical schematics
+
+A schematic can place other cells: their schematic pins (see **Pins**) become the pins of
+a box symbol, inputs on the left, outputs on the right and inouts on top and bottom. The
+demo cell `buffer_tb` places two `inv` cells.
+
+- **Place Cell Instance…** (`Shift+I`, **Tools** menu, or **Place in Active Schematic** on
+  a cell in the Explorer) lists the cells whose schematic has pins. Click to place, `Space`
+  / `X` rotate and mirror, `Esc` ends. Instances are named `X1`, `X2`, ...
+- **Descend into Cell** (`Shift+X` on a selected instance, or its context menu) opens the
+  placed cell's schematic; **Return to Parent** (`Shift+B`) goes back.
+- **Update Cell Instance Pins** gives the instances the current pins of their cells after
+  pins were added or renamed. Until then the netlist warns that the pins changed.
+- **Edit Symbol Pins…** (**Tools** menu, on the placed cell's own schematic) sets each pin's
+  side and its order along it, with a preview of the box; **Apply** updates every instance
+  of the cell in the project, **Default** goes back to the automatic arrangement.
+- The SKILL export writes cell instances as instances of the cell's `symbol` view in the
+  target library, creating it from the schematic's pins when it is missing (export the
+  placed cells first). Cross-probing selects instance `X1` for the layout's `X1/M1`.
+
+Simulation, sweeps, Monte Carlo, LVS, schematic-driven layout and ECO use the flattened
+circuit: device `M1` of instance `X1` is `X1/M1`, a net inside it `X1/n3`. A placed cell's
+pins take the nets wired to the instance; ground and the nets of supply symbols are
+global. A cell that places itself, directly or through other cells, is an error.
+
 ## Selecting and editing
 
 | Action | How |
@@ -157,7 +182,12 @@ Virtuoso through the text formats Virtuoso writes and reads itself:
   - `.GLOBAL` and `!` global nets (`gnd!` is ground);
   - `$` annotations.
 
-  It flattens the netlist from the top subcircuit into one schematic. Element names carry
+  When its subcircuits place each other, **File > Import** keeps the hierarchy: a new
+  library named after the file gets a cell per subcircuit, with the subcircuit's pins as
+  schematic pins and each `X` instance as an instance of that cell (`ics import-cdl --hier`,
+  MCP `import_cdl` with `hierarchical`). An instance that passes other parameter values
+  places a variant cell (`inv_wp4u`). Otherwise, and with `ics import-cdl` without `--hier`,
+  it flattens the netlist from the top subcircuit into one schematic. Element names carry
   the instance path (`MI0/M0` is `MM0` inside `XI0`), and local nets get it too
   (`I0/net7`). Every pin gets a net label, as with SPICE netlists. A resistor or capacitor
   given only by a `$[model]` and its size gets a placeholder value and a warning.
@@ -220,8 +250,9 @@ What comes over:
   the same symbol map as the SKILL export, read in reverse (analogLib by default). Their
   parameters are the instance's CDF values, so defaults the instance does not override are
   included. The net on each terminal comes from Virtuoso's own connectivity. An instance of
-  another dumped schematic is a subcircuit: it is flattened with instance paths, as in the
-  CDL import (`MI0/M0`). `pPar("wp")` takes the parent's value, or the cell's CDF default.
+  another dumped schematic stays an instance of that schematic's cell (a hierarchical
+  schematic); one passing other CDF values places a variant cell. `pPar("wp")` takes the
+  parent's value, or the cell's CDF default.
   A schematic with no subcircuits keeps the Virtuoso placement and orientation, at `--scale`
   user units per grid point, as long as that gives the same connectivity. Otherwise its
   devices are laid out in rows, and a warning says so. Pin, supply and `basic` symbols are

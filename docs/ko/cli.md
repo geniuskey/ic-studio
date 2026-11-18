@@ -53,7 +53,7 @@
 | `ics verify <PROJECT> [--test NAME]... [--junit FILE] [--against RUN] [--no-history] [--json]` | 검증 계획 실행(모든 테스트의 코너, 스윕, 몬테카를로), 스펙별 요약, 이전 실행과 비교. `--add CELL`은 테스트 추가, `--list`는 목록. 실패하거나 측정 못 한 스펙이 있으면 1로 종료 |
 | `ics yield <PROJECT> <CELL> [--runs N] [--samples N] [--target Y] [--process] [--json]` | 셀의 몬테카를로 스윕 설정을 실행하고 조건별 수율과 스펙별 민감도를 예측(`--process`는 테크놀로지의 측정 공정 변동도 뽑음). `--target` 미만이면 1로 종료 |
 | `ics correlate <PROJECT> <CELL> [--data CSV] [--x COL] [--analysis A] [--trace COL=EXPR[@BIAS]]... [--param TARGET=MIN:MAX[:log]]... [--log] [--fit] [--write-models FILE] [--apply] [--save] [--json]` | 측정 곡선과 시뮬레이션 비교, 모델·인스턴스·설계 파라미터 피팅 |
-| `ics import-cdl <PROJECT> <CDL> [--top NAME] [--cell LIB/CELL] [--all] [--overwrite]` | 계층 CDL 넷리스트(Virtuoso auCdl)를 평탄한 회로도로 가져오기([Virtuoso](schematic.md#virtuoso와-회로도-주고받기) 참고) |
+| `ics import-cdl <PROJECT> <CDL> [--top NAME] [--cell LIB/CELL] [--all \| --hier] [--overwrite]` | 계층 CDL 넷리스트(Virtuoso auCdl)를 평탄한 회로도로, `--hier`면 서브서킷마다 셀로 가져오기([Virtuoso](schematic.md#virtuoso와-회로도-주고받기) 참고) |
 | `ics dump-skill [-o FILE]` | Virtuoso 라이브러리(회로도와 레이아웃)를 덤프하는 SKILL 스크립트 `icsDump.il` 쓰기 |
 | `ics import-virtuoso <PROJECT> <DUMP 또는 cds.lib> [--lib NAME] [--map TOML] [--scale S] [--overwrite]` | Virtuoso 라이브러리 덤프, 또는 Virtuoso 배치 모드로 덤프한 `cds.lib`의 라이브러리 가져오기: 회로도(평탄화, 가능하면 배치 유지)와 마스터를 포함한 레이아웃([Virtuoso](schematic.md#라이브러리-통째로-virtuoso-덤프) 참고) |
 | `ics xsection <PROJECT> <CELL> [--flow FILE] [--cut x0,y0,x1,y1] [--steps N] [--at X]... [--svg FILE] [--profile CSV] [--json]` | 공정 에뮬레이션: 공정 흐름 후 컷을 따른 레이아웃 단면, 도핑된 층·접합 깊이·면저항. `--profile`은 도펀트 깊이 프로파일 작성([공정 에뮬레이션](process.md) 참고) |

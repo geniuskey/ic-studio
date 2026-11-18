@@ -45,6 +45,7 @@ pub mod reshape;
 pub mod route;
 pub mod rule_design;
 pub mod sch_check;
+pub mod sch_hier;
 pub mod schematic;
 pub mod sdl;
 pub mod signoff;

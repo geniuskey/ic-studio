@@ -23,6 +23,9 @@ pub enum DeviceKind {
     Nmos3,
     /// PMOS without a body pin: the body connects to the net named by its `bulk` parameter.
     Pmos3,
+    /// An instance of another cell's schematic ([`Instance::cell`]); its pins are that
+    /// schematic's pins ([`Instance::ports`]), drawn as a generated box symbol.
+    Cell,
 }
 
 impl DeviceKind {
@@ -102,13 +105,14 @@ impl DeviceKind {
             DeviceKind::Pmos3 => "PMOS (3-terminal)",
             DeviceKind::Ground => "Ground",
             DeviceKind::Supply => "Supply Net",
+            DeviceKind::Cell => "Cell Instance",
         }
     }
 
     /// Keyboard shortcut used by the schematic editor to place this device.
     pub fn shortcut(self) -> Option<char> {
         Some(match self {
-            DeviceKind::Nmos3 | DeviceKind::Pmos3 => return None,
+            DeviceKind::Nmos3 | DeviceKind::Pmos3 | DeviceKind::Cell => return None,
             DeviceKind::Resistor => 'R',
             DeviceKind::Capacitor => 'C',
             DeviceKind::Inductor => 'L',
@@ -132,6 +136,7 @@ impl DeviceKind {
             DeviceKind::ISource => Some('I'),
             DeviceKind::Diode => Some('D'),
             DeviceKind::Nmos | DeviceKind::Pmos | DeviceKind::Nmos3 | DeviceKind::Pmos3 => Some('M'),
+            DeviceKind::Cell => Some('X'),
             DeviceKind::Ground | DeviceKind::Supply => None,
         }
     }
@@ -147,6 +152,7 @@ impl DeviceKind {
             DeviceKind::Nmos | DeviceKind::Pmos | DeviceKind::Nmos3 | DeviceKind::Pmos3 => "M",
             DeviceKind::Ground => "GND",
             DeviceKind::Supply => "VDD",
+            DeviceKind::Cell => "X",
         }
     }
 
@@ -163,7 +169,7 @@ impl DeviceKind {
             DeviceKind::Pmos => vec![("model", "pmos"), ("w", "2u"), ("l", "180n"), ("m", "1")],
             DeviceKind::Nmos3 => vec![("model", "nmos"), ("w", "1u"), ("l", "180n"), ("m", "1"), ("bulk", "0")],
             DeviceKind::Pmos3 => vec![("model", "pmos"), ("w", "2u"), ("l", "180n"), ("m", "1"), ("bulk", "vdd")],
-            DeviceKind::Ground => vec![],
+            DeviceKind::Ground | DeviceKind::Cell => vec![],
             DeviceKind::Supply => vec![("net", "vdd")],
         }
     }
@@ -177,11 +183,13 @@ impl DeviceKind {
             DeviceKind::VSource | DeviceKind::ISource => Some("dc"),
             DeviceKind::Diode => Some("model"),
             DeviceKind::Nmos | DeviceKind::Pmos | DeviceKind::Nmos3 | DeviceKind::Pmos3 => None,
-            DeviceKind::Ground => None,
+            DeviceKind::Ground | DeviceKind::Cell => None,
             DeviceKind::Supply => Some("net"),
         }
     }
 
+    /// The symbol of a primitive kind. A [`DeviceKind::Cell`] instance draws the box of its
+    /// pins: use [`Instance::symbol`].
     pub fn symbol(self) -> &'static Symbol {
         symbols::get(self)
     }
@@ -384,7 +392,68 @@ mod symbols {
         }
     }
 
+    /// Box symbol of a cell instance with `pins` on their sides ([`SymbolSpec::arrange`]); 2
+    /// grid units between pins. Interned per arrangement (pin names must be `&'static str`).
+    pub fn cell_box(arranged: &[(String, PinSide)]) -> &'static Symbol {
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+        type Boxes = HashMap<Vec<(String, PinSide)>, &'static Symbol>;
+        static CACHE: OnceLock<Mutex<Boxes>> = OnceLock::new();
+        let mut cache = CACHE.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(s) = cache.get(arranged) {
+            return s;
+        }
+        let side = |d: PinSide| arranged.iter().filter(move |(_, p)| *p == d).map(|(n, _)| n.clone()).collect::<Vec<_>>();
+        let (left, right) = (side(PinSide::Left), side(PinSide::Right));
+        let (top, bottom) = (side(PinSide::Top), side(PinSide::Bottom));
+        let rows = left.len().max(right.len()).max(1) as i32;
+        let cols = top.len().max(bottom.len()).max(1) as i32;
+        // Half sizes of the body, so that pins land on grid points 2 apart.
+        let (hw, hh) = (cols.max(2), rows);
+        let leak = |n: &str| -> &'static str { Box::leak(n.to_string().into_boxed_str()) };
+        let mut pins = vec![];
+        let mut prims = vec![Prim::Poly(vec![
+            (-hw as f32, -hh as f32),
+            (hw as f32, -hh as f32),
+            (hw as f32, hh as f32),
+            (-hw as f32, hh as f32),
+            (-hw as f32, -hh as f32),
+        ])];
+        let along = |k: usize, n: usize| -((n as i32) - 1) + 2 * k as i32;
+        for (k, n) in left.iter().enumerate() {
+            let y = along(k, left.len());
+            pins.push(SymPin { name: leak(n), at: Pt::new(-hw - 1, y) });
+            prims.push(Prim::Line(-(hw + 1) as f32, y as f32, -hw as f32, y as f32));
+        }
+        for (k, n) in right.iter().enumerate() {
+            let y = along(k, right.len());
+            pins.push(SymPin { name: leak(n), at: Pt::new(hw + 1, y) });
+            prims.push(Prim::Line(hw as f32, y as f32, (hw + 1) as f32, y as f32));
+        }
+        for (k, n) in top.iter().enumerate() {
+            let x = along(k, top.len());
+            pins.push(SymPin { name: leak(n), at: Pt::new(x, -hh - 1) });
+            prims.push(Prim::Line(x as f32, -(hh + 1) as f32, x as f32, -hh as f32));
+        }
+        for (k, n) in bottom.iter().enumerate() {
+            let x = along(k, bottom.len());
+            pins.push(SymPin { name: leak(n), at: Pt::new(x, hh + 1) });
+            prims.push(Prim::Line(x as f32, hh as f32, x as f32, (hh + 1) as f32));
+        }
+        let sym: &'static Symbol = Box::leak(Box::new(Symbol {
+            pins,
+            prims,
+            bbox: (-(hw + 1) as f32, -(hh + 1) as f32, (hw + 1) as f32, (hh + 1) as f32),
+            label_at: (hw as f32 + 0.4, -hh as f32 - 1.4),
+        }));
+        cache.insert(arranged.to_vec(), sym);
+        sym
+    }
+
     pub fn get(kind: DeviceKind) -> &'static Symbol {
+        if kind == DeviceKind::Cell {
+            return cell_box(&[]);
+        }
         static LIB: OnceLock<Vec<(DeviceKind, Symbol)>> = OnceLock::new();
         let lib = LIB.get_or_init(|| {
             vec![
@@ -419,6 +488,16 @@ pub struct Instance {
     pub orient: Orient,
     #[serde(default)]
     pub params: BTreeMap<String, String>,
+    /// The placed cell of a [`DeviceKind::Cell`] instance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cell: Option<crate::project::CellRef>,
+    /// Pins of a cell instance: the placed schematic's pins when it was placed or last updated
+    /// ([`Schematic::ports`]), in the order of the symbol and the subcircuit.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ports: Vec<(String, PortDir)>,
+    /// The placed cell's symbol arrangement when placed or last updated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<SymbolSpec>,
 }
 
 impl Instance {
@@ -432,9 +511,18 @@ impl Instance {
         matches!(self.param(LVS_IGNORE).trim().to_ascii_lowercase().as_str(), "t" | "true" | "1" | "yes")
     }
 
+    /// The drawn symbol: the primitive's, or the pin box of a cell instance.
+    pub fn symbol(&self) -> &'static Symbol {
+        if self.kind == DeviceKind::Cell {
+            symbols::cell_box(&SymbolSpec::arrange(self.symbol.as_ref(), &self.ports))
+        } else {
+            self.kind.symbol()
+        }
+    }
+
     /// World position of each pin, in symbol pin order.
     pub fn pin_positions(&self) -> Vec<(&'static str, Pt)> {
-        self.kind.symbol().pins.iter().map(|p| (p.name, self.pos + self.orient.apply(p.at))).collect()
+        self.symbol().pins.iter().map(|p| (p.name, self.pos + self.orient.apply(p.at))).collect()
     }
 
     pub fn to_world_f(&self, x: f32, y: f32) -> (f32, f32) {
@@ -444,7 +532,7 @@ impl Instance {
 
     /// World space bounding box (min_x, min_y, max_x, max_y).
     pub fn bbox(&self) -> (f32, f32, f32, f32) {
-        let b = self.kind.symbol().bbox;
+        let b = self.symbol().bbox;
         let corners = [(b.0, b.1), (b.2, b.1), (b.0, b.3), (b.2, b.3)];
         let mut r = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
         for (x, y) in corners {
@@ -524,6 +612,74 @@ pub struct Schematic {
     pub labels: Vec<NetLabel>,
     #[serde(default)]
     pub next_id: u64,
+    /// How this cell's symbol arranges its pins when other schematics place it (`None`: inputs
+    /// left, outputs right, inouts top and bottom).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<SymbolSpec>,
+}
+
+/// Side of a cell symbol a pin sits on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PinSide {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+impl PinSide {
+    pub const ALL: [PinSide; 4] = [PinSide::Left, PinSide::Right, PinSide::Top, PinSide::Bottom];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            PinSide::Left => "left",
+            PinSide::Right => "right",
+            PinSide::Top => "top",
+            PinSide::Bottom => "bottom",
+        }
+    }
+}
+
+/// The pin arrangement of a cell symbol: each pin's side, in order along it (top to bottom,
+/// left to right). Pins it does not list get their default side, after the listed ones.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub struct SymbolSpec {
+    pub pins: Vec<(String, PinSide)>,
+}
+
+impl SymbolSpec {
+    /// Every pin of `ports` with its side, in drawing order: the spec's order first.
+    pub fn arrange(spec: Option<&SymbolSpec>, ports: &[(String, PortDir)]) -> Vec<(String, PinSide)> {
+        let mut out: Vec<(String, PinSide)> = vec![];
+        if let Some(spec) = spec {
+            for (n, side) in &spec.pins {
+                if ports.iter().any(|(p, _)| p == n) && !out.iter().any(|(o, _)| o == n) {
+                    out.push((n.clone(), *side));
+                }
+            }
+        }
+        let inouts: Vec<&String> = ports.iter().filter(|(_, d)| *d == PortDir::InOut).map(|(n, _)| n).collect();
+        let half = inouts.len().div_ceil(2);
+        for (n, d) in ports {
+            if out.iter().any(|(o, _)| o == n) {
+                continue;
+            }
+            let side = match d {
+                PortDir::Input => PinSide::Left,
+                PortDir::Output => PinSide::Right,
+                PortDir::InOut => {
+                    if inouts.iter().position(|i| *i == n).is_some_and(|k| k < half) {
+                        PinSide::Top
+                    } else {
+                        PinSide::Bottom
+                    }
+                }
+            };
+            out.push((n.clone(), side));
+        }
+        out
+    }
 }
 
 /// Reference to any object in a schematic.
@@ -558,7 +714,31 @@ impl Schematic {
         let id = self.alloc_id();
         let name = self.next_name(kind);
         let params = kind.default_params().into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-        self.instances.push(Instance { id, kind, name, pos, orient, params });
+        self.instances.push(Instance { id, kind, name, pos, orient, params, cell: None, ports: vec![], symbol: None });
+        id
+    }
+
+    /// Place an instance of `cell`, whose schematic has the pins `ports`.
+    pub fn add_cell_instance(
+        &mut self,
+        cell: crate::project::CellRef,
+        ports: Vec<(String, PortDir)>,
+        pos: Pt,
+        orient: Orient,
+    ) -> u64 {
+        let id = self.alloc_id();
+        let name = self.next_name(DeviceKind::Cell);
+        self.instances.push(Instance {
+            id,
+            kind: DeviceKind::Cell,
+            name,
+            pos,
+            orient,
+            params: BTreeMap::new(),
+            cell: Some(cell),
+            ports,
+            symbol: None,
+        });
         id
     }
 

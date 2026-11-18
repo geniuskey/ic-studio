@@ -95,7 +95,8 @@ impl LayoutEditor {
     }
 
     pub(super) fn infer_constraints(&mut self, l: &mut Layout, cx: &mut LayCtx) -> bool {
-        let Some(sch) = cx.src.cell(cx.cell).and_then(|c| c.schematic.as_ref()) else {
+        let circuit = cx.src.circuit(cx.cell).ok();
+        let Some(sch) = circuit.as_deref() else {
             self.note(false, "Inferring constraints needs a schematic view of this cell");
             return false;
         };

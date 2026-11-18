@@ -193,7 +193,11 @@ pub fn evaluate(project: &Project, cell: &CellRef, setup: &OptSetup, values: &[f
     };
     let Some(c) = project.cell(cell) else { return fail(0, format!("no cell '{cell}'")) };
     let specs = &c.sim.sweep.specs;
-    let Some(base) = c.schematic.as_ref() else { return fail(specs.len(), "cell has no schematic".into()) };
+    let circuit = match project.circuit(cell) {
+        Ok(s) => s,
+        Err(e) => return fail(specs.len(), e),
+    };
+    let base = &*circuit;
     let sch = apply_values(base, setup, values);
     let (deck, note) = match candidate_deck(project, cell, c, &sch, setup, values) {
         Ok(d) => d,

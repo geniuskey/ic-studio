@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use eframe::egui;
 use egui_kittest::Harness;
+use ics_core::CellRef;
 use ics_studio::LaunchArgs;
 use ics_studio::app::{Command, IcStudio, Workspace};
 
@@ -1102,6 +1103,82 @@ fn schematic_place_and_undo() {
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
     h.run_steps(3);
     assert_eq!(instance_count(&h), before, "undo should remove it");
+}
+
+/// Hierarchical schematics: buffer_tb places two inv cells drawn as pin boxes; Shift+X on one
+/// descends into inv and Shift+B returns; Place Cell Instance adds another, undoably.
+#[test]
+fn hierarchical_schematic() {
+    let mut h = app(LaunchArgs {
+        project: None,
+        demo: true,
+        workspace: Some("schematic".into()),
+        cell: Some("buffer_tb".into()),
+        run: false,
+    });
+    h.run_steps(4);
+    shot(&mut h, "schematic_hierarchy");
+    let tb = CellRef::new("work", "buffer_tb");
+    let x1 = {
+        let sch = h.state().project().unwrap().cell(&tb).unwrap().schematic.as_ref().unwrap();
+        sch.instances.iter().find(|i| i.name == "X1").expect("X1").id
+    };
+    h.state_mut().command(Command::DescendSchematic(x1));
+    h.run_steps(3);
+    assert_eq!(h.state().active_ref().map(|r| r.cell.as_str()), Some("inv"));
+    h.state_mut().command(Command::ReturnSchematic);
+    h.run_steps(3);
+    assert_eq!(h.state().active_ref(), Some(&tb));
+    // Place a third inverter by clicking the canvas.
+    let count = |h: &Harness<'_, IcStudio>| {
+        h.state().project().unwrap().cell(&CellRef::new("work", "buffer_tb")).unwrap().schematic.as_ref().unwrap().instances.len()
+    };
+    let before = count(&h);
+    h.state_mut().command(Command::PlaceCell(CellRef::new("work", "inv")));
+    h.run_steps(2);
+    let p = egui::pos2(900.0, 650.0);
+    h.hover_at(p);
+    h.run_steps(2);
+    h.event(egui::Event::PointerButton {
+        pos: p,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: Default::default(),
+    });
+    h.step();
+    h.event(egui::Event::PointerButton {
+        pos: p,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: Default::default(),
+    });
+    h.run_steps(3);
+    assert_eq!(count(&h), before + 1);
+    let sch = h.state().project().unwrap().cell(&tb).unwrap().schematic.as_ref().unwrap();
+    let x3 = sch.instances.iter().find(|i| i.name == "X3").expect("X3 placed");
+    assert_eq!(x3.cell, Some(CellRef::new("work", "inv")));
+    assert_eq!(x3.ports.len(), 2);
+    h.key_press(egui::Key::Escape);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run_steps(3);
+    assert_eq!(count(&h), before, "placing is undoable");
+
+    // Edit inv's symbol: moving a pin down reorders it, and buffer_tb's instances follow.
+    use egui_kittest::kittest::Queryable;
+    h.state_mut().command(Command::OpenCell(CellRef::new("work", "inv"), Some(Workspace::Schematic)));
+    h.run_steps(3);
+    h.state_mut().command(Command::EditSymbolDialog);
+    h.run_steps(3);
+    shot(&mut h, "symbol_pins");
+    h.query_all_by_label("Down").next().expect("a Down button").click();
+    h.run_steps(2);
+    h.get_by_label("Apply").click();
+    h.run_steps(3);
+    let p = h.state().project().unwrap();
+    let spec = p.cell(&CellRef::new("work", "inv")).unwrap().schematic.as_ref().unwrap().symbol.clone().expect("a symbol spec");
+    assert_eq!(spec.pins[0].0, "y");
+    let tb = p.cell(&CellRef::new("work", "buffer_tb")).unwrap().schematic.as_ref().unwrap();
+    assert!(tb.instances.iter().filter(|i| i.kind == ics_core::DeviceKind::Cell).all(|i| i.symbol.as_ref() == Some(&spec)));
 }
 
 /// MOS symbol style: with the 3-terminal style, N places an NMOS without a body pin; an existing
@@ -2724,9 +2801,15 @@ fn import_cdl_netlist() {
     h.run_steps(4);
     let _ = std::fs::remove_file(&path);
     let p = h.state().project().unwrap();
-    let c = p.cell(&ics_core::CellRef::new("work", "buf")).expect("imported cell");
-    let mos = c.schematic.as_ref().unwrap().instances.iter().filter(|i| i.name.starts_with("MI")).count();
-    assert_eq!(mos, 4, "two inverters of two transistors");
+    // The hierarchy is kept, in a library named after the file: buf places two inv cells.
+    let lib = path.file_stem().unwrap().to_string_lossy().to_string();
+    let buf = CellRef::new(&lib, "buf");
+    let c = p.cell(&buf).expect("imported cell");
+    let xs = c.schematic.as_ref().unwrap().instances.iter().filter(|i| i.kind == ics_core::DeviceKind::Cell).count();
+    assert_eq!(xs, 2);
+    assert!(p.cell(&CellRef::new(&lib, "inv")).is_some_and(|c| c.schematic.is_some()));
+    let flat = p.circuit(&buf).unwrap();
+    assert_eq!(flat.instances.iter().filter(|i| i.kind.is_mos()).count(), 4, "two inverters of two transistors");
 }
 
 /// Right-clicking a library in the Explorer selects it and offers library-level actions:

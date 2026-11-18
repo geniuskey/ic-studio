@@ -330,7 +330,7 @@ impl Cdl {
         };
         let nets: HashMap<String, String> = pins.iter().map(|p| (p.to_ascii_lowercase(), p.clone())).collect();
         let mut out = vec![];
-        self.expand(&lines, "", &nets, &env, 0, &mut out, &mut f.warnings)?;
+        self.expand(&lines, "", &nets, &env, 0, &mut out, &mut f.warnings, None)?;
         f.devices = out.len();
         f.netlist = out.join("\n") + "\n";
         Ok(f)
@@ -346,6 +346,7 @@ impl Cdl {
         depth: usize,
         out: &mut Vec<String>,
         warnings: &mut Vec<String>,
+        mut keep: Option<&mut Vec<XInst>>,
     ) -> Result<(), String> {
         if depth > 50 {
             return Err("subcircuits nest more than 50 deep (recursive?)".into());
@@ -399,9 +400,20 @@ impl Cdl {
                 for (k, _) in params.iter().filter(|(k, _)| !sub.params.iter().any(|(p, _)| p == k)) {
                     warnings.push(format!("{name}: parameter {k} is not a parameter of {}", sub.name));
                 }
+                if let Some(keep) = keep.as_deref_mut() {
+                    // Hierarchical import: the instance stays an instance of the subcircuit's
+                    // cell, a variant cell when it passes other parameter values.
+                    keep.push(XInst {
+                        name: seg(name),
+                        sub: sub.name.clone(),
+                        env: child_env,
+                        nets: nodes.iter().map(|n| net(n)).collect(),
+                    });
+                    continue;
+                }
                 let child_ports: HashMap<String, String> =
                     sub.pins.iter().zip(&nodes).map(|(p, n)| (p.to_ascii_lowercase(), net(n))).collect();
-                self.expand(&sub.lines, &seg(name), &child_ports, &child_env, depth + 1, out, warnings)?;
+                self.expand(&sub.lines, &seg(name), &child_ports, &child_env, depth + 1, out, warnings, None)?;
                 continue;
             }
             let Some(nn) = node_count(letter) else {
@@ -444,6 +456,201 @@ impl Cdl {
         }
         Ok(())
     }
+}
+
+/// An instance of a subcircuit kept as a cell instance ([`import_cdl_hier`]).
+#[derive(Debug, Clone)]
+struct XInst {
+    name: String,
+    /// The subcircuit and its parameter values for this instance.
+    sub: String,
+    env: HashMap<String, f64>,
+    nets: Vec<String>,
+}
+
+/// One cell of a hierarchical CDL import.
+#[derive(Debug, Clone)]
+pub struct CdlCell {
+    /// The subcircuit name (the cell name).
+    pub name: String,
+    pub imported: Imported,
+}
+
+/// The result of [`import_cdl_hier`]: a cell per subcircuit under the top, children first.
+#[derive(Debug, Clone, Default)]
+pub struct CdlHier {
+    pub top: String,
+    pub cells: Vec<CdlCell>,
+    pub warnings: Vec<String>,
+}
+
+/// Import a CDL netlist keeping its hierarchy: every `.SUBCKT` reachable from `top` (chosen as
+/// in [`import_cdl`]) becomes a cell of library `lib` whose schematic holds its own devices and
+/// an instance of the cell of each subcircuit it places, with the subcircuit's pins as
+/// schematic pins. Subcircuits the file does not define (PDK devices) stay devices.
+pub fn import_cdl_hier(text: &str, tech: &Tech, top: Option<&str>, lib: &str) -> Result<CdlHier, String> {
+    let cdl = Cdl::parse(text)?;
+    let top = match top {
+        Some(t) => t.to_string(),
+        None => cdl.tops().last().cloned().ok_or("the netlist has no .SUBCKT: import it flat")?,
+    };
+    let mut out =
+        CdlHier { top: cdl.subckt(&top).ok_or_else(|| format!("no .SUBCKT {top}"))?.name.clone(), ..Default::default() };
+    let ports_of = |s: &Subckt| -> Vec<(String, PortDir)> {
+        s.pins.iter().map(|p| (p.clone(), PortDir::parse(s.dirs.get(p).map_or("", String::as_str)))).collect()
+    };
+    let sub = cdl.subckt(&out.top).expect("found");
+    let mut env = HashMap::new();
+    for (k, v) in &sub.params {
+        env.insert(k.clone(), parse_spice(&eval_param(v, &env)?).unwrap_or(0.0));
+    }
+    let top_name = out.top.clone();
+    let mut done: Vec<String> = vec![];
+    build_cell(&cdl, tech, lib, &top_name, &top_name, &env, &ports_of, &mut done, &mut vec![], &mut out)?;
+    Ok(out)
+}
+
+impl CdlHier {
+    /// Store the cells in library `lib` of `p` (created when missing). An existing cell's
+    /// schematic is replaced only with `overwrite`. Returns the cells, children first.
+    pub fn add_to(&self, p: &mut crate::Project, lib: &str, overwrite: bool) -> Result<Vec<crate::CellRef>, String> {
+        if !p.libraries.iter().any(|l| l.name == lib) {
+            p.add_library(lib)?;
+        }
+        for c in &self.cells {
+            let r = crate::CellRef::new(lib, &c.name);
+            if p.cell(&r).is_some_and(|x| x.schematic.is_some()) && !overwrite {
+                return Err(format!("{r} already has a schematic; overwrite to replace it"));
+            }
+        }
+        let mut out = vec![];
+        for c in &self.cells {
+            let r = crate::CellRef::new(lib, &c.name);
+            if p.cell(&r).is_none() {
+                p.add_cell(lib, crate::Cell::new(&c.name))?;
+            }
+            p.cell_mut(&r).expect("added").schematic = Some(c.imported.schematic.clone());
+            out.push(r);
+        }
+        Ok(out)
+    }
+}
+
+/// Whether the netlist's subcircuits place each other (a hierarchy worth keeping).
+pub fn cdl_is_hierarchical(text: &str) -> bool {
+    Cdl::parse(text).is_ok_and(|c| {
+        c.subckts
+            .iter()
+            .any(|s| s.lines.iter().any(|l| x_cell(&tokens(annotations(l).0)).is_some_and(|(_, x, _)| c.subckt(&x).is_some())))
+    })
+}
+
+/// The parameter values of subcircuit `sub` as passed, or `None` when they are its defaults.
+fn variant_suffix(sub: &Subckt, env: &HashMap<String, f64>) -> Option<String> {
+    let mut defaults = HashMap::new();
+    for (k, v) in &sub.params {
+        defaults.insert(k.clone(), parse_spice(&eval_param(v, &defaults).ok()?).unwrap_or(0.0));
+    }
+    let parts: Vec<String> = sub
+        .params
+        .iter()
+        .filter(|(k, _)| env.get(k).is_some_and(|v| (v - defaults[k]).abs() > 1e-12 * v.abs().max(1e-30)))
+        // SPICE suffixes (`4u`), so the name stays ASCII.
+        .map(|(k, _)| format!("{k}{}", crate::units::format_eng(env[k], "").replace('µ', "u")))
+        .collect();
+    (!parts.is_empty()).then(|| {
+        parts
+            .join("_")
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() {
+                    c
+                } else if c == '.' {
+                    'p'
+                } else {
+                    '_'
+                }
+            })
+            .collect()
+    })
+}
+
+/// Build the cell `cell` of subcircuit `sub` with parameter values `env` (and first the cells
+/// it places), appending them to `out` children first.
+#[allow(clippy::too_many_arguments)]
+fn build_cell(
+    cdl: &Cdl,
+    tech: &Tech,
+    lib: &str,
+    sub_name: &str,
+    cell: &str,
+    env: &HashMap<String, f64>,
+    ports_of: &dyn Fn(&Subckt) -> Vec<(String, PortDir)>,
+    done: &mut Vec<String>,
+    path: &mut Vec<String>,
+    out: &mut CdlHier,
+) -> Result<(), String> {
+    use crate::geom::{Orient, Pt};
+    if path.iter().any(|p| p.eq_ignore_ascii_case(sub_name)) {
+        return Err(format!("{sub_name} places itself (recursive subcircuits)"));
+    }
+    if done.iter().any(|d| d.eq_ignore_ascii_case(cell)) {
+        return Ok(());
+    }
+    if !crate::project::valid_name(cell) {
+        return Err(format!("subcircuit {sub_name}: '{cell}' is not a valid cell name (import it flat)"));
+    }
+    let sub = cdl.subckt(sub_name).ok_or_else(|| format!("no .SUBCKT {sub_name}"))?;
+    let nets: HashMap<String, String> = sub.pins.iter().map(|p| (p.to_ascii_lowercase(), p.clone())).collect();
+    let (mut lines, mut xs) = (vec![], vec![]);
+    cdl.expand(&sub.lines, "", &nets, env, 0, &mut lines, &mut out.warnings, Some(&mut xs))?;
+    path.push(sub_name.to_string());
+    let mut children = vec![];
+    for x in &xs {
+        let child = cdl.subckt(&x.sub).expect("kept only local subcircuits");
+        let name = match variant_suffix(child, &x.env) {
+            Some(v) => format!("{}_{v}", child.name),
+            None => child.name.clone(),
+        };
+        build_cell(cdl, tech, lib, &child.name, &name, &x.env, ports_of, done, path, out)?;
+        children.push((name, ports_of(child), child.pins.clone()));
+    }
+    path.pop();
+    let mut imported = if lines.is_empty() {
+        Imported::default()
+    } else {
+        spice_import::import(&(lines.join("\n") + "\n"), tech).map_err(|e| format!("{}: {e}", sub.name))?
+    };
+    let sch = &mut imported.schematic;
+    let base_y = sch.instances.iter().map(|i| i.pos.y).max().map_or(0, |y| y + 14);
+    for (k, (x, (name, ports, pins))) in xs.iter().zip(children).enumerate() {
+        let pos = Pt::new((k % 6) as i32 * 16, base_y + (k / 6) as i32 * 14);
+        let id = sch.add_cell_instance(crate::project::CellRef::new(lib, &name), ports, pos, Orient::default());
+        let inst = sch.instance_mut(id).expect("just added");
+        inst.name = format!("X{}", x.name);
+        let at: HashMap<&str, Pt> = inst.pin_positions().into_iter().collect();
+        for (pin, net) in pins.iter().zip(&x.nets) {
+            let Some(&p) = at.get(pin.as_str()) else { continue };
+            if net == "0" || net.eq_ignore_ascii_case("gnd") {
+                sch.add_instance(DeviceKind::Ground, p, Orient::default());
+            } else {
+                sch.add_label(net.clone(), p);
+            }
+        }
+    }
+    // Pins: label the ports no device or instance touches, then mark them all.
+    let ports = ports_of(sub);
+    let mut spare = Pt::new(-12, 0);
+    for (pin, _) in &ports {
+        if !sch.labels.iter().any(|l| l.name.eq_ignore_ascii_case(pin)) {
+            sch.add_label(pin.clone(), spare);
+            spare.y += 4;
+        }
+    }
+    sch.mark_ports(&ports);
+    done.push(cell.to_string());
+    out.cells.push(CdlCell { name: cell.to_string(), imported });
+    Ok(())
 }
 
 /// The result of [`import_cdl`].
@@ -561,7 +768,7 @@ fn kind_name(k: DeviceKind) -> Option<&'static str> {
         DeviceKind::VSource => "vsource",
         DeviceKind::ISource => "isource",
         DeviceKind::Diode => "diode",
-        DeviceKind::Ground | DeviceKind::Supply => return None,
+        DeviceKind::Ground | DeviceKind::Supply | DeviceKind::Cell => return None,
     })
 }
 
@@ -621,6 +828,39 @@ pub fn skill_schematic(sch: &Schematic, lib: &str, cell: &str, map: &SymbolMap, 
     let mut masters: HashMap<String, usize> = HashMap::new();
     for inst in &sch.instances {
         if matches!(inst.kind, DeviceKind::Ground | DeviceKind::Supply) {
+            continue;
+        }
+        if inst.kind == DeviceKind::Cell {
+            // A placed cell: the symbol of that cell in the target library, made from its
+            // schematic's pins when it has none yet (export the placed cells first).
+            let Some(c) = &inst.cell else { continue };
+            let key = format!("{lib}/{}/symbol", c.cell);
+            if !masters.contains_key(&key) {
+                let k = masters.len();
+                masters.insert(key.clone(), k);
+                let (l, n) = (skill_str(lib), skill_str(&c.cell));
+                s += &format!(
+                    "  unless(ddGetObj({l} {n} \"symbol\")\n    schPinListToSymbol({l} {n} \"symbol\" schSchemToPinList({l} {n} \"schematic\")))\n\
+                     \x20 master{k} = dbOpenCellViewByType({l} {n} \"symbol\")\n  unless(master{k} error(\"no symbol {key}: export {} first\"))\n",
+                    c.cell
+                );
+            }
+            let k = masters[&key];
+            let (x, y) = (inst.pos.x as f64 * scale, -(inst.pos.y as f64) * scale);
+            s += &format!(
+                "  inst = dbCreateInst(cv master{k} {} list({x} {y}) {})\n",
+                skill_str(&inst.name),
+                skill_str(orient_code(inst.orient))
+            );
+            for (pin, _) in &inst.ports {
+                let net = conn.net_of(inst.id, pin).unwrap_or("").to_string();
+                let net = if net == "0" || net.eq_ignore_ascii_case("gnd") { "gnd!".to_string() } else { net };
+                if net.is_empty() {
+                    warnings.push(format!("{}.{pin}: unconnected", inst.name));
+                    continue;
+                }
+                s += &format!("  icsConnect(cv inst {} {})\n", skill_str(pin), skill_str(&net));
+            }
             continue;
         }
         let Some(sym) = map.find(inst.kind, inst.param("model")) else {
@@ -710,6 +950,48 @@ RR0 y gnd! $[rppoly] $W=1u $L=10u
 CC0 mid gnd! 10f $[mimcap]
 .ENDS
 "#;
+
+    #[test]
+    fn hierarchical_cdl_keeps_its_hierarchy() {
+        let h = import_cdl_hier(CDL, &Tech::generic(), None, "work").unwrap();
+        assert_eq!(h.top, "buf");
+        let names: Vec<&str> = h.cells.iter().map(|c| c.name.as_str()).collect();
+        // XI0 passes wp=4u: a variant cell; XI1 uses the default inv. Children come first.
+        assert_eq!(names.len(), 3, "{names:?}");
+        assert_eq!(names[2], "buf");
+        assert!(names.contains(&"inv") && names.iter().any(|n| n.starts_with("inv_wp4")), "{names:?}");
+        let buf = &h.cells[2].imported.schematic;
+        let xs: Vec<_> = buf.instances.iter().filter(|i| i.kind == DeviceKind::Cell).collect();
+        assert_eq!(xs.len(), 2);
+        assert_eq!(buf.ports().len(), 2);
+        // Flattened again through a project, the circuit equals the flat import.
+        let mut p = crate::Project::new("h");
+        for c in &h.cells {
+            let mut cell = crate::Cell::new(&c.name);
+            cell.schematic = Some(c.imported.schematic.clone());
+            p.add_cell("work", cell).unwrap();
+        }
+        let flat = p.circuit(&crate::CellRef::new("work", "buf")).unwrap();
+        let ws: Vec<String> = flat.instances.iter().filter(|i| i.kind.is_mos()).map(|i| i.param("w").to_string()).collect();
+        assert_eq!(ws.len(), 4);
+        assert!(ws.iter().any(|w| parse_spice(w) == Some(4e-6)), "{ws:?}");
+        let conn = connectivity::extract(&flat);
+        let m = flat.instances.iter().find(|i| i.name == "XI0/MM1").expect("XI0/MM1");
+        let mid = conn.net_of(m.id, "d").unwrap().to_string();
+        let m2 = flat.instances.iter().find(|i| i.name == "XI1/MM1").expect("XI1/MM1");
+        assert_eq!(conn.net_of(m2.id, "g"), Some(mid.as_str()), "XI0's output drives XI1");
+    }
+
+    #[test]
+    fn skill_places_cell_instances() {
+        let p = crate::examples::demo_project();
+        let sch = p.cell(&crate::CellRef::new("work", "buffer_tb")).unwrap().schematic.as_ref().unwrap();
+        let (skill, warnings) = skill_schematic(sch, "myLib", "buffer_tb", &SymbolMap::analog_lib(), 0.1875);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(skill.contains(r#"schPinListToSymbol("myLib" "inv" "symbol""#), "{skill}");
+        assert_eq!(skill.matches(r#"dbCreateInst(cv master"#).count(), 5, "two inv, a capacitor, two sources");
+        assert!(skill.contains(r#"icsConnect(cv inst "y" "out")"#), "{skill}");
+    }
 
     #[test]
     fn hierarchical_cdl_flattens() {

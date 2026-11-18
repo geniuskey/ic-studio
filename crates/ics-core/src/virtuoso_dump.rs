@@ -3,8 +3,8 @@
 //!
 //! - **Schematics**: every dumped schematic becomes a cell. Instances are matched to IC Studio
 //!   devices through a [`SymbolMap`] (analogLib by default); instances of other dumped
-//!   schematics are subcircuits, flattened with instance paths as the CDL import does
-//!   ([`crate::cadence`]). The net on each terminal comes from Virtuoso's own connectivity, so
+//!   schematics become cell instances (a hierarchical schematic, [`crate::sch_hier`]); an
+//!   instance passing other CDF parameter values places a variant cell of its own. The net on each terminal comes from Virtuoso's own connectivity, so
 //!   wires are not needed: every pin gets a net label (or a ground symbol). A schematic without
 //!   subcircuits keeps the Virtuoso placement and orientation (`scale` user units per grid
 //!   point) when that gives the same connectivity; otherwise its devices are laid out in rows.
@@ -16,7 +16,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::cadence::{SymbolDef, SymbolMap, import_cdl};
+use crate::cadence::{SymbolDef, SymbolMap, import_cdl, import_cdl_hier};
 use crate::connectivity;
 use crate::geom::{IRect, Orient, Pt};
 use crate::layout::{ArraySpec, Geometry, Layout, Trans};
@@ -684,8 +684,49 @@ pub fn import_dump(dump: &Dump, tech: &Tech, map: &SymbolMap, scale: f64) -> Res
     let mut out = VirtuosoImport::default();
     let scale = if scale > 0.0 { scale } else { 0.1875 };
     let (cdl, info) = dump_cdl(dump, map, &mut out.warnings);
+    // Library of each dumped schematic, for the cell instances of hierarchical ones.
+    let lib_of: HashMap<String, String> = dump.schematics.iter().map(|s| (s.cell.to_ascii_lowercase(), s.lib.clone())).collect();
     for s in &dump.schematics {
         let (elems, hier) = &info[&s.cell.to_ascii_lowercase()];
+        if *hier {
+            // Instances of other dumped schematics stay instances of their cells.
+            match import_cdl_hier(&cdl, tech, Some(&s.cell), &s.lib) {
+                Ok(h) => {
+                    out.warnings.extend(h.warnings.iter().map(|w| format!("{}/{}: {w}", s.lib, s.cell)));
+                    for c in h.cells {
+                        let dumped = lib_of.contains_key(&c.name.to_ascii_lowercase());
+                        if dumped && !c.name.eq_ignore_ascii_case(&s.cell) {
+                            continue; // imported on its own
+                        }
+                        let mut sch = c.imported.schematic;
+                        for i in sch.instances.iter_mut() {
+                            if let Some(r) = i.cell.as_mut()
+                                && let Some(l) = lib_of.get(&r.cell.to_ascii_lowercase())
+                            {
+                                r.lib = l.clone();
+                            }
+                            // The cell's own devices keep their Virtuoso names (`C0`, not `CC0`).
+                            if dumped
+                                && let Some(v) = elems.get(&i.name.to_ascii_lowercase())
+                                && v.name
+                                    .chars()
+                                    .next()
+                                    .zip(i.name.chars().next())
+                                    .is_some_and(|(a, b)| a.eq_ignore_ascii_case(&b))
+                            {
+                                i.name = v.name.clone();
+                            }
+                        }
+                        out.warnings.extend(c.imported.warnings.iter().map(|w| format!("{}/{}: {w}", s.lib, c.name)));
+                        let devices = sch.instances.iter().filter(|i| i.kind.spice_prefix().is_some()).count();
+                        let cell = if dumped { CellRef::new(&s.lib, &s.cell) } else { CellRef::new(&s.lib, &c.name) };
+                        out.cells.push(CellImport { cell, devices, placed: false, schematic: Some(sch), layout: None });
+                    }
+                    continue;
+                }
+                Err(e) => out.warnings.push(format!("{}/{}: hierarchy not kept ({e}); flattened", s.lib, s.cell)),
+            }
+        }
         let imp = match import_cdl(&cdl, tech, Some(&s.cell)) {
             Ok(i) => i,
             Err(e) => {
@@ -711,6 +752,20 @@ pub fn import_dump(dump: &Dump, tech: &Tech, map: &SymbolMap, scale: f64) -> Res
                 s.lib, s.cell
             ));
         }
+        // The cell's pins, so that schematics placing it connect to them.
+        let ports = auto.ports();
+        let placed = placed.map(|mut p| {
+            if p.mark_ports(&ports) < ports.len() {
+                // A pin net the placement does not label: keep the placement but add the label.
+                for (n, _) in &ports {
+                    if !p.labels.iter().any(|l| l.name.eq_ignore_ascii_case(n)) {
+                        p.add_label(n.clone(), Pt::new(-20, 0));
+                    }
+                }
+                p.mark_ports(&ports);
+            }
+            p
+        });
         out.cells.push(CellImport {
             cell: CellRef::new(&s.lib, &s.cell),
             devices: imp.flat.devices,
@@ -925,16 +980,29 @@ mod tests {
         assert_eq!(norm_net(conn.net_of(m0.id, "s").unwrap()), "0");
         assert_eq!(conn.net_of(m1.id, "s"), Some("vdd"));
 
-        // The buffer is flattened: two inverters and a capacitor, wp passed down.
+        // The buffer keeps its hierarchy: two inv instances and a capacitor; XI0 passes
+        // wp=4u, so it places a variant cell of inv.
         let buf = imp.cells.iter().find(|c| c.cell.cell == "buf").unwrap();
-        assert_eq!(buf.devices, 5);
+        assert_eq!(buf.devices, 3);
         assert!(!buf.placed);
         let sch = buf.schematic.as_ref().unwrap();
-        let p0 = sch.instance_by_name("MI0/M1").unwrap();
         assert!(sch.instance_by_name("C0").is_some());
+        let xs: Vec<_> = sch.instances.iter().filter(|i| i.kind == DeviceKind::Cell).collect();
+        assert_eq!(xs.len(), 2);
+        assert!(xs.iter().any(|x| x.cell.as_ref().is_some_and(|c| c.cell == "inv")));
+        let variant = xs.iter().find_map(|x| x.cell.as_ref().filter(|c| c.cell != "inv")).expect("a variant cell").clone();
+        assert!(imp.cells.iter().any(|c| c.cell == variant), "the variant cell is imported too");
+        // Flattened, it is the old flat circuit.
+        let mut p = Project::new("v");
+        let mut w = vec![];
+        apply(&mut p, &imp, false, &mut w).unwrap();
+        let flat = p.circuit(&buf.cell).unwrap();
+        let mos: Vec<_> = flat.instances.iter().filter(|i| i.kind.is_mos()).collect();
+        assert_eq!(mos.len(), 4);
+        let p0 = mos.iter().find(|i| i.name.starts_with("XI0/") && i.kind == DeviceKind::Pmos).unwrap();
         assert_eq!(p0.param("w"), "4e-6");
-        let conn = connectivity::extract(sch);
-        let p1 = sch.instances.iter().find(|i| i.name.contains("I1/") && i.kind == DeviceKind::Pmos).unwrap();
+        let conn = connectivity::extract(&flat);
+        let p1 = mos.iter().find(|i| i.name.starts_with("XI1/") && i.kind == DeviceKind::Pmos).unwrap();
         assert_eq!(conn.net_of(p0.id, "d"), conn.net_of(p1.id, "g"));
         assert_eq!(conn.net_of(p0.id, "g"), Some("a"));
 
@@ -952,7 +1020,7 @@ mod tests {
         let mut p = Project::new("t");
         let mut warns = vec![];
         let done = apply(&mut p, &imp, false, &mut warns).unwrap();
-        assert_eq!(done.len(), 3);
+        assert_eq!(done.len(), 4, "inv, its wp=4u variant, buf and the PCell variant");
         assert!(p.cell(&CellRef::new("gpdk", "nmos1v_pc1")).unwrap().layout.is_some());
         let again = apply(&mut p, &imp, false, &mut warns).unwrap();
         assert!(again.iter().all(|a| !a.schematic && !a.layout));

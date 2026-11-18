@@ -6,7 +6,8 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Align2, Color32, FontId, Key, KeyboardShortcut, Modifiers, RichText, Sense, Stroke, Vec2};
-use ics_core::{Cell, CellRef, Layout, Project, SchObj, Schematic, ViewKind, examples};
+use ics_core::schematic::PortDir;
+use ics_core::{Cell, CellRef, DeviceKind, Layout, Project, SchObj, Schematic, ViewKind, examples};
 use ics_mcp::bridge::Pending;
 use ics_mcp::{ToolResult, tools};
 use ics_sim::SimOptions;
@@ -149,6 +150,18 @@ pub enum Command {
     ResultsBrowser,
     /// Check the active schematic (Check and Save: `true` also saves when it has no errors).
     CheckSchematic(bool),
+    /// Choose a cell to place in the active schematic (a hierarchical schematic).
+    PlaceCellDialog,
+    /// Place instances of this cell in the active schematic (its pins from its schematic).
+    PlaceCell(CellRef),
+    /// Open the schematic of cell instance `.0` of the active schematic.
+    DescendSchematic(u64),
+    /// Back to the schematic the last descent started from.
+    ReturnSchematic,
+    /// Refresh the pins of the active schematic's cell instances from the placed cells.
+    UpdateCellInstances,
+    /// Edit how the active cell's symbol arranges its pins (side and order).
+    EditSymbolDialog,
     /// Open the Net Browser on the active layout's extraction.
     NetBrowser,
     /// Open the Hierarchy Browser.
@@ -374,6 +387,15 @@ enum Dialog {
         files: Vec<std::path::PathBuf>,
         then: Option<Box<Command>>,
     },
+    /// Pick a cell to place in the active schematic.
+    PlaceCell {
+        filter: String,
+    },
+    /// The pin sides and order of a cell's symbol.
+    EditSymbol {
+        cell: CellRef,
+        pins: Vec<(String, ics_core::schematic::PinSide)>,
+    },
     /// An autosaved copy of the project just opened is newer than its files (the app quit
     /// without saving).
     Recover {
@@ -432,6 +454,9 @@ struct McpJob {
 
 type McpArgs = serde_json::Map<String, serde_json::Value>;
 type McpSnapshot = (Project, McpArgs, Option<CellRef>);
+
+/// A cell's schematic pins and symbol arrangement.
+type PinsAndSymbol = (Vec<(String, PortDir)>, Option<ics_core::schematic::SymbolSpec>);
 
 /// MCP tools that change neither layouts nor schematics. Every other tool runs between
 /// snapshots of the project, so whatever it changes is undoable and redrawn.
@@ -578,6 +603,8 @@ const SHORTCUTS: &[ShortcutGroup] = &[
             ("G S", "Ground, supply"),
             ("Space / X", "Rotate / mirror (placement or selection)"),
             ("/", "Swap wire bend direction"),
+            ("Shift+I", "Place a cell instance"),
+            ("Shift+X / Shift+B", "Descend into a cell instance / return"),
         ],
     ),
     (
@@ -693,6 +720,8 @@ pub struct IcStudio {
     lay_eds: HashMap<CellRef, LayoutEditor>,
     /// Cells descended into (Shift+X) or edited in place (x), for Shift+B (return).
     lay_return: Vec<Descent>,
+    /// Schematics descended from (Shift+X), most recent last.
+    sch_return: Vec<CellRef>,
     hier: Hier,
     /// Device names last selected in either editor, for cross-probing.
     probe: Option<(CellRef, BTreeSet<String>)>,
@@ -780,6 +809,7 @@ impl IcStudio {
             sch_eds: HashMap::new(),
             lay_eds: HashMap::new(),
             lay_return: vec![],
+            sch_return: vec![],
             hier: Hier::default(),
             probe: None,
             sims: HashMap::new(),
@@ -985,6 +1015,69 @@ impl IcStudio {
         }
     }
 
+    /// Arm the active schematic editor to place `r` (its pins from its schematic).
+    fn place_cell(&mut self, r: CellRef) {
+        let (Some(here), Some(p)) = (self.active.clone(), self.project.as_ref()) else { return };
+        let Some(sch) = p.cell(&r).and_then(|c| c.schematic.as_ref()) else {
+            self.warn(format!("{r} has no schematic to place"));
+            return;
+        };
+        if r == here {
+            self.warn("A cell cannot place itself".into());
+            return;
+        }
+        let (ports, spec) = (sch.ports(), sch.symbol.clone());
+        if ports.is_empty() {
+            self.warn(format!("{r} has no pins: add schematic pins (labels marked as pins) to connect to it"));
+        }
+        let ed = self.sch_eds.entry(here).or_default();
+        ed.place_cell = Some((r.clone(), ports, spec));
+        ed.tool = crate::schematic_view::SchTool::Place(DeviceKind::Cell);
+        self.workspace = Workspace::Schematic;
+        self.info(format!("Placing {r}: click to place, Esc ends"));
+    }
+
+    /// Give the cell instances of every schematic the current pins and symbol of their cells.
+    /// Returns how many changed.
+    fn refresh_cell_instances(&mut self) -> usize {
+        let Some(p) = self.project.as_mut() else { return 0 };
+        let defs: HashMap<CellRef, PinsAndSymbol> =
+            p.all_cells().filter_map(|(r, c)| c.schematic.as_ref().map(|s| (r, (s.ports(), s.symbol.clone())))).collect();
+        let mut n = 0;
+        let refs: Vec<CellRef> = p.all_cells().map(|(r, _)| r).collect();
+        for r in refs {
+            let Some(sch) = p.cell_mut(&r).and_then(|c| c.schematic.as_mut()) else { continue };
+            let stale = |i: &ics_core::Instance| {
+                i.cell.as_ref().and_then(|c| defs.get(c)).is_some_and(|(ports, spec)| *ports != i.ports || *spec != i.symbol)
+            };
+            if !sch.instances.iter().any(|i| i.kind == DeviceKind::Cell && stale(i)) {
+                continue;
+            }
+            self.sch_eds.entry(r.clone()).or_default().history.push(sch);
+            for i in sch.instances.iter_mut().filter(|i| i.kind == DeviceKind::Cell) {
+                if let Some((ports, spec)) = i.cell.as_ref().and_then(|c| defs.get(c))
+                    && (*ports != i.ports || *spec != i.symbol)
+                {
+                    i.ports = ports.clone();
+                    i.symbol = spec.clone();
+                    n += 1;
+                }
+            }
+        }
+        if n > 0 {
+            self.mark_dirty();
+        }
+        n
+    }
+
+    /// Update Cell Instance Pins: every schematic's cell instances follow their cells.
+    fn update_cell_instances(&mut self) {
+        match self.refresh_cell_instances() {
+            0 => self.info("Cell instances are up to date".into()),
+            n => self.ok(format!("Updated the pins of {n} cell instance(s)")),
+        }
+    }
+
     fn guard_unsaved(&mut self, then: Command) -> bool {
         if self.dirty {
             self.dialog = Some(Dialog::Unsaved { then: Box::new(then) });
@@ -1011,9 +1104,15 @@ impl IcStudio {
     fn netlist_active(&self) -> Option<(String, Vec<String>)> {
         let r = self.active.as_ref()?;
         let cell = self.active_cell()?;
-        let sch = cell.schematic.as_ref()?;
-        let nl = ics_core::netlist::netlist_for(sch, &self.project.as_ref()?.tech, &cell.sim.corner);
-        Some((nl.deck(&r.to_string(), &cell.sim), nl.warnings))
+        let p = self.project.as_ref()?;
+        // A hierarchical schematic is simulated flattened; its flattening notes are warnings.
+        let (sch, mut warnings) = match p.circuit_with_warnings(r) {
+            Ok(c) => c,
+            Err(e) => return Some((String::new(), vec![e])),
+        };
+        let nl = ics_core::netlist::netlist_for(&sch, &p.tech, &cell.sim.corner);
+        warnings.extend(nl.warnings.iter().cloned());
+        Some((nl.deck(&r.to_string(), &cell.sim), warnings))
     }
 
     // ----- commands -----
@@ -1281,6 +1380,42 @@ impl IcStudio {
             }
             Command::ResultsBrowser => self.results_open = true,
             Command::CheckSchematic(save) => self.check_schematic(save),
+            Command::PlaceCellDialog => {
+                if self.active.is_some() {
+                    self.dialog = Some(Dialog::PlaceCell { filter: String::new() });
+                }
+            }
+            Command::PlaceCell(r) => self.place_cell(r),
+            Command::DescendSchematic(id) => {
+                let (Some(here), Some(p)) = (self.active.clone(), self.project.as_ref()) else { return };
+                let child =
+                    p.cell(&here).and_then(|c| c.schematic.as_ref()).and_then(|s| s.instance(id)).and_then(|i| i.cell.clone());
+                match child {
+                    Some(c) if p.cell(&c).is_some_and(|c| c.schematic.is_some()) => {
+                        self.sch_return.push(here);
+                        self.info(format!("Descended into {c} (Shift+B returns)"));
+                        self.queue.push(Command::OpenCell(c, Some(Workspace::Schematic)));
+                    }
+                    Some(c) => self.warn(format!("{c} has no schematic")),
+                    None => {}
+                }
+            }
+            Command::ReturnSchematic => match self.sch_return.pop() {
+                Some(r) => self.queue.push(Command::OpenCell(r, Some(Workspace::Schematic))),
+                None => self.info("Return: no schematic to return to".into()),
+            },
+            Command::UpdateCellInstances => self.update_cell_instances(),
+            Command::EditSymbolDialog => {
+                let Some(r) = self.active.clone() else { return };
+                match self.project.as_ref().and_then(|p| p.cell(&r)).and_then(|c| c.schematic.as_ref()) {
+                    Some(sch) if !sch.ports().is_empty() => {
+                        let pins = ics_core::schematic::SymbolSpec::arrange(sch.symbol.as_ref(), &sch.ports());
+                        self.dialog = Some(Dialog::EditSymbol { cell: r, pins });
+                    }
+                    Some(_) => self.warn("The schematic has no pins: mark labels as pins first".into()),
+                    None => self.warn(format!("{r} has no schematic")),
+                }
+            }
             Command::NetBrowser => {
                 self.nets.open = true;
                 if let Some(r) = self.active_layout()
@@ -1600,7 +1735,7 @@ impl IcStudio {
 
     fn generate_layout(&mut self) {
         let (Some(r), Some(p)) = (self.active.clone(), self.project.as_mut()) else { return };
-        let Some(sch) = p.cell(&r).and_then(|c| c.schematic.clone()) else {
+        let Some(sch) = p.circuit(&r).ok().map(|c| c.into_owned()) else {
             self.warn(format!("{r} has no schematic"));
             return;
         };
@@ -1668,7 +1803,7 @@ impl IcStudio {
 
     fn update_from_source(&mut self, remove_extra: bool) {
         let (Some(r), Some(p)) = (self.active.clone(), self.project.as_mut()) else { return };
-        let Some(sch) = p.cell(&r).and_then(|c| c.schematic.clone()) else {
+        let Some(sch) = p.circuit(&r).ok().map(|c| c.into_owned()) else {
             self.warn(format!("{r} has no schematic"));
             return;
         };
@@ -1705,7 +1840,7 @@ impl IcStudio {
 
     fn route_flylines(&mut self) {
         let (Some(r), Some(p)) = (self.active.clone(), self.project.as_mut()) else { return };
-        let Some(sch) = p.cell(&r).and_then(|c| c.schematic.clone()) else {
+        let Some(sch) = p.circuit(&r).ok().map(|c| c.into_owned()) else {
             self.warn(format!("{r} has no schematic"));
             return;
         };
@@ -1770,15 +1905,25 @@ impl IcStudio {
             let ids: BTreeSet<u64> = lay
                 .instances
                 .iter()
-                .filter(|i| i.name.as_deref().is_some_and(|n| names.contains(ics_core::sdl::device_of(n))))
+                // A device of a placed cell (`X1/M1`) belongs to the schematic instance `X1`.
+                .filter(|i| {
+                    i.name.as_deref().is_some_and(|n| {
+                        let d = ics_core::sdl::device_of(n);
+                        names.contains(d) || names.contains(d.split('/').next().unwrap_or(d))
+                    })
+                })
                 .map(|i| i.id)
                 .collect();
             if !ids.is_empty() {
                 self.lay_eds.entry(r).or_default().selection = ids;
             }
         } else {
-            let objs: BTreeSet<SchObj> =
-                sch.instances.iter().filter(|i| names.contains(&i.name)).map(|i| SchObj::Instance(i.id)).collect();
+            let objs: BTreeSet<SchObj> = sch
+                .instances
+                .iter()
+                .filter(|i| names.contains(&i.name) || names.iter().any(|n| n.split('/').next() == Some(i.name.as_str())))
+                .map(|i| SchObj::Instance(i.id))
+                .collect();
             if !objs.is_empty() {
                 self.sch_eds.entry(r).or_default().selection = objs;
             }
@@ -1913,6 +2058,11 @@ impl IcStudio {
         let backend = cell.sim.backend;
         let parasitics = cell.sim.parasitics && cell.layout.is_some();
         let (mut deck, warnings) = self.netlist_active().unwrap();
+        if deck.is_empty() {
+            // The hierarchy could not be flattened (a missing cell, a cell placing itself).
+            self.error(format!("Cannot simulate {r}: {}", warnings.join("; ")));
+            return;
+        }
         for w in warnings {
             self.warn(format!("netlist: {w}"));
         }
@@ -2006,7 +2156,8 @@ impl IcStudio {
     fn mc_deck(&self, r: &CellRef, notes: &mut Vec<String>) -> Result<(String, Vec<ics_core::Analysis>), String> {
         let p = self.project.as_ref().ok_or("no project")?;
         let cell = p.cell(r).ok_or_else(|| format!("no cell {r}"))?;
-        let sch = cell.schematic.as_ref().ok_or_else(|| format!("{r} has no schematic"))?;
+        let circuit = p.circuit(r)?;
+        let sch = &*circuit;
         let analyses: Vec<_> = cell.sim.enabled().cloned().collect();
         if analyses.is_empty() {
             return Err("no analyses enabled".into());
@@ -2268,7 +2419,8 @@ impl IcStudio {
     ) -> Result<(Vec<(ics_core::sweep::SweepPoint, String)>, Vec<ics_core::Analysis>, ics_core::Backend), String> {
         let p = self.project.as_ref().ok_or("no project")?;
         let cell = p.cell(r).ok_or_else(|| format!("no cell {r}"))?;
-        let sch = cell.schematic.as_ref().ok_or_else(|| format!("{r} has no schematic to sweep"))?;
+        let circuit = p.circuit(r)?;
+        let sch = &*circuit;
         let mut setup = cell.sim.clone();
         setup.sweep = self.sweep.setup.clone();
         let analyses: Vec<_> = setup.enabled().cloned().collect();
@@ -2614,6 +2766,52 @@ impl IcStudio {
         }) else {
             return;
         };
+        let Some(p) = self.project.as_mut() else { return };
+        // Subcircuits placing each other keep their hierarchy: a cell per subcircuit.
+        if let Ok(text) = std::fs::read_to_string(&path)
+            && ics_core::cadence::cdl_is_hierarchical(&text)
+        {
+            // Into a new library named after the file, so no existing cell is touched.
+            let stem: String = path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+                .collect();
+            let stem = if stem.is_empty() || stem.starts_with('-') { "cdl".to_string() } else { stem };
+            let mut lib = stem.clone();
+            let mut k = 1;
+            while p.libraries.iter().any(|l| l.name.eq_ignore_ascii_case(&lib)) {
+                lib = format!("{stem}_{k}");
+                k += 1;
+            }
+            match ics_core::cadence::import_cdl_hier(&text, &p.tech, None, &lib).and_then(|h| {
+                let cells = h.add_to(p, &lib, false)?;
+                Ok((h, cells))
+            }) {
+                Ok((h, cells)) => {
+                    self.hier.clear();
+                    self.mark_dirty();
+                    let names: Vec<String> = cells.iter().map(|r| r.cell.clone()).collect();
+                    let lib = cells.last().map_or(String::new(), |r| r.lib.clone());
+                    self.ok(format!(
+                        "CDL: {} cell(s) imported with their hierarchy into library {lib}, top {}: {}",
+                        cells.len(),
+                        h.top,
+                        names.join(", ")
+                    ));
+                    for w in h.warnings.iter().chain(h.cells.iter().flat_map(|c| &c.imported.warnings)) {
+                        self.warn(format!("CDL: {w}"));
+                    }
+                    if let Some(top) = cells.last() {
+                        self.queue.push(Command::OpenCell(top.clone(), Some(Workspace::Schematic)));
+                    }
+                    return;
+                }
+                Err(e) => self.warn(format!("CDL: hierarchy not kept ({e}); importing it flat")),
+            }
+        }
         let Some(p) = self.project.as_mut() else { return };
         let res = std::fs::read_to_string(&path)
             .map_err(|e| e.to_string())
@@ -3308,6 +3506,15 @@ impl IcStudio {
                 if menu_item(ui, has_sch, "Check Schematic", NEED_SCH) {
                     q.push(Command::CheckSchematic(false));
                 }
+                if menu_item(ui, has_sch, "Place Cell Instance…", NEED_SCH) {
+                    q.push(Command::PlaceCellDialog);
+                }
+                if menu_item(ui, has_sch, "Update Cell Instance Pins", NEED_SCH) {
+                    q.push(Command::UpdateCellInstances);
+                }
+                if menu_item(ui, has_sch, "Edit Symbol Pins…", NEED_SCH) {
+                    q.push(Command::EditSymbolDialog);
+                }
                 if menu_item(ui, has_project, "Hierarchy Browser…", NEED_PROJECT) {
                     q.push(Command::HierarchyBrowser);
                 }
@@ -3734,6 +3941,9 @@ impl IcStudio {
                     q.push(Command::OpenCell(r.clone(), None));
                     q.push(Command::RunSimulation);
                 }
+                if ui.button("Place in Active Schematic").clicked() {
+                    q.push(Command::PlaceCell(r.clone()));
+                }
             }
             ui.separator();
             if ui.button("Copy Name").clicked() {
@@ -3897,6 +4107,9 @@ impl IcStudio {
                                 SchRequest::Simulate => Command::RunSimulation,
                                 SchRequest::Check => Command::CheckSchematic(false),
                                 SchRequest::ExportNetlist => Command::ExportNetlist,
+                                SchRequest::PlaceCell => Command::PlaceCellDialog,
+                                SchRequest::Descend(id) => Command::DescendSchematic(id),
+                                SchRequest::Return => Command::ReturnSchematic,
                             });
                         }
                     });
@@ -4528,6 +4741,10 @@ impl IcStudio {
             ("Optimizer (size devices to meet specs)".into(), "", Command::Optimizer),
             ("Results browser (compare runs)".into(), "", Command::ResultsBrowser),
             ("Check schematic".into(), "", Command::CheckSchematic(false)),
+            ("Place cell instance (hierarchical schematic)".into(), "Shift+I", Command::PlaceCellDialog),
+            ("Return to the parent schematic".into(), "Shift+B", Command::ReturnSchematic),
+            ("Update cell instance pins".into(), "", Command::UpdateCellInstances),
+            ("Edit symbol pins (side and order)".into(), "", Command::EditSymbolDialog),
             ("Check and save".into(), "", Command::CheckSchematic(true)),
             ("Net browser".into(), "", Command::NetBrowser),
             ("Hierarchy browser".into(), "", Command::HierarchyBrowser),
@@ -5010,6 +5227,125 @@ impl IcStudio {
                             } else if let Some(Dialog::SaveConflict { then: after, .. }) = &mut self.dialog {
                                 *after = Some(then.clone());
                             }
+                            close = true;
+                        }
+                    });
+                }
+                Dialog::PlaceCell { filter } => {
+                    ui.heading("Place cell instance");
+                    let l = ui.label("Filter");
+                    ui.text_edit_singleline(filter).labelled_by(l.id);
+                    let here = self.active.clone();
+                    let f = filter.to_ascii_lowercase();
+                    let cells: Vec<(CellRef, usize)> = self
+                        .project
+                        .as_ref()
+                        .map(|p| {
+                            p.all_cells()
+                                .filter(|(r, c)| {
+                                    Some(r) != here.as_ref()
+                                        && r.lib != ics_core::pcell::PCELL_LIB
+                                        && c.schematic.as_ref().is_some_and(|s| !s.ports().is_empty())
+                                        && r.to_string().to_ascii_lowercase().contains(&f)
+                                })
+                                .map(|(r, c)| {
+                                    let n = c.schematic.as_ref().map_or(0, |s| s.ports().len());
+                                    (r, n)
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    ui.label(
+                        RichText::new("Cells whose schematic has pins (labels marked as pins)").small().color(pal.text_weak),
+                    );
+                    egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                        if cells.is_empty() {
+                            ui.label(RichText::new("No cell with schematic pins").small());
+                        }
+                        for (r, n) in cells {
+                            if ui.button(format!("{r}  ({n} pins)")).clicked() {
+                                self.queue.push(Command::PlaceCell(r));
+                                close = true;
+                            }
+                        }
+                    });
+                    ui.add_space(6.0);
+                    if ui.button("Cancel").clicked() {
+                        close = true;
+                    }
+                }
+                Dialog::EditSymbol { cell, pins } => {
+                    use ics_core::schematic::{PinSide, SymbolSpec};
+                    ui.heading(format!("Symbol pins of {cell}"));
+                    ui.label(RichText::new("The side and order of each pin on the box other schematics place").small().color(pal.text_weak));
+                    let mut swap: Option<(usize, usize)> = None;
+                    egui::Grid::new("symbol_pins").num_columns(4).spacing([10.0, 6.0]).show(ui, |ui| {
+                        let n = pins.len();
+                        for (k, (name, side)) in pins.iter_mut().enumerate() {
+                            let l = ui.label(RichText::new(name.as_str()).monospace());
+                            egui::ComboBox::from_id_salt(("pin_side", k))
+                                .selected_text(side.name())
+                                .show_ui(ui, |ui| {
+                                    for s in PinSide::ALL {
+                                        ui.selectable_value(side, s, s.name());
+                                    }
+                                })
+                                .response
+                                .labelled_by(l.id);
+                            if ui.add_enabled(k > 0, egui::Button::new("Up")).clicked() {
+                                swap = Some((k, k - 1));
+                            }
+                            if ui.add_enabled(k + 1 < n, egui::Button::new("Down")).clicked() {
+                                swap = Some((k, k + 1));
+                            }
+                            ui.end_row();
+                        }
+                    });
+                    if let Some((a, b)) = swap {
+                        pins.swap(a, b);
+                    }
+                    // Preview of the box.
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(360.0, 160.0), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, 6.0, pal.bg_canvas);
+                    let ghost = ics_core::Instance {
+                        id: 0,
+                        kind: DeviceKind::Cell,
+                        name: String::new(),
+                        pos: ics_core::Pt::new(0, 0),
+                        orient: Default::default(),
+                        params: Default::default(),
+                        cell: Some(cell.clone()),
+                        ports: pins.iter().map(|(n, _)| (n.clone(), PortDir::InOut)).collect(),
+                        symbol: Some(SymbolSpec { pins: pins.clone() }),
+                    };
+                    let b = ghost.bbox();
+                    let scale = ((rect.width() - 40.0) / (b.2 - b.0)).min((rect.height() - 30.0) / (b.3 - b.1)).clamp(4.0, 40.0);
+                    let mut view = crate::canvas::View2D::new(scale as f64, false, 1.0, 100.0);
+                    view.center = (((b.0 + b.2) / 2.0) as f64, ((b.1 + b.3) / 2.0) as f64);
+                    crate::schematic_view::draw_symbol(ui.painter(), &view, rect, &ghost, pal.symbol, 1.4);
+                    for (pin, at) in ghost.pin_positions() {
+                        let q = view.to_screen(rect, at.x as f64, at.y as f64);
+                        ui.painter().text(q, egui::Align2::CENTER_BOTTOM, pin, egui::FontId::proportional(11.0), pal.text_weak);
+                    }
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            close = true;
+                        }
+                        let reset = ui.button("Default").clicked();
+                        if (ui.button(RichText::new("Apply").strong()).clicked() || reset)
+                            && let Some(p) = self.project.as_mut()
+                            && let Some(sch) = p.cell_mut(cell).and_then(|c| c.schematic.as_mut())
+                        {
+                            let default = SymbolSpec::arrange(None, &sch.ports());
+                            let spec = (!reset && *pins != default).then(|| SymbolSpec { pins: pins.clone() });
+                            if sch.symbol != spec {
+                                self.sch_eds.entry(cell.clone()).or_default().history.push(sch);
+                                sch.symbol = spec;
+                                self.mark_dirty();
+                            }
+                            let n = self.refresh_cell_instances();
+                            self.ok(format!("Symbol of {cell} updated; {n} placed instance(s) follow it"));
                             close = true;
                         }
                     });

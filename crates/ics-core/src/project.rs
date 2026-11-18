@@ -367,6 +367,27 @@ impl Project {
         }
     }
 
+    /// The circuit of cell `r` for the tools that read one (simulation, LVS, schematic-driven
+    /// layout): its schematic, or the flattened hierarchy when it places other cells
+    /// ([`crate::sch_hier`]). Errors without a schematic, or for a broken hierarchy.
+    pub fn circuit(&self, r: &CellRef) -> std::result::Result<std::borrow::Cow<'_, Schematic>, String> {
+        self.circuit_with_warnings(r).map(|(s, _)| s)
+    }
+
+    /// [`Project::circuit`] and the flattening warnings (cell instances with outdated pins).
+    pub fn circuit_with_warnings(
+        &self,
+        r: &CellRef,
+    ) -> std::result::Result<(std::borrow::Cow<'_, Schematic>, Vec<String>), String> {
+        let sch = self.cell(r).and_then(|c| c.schematic.as_ref()).ok_or_else(|| format!("{r} has no schematic"))?;
+        if !crate::sch_hier::is_hierarchical(sch) {
+            return Ok((std::borrow::Cow::Borrowed(sch), vec![]));
+        }
+        let lookup = |c: &CellRef| self.cell(c).and_then(|c| c.schematic.as_ref());
+        let (flat, warnings) = crate::sch_hier::flatten(sch, Some(r), &lookup)?;
+        Ok((std::borrow::Cow::Owned(flat), warnings))
+    }
+
     pub fn cell(&self, r: &CellRef) -> Option<&Cell> {
         self.libraries.iter().find(|l| l.name == r.lib)?.cells.iter().find(|c| c.name == r.cell)
     }

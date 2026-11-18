@@ -545,7 +545,8 @@ impl PostLayout {
 pub fn post_layout(project: &Project, cell: &CellRef) -> Result<PostLayout, String> {
     const MIN_FARADS: f64 = 1e-18;
     let c = project.cell(cell).ok_or_else(|| format!("no cell '{cell}'"))?;
-    let sch = c.schematic.as_ref().ok_or("cell has no schematic")?;
+    let circuit = project.circuit(cell)?;
+    let sch = &*circuit;
     let lay = c.layout.as_ref().ok_or("cell has no layout")?;
     let x = extract(lay, project, &project.tech);
     let rep = compare(sch, &x, &LvsOptions::for_tech(&project.tech));

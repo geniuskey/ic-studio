@@ -91,6 +91,8 @@ Linux needs the usual windowing libraries:
   coupling between nets, MOS drain / source junctions (`ad as pd ps`) and an RC network of
   wire, via and gate resistance extracted from the layout are added to the matching
   schematic nets and devices
+- Hierarchical schematics: cells placed as pin-box symbols, descend / return, simulated,
+  swept and compared (LVS) as the flattened circuit
 - Schematic pins (input / output / inout) as the cell's ports, kept through CDL, SKILL and
   Virtuoso import / export, and placed as boundary pins in the generated layout
 - Schematic checker (Check and Save): missing ground, bad names, missing values, shorted

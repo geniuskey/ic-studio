@@ -117,12 +117,21 @@ pub enum SchRequest {
     Simulate,
     Check,
     ExportNetlist,
+    /// Choose a cell to place (Shift+I).
+    PlaceCell,
+    /// Open the schematic of the selected cell instance (Shift+X).
+    Descend(u64),
+    /// Back to the schematic descended from (Shift+B).
+    Return,
 }
 
 enum Drag {
     Move { start: Pt, snapshot: Schematic, stretch: Vec<(u64, bool, bool)> },
     Rubber { start: Pos2 },
 }
+
+/// A cell to place: the cell, its pins and its symbol arrangement.
+pub type CellPlacement = (ics_core::CellRef, Vec<(String, PortDir)>, Option<ics_core::schematic::SymbolSpec>);
 
 pub struct SchematicEditor {
     pub view: View2D,
@@ -150,6 +159,10 @@ pub struct SchematicEditor {
     /// The last symbol switch of an instance: a note (the body pin was labelled) or why it
     /// could not be switched (`true`).
     body_pin_msg: Option<(u64, String, bool)>,
+    /// The cell `SchTool::Place(DeviceKind::Cell)` places, with its pins.
+    pub place_cell: Option<CellPlacement>,
+    /// Requests from keys, handed out with the next canvas output.
+    key_requests: Vec<SchRequest>,
 }
 
 impl Default for SchematicEditor {
@@ -173,6 +186,8 @@ impl Default for SchematicEditor {
             mos_body_pin: true,
             bulk_nets: Default::default(),
             body_pin_msg: None,
+            place_cell: None,
+            key_requests: vec![],
         }
     }
 }
@@ -198,7 +213,7 @@ fn screen(view: &View2D, rect: Rect, x: f32, y: f32) -> Pos2 {
 }
 
 pub fn draw_symbol(painter: &egui::Painter, view: &View2D, rect: Rect, inst: &Instance, color: Color32, width: f32) {
-    let sym = inst.kind.symbol();
+    let sym = inst.symbol();
     let stroke = Stroke::new(width, color);
     let tp = |x: f32, y: f32| {
         let (wx, wy) = inst.to_world_f(x, y);
@@ -286,7 +301,28 @@ pub fn draw_schematic(painter: &egui::Painter, view: &View2D, rect: Rect, sch: &
         if o.thumbnail || s < 7.0 {
             continue;
         }
-        let sym = inst.kind.symbol();
+        let sym = inst.symbol();
+        if inst.kind == DeviceKind::Cell {
+            // The placed cell's name in the box and each pin's name inside its edge.
+            let (cx, cy) = inst.to_world_f(0.0, 0.0);
+            let name = inst.cell.as_ref().map_or("?".to_string(), |c| c.cell.clone());
+            painter.text(screen(view, rect, cx, cy), Align2::CENTER_CENTER, name, font.clone(), pal.symbol);
+            let small = FontId::proportional((s * 0.45).clamp(6.0, 13.0));
+            for (pin, at) in inst.pin_positions() {
+                let (dx, dy) = ((cx - at.x as f32).signum(), (cy - at.y as f32).signum());
+                let horizontal = (cx - at.x as f32).abs() > (cy - at.y as f32).abs();
+                let (px, py) =
+                    if horizontal { (at.x as f32 + dx * 1.3, at.y as f32) } else { (at.x as f32, at.y as f32 + dy * 1.3) };
+                let align = if !horizontal {
+                    Align2::CENTER_CENTER
+                } else if dx > 0.0 {
+                    Align2::LEFT_CENTER
+                } else {
+                    Align2::RIGHT_CENTER
+                };
+                painter.text(screen(view, rect, px, py), align, pin, small.clone(), pal.text_weak);
+            }
+        }
         // Label anchor: keep text upright, place on the side the anchor ends up on.
         let (lx, ly) = inst.to_world_f(sym.label_at.0, sym.label_at.1);
         let (cx, cy) = inst.to_world_f(0.0, 0.0);
@@ -295,6 +331,7 @@ pub fn draw_schematic(painter: &egui::Painter, view: &View2D, rect: Rect, sch: &
         let mut lines: Vec<String> = vec![];
         match inst.kind {
             DeviceKind::Ground => {}
+            DeviceKind::Cell => lines.push(inst.name.clone()),
             DeviceKind::Supply => lines.push(inst.param("net").to_string()),
             DeviceKind::Nmos | DeviceKind::Pmos | DeviceKind::Nmos3 | DeviceKind::Pmos3 => {
                 lines.push(inst.name.clone());
@@ -704,6 +741,11 @@ impl SchematicEditor {
                 if selected {
                     ui.label(egui::RichText::new(&summary).small().strong());
                     ui.separator();
+                    if let Some(id) = self.selected_cell_instance(sch)
+                        && ui.add(egui::Button::new("Descend into Cell").shortcut_text("Shift+X")).clicked()
+                    {
+                        requests.push(SchRequest::Descend(id));
+                    }
                     item(ui, SchAction::Rotate, has_inst, &mut picked);
                     item(ui, SchAction::Mirror, has_inst, &mut picked);
                     item(ui, SchAction::Duplicate, true, &mut picked);
@@ -721,6 +763,12 @@ impl SchematicEditor {
                             item(ui, SchAction::Tool(SchTool::Place(k.with_body_pin(self.mos_body_pin))), true, &mut picked);
                         }
                     });
+                    if ui.add(egui::Button::new("Place Cell Instance…").shortcut_text("Shift+I")).clicked() {
+                        requests.push(SchRequest::PlaceCell);
+                    }
+                    if ui.add(egui::Button::new("Return to Parent").shortcut_text("Shift+B")).clicked() {
+                        requests.push(SchRequest::Return);
+                    }
                     ui.separator();
                     item(ui, SchAction::Undo, can_undo, &mut picked);
                     item(ui, SchAction::Redo, can_redo, &mut picked);
@@ -752,6 +800,16 @@ impl SchematicEditor {
             resp.ctx.request_repaint();
         }
         requests
+    }
+
+    /// The only selected instance, when it places a cell.
+    fn selected_cell_instance(&self, sch: &Schematic) -> Option<u64> {
+        let mut it = self.selection.iter().filter_map(|o| match o {
+            SchObj::Instance(id) => Some(*id),
+            _ => None,
+        });
+        let id = it.next()?;
+        (it.next().is_none() && sch.instance(id).is_some_and(|i| i.kind == DeviceKind::Cell)).then_some(id)
     }
 
     fn snap(&self, w: (f64, f64)) -> Pt {
@@ -799,7 +857,7 @@ impl SchematicEditor {
                 Key::W => self.set_tool(SchTool::Wire),
                 Key::F => self.needs_fit = true,
                 Key::Slash => self.wire_hv = !self.wire_hv,
-                Key::Space | Key::X => {
+                Key::Space | Key::X if !(shift && k == Key::X) => {
                     let mirror = k == Key::X;
                     if let SchTool::Place(_) = self.tool {
                         self.place_orient = if mirror { self.place_orient.mirrored() } else { self.place_orient.rotated() };
@@ -808,6 +866,13 @@ impl SchematicEditor {
                     }
                 }
                 Key::T => self.set_tool(SchTool::Label),
+                Key::I if shift => self.key_requests.push(SchRequest::PlaceCell),
+                Key::X if shift => {
+                    if let Some(id) = self.selected_cell_instance(sch) {
+                        self.key_requests.push(SchRequest::Descend(id));
+                    }
+                }
+                Key::B if shift => self.key_requests.push(SchRequest::Return),
                 _ => {
                     for kind in DeviceKind::PALETTE {
                         let Some(c) = kind.shortcut() else { continue };
@@ -889,7 +954,16 @@ impl SchematicEditor {
                     && let Some(c) = self.cursor
                 {
                     self.history.push(sch);
-                    let id = sch.add_instance(kind, c, self.place_orient);
+                    let id = match (&self.place_cell, kind) {
+                        (Some((cell, ports, spec)), DeviceKind::Cell) => {
+                            let id = sch.add_cell_instance(cell.clone(), ports.clone(), c, self.place_orient);
+                            if let Some(i) = sch.instance_mut(id) {
+                                i.symbol = spec.clone();
+                            }
+                            id
+                        }
+                        _ => sch.add_instance(kind, c, self.place_orient),
+                    };
                     if kind.implicit_bulk()
                         && let Some(i) = sch.instance_mut(id)
                     {
@@ -968,6 +1042,10 @@ impl SchematicEditor {
                     }
                 }
                 SchTool::Place(kind) => {
+                    let (cell, ports, symbol) = match (&self.place_cell, kind) {
+                        (Some((c, p, sp)), DeviceKind::Cell) => (Some(c.clone()), p.clone(), sp.clone()),
+                        _ => (None, vec![], None),
+                    };
                     let ghost = Instance {
                         id: 0,
                         kind,
@@ -975,6 +1053,9 @@ impl SchematicEditor {
                         pos: c,
                         orient: self.place_orient,
                         params: Default::default(),
+                        cell,
+                        ports,
+                        symbol,
                     };
                     draw_symbol(
                         &painter,
@@ -1024,6 +1105,8 @@ impl SchematicEditor {
         if resp.hovered() {
             ui.ctx().set_cursor_icon(cursor);
         }
+        let mut requests = requests;
+        requests.append(&mut self.key_requests);
         SchOutput { changed, requests }
     }
 
@@ -1504,6 +1587,9 @@ pub fn device_palette(ui: &mut egui::Ui, editor: &mut SchematicEditor) {
                 pos: Pt::new(0, 0),
                 orient: Orient::default(),
                 params: Default::default(),
+                cell: None,
+                ports: vec![],
+                symbol: None,
             };
             draw_symbol(&painter, &view, sym_rect, &inst, if active { pal.accent } else { pal.symbol }, 1.4);
             painter.text(

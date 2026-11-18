@@ -237,7 +237,7 @@ impl LayoutEditor {
                 }
             }
             Verify::Extract => Task::Extract,
-            Verify::Lvs => match cx.src.cell(cx.cell).and_then(|c| c.schematic.clone()) {
+            Verify::Lvs => match cx.src.circuit(cx.cell).ok().map(|c| c.into_owned()) {
                 Some(sch) => Task::Lvs(sch),
                 None => return "LVS needs a schematic view of this cell".into(),
             },
@@ -527,10 +527,10 @@ impl LayoutEditor {
             if !matches!(&self.verify.net_elec, Some((g, n, _)) if *g == gen_now && *n == k) {
                 let taps: Vec<(i64, i64)> = cx
                     .src
-                    .cell(cx.cell)
-                    .and_then(|c| c.schematic.as_ref())
+                    .circuit(cx.cell)
+                    .ok()
                     .map(|sch| {
-                        ics_core::sdl::terminals(sch, l, cx.src)
+                        ics_core::sdl::terminals(&sch, l, cx.src)
                             .into_values()
                             .flatten()
                             .filter(|&p| ics_core::sdl::pin_net(x, tech, p) == Some(k))
@@ -579,7 +579,8 @@ impl LayoutEditor {
 
         ui.add_space(12.0);
         theme::section(ui, "Layout vs Schematic");
-        let schematic = cx.src.cell(cx.cell).and_then(|c| c.schematic.as_ref());
+        let circuit = cx.src.circuit(cx.cell).ok();
+        let schematic = circuit.as_deref();
         match schematic {
             None => {
                 ui.label(egui::RichText::new("This cell has no schematic to compare against").small().color(pal.text_weak));

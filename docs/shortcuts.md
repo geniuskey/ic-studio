@@ -59,6 +59,8 @@ a right drag. Bindkeys are the same in both.
 | `G` `S` | Ground, supply |
 | `Space` / `X` | Rotate / mirror (while placing, or the selection) |
 | `/` | Swap the wire bend direction |
+| `Shift+I` | Place a cell instance (hierarchical schematic) |
+| `Shift+X` / `Shift+B` | Descend into the selected cell instance / return |
 
 ## Layout
 

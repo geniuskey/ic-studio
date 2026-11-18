@@ -25,6 +25,95 @@ fn wires(s: &mut Schematic, pts: &[(i32, i32)]) {
     }
 }
 
+fn pin_at(s: &Schematic, id: u64, name: &str) -> Pt {
+    s.instance(id).expect("instance").pin_positions().into_iter().find(|(p, _)| *p == name).expect("pin").1
+}
+
+/// An inverter with schematic pins `a` (input) and `y` (output), supplied by `vdd` and ground
+/// symbols: a cell to place in other schematics.
+pub fn inv() -> Cell {
+    use crate::schematic::PortDir;
+    let mut s = Schematic::default();
+    let o = Orient::default();
+    let mp = s.add_instance(DeviceKind::Pmos, Pt::new(0, 0), o);
+    let mn = s.add_instance(DeviceKind::Nmos, Pt::new(0, 8), o);
+    set(&mut s, mp, &[("w", "2u")]);
+    set(&mut s, mn, &[("w", "1u")]);
+    for (a, b) in [(pin_at(&s, mp, "g"), pin_at(&s, mn, "g")), (pin_at(&s, mp, "d"), pin_at(&s, mn, "d"))] {
+        s.add_wire(a, Pt::new(a.x, b.y));
+    }
+    for pn in ["s", "b"] {
+        let at = pin_at(&s, mp, pn);
+        let v = s.add_instance(DeviceKind::Supply, at, o);
+        set(&mut s, v, &[("net", "vdd")]);
+        let at = pin_at(&s, mn, pn);
+        s.add_instance(DeviceKind::Ground, at, o);
+    }
+    for (name, at, dir) in [("a", pin_at(&s, mp, "g"), PortDir::Input), ("y", pin_at(&s, mp, "d"), PortDir::Output)] {
+        let id = s.add_label(name, at);
+        if let Some(l) = s.labels.iter_mut().find(|l| l.id == id) {
+            l.port = Some(dir);
+        }
+    }
+    Cell {
+        description: "Inverter with pins a / y: placed by buffer_tb (a hierarchical schematic)".into(),
+        schematic: Some(s),
+        ..Cell::new("inv")
+    }
+}
+
+/// A test bench placing two `inv` cells as a buffer: a hierarchical schematic. Shift+X on an
+/// instance descends into `inv`, Shift+B returns.
+pub fn buffer_tb() -> Cell {
+    let mut s = Schematic::default();
+    let o = Orient::default();
+    let inv = CellRef::new("work", "inv");
+    let ports = inv_ports();
+    let x1 = s.add_cell_instance(inv.clone(), ports.clone(), Pt::new(10, 0), o);
+    let x2 = s.add_cell_instance(inv, ports, Pt::new(24, 0), o);
+    s.add_wire(pin_at(&s, x1, "y"), pin_at(&s, x2, "a"));
+    let a1 = pin_at(&s, x1, "a");
+    let y2 = pin_at(&s, x2, "y");
+    s.add_wire(y2, Pt::new(y2.x + 4, y2.y));
+    s.add_label("out", Pt::new(y2.x + 4, y2.y));
+    let c = s.add_instance(DeviceKind::Capacitor, Pt::new(y2.x + 4, y2.y + 2), o);
+    // The load is part of the test bench, not of the circuit LVS compares.
+    set(&mut s, c, &[("c", "10f"), (crate::schematic::LVS_IGNORE, "t")]);
+    let at = pin_at(&s, c, "n");
+    s.add_instance(DeviceKind::Ground, at, o);
+    let vin = s.add_instance(DeviceKind::VSource, Pt::new(0, 2), o);
+    set(&mut s, vin, &[("dc", "0"), ("tran", "PULSE(0 1.8 1n 100p 100p 2n 4n)")]);
+    s.add_wire(pin_at(&s, vin, "p"), Pt::new(0, a1.y));
+    s.add_wire(Pt::new(0, a1.y), a1);
+    s.add_label("in", Pt::new(0, a1.y));
+    let at = pin_at(&s, vin, "n");
+    s.add_instance(DeviceKind::Ground, at, o);
+    let vdd = s.add_instance(DeviceKind::VSource, Pt::new(-8, 2), o);
+    set(&mut s, vdd, &[("dc", "1.8")]);
+    let at = pin_at(&s, vdd, "p");
+    let sup = s.add_instance(DeviceKind::Supply, at, o);
+    set(&mut s, sup, &[("net", "vdd")]);
+    let at = pin_at(&s, vdd, "n");
+    s.add_instance(DeviceKind::Ground, at, o);
+    let mut sim = SimSetup::default();
+    sim.set_enabled("op", true);
+    sim.set_enabled("tran", true);
+    if let Some(Analysis::Tran { tstep, tstop, .. }) = sim.get_mut("tran") {
+        *tstep = "10p".into();
+        *tstop = "8n".into();
+    }
+    Cell {
+        description: "Buffer of two inv instances (hierarchical schematic): descend with Shift+X, simulate flattened".into(),
+        schematic: Some(s),
+        sim,
+        ..Cell::new("buffer_tb")
+    }
+}
+
+fn inv_ports() -> Vec<(String, crate::schematic::PortDir)> {
+    inv().schematic.expect("schematic").ports()
+}
+
 pub fn rc_lowpass() -> Cell {
     let mut s = Schematic::default();
     let o = Orient::default();
@@ -1527,7 +1616,7 @@ pub fn demo_project() -> Project {
     let mut p = Project::new("demo");
     p.description = "Example designs shipped with IC Studio".into();
     let hier = hierarchy_cells(&p.tech, "work");
-    for c in [cmos_inverter(), rc_lowpass(), diode_clipper()].into_iter().chain(hier) {
+    for c in [cmos_inverter(), rc_lowpass(), diode_clipper(), inv(), buffer_tb()].into_iter().chain(hier) {
         p.add_cell("work", c).expect("unique");
     }
     for make in [nand2, nor2, ring_osc5, current_mirror, ota5t, sram6t, dram1t1c, nand_string, aps4t, full_adder, ota2s] {
@@ -1567,7 +1656,7 @@ pub const TOPICS: [Topic; 5] = [
         title: "Getting started",
         summary: "Simulation, layout, PCells",
         description: "Schematic entry and simulation (op, DC, AC, transient), a hand-drawn inverter layout, the parametric devices",
-        cells: &["cmos_inverter", "rc_lowpass", "diode_clipper", "devices"],
+        cells: &["cmos_inverter", "rc_lowpass", "diode_clipper", "inv", "buffer_tb", "devices"],
     },
     Topic {
         name: "analog",

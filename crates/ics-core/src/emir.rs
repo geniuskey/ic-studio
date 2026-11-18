@@ -463,7 +463,8 @@ pub fn layout_currents(
     by_element: &BTreeMap<String, f64>,
 ) -> Result<BTreeMap<String, f64>, String> {
     let c = project.cell(cell).ok_or_else(|| format!("no cell '{cell}'"))?;
-    let sch = c.schematic.as_ref().ok_or("cell has no schematic")?;
+    let circuit = project.circuit(cell)?;
+    let sch = &*circuit;
     let lay = c.layout.as_ref().ok_or("cell has no layout")?;
     let x = extract(lay, project, &project.tech);
     let rep = compare(sch, &x, &LvsOptions::for_tech(&project.tech));

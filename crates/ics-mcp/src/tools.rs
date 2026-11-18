@@ -267,7 +267,8 @@ fn results_json(res: &SimResults) -> Value {
 /// operating-point simulation of the cell's schematic (built-in engine), matched via LVS.
 pub fn op_device_currents(p: &Project, r: &CellRef) -> Result<BTreeMap<String, f64>, String> {
     let c = p.cell(r).ok_or_else(|| format!("no cell '{r}'"))?;
-    let sch = c.schematic.as_ref().ok_or("cell has no schematic to simulate; give the device currents")?;
+    let circuit = p.circuit(r)?;
+    let sch = &*circuit;
     let deck = ics_core::netlist::netlist_for(sch, &p.tech, &c.sim.corner).deck(&r.to_string(), &c.sim);
     let res = ics_sim::simulate(&deck, &[ics_core::Analysis::Op], &sim_options(Some(p), Backend::Builtin))
         .map_err(|e| format!("operating point: {e}"))?;
@@ -549,7 +550,8 @@ pub struct CellSim {
 /// the setup asks for them; `backend` replaces the setup's.
 pub fn simulate_cell(p: &Project, r: &CellRef, parasitics: bool, backend: Option<Backend>) -> Result<CellSim, String> {
     let c = p.cell(r).ok_or_else(|| format!("no cell {r}"))?;
-    let sch = c.schematic.as_ref().ok_or("cell has no schematic view")?;
+    let circuit = p.circuit(r)?;
+    let sch = &*circuit;
     let nl = ics_core::netlist::netlist_for(sch, &p.tech, &c.sim.corner);
     let mut deck = nl.deck(&r.to_string(), &c.sim);
     let mut summary = None;
@@ -606,14 +608,16 @@ pub fn definitions() -> Vec<Value> {
         tool(
             "import_cdl",
             &format!(
-                "Import a hierarchical CDL netlist as Cadence Virtuoso writes it (auCdl: .SUBCKT with *.PININFO, X instances with '/ cell', subcircuit parameters and expressions, .GLOBAL and '!' global nets, $ annotations) as the flat schematic of one cell. The top subcircuit is the one no other instantiates unless 'top' is given; instance paths become element names (MI0/M0 is MM0 inside XI0) and local nets get the path (I0/net7). Returns the top, its pins with directions, the device count, all subcircuits and warnings. {NOT_SAVED}"
+                "Import a hierarchical CDL netlist as Cadence Virtuoso writes it (auCdl: .SUBCKT with *.PININFO, X instances with '/ cell', subcircuit parameters and expressions, .GLOBAL and '!' global nets, $ annotations) as the flat schematic of one cell, or with hierarchical: true as a cell per subcircuit (subcircuit instances become cell instances, a variant cell for other parameter values; returns the cells). The top subcircuit is the one no other instantiates unless 'top' is given; instance paths become element names (MI0/M0 is MM0 inside XI0) and local nets get the path (I0/net7). Returns the top, its pins with directions, the device count, all subcircuits and warnings. {NOT_SAVED}"
             ),
             json!({
                 "cell": {"type": "string", "description": "Cell to create or replace (default work/<top>)."},
                 "cdl": {"type": "string", "description": "CDL text."},
                 "path": {"type": "string", "description": "A CDL file instead of the text."},
                 "top": {"type": "string", "description": "Subcircuit to import."},
-                "overwrite": {"type": "boolean", "description": "Replace an existing schematic (default false)."}
+                "overwrite": {"type": "boolean", "description": "Replace an existing schematic (default false)."},
+                "hierarchical": {"type": "boolean", "description": "Keep the hierarchy: a cell per subcircuit (default false)."},
+                "library": {"type": "string", "description": "Library of the cells of a hierarchical import (default work)."}
             }),
             &[],
         ),
@@ -1411,6 +1415,17 @@ impl State {
             (None, Some(p)) => std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))?,
             _ => return Err("give the CDL as cdl or path".into()),
         };
+        if a.opt_bool("hierarchical")?.unwrap_or(false) {
+            let lib = a.opt_str("library")?.unwrap_or("work").to_string();
+            let h = ics_core::cadence::import_cdl_hier(&text, &self.project()?.tech, a.opt_str("top")?, &lib)?;
+            let overwrite = a.opt_bool("overwrite")?.unwrap_or(false);
+            let cells = h.add_to(self.project_mut()?, &lib, overwrite)?;
+            self.dirty = true;
+            let warnings: Vec<&String> = h.warnings.iter().chain(h.cells.iter().flat_map(|c| &c.imported.warnings)).collect();
+            return Ok(
+                json!({"top": format!("{lib}/{}", h.top), "cells": cells.iter().map(|r| r.to_string()).collect::<Vec<_>>(), "warnings": warnings}),
+            );
+        }
         let imp = ics_core::cadence::import_cdl(&text, &self.project()?.tech, a.opt_str("top")?)?;
         let cell = match a.opt_str("cell")? {
             Some(c) => c.to_string(),
@@ -1833,7 +1848,7 @@ impl State {
             return Err("PCell variants have no schematic".into());
         }
         let p = self.project_mut()?;
-        let sch = p.cell(&r).and_then(|c| c.schematic.clone()).ok_or("cell has no schematic view to generate from")?;
+        let sch = p.circuit(&r)?.into_owned();
         let plan = sdl::plan(&sch, &p.tech);
         let original = p.cell_mut(&r).expect("resolved").layout.take();
         let mut layout = original.clone().unwrap_or_default();
@@ -1856,7 +1871,7 @@ impl State {
     fn route(&mut self, a: &Args) -> Result<Value, String> {
         let (_, r) = self.cell_arg(a)?;
         let p = self.project_mut()?;
-        let sch = p.cell(&r).and_then(|c| c.schematic.clone()).ok_or("cell has no schematic view")?;
+        let sch = p.circuit(&r)?.into_owned();
         let mut layout = p.cell_mut(&r).expect("resolved").layout.take().ok_or("cell has no layout view")?;
         let res = ics_core::route::route(&sch, &mut layout, p, &p.tech);
         p.cell_mut(&r).expect("resolved").layout = Some(layout);
@@ -1881,7 +1896,8 @@ impl State {
     fn check_against_source(&self, a: &Args) -> Result<Value, String> {
         let (p, r) = self.cell_arg(a)?;
         let t = &p.tech;
-        let sch = p.cell(&r).and_then(|c| c.schematic.as_ref()).ok_or("cell has no schematic view")?;
+        let circuit = p.circuit(&r)?;
+        let sch = &*circuit;
         let c = ics_core::eco::check(sch, layout_of(p, &r)?, p);
         let issues: Vec<Value> = c
             .issues
@@ -1903,7 +1919,7 @@ impl State {
         let (_, r) = self.cell_arg(a)?;
         let remove_extra = a.opt_bool("remove_extra")?.unwrap_or(false);
         let p = self.project_mut()?;
-        let sch = p.cell(&r).and_then(|c| c.schematic.clone()).ok_or("cell has no schematic view")?;
+        let sch = p.circuit(&r)?.into_owned();
         let mut layout = p.cell_mut(&r).expect("resolved").layout.take().unwrap_or_default();
         let res = ics_core::eco::update(p, &mut layout, &sch, ics_core::eco::UpdateOptions { remove_extra });
         p.cell_mut(&r).expect("resolved").layout = Some(layout);
@@ -1954,7 +1970,8 @@ impl State {
     fn flylines(&self, a: &Args) -> Result<Value, String> {
         let (p, r) = self.cell_arg(a)?;
         let t = &p.tech;
-        let sch = p.cell(&r).and_then(|c| c.schematic.as_ref()).ok_or("cell has no schematic view")?;
+        let circuit = p.circuit(&r)?;
+        let sch = &*circuit;
         let fl = sdl::ratsnest(sch, layout_of(p, &r)?, p, t);
         let lines: Vec<Value> = fl.iter().map(|f| json!({"net": f.net, "a": pt_um(t, f.a), "b": pt_um(t, f.b)})).collect();
         Ok(json!({"cell": r.to_string(), "count": fl.len(), "flylines": lines}))
@@ -2568,8 +2585,8 @@ impl State {
     fn run_lvs(&mut self, a: &Args) -> Result<Value, String> {
         let (p, r) = self.cell_arg(a)?;
         let t = &p.tech;
-        let c = p.cell(&r).expect("resolved");
-        let sch = c.schematic.as_ref().ok_or("cell has no schematic view")?;
+        let circuit = p.circuit(&r)?;
+        let sch = &*circuit;
         let x = extract(layout_of(p, &r)?, p, t);
         let rep = compare(sch, &x, &LvsOptions::for_tech(&p.tech));
         let errors: Vec<Value> = rep

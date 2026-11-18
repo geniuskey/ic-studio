@@ -304,7 +304,8 @@ pub fn run(project: &Project, cell: &CellRef, runset: &Runset, tools: &Tools) ->
     std::fs::write(&gds, bytes).map_err(|e| format!("{}: {e}", gds.display()))?;
     let schematic = match runset.check {
         Check::Lvs => {
-            let sch = c.schematic.as_ref().ok_or_else(|| format!("LVS needs a schematic view of {cell}"))?;
+            let circuit = project.circuit(cell).map_err(|e| format!("LVS needs a schematic view of {cell}: {e}"))?;
+            let sch = &*circuit;
             let path = dir.join(format!("{}_sch.cir", cell.cell));
             std::fs::write(&path, lvs_netlist(sch, tech, &top, runset)).map_err(|e| format!("{}: {e}", path.display()))?;
             Some(path)

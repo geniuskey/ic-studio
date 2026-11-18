@@ -282,7 +282,8 @@ pub fn cell_deck(
     deck_dir: Option<&std::path::Path>,
 ) -> Result<String, String> {
     let c = project.cell(cell).ok_or_else(|| format!("no cell {cell}"))?;
-    let sch = c.schematic.as_ref().ok_or_else(|| format!("{cell} has no schematic"))?;
+    let circuit = project.circuit(cell)?;
+    let sch = &*circuit;
     let pt = SweepPoint { corner: c.sim.corner.clone(), temp: c.sim.temp, vars, run: None, swept: 0 };
     let (mut deck, _) = point_deck(sch, &project.tech, &cell.to_string(), &c.sim, &pt)?;
     if !model.is_empty() {

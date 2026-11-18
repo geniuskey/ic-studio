@@ -308,7 +308,7 @@ fn params(cx: &mut Ctx) {
                     found.push(finding("missing-param", format!("{}: source has no dc, ac or tran value", inst.name)));
                 }
             }
-            DeviceKind::Diode | DeviceKind::Ground | DeviceKind::Supply => {}
+            DeviceKind::Diode | DeviceKind::Ground | DeviceKind::Supply | DeviceKind::Cell => {}
         }
         if (is_mos(inst.kind) || inst.kind == DeviceKind::Diode) && inst.param("model").trim().is_empty() {
             found.push(finding("missing-param", format!("{}: parameter 'model' is empty", inst.name)));
@@ -472,6 +472,13 @@ fn dc_paths(cx: &mut Ctx) {
             }
             DeviceKind::Diode => {
                 sets.union(net("a"), net("k"));
+            }
+            // Whatever the placed cell holds, assume its pins have a DC path between them.
+            DeviceKind::Cell => {
+                let nets: Vec<&str> = inst.ports.iter().map(|(p, _)| net(p)).collect();
+                for w in nets.windows(2) {
+                    sets.union(w[0], w[1]);
+                }
             }
             DeviceKind::Nmos | DeviceKind::Pmos | DeviceKind::Nmos3 | DeviceKind::Pmos3 => {
                 sets.union(net("d"), net("s"));
