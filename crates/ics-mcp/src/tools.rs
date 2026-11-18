@@ -14,12 +14,15 @@ use ics_core::{Backend, Cell, CellRef, IRect, Project, Tech, sdl};
 use ics_sim::{Dataset, SimOptions, SimResults};
 use serde_json::{Map, Value, json};
 
+mod pcell_design;
+
 const MAX_LISTED: usize = 500;
 
 /// Read-only tools that can take long on large designs. Live mode runs them on a worker
 /// thread against a [`snapshot`] so the window stays responsive.
-pub const BACKGROUND: [&str; 14] = [
+pub const BACKGROUND: [&str; 15] = [
     "get_netlist",
+    "pcell_design_check",
     "simulate",
     "run_spice",
     "layout_summary",
@@ -767,23 +770,23 @@ pub fn definitions() -> Vec<Value> {
         tool(
             "place_pcell",
             &format!(
-                "Generate a parametric device (variant cell in the 'pcells' library, reused if it exists) and place it. MOS terminals carry labels D/G/S. Name MOS instances after their schematic devices (e.g. 'M1') for LVS and flylines. {NOT_SAVED}"
+                "Generate a parametric device (variant cell in the 'pcells' library, reused if it exists) and place it: a built-in PCell (kind) or a PCell Designer master (master, see pcell_design_create). MOS terminals carry labels D/G/S. Name MOS instances after their schematic devices (e.g. 'M1') for LVS and flylines. {NOT_SAVED}"
             ),
             json!({
                 "cell": edit_cell(),
-                "kind": {"type": "string", "enum": ["nmos", "pmos", "poly_res", "mom_cap", "ntap", "ptap", "nring", "pring", "nring_path", "pring_path"]},
+                "kind": {"type": "string", "enum": ["nmos", "pmos", "poly_res", "mom_cap", "ntap", "ptap", "nring", "pring", "nring_path", "pring_path"], "description": "Built-in PCell (give kind or master)."},
+                "master": {"type": "string", "description": "PCell Designer master cell (project_info lists pcell_designs); params are then its parameters by name (µm, integers, booleans), the others take their defaults."},
                 "params": {
                     "type": "object",
-                    "description": "Sizes in µm. nmos/pmos: w (per finger, default 1 / 2), l (default 0.18), fingers (default 1), device (PDK device name, e.g. a low-Vt model; default: the technology's default device). poly_res: w (0.4), l (5). mom_cap: w (5), h (5). ntap/ptap: w (tap height, 1). nring/pring: guard ring around a w x h area (5 x 5). nring_path/pring_path: guard ring along the Manhattan centre line points ([[x, y], ...] µm, relative to the origin), closed into a loop when closed is true; width (0 = minimum).",
+                    "description": "Designer master: its parameters by name. Built-in, sizes in µm. nmos/pmos: w (per finger, default 1 / 2), l (default 0.18), fingers (default 1), device (PDK device name, e.g. a low-Vt model; default: the technology's default device). poly_res: w (0.4), l (5). mom_cap: w (5), h (5). ntap/ptap: w (tap height, 1). nring/pring: guard ring around a w x h area (5 x 5). nring_path/pring_path: guard ring along the Manhattan centre line points ([[x, y], ...] µm, relative to the origin), closed into a loop when closed is true; width (0 = minimum).",
                     "properties": {"w": {"type": "number"}, "l": {"type": "number"}, "h": {"type": "number"}, "fingers": {"type": "integer", "minimum": 1}, "device": {"type": "string"}, "points": {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2}}, "closed": {"type": "boolean"}, "width": {"type": "number"}},
-                    "additionalProperties": false,
                 },
                 "x": num_prop("Origin x (µm)."), "y": num_prop("Origin y (µm)."),
                 "rot": {"type": "integer", "enum": [0, 90, 180, 270], "description": "Counter-clockwise rotation in degrees."},
                 "mirror": {"type": "boolean", "description": "Mirror about the x axis before rotating."},
                 "name": {"type": "string", "description": "Instance name, e.g. 'M1'."},
             }),
-            &["cell", "kind", "x", "y"],
+            &["cell", "x", "y"],
         ),
         tool(
             "delete_items",
@@ -1150,6 +1153,9 @@ pub fn definitions() -> Vec<Value> {
             &[],
         ),
     ]
+    .into_iter()
+    .chain(pcell_design::definitions())
+    .collect()
 }
 
 impl State {
@@ -1213,6 +1219,10 @@ impl State {
             "add_label" => self.add_label(a),
             "place_instance" => self.place_instance(a),
             "place_pcell" => self.place_pcell(a),
+            "pcell_design_create" => self.pcell_design_create(a),
+            "pcell_design_edit" => self.pcell_design_edit(a),
+            "pcell_design_check" => self.pcell_design_check(a),
+            "pcell_design_export_skill" => self.pcell_design_export_skill(a),
             "delete_items" => self.delete_items(a),
             "generate_layout" => self.generate_layout(a),
             "flylines" => self.flylines(a),
@@ -1410,6 +1420,7 @@ impl State {
                 "model_corners": t.models.as_ref().map(|m| m.corners.clone()),
             },
             "libraries": libraries,
+            "pcell_designs": pcell_design::designs_json(p),
         }))
     }
 
@@ -1827,8 +1838,12 @@ impl State {
             None => &empty,
             Some(v) => v.as_object().ok_or("argument 'params' must be an object")?,
         };
+        let pc = match (a.opt_str("kind")?, a.opt_str("master")?) {
+            (Some(k), None) => pcell_from(k, &Args(params), &self.project()?.tech)?,
+            (None, Some(m)) => self.template_pcell(m, params)?,
+            _ => return Err("give exactly one of 'kind' (a built-in PCell) or 'master' (a PCell Designer master)".into()),
+        };
         let p = self.project_mut()?;
-        let pc = pcell_from(a.str("kind")?, &Args(params), &p.tech)?;
         let summary = pc.summary(p.tech.dbu_per_um);
         let child = p.ensure_pcell(&pc)?;
         self.dirty = true;

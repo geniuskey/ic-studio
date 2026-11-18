@@ -63,6 +63,7 @@ it with `cargo build --release -p ics-cli` (binary `target/release/ics`) or run 
 | `ics optimize <PROJECT> <CELL> [--post-layout] [--apply] [--json]` | Size devices to meet the cell's specs; exit 1 if no point meets every spec |
 | `ics place-like <PROJECT> <CELL> --from <CELL> [--route]` | Place the cell like a finished cell with the same circuit and save |
 | `ics skill <PROJECT> <FILE.il> [--no-save] [--json]` | Run a Cadence SKILL script on the project and save; exit 1 on a SKILL error |
+| `ics pcell-skill <PROJECT> <CELL> [--lib L] [-o FILE]` | Export a [PCell Designer](pcells.md#pcell-designer) master as a SKILL `pcDefinePCell` for Virtuoso |
 
 ## Details
 

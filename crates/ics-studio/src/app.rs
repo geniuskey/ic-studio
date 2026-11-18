@@ -465,8 +465,10 @@ type PinsAndSymbol = (Vec<(String, PortDir)>, Option<ics_core::schematic::Symbol
 
 /// MCP tools that change neither layouts nor schematics. Every other tool runs between
 /// snapshots of the project, so whatever it changes is undoable and redrawn.
-const MCP_READ_ONLY: [&str; 25] = [
+const MCP_READ_ONLY: [&str; 27] = [
     "project_info",
+    "pcell_design_check",
+    "pcell_design_export_skill",
     "gui_status",
     "get_netlist",
     "simulate",
@@ -5921,6 +5923,12 @@ impl IcStudio {
             if tool == "run_skill" {
                 target = changed.into_iter().next().filter(|_| self.active.is_none());
             }
+        }
+        if !res.is_error
+            && matches!(tool, "pcell_design_create" | "pcell_design_edit")
+            && let (Some(p), Some(r)) = (&self.project, &target)
+        {
+            self.pcell_designer.sync(p, r);
         }
         self.mcp_done(tool, target, &res, None);
         res

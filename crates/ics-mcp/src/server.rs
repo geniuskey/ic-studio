@@ -276,6 +276,10 @@ mod tests {
             "import_def",
             "run_skill",
             "gui_status",
+            "pcell_design_create",
+            "pcell_design_edit",
+            "pcell_design_check",
+            "pcell_design_export_skill",
         ];
         assert_eq!(names, expected);
         for t in tools {

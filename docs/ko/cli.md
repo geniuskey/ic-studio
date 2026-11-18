@@ -63,6 +63,7 @@
 | `ics optimize <PROJECT> <CELL> [--post-layout] [--apply] [--json]` | 셀의 스펙을 만족하도록 소자 사이징. 모든 스펙을 만족하는 포인트가 없으면 1로 종료 |
 | `ics place-like <PROJECT> <CELL> --from <CELL> [--route]` | 같은 회로를 가진 완성된 셀처럼 배치하고 저장 |
 | `ics skill <PROJECT> <FILE.il> [--no-save] [--json]` | 프로젝트에 Cadence SKILL 스크립트를 실행하고 저장. SKILL 오류가 나면 1로 종료 |
+| `ics pcell-skill <PROJECT> <CELL> [--lib L] [-o FILE]` | [PCell Designer](pcells.md#pcell-designer) 마스터를 Virtuoso용 SKILL `pcDefinePCell`로 내보내기 |
 
 ## 세부 사항
 

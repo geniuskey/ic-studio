@@ -53,7 +53,7 @@ npx skills add geniuskey/ic-studio
 
 ## 도구
 
-서버에는 53개의 도구가 있습니다.
+서버에는 57개의 도구가 있습니다.
 
 | 도구 | 용도 |
 |---|---|
@@ -65,7 +65,10 @@ npx skills add geniuskey/ic-studio
 | `run_spice` | 원시 SPICE 덱 시뮬레이션 |
 | `layout_summary` | 경계 상자, 레이어별 도형, 라벨, 인스턴스 |
 | `add_rect`, `add_path`, `add_label` | 도형 그리기. 배선 레이어의 라벨은 그 아래 넷의 이름이 됨 |
-| `place_instance`, `place_pcell` | 셀 또는 [PCell](pcells.md) 배치(`nmos`, `pmos`(선택적으로 PDK `device`), `poly_res`, `mom_cap`, `ntap`, `ptap`) |
+| `place_instance`, `place_pcell` | 셀 또는 [PCell](pcells.md) 배치. 내장 `kind`(`nmos`, `pmos`(선택적으로 PDK `device`), `poly_res`, `mom_cap`, `ntap`, `ptap`, 가드링) 또는 PCell Designer `master`와 이름별 파라미터 값 |
+| `pcell_design_create`, `pcell_design_edit` | [PCell Designer](pcells.md#pcell-designer): 그린 셀(`source`, `suggest`)이나 빈 상태(`add_shapes`, `set_params`, `add_ops`)에서 파라메트릭 셀을 만들고 수정. 배치된 변형도 따라 바뀜 |
+| `pcell_design_check` | 디자이너 마스터의 템플릿, lint, DRC 코너 검사, 주어진 `values`에서의 미리보기 |
+| `pcell_design_export_skill` | 디자이너 마스터를 Virtuoso용 SKILL `pcDefinePCell`로 내보내기 |
 | `delete_items` | id로 도형 / 인스턴스 삭제 |
 | `generate_layout` | 매칭을 고려한 회로도 기반 배치(배선 없음) |
 | `flylines` | 배선되지 않은 연결 목록 |

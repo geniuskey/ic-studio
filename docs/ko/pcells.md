@@ -6,9 +6,12 @@
 
 IC Studio에는 여섯 가지 내장 파라미터 셀(PCell)이 있습니다. PCell은 테크놀로지 정보를 바탕으로
 코드가 그리므로, 같은 파라미터로 generic180, SKY130 또는 다른 어떤 PDK에서도 올바른 소자를
-얻을 수 있습니다. 내장 PCell로 그릴 수 없는 소자(직사각형이 아닌 액티브, 특수한 콘택 배치, 꺾인
-게이트나 45° 게이트)는 SKILL로 생성기를 작성하십시오.
-[사용자 소자 생성기](#사용자-소자-생성기)를 참고하십시오.
+얻을 수 있습니다. 직접 PCell을 만드는 방법은 두 가지입니다.
+
+- 소자를 그린 뒤 [PCell Designer](#pcell-designer)로 PCell로 바꿉니다. 직접 하거나 Design
+  Copilot에게 맡길 수 있습니다.
+- 코드가 필요한 소자는 SKILL로 생성기를 작성합니다.
+  [사용자 소자 생성기](#사용자-소자-생성기)를 참고하십시오.
 
 ## 내장 PCell
 
@@ -147,7 +150,119 @@ bend_corner = 0.5   # 1(기본값): W = 평균 에지, 0: W = 더 짧은(안쪽)
 꼭짓점은 그리드로 반올림됨), 예각 모서리는 보고됩니다. 다른 룰은 계단 모양 형상을 기준으로
 검사합니다([검증](verification.md) 참고).
 
-내장 PCell은 항상 직사각형 액티브를 그립니다. L자형이나 U자형 소자에는 생성기를 사용하십시오.
+내장 PCell은 항상 직사각형 액티브를 그립니다. L자형이나 U자형 소자는 그린 뒤
+[PCell Designer](#pcell-designer)로 PCell로 만들거나, 생성기를 작성하십시오.
+
+## PCell Designer
+
+PCell Designer는 Virtuoso의 PCell Designer처럼, 그린 레이아웃을 코드 없이 파라메트릭 셀로
+바꿉니다. 소자를 대표값으로 한 번 그린 다음 파라미터를 추가하고, 그 값이 바뀔 때 셀을 다시 그리는
+연산을 추가합니다. 빈 도면에서 시작해 셀을 처음부터 설계할 수도 있습니다.
+
+**Tools > PCell Designer…**에서 엽니다. 명령 팔레트의
+**PCell designer: make a PCell from the active layout**로도 열 수 있습니다. **Start here** 탭은
+아래 단계를 순서대로 안내하고, **Design** 탭은 원본 도면 위에 모든 연산을 보여 줍니다.
+
+### 파라미터와 연산
+
+파라미터 종류는 `length`(µm, 그리드에 맞춤), `integer`, `boolean`(식에서는 0 / 1)입니다.
+파라미터마다 기본값, 선택적인 최솟값과 최댓값, 설명이 있습니다. 식은 파라미터 이름을 쓰는 µm
+단위 식입니다. `+ - * / %`, 비교 연산자, `&& || !`, 그리고 `min`, `max`, `abs`, `floor`, `ceil`,
+`round`, `sqrt`, `if(c, a, b)`를 쓸 수 있습니다. 예: `(nf - 1) * 0.72`, `if(guard, 0.5, 0)`.
+
+| 연산 | 동작 |
+|---|---|
+| **Stretch X / Y** | 셀을 가로지르는 선. 움직이는 쪽(오른쪽 / 위, 왼쪽 / 아래, 또는 양쪽 절반)의 모든 것이 기본값 대비 amount의 변화만큼 이동하므로, 선을 가로지르는 도형이 늘어남 |
+| **Repeat** | 영역 안에 완전히 들어 있는 항목을 `pitch` 간격으로 `count - 1`번 복사. 영역을 가로지르는 도형(diffusion, implant, 게이트 스트랩)도 따라 늘어남 |
+| **Condition** | 식이 0이면 영역 안의 항목을 지움 |
+| **Contact fill** | 늘어난 뒤 사각형을 가장 큰 중앙 정렬 via cut 배열로 다시 채움. 콘택이 늘어나는 대신 개수가 바뀜 |
+
+생성 순서는 condition, stretch(목록 순서대로이며 각각 뒤의 선과 영역도 옮김), repeat,
+contact fill입니다. stretch, repeat, condition은 일부 레이어에만 적용할 수 있습니다.
+**Earlier** / **Later**로 순서를 바꾸고 **Undo**로 되돌립니다.
+
+### 그린 MOS에 대한 제안
+
+| 버튼 | 결과 |
+|---|---|
+| **Contacts to fills** | via cut 묶음마다 contact fill로 바꿈 |
+| **Detect fingers (nf)** | 같은 간격의 동일한 게이트들을 한 단위로 줄이고, 새 파라미터 `nf`(기본값: 그린 개수)로 구동되는 repeat을 만듦. stretch 선을 넣기 전에 실행 |
+| **Width stretch (w)** | diffusion을 지나는 가로 선. 새 파라미터 `w`로 구동 |
+| **Length stretch (l)** | 첫 게이트를 지나는 세로 선. 새 파라미터 `l`로 구동. finger repeat의 pitch도 따라 바뀜 |
+
+각 제안은 기본값에서 원래 도면을 그대로 재현합니다. pitch를 읽을 수 있도록 동일한 finger를 두세
+개 그리십시오.
+
+### 검사
+
+- **Preview**: 편집하는 동안 아무 값에서나 셀을 생성해 봅니다.
+- **Issues**: lint 결과를 보여 줍니다.
+  - 없는 파라미터를 쓰는 식
+  - 어떤 연산도 쓰지 않는 파라미터, 범위가 없는 파라미터
+  - 범위를 벗어나거나 그리드에 맞지 않는 기본값
+  - 움직이는 쪽에 아무것도 없는 stretch 선, 콘택을 가로지르는 stretch 선
+  - SKILL 예약어인 이름
+  - 기본값에서 생성되지 않는 셀
+- **Corners**: 여러 파라미터 조합에서 테크놀로지 DRC 덱을 실행합니다.
+  - 기본값
+  - 각 파라미터 하나만 최솟값, 최댓값(boolean은 반전)
+  - 모든 파라미터를 함께 최솟값, 모두 함께 최댓값
+
+  생성할 수 없는 코너도 보고합니다. 예를 들어 최솟값에서 모서리가 stretch 선을 넘어가는 경우입니다.
+
+### 저장과 배치
+
+**Save PCell**은 마스터 셀 `lib/<name>`을 저장합니다. 마스터의 레이아웃은 기본값으로 만든
+PCell입니다. 레이아웃 편집기의 인스턴스 도구(`I`)에 저장된 마스터가 내장 PCell과 함께 나옵니다.
+Inspector에서 배치된 인스턴스의 값을 바꿀 수 있고, stretch 핸들로 length 파라미터를 바꾸는 것도
+내장 PCell과 같습니다. 마스터를 다시 저장하면 배치된 모든 변형이 각자의 값으로 다시 생성됩니다.
+
+**Export SKILL…**(또는 `ics pcell-skill <project> <cell> [--lib L] [-o FILE]`)은 같은 레이아웃을
+만드는 Cadence Virtuoso용 SKILL `pcDefinePCell`을 씁니다. 도면은 데이터로 저장되고, PCell 본문의
+작은 엔진이 연산을 실행합니다.
+
+### Design Copilot 또는 MCP 에이전트로 사용하기
+
+[Design Copilot](tools.md)과 모든 [MCP](mcp.md) 클라이언트는 같은 작업 흐름을 도구로 씁니다.
+
+| 도구 | 용도 |
+|---|---|
+| `pcell_design_create` | 그린 셀(`source`, 그리고 `suggest`)이나 빈 상태(`add_shapes`, `set_params`, `add_ops`)에서 마스터 만들기 |
+| `pcell_design_edit` | 도면, 제안, 파라미터, 연산 변경. 전부 적용되거나 하나도 적용되지 않으며, 배치된 변형도 따라 바뀜 |
+| `pcell_design_check` | 템플릿, lint, 코너 DRC, 주어진 `values`에서의 미리보기. `list_source`는 도면의 도형을 id와 함께 나열. 읽기 전용 |
+| `pcell_design_export_skill` | SKILL `pcDefinePCell` 텍스트를 돌려주거나 `path`에 파일로 씀 |
+| `place_pcell`의 `master` | 파라미터 이름별 값으로 변형 배치 |
+
+`project_info`는 마스터 목록을 `pcell_designs`에 보여 줍니다. 앱에서는 변경할 때마다 마스터가
+레이아웃 편집기에 열리고, 저장하지 않은 편집이 없는 PCell Designer 창은 마스터를 다시 불러옵니다.
+
+그린 레이아웃에서 시작:
+
+```json
+{"tool": "pcell_design_create", "arguments": {
+  "cell": "work/nmos_pc", "source": "work/nmos_drawn",
+  "suggest": ["contacts", "fingers", "width", "length"]}}
+{"tool": "pcell_design_check", "arguments": {"cell": "nmos_pc", "values": {"nf": 4, "w": 2}}}
+{"tool": "place_pcell", "arguments": {"cell": "amp", "master": "nmos_pc",
+  "params": {"nf": 4, "w": 2}, "x": 0, "y": 0, "name": "M1"}}
+```
+
+빈 상태에서 시작. 아래는 폭 `w`로 늘어나고 위쪽으로 `n`번 반복되는 metal 판입니다.
+
+```json
+{"tool": "pcell_design_create", "arguments": {
+  "cell": "plate",
+  "add_shapes": [{"layer": "metal1", "rect": [0, 0, 1, 1]},
+                 {"layer": "metal1", "label": "A", "at": [0.2, 0.5]}],
+  "set_params": [{"name": "w", "default": 1, "min": 0.5, "max": 5},
+                 {"name": "n", "kind": "int", "default": 1, "min": 1, "max": 4}],
+  "add_ops": [{"op": "stretch", "axis": "x", "at": 0.4, "amount": "w"},
+              {"op": "repeat", "axis": "y", "region": [-1, -1, 7, 2], "count": "n", "pitch": 1.5}]}}
+```
+
+연산을 바꾸려면 한 번의 `pcell_design_edit`에서 기존 연산을 지우고 같은 위치에 새 연산을
+넣습니다: `{"remove_ops": [0], "add_ops": [{"op": "stretch", ..., "index": 0}]}`.
+그다음 lint에 오류가 없고 모든 코너가 깨끗해질 때까지 `pcell_design_check`를 실행합니다.
 
 ## 사용자 소자 생성기
 

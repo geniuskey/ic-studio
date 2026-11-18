@@ -173,6 +173,16 @@ impl PCellDesigner {
         self.touch();
     }
 
+    /// Master `r` was changed elsewhere (an agent): reload it when it is the design open here
+    /// and has no unsaved edits.
+    pub fn sync(&mut self, project: &Project, r: &CellRef) {
+        let ours = self.tpl.as_ref().is_some_and(|t| t.name == r.cell) && self.lib == r.lib;
+        if ours && self.baseline.is_some() && self.baseline == self.tpl {
+            self.load(project, r);
+            self.status = Some((true, format!("{r} was updated by the agent")));
+        }
+    }
+
     fn touch(&mut self) {
         self.gen_ += 1;
     }

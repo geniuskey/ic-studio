@@ -21,6 +21,7 @@ back; the choice is remembered per tool. Every tool is also in the command palet
 | [Hierarchy Browser](#hierarchy-browser) | Design Hierarchy | Every layout of the project |
 | [Net Browser](#net-browser) | Annotation / net browser | Extraction of the active layout |
 | [Layout Generators](#layout-generators) | Create Guard Ring, Create Via Array, Modgen | Active layout |
+| [PCell Designer](pcells.md#pcell-designer) | PCell Designer | A drawn layout cell, or an empty drawing |
 | [DRC Rule Designer](#drc-rule-designer) | Rule deck editing | The technology's DRC deck |
 | [Stream Layer Map](#stream-layer-map) | XStream layer map | GDSII / OASIS import and export |
 | [Dummy Fill](#dummy-fill) | Metal fill | Active layout |

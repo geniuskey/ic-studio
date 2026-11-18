@@ -56,7 +56,7 @@ or copy `skills/ic-studio` into `~/.claude/skills/`.
 
 ## Tools
 
-The server has 53 tools:
+The server has 57 tools:
 
 | Tool | Purpose |
 |---|---|
@@ -68,7 +68,10 @@ The server has 53 tools:
 | `run_spice` | Simulate a raw SPICE deck |
 | `layout_summary` | Bounding box, shapes per layer, labels and instances |
 | `add_rect`, `add_path`, `add_label` | Draw shapes; a label on a routing layer names the net under it |
-| `place_instance`, `place_pcell` | Place a cell or a [PCell](pcells.md) (`nmos`, `pmos` with an optional PDK `device`, `poly_res`, `mom_cap`, `ntap`, `ptap`) |
+| `place_instance`, `place_pcell` | Place a cell or a [PCell](pcells.md): a built-in `kind` (`nmos`, `pmos` with an optional PDK `device`, `poly_res`, `mom_cap`, `ntap`, `ptap`, guard rings) or a PCell Designer `master` with its parameters by name |
+| `pcell_design_create`, `pcell_design_edit` | [PCell Designer](pcells.md#pcell-designer): make a parametric cell from a drawn cell (`source`, `suggest`) or from nothing (`add_shapes`, `set_params`, `add_ops`), then change it; placed variants follow |
+| `pcell_design_check` | A designer master's template, lint, DRC corner check and a preview at given `values` |
+| `pcell_design_export_skill` | A designer master as a SKILL `pcDefinePCell` for Virtuoso |
 | `delete_items` | Delete shapes / instances by id |
 | `generate_layout` | Schematic-driven placement with matching (no wiring) |
 | `flylines` | List unrouted connections |

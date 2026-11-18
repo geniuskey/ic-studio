@@ -6,9 +6,12 @@
 
 IC Studio has six built-in parametric cells (PCells). They are drawn by code from the
 technology, so the same parameters give a correct device in generic180, SKY130 or any
-other PDK. For devices the built-in PCells cannot draw (non-rectangular active, special
-contact arrangements, bent or 45° gates), write a generator in SKILL: see
-[Your own device generators](#your-own-device-generators).
+other PDK. You can make your own PCells in two ways:
+
+- Draw the device and turn it into a PCell with the [PCell Designer](#pcell-designer),
+  by hand or with the Design Copilot.
+- Write a generator in SKILL, for devices that need code: see
+  [Your own device generators](#your-own-device-generators).
 
 ## Built-in PCells
 
@@ -149,8 +152,129 @@ Euclidean metric, so a 45° wire at the minimum width and spacing is clean. Dist
 3/4 dbu of the limit pass (any-angle vertices are rounded to the grid), and acute corners
 are reported. The other rules see the staircase (see [Verification](verification.md)).
 
-The built-in PCells always draw rectangular active. For an L- or U-shaped device, use a
-generator.
+The built-in PCells always draw rectangular active. For an L- or U-shaped device, draw it
+and make it a PCell with the [PCell Designer](#pcell-designer), or write a generator.
+
+## PCell Designer
+
+The PCell Designer turns a drawn layout into a parametric cell without writing code, like
+the Virtuoso PCell Designer. Draw the device once at typical values. You then add
+parameters and the operations that redraw it when they change. You can also start from
+an empty drawing and design the cell from nothing.
+
+Open it from **Tools > PCell Designer…**, or from the command palette with
+**PCell designer: make a PCell from the active layout**. The **Start here** tab walks
+through the steps below, and the **Design** tab shows the source drawing with every
+operation on it.
+
+### Parameters and operations
+
+A parameter is a `length` (µm, snapped to the grid), an `integer` or a `boolean` (0 / 1 in
+expressions). Each one has a default, an optional minimum and maximum, and a description.
+Expressions are in µm over the parameter names. They take `+ - * / %`, comparisons,
+`&& || !` and `min`, `max`, `abs`, `floor`, `ceil`, `round`, `sqrt` and `if(c, a, b)`,
+for example `(nf - 1) * 0.72` or `if(guard, 0.5, 0)`.
+
+| Operation | What it does |
+|---|---|
+| **Stretch X / Y** | A line across the cell. Everything on its moving side (right / top, left / bottom, or both halves) shifts by the change of its amount from the defaults, so shapes crossing it grow |
+| **Repeat** | Items wholly inside a region are copied `count - 1` times, `pitch` apart. Shapes that span the region (diffusion, implants, a gate strap) stretch to follow |
+| **Condition** | Items inside a region are dropped while an expression is 0 |
+| **Contact fill** | A rectangle refilled with the largest centred array of via cuts after stretching, so contacts re-array instead of stretching |
+
+Generation runs conditions first, then the stretches in list order (each also moves the
+later lines and regions), then the repeats, then the contact fills. Stretch, repeat and
+condition can be limited to some layers. **Earlier** / **Later** reorder the list, and
+**Undo** steps back.
+
+### Suggestions for a drawn MOS
+
+| Button | Result |
+|---|---|
+| **Contacts to fills** | Every cluster of via cuts becomes a contact fill |
+| **Detect fingers (nf)** | Identical, equally spaced gates become one unit and a repeat driven by a new `nf` (default: the drawn count). Run it before adding stretch lines |
+| **Width stretch (w)** | A horizontal line through the diffusion, driven by a new `w` |
+| **Length stretch (l)** | A vertical line through the first gate, driven by a new `l`. A finger repeat's pitch follows |
+
+At the defaults, each suggestion reproduces the drawing. Draw two or three identical
+fingers so the pitch can be read.
+
+### Checking
+
+- **Preview** generates the cell at any values while you edit.
+- **Issues** lists the lint findings:
+  - an expression naming a parameter that does not exist
+  - a parameter no operation uses, or one without a range
+  - a default outside its range or off the grid
+  - a stretch line with nothing on its moving side, or one that cuts through contacts
+  - a name SKILL reserves
+  - a cell that does not generate at its defaults
+- **Corners** runs the technology's DRC deck on several parameter sets:
+  - the defaults
+  - each parameter alone at its minimum and at its maximum (booleans toggled)
+  - all parameters at their minimum, and all at their maximum
+
+  A corner that cannot be generated is reported too, for example a stretch whose minimum
+  would pull edges past the line.
+
+### Saving and placing
+
+**Save PCell** stores the master cell `lib/<name>`, whose layout is the PCell at its
+defaults. In the layout editor, the instance tool (`I`) lists saved masters next to the
+built-in PCells. The inspector edits a placed instance's values, and stretch handles
+change its length parameters as they do for a built-in PCell. Saving the master again
+regenerates every placed variant with its own values.
+
+**Export SKILL…** (or `ics pcell-skill <project> <cell> [--lib L] [-o FILE]`) writes a
+SKILL `pcDefinePCell` for Cadence Virtuoso that generates the same layout. The drawing is
+stored as data, and a small engine in the PCell body runs the operations.
+
+### With the Design Copilot or an MCP agent
+
+The [Design Copilot](tools.md) and any [MCP](mcp.md) client have the same workflow as
+tools:
+
+| Tool | Purpose |
+|---|---|
+| `pcell_design_create` | Make a master from a drawn cell (`source`, plus `suggest`) or from nothing (`add_shapes`, `set_params`, `add_ops`) |
+| `pcell_design_edit` | Change the drawing, the suggestions, the parameters and the operations. The change is all or nothing, and placed variants follow |
+| `pcell_design_check` | Template, lint, corner DRC and a preview at given `values`. `list_source` lists the drawing's shapes with ids. Read-only |
+| `pcell_design_export_skill` | The SKILL `pcDefinePCell` text, or a file at `path` |
+| `place_pcell` with `master` | Place a variant with values by parameter name |
+
+`project_info` lists the masters under `pcell_designs`. In the app, the master opens in the
+layout editor after each change, and an open PCell Designer window with no unsaved edits
+reloads it.
+
+From a drawn layout:
+
+```json
+{"tool": "pcell_design_create", "arguments": {
+  "cell": "work/nmos_pc", "source": "work/nmos_drawn",
+  "suggest": ["contacts", "fingers", "width", "length"]}}
+{"tool": "pcell_design_check", "arguments": {"cell": "nmos_pc", "values": {"nf": 4, "w": 2}}}
+{"tool": "place_pcell", "arguments": {"cell": "amp", "master": "nmos_pc",
+  "params": {"nf": 4, "w": 2}, "x": 0, "y": 0, "name": "M1"}}
+```
+
+From nothing, here a metal plate whose width `w` stretches and which repeats `n` times
+upwards:
+
+```json
+{"tool": "pcell_design_create", "arguments": {
+  "cell": "plate",
+  "add_shapes": [{"layer": "metal1", "rect": [0, 0, 1, 1]},
+                 {"layer": "metal1", "label": "A", "at": [0.2, 0.5]}],
+  "set_params": [{"name": "w", "default": 1, "min": 0.5, "max": 5},
+                 {"name": "n", "kind": "int", "default": 1, "min": 1, "max": 4}],
+  "add_ops": [{"op": "stretch", "axis": "x", "at": 0.4, "amount": "w"},
+              {"op": "repeat", "axis": "y", "region": [-1, -1, 7, 2], "count": "n", "pitch": 1.5}]}}
+```
+
+An operation is changed by removing it and inserting the new one at the same place, in one
+`pcell_design_edit`:
+`{"remove_ops": [0], "add_ops": [{"op": "stretch", ..., "index": 0}]}`.
+Then run `pcell_design_check` until the lint shows no errors and every corner is clean.
 
 ## Your own device generators
 

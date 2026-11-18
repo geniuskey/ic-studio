@@ -214,7 +214,8 @@ Linux needs the usual windowing libraries:
   suggestions read a drawn MOS (contacts, fingers, W, L), a corner check runs DRC at the
   parameter extremes, and the saved master is placed and stretched like a built-in PCell;
   export to Cadence Virtuoso as a SKILL `pcDefinePCell` generating the same layout
-  (`ics pcell-skill`)
+  (`ics pcell-skill`); the Design Copilot and MCP agents build them too, from a drawn layout
+  or from nothing (`pcell_design_*` tools)
 - Hierarchy and net browsers; a visual DRC rule designer that self-tests every rule; a
   stream layer map (Virtuoso layer map files) for GDSII / OASIS import and export
 
@@ -339,9 +340,10 @@ use `target/release/ics` when it exists (otherwise `cargo run --release -p ics-c
 ## MCP server (AI agents)
 
 `ics mcp` exposes an IC Studio project to AI agents over the Model Context Protocol
-(stdio). Its 53 tools cover projects and PDKs, schematics from SPICE netlists, Virtuoso
+(stdio). Its 57 tools cover projects and PDKs, schematics from SPICE netlists, Virtuoso
 CDL and library dumps, netlisting and simulation, verification and yield, layout editing (rects, paths, labels, instances, PCells, schematic-driven
-placement, flylines, routing), DRC with quick fixes, compaction, layout compare, the
+placement, flylines, routing), PCell Designer parametric cells from a drawn layout or from
+nothing, DRC with quick fixes, compaction, layout compare, the
 optimizer, layout by example, extraction, LVS, sign-off runsets, parasitics, GDSII / OASIS
 import and export, and SKILL scripts. Coordinates are in µm; edits stay in memory until
 `save_project`. Tool list: [MCP server](https://pages.euiyun.com/ic-studio/mcp.html).

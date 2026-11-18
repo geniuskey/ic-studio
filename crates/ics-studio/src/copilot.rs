@@ -22,8 +22,9 @@ const TOOL_TIMEOUT: Duration = Duration::from_secs(600);
 /// Tools the copilot does not get: it works on the project already open in the window.
 const HIDDEN: [&str; 3] = ["new_project", "open_project", "gui_status"];
 /// Design tools that only read the project: the ones plan mode runs.
-const READ_ONLY: [&str; 13] = [
+const READ_ONLY: [&str; 14] = [
     "project_info",
+    "pcell_design_check",
     "get_netlist",
     "simulate",
     "run_spice",
@@ -231,6 +232,11 @@ fn system_prompt(context: &str, plan_mode: bool) -> String {
          tools return. If a tool fails, read the error and try a different approach; do not repeat the same failing \
          call more than twice. If you are stuck, say so and ask the user.\n\
          5. Finish with a short report: what changed, the verified numbers, and anything left open.\n\n\
+         Parametric cells (PCell Designer): pcell_design_create makes one from a drawn layout (source, plus suggest \
+         [contacts, fingers, width, length] for a MOS) or from nothing (add_shapes, set_params, add_ops); inspect the \
+         drawing with pcell_design_check list_source before placing stretch lines and regions, refine with \
+         pcell_design_edit, verify with pcell_design_check (lint and the DRC corner check must be clean), place it with \
+         place_pcell master and export it with pcell_design_export_skill.\n\n\
          Do not call save_project unless the user asks to save; edits stay in the window, where the user can undo \
          them. Keep formatting light: plain sentences, '-' or numbered lists, **bold** for key numbers, `inline \
          code` for cell, net and device names, and fenced code blocks (```spice ... ```) for netlists, SPICE decks or \
