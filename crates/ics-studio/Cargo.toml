@@ -18,6 +18,8 @@ ics-mcp = { version = "0.2.9", path = "../ics-mcp" }
 ics-sim = { version = "0.2.9", path = "../ics-sim" }
 ics-optics = { version = "0.2.9", path = "../ics-optics" }
 rfd = "0.18.0"
+# SHA-256 of downloaded updates (already used by rustls).
+ring = "0.17"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 ureq = { version = "3", default-features = false, features = ["rustls", "json"] }

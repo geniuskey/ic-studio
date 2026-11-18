@@ -1152,7 +1152,7 @@ fn run(cli: Cli) -> Result<(), String> {
             if let Some(b) = b {
                 opts.backend = backend(b);
             }
-            if let Some(exe) = &p.settings.ngspice_path {
+            if let Some(exe) = &p.trusted_ngspice() {
                 opts.ngspice_exe = exe.clone();
             }
             let analyses: Vec<_> = c.sim.enabled().cloned().collect();
@@ -1609,7 +1609,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 return Err("no tests: give cells specs in their sweep setup, or add tests with --add".into());
             }
             let mut opts = SimOptions::default();
-            if let Some(exe) = &p.settings.ngspice_path {
+            if let Some(exe) = &p.trusted_ngspice() {
                 opts.ngspice_exe = exe.clone();
             }
             let progress = |name: &str, done: usize, total: usize| {
@@ -1727,7 +1727,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 return Err(format!("{r}: the sweep setup has no specs"));
             }
             let mut opts = SimOptions::default();
-            if let Some(exe) = &p.settings.ngspice_path {
+            if let Some(exe) = &p.trusted_ngspice() {
                 opts.ngspice_exe = exe.clone();
             }
             let started = std::time::Instant::now();
@@ -1763,7 +1763,7 @@ fn run(cli: Cli) -> Result<(), String> {
                             .collect();
                         serde_json::json!({"condition": c.condition, "runs": c.runs, "passed": c.passed,
                             "simulated_yield": c.passed as f64 / c.runs.max(1) as f64, "simulated_ci95": [lo, hi],
-                            "predicted_yield": c.prediction.joint, "specs": sj})
+                            "predicted_yield": c.prediction.joint, "failed_runs": c.prediction.failed_runs, "specs": sj})
                     })
                     .collect();
                 println!("{}", serde_json::json!({"cell": r.to_string(), "samples": samples, "conditions": cj}));
@@ -1785,6 +1785,9 @@ fn run(cli: Cli) -> Result<(), String> {
                         pct(hi),
                         c.prediction.joint.map_or("—".into(), pct)
                     );
+                    if c.prediction.failed_runs > 0 {
+                        println!("  {} run(s) gave no value for a spec: counted as failures", c.prediction.failed_runs);
+                    }
                     for (s, sp) in specs.iter().zip(&c.prediction.specs) {
                         match sp {
                             Ok(sp) => {
@@ -1888,7 +1891,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 p.save().map_err(|e| e.to_string())?;
             }
             let mut opts = SimOptions::default();
-            if let Some(exe) = &p.settings.ngspice_path {
+            if let Some(exe) = &p.trusted_ngspice() {
                 opts.ngspice_exe = exe.clone();
             }
             let cor = ics_sim::silicon::Correlation::new(&p, &r, &opts)?;
@@ -2261,7 +2264,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 None => ics_core::examples::demo_project(),
             };
             let mut opts = SimOptions::default();
-            if let Some(exe) = &p.settings.ngspice_path {
+            if let Some(exe) = &p.trusted_ngspice() {
                 opts.ngspice_exe = exe.clone();
             }
             let started = std::time::Instant::now();
@@ -2389,7 +2392,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 p.cell_mut(&r).unwrap().sim.optimize.post_layout = true;
             }
             let mut opts = SimOptions::default();
-            if let Some(exe) = &p.settings.ngspice_path {
+            if let Some(exe) = &p.trusted_ngspice() {
                 opts.ngspice_exe = exe.clone();
             }
             let mut progress = |e: &ics_sim::optimize::OptEval, k: usize| {
@@ -2498,6 +2501,9 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             for e in &rep.errors {
                 println!("{:?}: {}", e.kind, e.message);
+            }
+            for w in &rep.warnings {
+                println!("warning: {}", w.message);
             }
             if !rep.matched {
                 return Err(format!("LVS: {} difference(s)", rep.errors.len()));

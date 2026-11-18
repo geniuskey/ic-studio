@@ -13,10 +13,9 @@ written in Rust (egui/eframe 0.37 on wgpu). See README.md for features and archi
   the Visual Studio Build Tools (the "Desktop development with C++" workload).
   Rust 1.95 or newer (required by egui_plot 0.38).
 - ngspice (optional): the Windows build installs to `C:\Spice64\bin\`.
-  `ics_sim::ngspice::default_exe()` looks for `C:\Spice64\bin\ngspice.exe`.
-  Unverified: batch mode on Windows probably needs the console binary `ngspice_con.exe`,
-  because `ngspice.exe` is the GUI build. Check this, and adjust `default_exe` / `detect`
-  if needed.
+  `ics_sim::ngspice::default_exe()` looks for `C:\Spice64\bin\ngspice_con.exe` first
+  (the console build batch mode needs; `ngspice.exe` is the GUI build and is mapped to
+  `ngspice_con.exe` next to it).
 
 ## Commands
 

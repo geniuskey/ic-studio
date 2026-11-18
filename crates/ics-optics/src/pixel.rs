@@ -971,16 +971,25 @@ fn trace(
     let pd = &stack.photodiode;
     let path_per_depth = 1.0 / -dsi[2];
     let generated = |z0: f64, z1: f64| (-alpha * z0 * path_per_depth).exp() - (-alpha * z1 * path_per_depth).exp();
+    let lens_color = PixelStack::color(lens_pixel.0, lens_pixel.1);
     if let Some((g, cells)) = genv {
         // Carrier model: deposit the generation in the voxels it falls in, to the epi bottom;
-        // collection is computed afterwards.
+        // collection is computed afterwards. Optical crosstalk counts, as without the carrier
+        // model, the generation over the photodiode depth that lands under another pixel.
         let depth = g.nz as f64 * g.dz;
         for k in 0..g.nz {
             let (za, zb) = (k as f64 * g.dz, (k + 1) as f64 * g.dz);
             let zm = 0.5 * (za + zb);
             let (x, y) = (pos[0] + dsi[0] * zm * path_per_depth, pos[1] + dsi[1] * zm * path_per_depth);
+            let dep = power * generated(za, zb);
             if let Some(v) = g.voxel(x, y, zm) {
-                cells[v] += power * generated(za, zb);
+                cells[v] += dep;
+            }
+            if zm >= pd.top && zm <= pd.bottom {
+                entered[lens_color][0] += dep;
+                if pixel_of(x, y, p) != lens_pixel {
+                    entered[lens_color][1] += dep;
+                }
             }
         }
         b.silicon_deep += power * (-alpha * depth * path_per_depth).exp();
@@ -989,7 +998,6 @@ fn trace(
     b.silicon_shallow += power * generated(0.0, pd.top);
     b.silicon_deep += power * (-alpha * pd.bottom * path_per_depth).exp();
     const STEPS: usize = 48;
-    let lens_color = PixelStack::color(lens_pixel.0, lens_pixel.1);
     for s in 0..STEPS {
         let za = pd.top + (pd.bottom - pd.top) * s as f64 / STEPS as f64;
         let zb = pd.top + (pd.bottom - pd.top) * (s + 1) as f64 / STEPS as f64;
@@ -1125,6 +1133,11 @@ bottom = 3.0
         flat.microlens = None;
         let rf = run(&flat, 0.0);
         assert!(rf.budget[i].metal > r0.budget[i].metal);
+        // The carrier model keeps the optical crosstalk of the ray model.
+        let mut si = s.clone();
+        si.silicon = Some(Silicon { diffusion_length: 0.01, epi: Some(4.0), grid: Some(0.1), ..Silicon::default() });
+        let (a, b) = (run(&si, 25.0).crosstalk[1][i], r25.crosstalk[1][i]);
+        assert!(a > 0.01 && (a - b).abs() < 0.2 * b, "with silicon {a} vs {b}");
     }
 
     #[test]

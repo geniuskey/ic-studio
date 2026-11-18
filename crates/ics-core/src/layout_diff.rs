@@ -189,8 +189,7 @@ pub fn open_revision(dir: &Path, rev: &str) -> Result<Project, String> {
     if files.is_empty() {
         return Err(format!("the project is not in revision {rev}"));
     }
-    let scratch = std::env::temp_dir().join(format!("ics-rev-{}-{}", std::process::id(), rev.replace(['/', '~', '^', ':'], "_")));
-    let _ = std::fs::remove_dir_all(&scratch);
+    let scratch = crate::tmp::private_dir("ics-rev").map_err(|e| format!("cannot create a scratch folder: {e}"))?;
     let res = (|| {
         for f in &files {
             let rel = f.strip_prefix(&spec).unwrap_or(f);

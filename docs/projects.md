@@ -44,8 +44,18 @@ and a list of recent projects.
 - **File > Save** (`Ctrl+S`) and **Save As...** (`Ctrl+Shift+S`). When saving to a
   folder that is neither empty nor an existing project, a subfolder named after the
   project is created.
-- **File > Close Project**. Closing, quitting or opening another project with unsaved
-  changes asks whether to **Save**, **Discard** or **Cancel**.
+- **File > Close Project**. Closing, quitting, creating or opening another project with
+  unsaved changes asks whether to **Save**, **Discard** or **Cancel**.
+- **Autosave and recovery.** While there are unsaved changes, a copy of the project is
+  written every two minutes to a recovery folder in the user's data folder (never into the
+  project). If IC Studio closes without saving, opening the project again offers to
+  **Recover** the copy (then save it) or **Discard copy**. A crash also writes `crash.log`
+  there (`ICS_RECOVERY_DIR` moves the folder).
+- **Changes made elsewhere are not overwritten.** When another program (git, the `ics`
+  command line, an AI agent) changed project files after the project was opened, **Save**
+  writes nothing and lists the files; **Overwrite** replaces them with the project in the
+  window, or cancel and reopen the project to keep their version. Files whose content did
+  not change are not rewritten, so a save touches only what changed.
 
 ## Cells and views
 

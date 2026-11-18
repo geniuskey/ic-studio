@@ -2,7 +2,6 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use ics_core::Analysis;
 
@@ -19,11 +18,9 @@ pub fn detect(exe: &str) -> Option<String> {
     })
 }
 
+/// A private folder per run: ngspice reads `.spiceinit` from its working directory.
 fn work_dir() -> std::io::Result<PathBuf> {
-    static N: AtomicU64 = AtomicU64::new(0);
-    let d = std::env::temp_dir().join(format!("ic-studio-ngspice-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
-    std::fs::create_dir_all(&d)?;
-    Ok(d)
+    ics_core::tmp::private_dir("ic-studio-ngspice")
 }
 
 /// Strip dot-analyses / .end / existing control blocks from a deck so we can drive it from
@@ -44,7 +41,9 @@ fn strip_analyses(deck: &str) -> (String, Vec<String>) {
             continue;
         }
         if in_control {
-            if t.starts_with("pre_") {
+            // Only `pre_osdi` (loading compiled Verilog-A models) is passed on: other `pre_`
+            // commands, such as `pre_shell`, would run before the deck is read.
+            if t.starts_with("pre_osdi") {
                 pre.push(l.trim().to_string());
             }
             continue;
@@ -269,6 +268,9 @@ mod tests {
         let (text, pre) = strip_analyses(deck);
         assert_eq!(pre, vec!["pre_osdi /pdk/bsimcmg.osdi".to_string()]);
         assert_eq!(text, "* t\nR1 a 0 1k\n");
+        // Other pre_ commands would run before the deck: pre_shell runs a program.
+        let (_, pre) = strip_analyses("* t\n.control\npre_shell touch /tmp/x\npre_osdi a.osdi\n.endc\n.end\n");
+        assert_eq!(pre, vec!["pre_osdi a.osdi".to_string()]);
     }
 
     #[test]

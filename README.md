@@ -330,7 +330,7 @@ use `target/release/ics` when it exists (otherwise `cargo run --release -p ics-c
 ## MCP server (AI agents)
 
 `ics mcp` exposes an IC Studio project to AI agents over the Model Context Protocol
-(stdio). Its 50 tools cover projects and PDKs, schematics from SPICE netlists, Virtuoso
+(stdio). Its 53 tools cover projects and PDKs, schematics from SPICE netlists, Virtuoso
 CDL and library dumps, netlisting and simulation, verification and yield, layout editing (rects, paths, labels, instances, PCells, schematic-driven
 placement, flylines, routing), DRC with quick fixes, compaction, layout compare, the
 optimizer, layout by example, extraction, LVS, sign-off runsets, parasitics, GDSII / OASIS

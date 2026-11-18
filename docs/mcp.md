@@ -56,7 +56,7 @@ or copy `skills/ic-studio` into `~/.claude/skills/`.
 
 ## Tools
 
-The server has 40 tools:
+The server has 53 tools:
 
 | Tool | Purpose |
 |---|---|

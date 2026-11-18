@@ -6,6 +6,7 @@ use std::sync::{Arc, OnceLock};
 
 fn main() -> eframe::Result {
     let args = ics_studio::parse_args();
+    ics_studio::recovery::install_panic_log();
     ics_studio::update::cleanup();
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()

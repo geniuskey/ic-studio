@@ -629,6 +629,23 @@ impl LayoutEditor {
                     }
                 });
             }
+            if !r.warnings.is_empty() {
+                egui::ScrollArea::vertical().id_salt("lvs_warnings").max_height(120.0).show(ui, |ui| {
+                    for w in &r.warnings {
+                        let txt = egui::RichText::new(format!("[warning] {}", w.message)).small().color(pal.warning);
+                        match w.marker {
+                            Some(m) => {
+                                if ui.add(egui::Button::new(txt).frame(false)).on_hover_text("Click to zoom").clicked() {
+                                    zoom = Some(m);
+                                }
+                            }
+                            None => {
+                                ui.label(txt);
+                            }
+                        }
+                    }
+                });
+            }
         }
         ui.add_space(12.0);
         theme::section(ui, "Check Against Source");

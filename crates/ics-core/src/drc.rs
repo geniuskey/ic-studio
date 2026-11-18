@@ -838,6 +838,16 @@ pub fn default_deck_text(tech: &Tech) -> String {
     let def = |n: &str| tech.layer_index(n).and_then(|i| tech.layer(i));
     if let (Some(poly), Some(active)) = (tech.poly().and_then(|i| tech.layer(i)), tech.diffusion().and_then(|i| tech.layer(i))) {
         push(format!("extension {} {} {}", poly.name, active.name, um(tech.rules.poly_endcap)));
+        // A PMOS gate needs its n-well: without one the device is in the substrate, which
+        // neither width nor spacing rules notice.
+        if let (Some(nwell), Some(pimp)) =
+            (tech.nwell().and_then(|i| tech.layer(i)), tech.implant(true).and_then(|i| tech.layer(i)))
+        {
+            push(format!("well_pgate = {} and {}", poly.name, active.name));
+            push(format!("well_pgate_p = well_pgate and {}", pimp.name));
+            push(format!("well_pgate_out = well_pgate_p not {}", nwell.name));
+            push("pmos_outside_nwell: flag well_pgate_out".to_string());
+        }
         for v in &tech.vias {
             if let Some(top) = def(&v.top).filter(|t| t.routing && t.name != poly.name && t.name != active.name) {
                 push(format!("antenna {} {ANTENNA_RATIO}", top.name));
@@ -1671,11 +1681,7 @@ fn check<'a>(rule: &Rule, layer: &impl Fn(usize) -> &'a Region, extent: Option<I
             a.boolean(&a.eroded(0, 0, k, k).dilated(0, 0, k, k), BoolOp::Not)
         }
         Rule::Space { layer: l, min } => space(layer(l), min),
-        Rule::Separation { a, b, min } => {
-            let (a, b) = (layer(a), layer(b));
-            let (_, free) = split_overlapping(b, a);
-            euclidean(a.sized(min).boolean(&free, BoolOp::And), a, min)
-        }
+        Rule::Separation { a, b, min } => separation(layer(a), layer(b), min),
         Rule::Enclosure { inner, outer, min } => {
             let outer = layer(outer);
             let (hit, _) = split_overlapping(layer(inner), outer);
@@ -1694,6 +1700,38 @@ fn check<'a>(rule: &Rule, layer: &impl Fn(usize) -> &'a Region, extent: Option<I
         }
         Rule::Flag { layer: l } => layer(l).clone(),
     }
+}
+
+/// Pieces of `b` closer than `min` to `a`. A piece that overlaps `a` (a contact landing on
+/// poly, a diffusion under its gate) is exempt only from the `a` shapes it overlaps, as
+/// Calibre's EXT does: it is still measured against every other `a` shape near it.
+fn separation(a: &Region, b: &Region, min: i64) -> Region {
+    let (hit, free) = split_overlapping(b, a);
+    let mut out = euclidean(a.sized(min).boolean(&free, BoolOp::And), a, min);
+    if hit.is_empty() {
+        return out;
+    }
+    let parts = a.parts();
+    let tree = RTree::bulk_load(
+        parts.iter().enumerate().flat_map(|(i, p)| p.rects().iter().map(move |&r| Tagged(r, i))).collect::<Vec<_>>(),
+    );
+    let mut rects = out.rects().to_vec();
+    for piece in hit.parts() {
+        let Some(bb) = piece.bbox() else { continue };
+        let window = IRect::new(bb.x0 - min, bb.y0 - min, bb.x1 + min, bb.y1 + min);
+        let mut near: Vec<usize> = tree.locate_in_envelope_intersecting(aabb(window)).map(|t| t.1).collect();
+        near.sort_unstable();
+        near.dedup();
+        let touches = |i: &usize| parts[*i].rects().iter().any(|q| piece.rects().iter().any(|r| r.intersects(q)));
+        let others = Region::from_rects(near.iter().filter(|i| !touches(i)).flat_map(|&i| parts[i].rects().to_vec()));
+        if others.is_empty() {
+            continue;
+        }
+        let v = euclidean(others.sized(min).boolean(&piece, BoolOp::And), &others, min);
+        rects.extend_from_slice(v.rects());
+    }
+    out = Region::from_rects(rects);
+    out
 }
 
 /// Pieces of `a` selected by `how` against `b` (the others when `not`).
@@ -2125,6 +2163,15 @@ mod tests {
         assert_eq!(markers(deck, &lay(180)), [r(180, 500, 340, 720)]);
         assert!(markers(deck, &lay(340)).is_empty());
         assert!(markers(deck, &lay(-20)).is_empty(), "contacts landing on poly are exempt");
+        // ...from the poly they land on only: a neighbouring poly 80 nm away still counts.
+        let landed = layout(&[("poly", (-100, 0, 80, 2000)), ("contact", (0, 500, 220, 720)), ("poly", (300, 0, 480, 2000))]);
+        assert_eq!(markers(deck, &landed), [r(140, 500, 220, 720)]);
+        // A diffusion under its gate is still measured against field poly beside it.
+        let ext = "separation poly active 0.1";
+        let gate = layout(&[("active", (0, 0, 1000, 500)), ("poly", (400, -200, 580, 700)), ("poly", (1050, -200, 1230, 700))]);
+        assert_eq!(markers(ext, &gate).len(), 1, "field poly 50 nm from a gated diffusion");
+        let far = layout(&[("active", (0, 0, 1000, 500)), ("poly", (400, -200, 580, 700))]);
+        assert!(markers(ext, &far).is_empty(), "its own gate does not count");
         let diag = layout(&[("poly", (0, 0, 180, 2000)), ("contact", (280, 2100, 500, 2320))]);
         assert_eq!(markers(deck, &diag), [r(280, 2100, 340, 2160)]);
     }
@@ -2377,8 +2424,19 @@ mod tests {
             comment: None
         }));
         let names = deck.layer_names(&t);
-        let lines: String = deck.rules.iter().map(|r| r.rule.deck_line(&t, &names) + "\n").collect();
-        assert_eq!(parse_deck(&lines, &t).unwrap(), deck);
+        let lines: String = deck
+            .derived
+            .iter()
+            .map(|d| d.deck_line(&t, &names) + "\n")
+            .chain(deck.rules.iter().map(|r| r.rule.deck_line(&t, &names) + "\n"))
+            .collect();
+        let mut back = parse_deck(&lines, &t).unwrap();
+        // Rule names are not part of `deck_line`: compare without them.
+        for (a, b) in back.rules.iter_mut().zip(&deck.rules) {
+            a.name = b.name.clone();
+        }
+        assert_eq!(back, deck);
+        assert!(names.iter().any(|n| n == "well_pgate_out"), "the PMOS well check is part of the derived deck");
         assert_eq!(t.deck_text(), text);
         let custom = Tech { drc_deck: Some("width metal1 1".into()), ..t };
         assert_eq!(custom.deck_text(), "width metal1 1");

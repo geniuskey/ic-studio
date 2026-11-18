@@ -1301,6 +1301,17 @@ fn mcp_live_requests() {
     h.state_mut().command(Command::Undo);
     h.run_steps(2);
     assert_eq!(shape_count(&h, "cmos_inverter"), before, "MCP edits are undoable");
+    // So are edits of tools that change layouts as a side effect (here OPC writing its mask).
+    let r = call(&mut h, "opc", serde_json::json!({"cell": "cmos_inverter", "layer": "poly", "apply": true}));
+    assert!(!r.is_error, "{r:?}");
+    assert!(shape_count(&h, "cmos_inverter") > before);
+    h.state_mut().command(Command::Undo);
+    h.run_steps(2);
+    assert_eq!(shape_count(&h, "cmos_inverter"), before, "an applied OPC mask is undoable");
+    // With unsaved changes in the window, an agent cannot replace the project.
+    let r =
+        call(&mut h, "new_project", serde_json::json!({"path": std::env::temp_dir().join("ics-ui-never").display().to_string()}));
+    assert!(r.is_error && r.text.contains("unsaved"), "{r:?}");
 
     let lvs = call(&mut h, "run_lvs", serde_json::json!({"cell": "cmos_inverter"})).value().unwrap();
     assert_eq!(lvs["differences"], 2);
@@ -2496,6 +2507,7 @@ fn update_toast() {
         url: None,
         size: 0,
         tools: vec![],
+        checksums: Default::default(),
     });
     h.run_steps(4);
     h.get_by_label("Update now");

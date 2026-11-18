@@ -61,13 +61,18 @@ pub enum Dist {
 
 /// A varied parameter. `target` is `INST.param` with `*` / `?` wildcards in the instance name
 /// (`M*.w`, `R1.r`) or a design variable name (replacing `{name}`, with `nominal` as its value).
+/// MOS threshold and mobility variation go through the instance parameters `delvto` (nominal
+/// 0) and `mulu0` (nominal 1), which BSIM models in both engines evaluate: `M*.delvto` with
+/// sigma `5m/sqrt(wl)` and `mismatch` draws Pelgrom mismatch, 5 mV·µm over √(W·L) in µm².
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct McVar {
     pub target: String,
     /// Nominal value of a design variable (instance parameters use the instance's value).
     pub nominal: String,
-    /// Standard deviation (Gauss) or half range (Uniform): `5%` of the nominal, or a SPICE number.
+    /// Standard deviation (Gauss) or half range (Uniform): `5%` of the nominal, a SPICE number,
+    /// or `A/sqrt(wl)` for an area-scaled (Pelgrom) value: `A` divided by the square root of the
+    /// instance's W·L in µm².
     pub sigma: String,
     pub dist: Dist,
     /// Draw each matching instance independently (mismatch); otherwise one draw per run is shared
@@ -277,6 +282,15 @@ struct McTarget {
 }
 
 impl McPlan {
+    /// Vary `name` by `term`. Several variables on one parameter (a process shift and a
+    /// mismatch of `M1.delvto`) add up instead of the last one replacing the others.
+    fn add_term(&mut self, name: String, nominal: f64, term: (usize, f64)) {
+        match self.targets.iter_mut().find(|t| t.name.eq_ignore_ascii_case(&name)) {
+            Some(t) => t.terms.push(term),
+            None => self.targets.push(McTarget { name, nominal, terms: vec![term] }),
+        }
+    }
+
     /// The parameter values of the draws `x` (one per input).
     pub fn assign(&self, x: &[f64]) -> Vec<(String, String)> {
         self.targets
@@ -292,8 +306,22 @@ pub fn mc_plan(mc: &MonteCarlo, sch: &Schematic, variation: Option<&ProcessVaria
     let mut plan = McPlan::default();
     for v in mc.vars.iter().filter(|v| !v.target.trim().is_empty()) {
         let t = v.target.trim();
-        let sigma_of = |nominal: f64| -> Result<f64, String> {
+        // `inst` gives the W·L of an area-scaled sigma.
+        let sigma_of = |nominal: f64, inst: Option<&crate::schematic::Instance>| -> Result<f64, String> {
             let s = v.sigma.trim();
+            let compact: String = s.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_ascii_lowercase();
+            if let Some(a) = compact.strip_suffix("/sqrt(wl)") {
+                let a = parse_spice(a).ok_or_else(|| format!("{t}: invalid sigma '{s}'"))?;
+                let inst = inst.ok_or_else(|| format!("{t}: '{s}' needs an instance with W and L"))?;
+                let dim = |k: &str| {
+                    parse_spice(inst.param(k))
+                        .filter(|x| *x > 0.0)
+                        .ok_or_else(|| format!("{t}: '{s}' needs {}.{k}, which is '{}'", inst.name, inst.param(k)))
+                };
+                // W and L in µm, whether the schematic writes metres (1u) or microns (1).
+                let um = |x: f64| if x < 1e-3 { x * 1e6 } else { x };
+                return Ok(a / (um(dim("w")?) * um(dim("l")?)).sqrt());
+            }
             match s.strip_suffix('%') {
                 Some(pct) => parse_spice(pct).map(|p| nominal.abs() * p / 100.0),
                 None => parse_spice(s),
@@ -309,8 +337,15 @@ pub fn mc_plan(mc: &MonteCarlo, sch: &Schematic, variation: Option<&ProcessVaria
                 let mut hit = false;
                 for inst in sch.instances.iter().filter(|i| glob(pat, &i.name)) {
                     let raw = inst.param(&param);
-                    let nominal =
-                        parse_spice(raw).ok_or_else(|| format!("{t}: {}.{param} = '{raw}' is not a number", inst.name))?;
+                    // The MOS shift parameters are rarely written: they start at no shift.
+                    let unset = match param.as_str() {
+                        "delvto" if raw.trim().is_empty() => Some(0.0),
+                        "mulu0" if raw.trim().is_empty() => Some(1.0),
+                        _ => None,
+                    };
+                    let nominal = unset
+                        .or_else(|| parse_spice(raw))
+                        .ok_or_else(|| format!("{t}: {}.{param} = '{raw}' is not a number", inst.name))?;
                     let name = format!("{}.{param}", inst.name);
                     let input = if v.mismatch && hit {
                         plan.inputs.push(name.clone());
@@ -322,7 +357,8 @@ pub fn mc_plan(mc: &MonteCarlo, sch: &Schematic, variation: Option<&ProcessVaria
                         }
                         shared
                     };
-                    plan.targets.push(McTarget { name, nominal, terms: vec![(input, sigma_of(nominal)?)] });
+                    let term = (input, sigma_of(nominal, Some(inst))?);
+                    plan.add_term(name, nominal, term);
                     hit = true;
                 }
                 if !hit {
@@ -331,7 +367,8 @@ pub fn mc_plan(mc: &MonteCarlo, sch: &Schematic, variation: Option<&ProcessVaria
             }
             None => {
                 let nominal = parse_spice(&v.nominal).ok_or_else(|| format!("{t}: invalid nominal '{}'", v.nominal))?;
-                plan.targets.push(McTarget { name: t.to_string(), nominal, terms: vec![(shared, sigma_of(nominal)?)] });
+                let term = (shared, sigma_of(nominal, None)?);
+                plan.add_term(t.to_string(), nominal, term);
             }
         }
     }
@@ -612,6 +649,53 @@ mod tests {
             ..Default::default()
         };
         assert!(mc_samples(&bad, &sch, None).is_err());
+    }
+
+    #[test]
+    fn mos_mismatch_through_delvto() {
+        // Two NMOS of 1 × 1 µm and 4 × 1 µm with no delvto written: Pelgrom sigma 5 mV·µm.
+        let mut sch = Schematic::default();
+        for (k, w) in ["1u", "4u"].iter().enumerate() {
+            let id = sch.add_instance(DeviceKind::Nmos, Pt::new(6 * k as i32, 0), Orient::default());
+            let i = sch.instance_mut(id).unwrap();
+            i.name = format!("M{}", k + 1);
+            i.params.insert("w".into(), w.to_string());
+            i.params.insert("l".into(), "1u".into());
+        }
+        let mc = MonteCarlo {
+            runs: 4000,
+            seed: 11,
+            vars: vec![McVar { target: "M*.delvto".into(), sigma: "5m / sqrt(WL)".into(), mismatch: true, ..Default::default() }],
+            ..Default::default()
+        };
+        let s = mc_samples(&mc, &sch, None).unwrap();
+        let col = |name: &str| -> Vec<f64> {
+            s.iter().map(|run| parse_spice(&run.iter().find(|(n, _)| n == name).unwrap().1).unwrap()).collect()
+        };
+        let (a, b) = (stats(&col("M1.delvto")), stats(&col("M2.delvto")));
+        assert!(a.mean.abs() < 3e-4 && (a.std / 5e-3 - 1.0).abs() < 0.06, "{a:?}");
+        assert!((b.std / 2.5e-3 - 1.0).abs() < 0.06, "4x the area halves sigma: {b:?}");
+        // A shared process shift on the same parameter adds to the mismatch (variances add).
+        let both = MonteCarlo {
+            vars: vec![mc.vars[0].clone(), McVar { target: "M*.delvto".into(), sigma: "10m".into(), ..Default::default() }],
+            ..mc.clone()
+        };
+        let s2 = mc_samples(&both, &sch, None).unwrap();
+        let m1: Vec<f64> =
+            s2.iter().map(|run| parse_spice(&run.iter().find(|(n, _)| n == "M1.delvto").unwrap().1).unwrap()).collect();
+        let st = stats(&m1);
+        assert!((st.std / (5e-3f64.hypot(10e-3)) - 1.0).abs() < 0.06, "{st:?}");
+        // The netlist carries the shift to the simulator.
+        let pt = SweepPoint { corner: String::new(), temp: 27.0, vars: s[0].clone(), run: Some(1), swept: 0 };
+        let (deck, _) = point_deck(&sch, &Tech::generic(), "t", &SimSetup::default(), &pt).unwrap();
+        assert!(deck.lines().any(|l| l.starts_with("M1 ") && l.contains(" delvto=")), "{deck}");
+        let no_wl = MonteCarlo {
+            vars: vec![McVar { target: "M*.delvto".into(), sigma: "5m/sqrt(wl)".into(), ..Default::default() }],
+            ..mc
+        };
+        let mut bare = sch.clone();
+        bare.instances[0].params.remove("w");
+        assert!(mc_samples(&no_wl, &bare, None).unwrap_err().contains("M1.w"));
     }
 
     #[test]

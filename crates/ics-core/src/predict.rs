@@ -216,15 +216,19 @@ pub struct YieldPrediction {
     /// Per spec, its prediction or why there is none.
     pub specs: Vec<Result<SpecPrediction, String>>,
     /// Share of samples meeting every limited spec (`None` when a limited spec has no model or
-    /// no spec has limits).
+    /// no spec has limits). Runs that gave no value for a limited spec count as failures: the
+    /// surrogate describes the runs that worked, scaled by the share of runs that did.
     pub joint: Option<f64>,
     /// Surrogate samples drawn.
     pub samples: usize,
+    /// Runs that gave no value for some limited spec (non-convergence, no crossing, ...).
+    pub failed_runs: usize,
 }
 
 /// Fit a surrogate of every spec over the run draws `x` and sample them `samples` times with
 /// the input distributions `dists`. `values[k][r]` is spec `k` in run `r` (`None` where the
-/// run gave no value; those runs are left out of that spec's fit).
+/// run gave no value; those runs are left out of that spec's fit and count as failures of its
+/// yield).
 pub fn predict(
     dists: &[Dist],
     x: &[Vec<f64>],
@@ -289,9 +293,23 @@ pub fn predict(
             Ok(SpecPrediction { model, mean, std, yield_: limited[i].then(|| pass[i] as f64 / n), cpk, sensitivity })
         })
         .collect::<Vec<Result<SpecPrediction, String>>>();
+    // A run without a value for a limited spec failed it outright; the surrogate only knows
+    // the runs that worked, so its pass rates are scaled by the share of those.
+    let runs = x.len().max(1) as f64;
+    let ok = |v: &Option<f64>| v.is_some_and(f64::is_finite);
+    let mut specs = specs;
+    for (i, s) in specs.iter_mut().enumerate() {
+        if let Ok(s) = s
+            && let Some(y) = &mut s.yield_
+        {
+            *y *= values[i].iter().filter(|v| ok(v)).count() as f64 / runs;
+        }
+    }
+    let failed_runs = (0..x.len()).filter(|&r| (0..k).any(|i| limited[i] && !values[i].get(r).is_some_and(ok))).count();
     let any_limited = limited.iter().any(|l| *l);
     let complete = specs.iter().zip(&limited).all(|(s, l)| !l || s.is_ok());
-    YieldPrediction { specs, joint: (any_limited && complete).then(|| joint as f64 / n), samples }
+    let joint = (any_limited && complete).then(|| joint as f64 / n * (x.len() - failed_runs) as f64 / runs);
+    YieldPrediction { specs, joint, samples, failed_runs }
 }
 
 /// The Monte Carlo runs of one sweep condition (corner, temperature, swept values) and their
@@ -403,6 +421,22 @@ mod tests {
         // A spec without values has no model, so the joint yield is unknown.
         let p = predict(&[Dist::Gauss, Dist::Gauss], &x, &[vec![None; 400]], &lim, 100, 1);
         assert!(p.specs[0].is_err() && p.joint.is_none());
+    }
+
+    #[test]
+    fn runs_without_a_value_fail() {
+        // Every passing run fits a model that always passes, but a quarter of the runs did not
+        // converge: they failed, so the yield is 75 %, not 100 %.
+        let x = draws(2, 400, 5);
+        let y: Vec<Option<f64>> = (0..400).map(|r| if r % 4 == 0 { None } else { Some(x[r][0] * 0.01) }).collect();
+        let lim = [(None, Some(1.0))];
+        let p = predict(&[Dist::Gauss, Dist::Gauss], &x, std::slice::from_ref(&y), &lim, 20_000, 1);
+        assert_eq!(p.failed_runs, 100);
+        assert!((p.joint.unwrap() - 0.75).abs() < 1e-9, "{:?}", p.joint);
+        assert!((p.specs[0].as_ref().unwrap().yield_.unwrap() - 0.75).abs() < 1e-9);
+        // Missing values of a spec without limits do not fail the run.
+        let p = predict(&[Dist::Gauss, Dist::Gauss], &x, &[y.clone(), y], &[(None, Some(1.0)), (None, None)], 1000, 1);
+        assert_eq!(p.failed_runs, 100);
     }
 
     #[test]

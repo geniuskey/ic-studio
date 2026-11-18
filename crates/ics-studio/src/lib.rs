@@ -24,6 +24,7 @@ pub mod optimizer_view;
 pub mod pixel_view;
 pub mod process_data_view;
 pub mod process_view;
+pub mod recovery;
 pub mod rule_designer;
 pub mod schematic_view;
 pub mod silicon_view;

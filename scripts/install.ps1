@@ -150,6 +150,28 @@ public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wP
             return
         }
 
+        # The release lists the SHA-256 of every file it holds; releases before v0.3 have no list.
+        $sums = Join-Path $tmp 'SHA256SUMS'
+        $sumsUrl = $url.Substring(0, $url.LastIndexOf('/')) + '/SHA256SUMS'
+        $haveSums = $true
+        try { Invoke-WebRequest -Uri $sumsUrl -OutFile $sums -UseBasicParsing } catch { $haveSums = $false }
+        if ($haveSums) {
+            $line = Get-Content -LiteralPath $sums | Where-Object { ($_ -split '\s+')[1] -in @($asset, "*$asset") } | Select-Object -First 1
+            if (-not $line) {
+                Write-Host "SHA256SUMS does not list $asset." -ForegroundColor Red
+                return
+            }
+            $want = ($line -split '\s+')[0].ToLowerInvariant()
+            $got = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($got -ne $want) {
+                Write-Host "The download does not match its SHA-256 (got $got, expected $want)." -ForegroundColor Red
+                return
+            }
+            Write-Step 'SHA-256 verified'
+        } else {
+            Write-Host 'Warning: this release lists no SHA-256 checksums; the download is not verified.' -ForegroundColor Yellow
+        }
+
         Write-Step 'Extracting'
         $unpacked = Join-Path $tmp 'unpacked'
         Expand-Archive -LiteralPath $zip -DestinationPath $unpacked -Force

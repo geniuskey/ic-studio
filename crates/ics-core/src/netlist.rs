@@ -184,6 +184,14 @@ pub fn netlist_for(sch: &Schematic, tech: &Tech, corner: &str) -> Netlist {
                         l += &format!(" {k}={}", scaled(k, dim));
                     }
                 }
+                // Threshold shift and mobility multiplier (BSIM instance parameters), set by
+                // Monte Carlo mismatch: `M*.delvto`, `M*.mulu0`.
+                for k in ["delvto", "mulu0"] {
+                    let v = inst.param(k).trim();
+                    if !v.is_empty() {
+                        l += &format!(" {k}={v}");
+                    }
+                }
                 l
             }
             DeviceKind::Ground | DeviceKind::Supply => unreachable!(),

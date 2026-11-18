@@ -95,6 +95,7 @@ pub fn snapshot(p: &Project, cell: Option<&CellRef>, layout: Option<&Layout>) ->
         tech: p.tech.clone(),
         libraries,
         settings: p.settings.clone(),
+        disk: p.disk.clone(),
     }
 }
 
@@ -198,8 +199,9 @@ fn backend(a: &Args) -> Result<Option<Backend>, String> {
 }
 
 fn sim_options(p: Option<&Project>, backend: Backend) -> SimOptions {
-    let mut opts = SimOptions { backend, ..Default::default() };
-    if let Some(exe) = p.and_then(|p| p.settings.ngspice_path.clone()) {
+    // Relative `.include` / `.lib` paths are relative to the project.
+    let mut opts = SimOptions { backend, deck_dir: p.and_then(|p| p.root.clone()), ..Default::default() };
+    if let Some(exe) = p.and_then(|p| p.trusted_ngspice()) {
         opts.ngspice_exe = exe;
     }
     opts
@@ -1471,7 +1473,7 @@ impl State {
             return Err("no tests: give cells specs in their sweep setup (sim.sweep.specs)".into());
         }
         let mut opts = ics_sim::SimOptions::default();
-        if let Some(exe) = &p.settings.ngspice_path {
+        if let Some(exe) = &p.trusted_ngspice() {
             opts.ngspice_exe = exe.clone();
         }
         let run = ics_sim::verify::run(p, &tests, &opts, &|_, _, _| {});
@@ -2106,7 +2108,7 @@ impl State {
         self.dirty = true;
         let p = self.project()?;
         let mut opts = ics_sim::SimOptions::default();
-        if let Some(exe) = &p.settings.ngspice_path {
+        if let Some(exe) = &p.trusted_ngspice() {
             opts.ngspice_exe = exe.clone();
         }
         let rep = ics_sim::optimize::run(p, &r, &opts, &mut |_, _| true)?;
@@ -2196,7 +2198,7 @@ impl State {
         let samples = a.0.get("samples").and_then(Value::as_u64).unwrap_or(100_000) as usize;
         let p = self.project()?;
         let mut opts = ics_sim::SimOptions::default();
-        if let Some(exe) = &p.settings.ngspice_path {
+        if let Some(exe) = &p.trusted_ngspice() {
             opts.ngspice_exe = exe.clone();
         }
         let run = ics_sim::sweep::run(p, &r, &opts, &|_, _| {})?;
@@ -2263,7 +2265,7 @@ impl State {
         self.dirty = true;
         let p = self.project()?;
         let mut opts = ics_sim::SimOptions::default();
-        if let Some(exe) = &p.settings.ngspice_path {
+        if let Some(exe) = &p.trusted_ngspice() {
             opts.ngspice_exe = exe.clone();
         }
         let cor = match a.0.get("csv").and_then(Value::as_str) {
@@ -2584,6 +2586,7 @@ impl State {
             "net_pairs": rep.nets,
             "differences": errors.len(),
             "errors": errors,
+            "warnings": rep.warnings.iter().map(|w| json!({"message": w.message, "marker_um": w.marker.map(|m| rect_um(t, m))})).collect::<Vec<_>>(),
         });
         self.keep(Verified::Lvs(x, rep));
         Ok(out)

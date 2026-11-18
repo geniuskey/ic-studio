@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::gds::{GdsImport, ReadOptions, read_gds_with, sanitize_name, unique_name, write_gds};
+use crate::gds::{GdsImport, ReadOptions, read_gds_with, sanitize_name, unique_name};
 use crate::layout::{Geometry, Layout};
 use crate::pcell::{PCELL_LIB, PCell};
 use crate::schematic::Schematic;
@@ -46,6 +46,62 @@ pub enum ProjectError {
     Parse { path: PathBuf, source: serde_json::Error },
     #[error("{0}")]
     Other(String),
+    /// Files changed on disk since this project read or wrote them (another program, a git
+    /// checkout): nothing was saved. [`Project::save_overwriting`] replaces them.
+    #[error("{} file(s) changed on disk since the project was opened, so nothing was saved: {}", .0.len(), conflict_list(.0))]
+    Conflict(Vec<PathBuf>),
+}
+
+fn conflict_list(paths: &[PathBuf]) -> String {
+    let mut s: Vec<String> = paths.iter().take(5).map(|p| p.display().to_string()).collect();
+    if paths.len() > 5 {
+        s.push(format!("and {} more", paths.len() - 5));
+    }
+    s.join(", ")
+}
+
+/// Content hashes of the project's files as this project last read or wrote them, to notice
+/// changes made by other programs before saving over them. Clones share it.
+#[derive(Debug, Clone, Default)]
+pub struct DiskState(std::sync::Arc<std::sync::Mutex<HashMap<PathBuf, u64>>>);
+
+impl DiskState {
+    fn get(&self, p: &Path) -> Option<u64> {
+        self.0.lock().ok()?.get(p).copied()
+    }
+    fn set(&self, p: &Path, h: Option<u64>) {
+        if let Ok(mut m) = self.0.lock() {
+            match h {
+                Some(h) => m.insert(p.to_path_buf(), h),
+                None => m.remove(p),
+            };
+        }
+    }
+    fn tracks_under(&self, root: &Path) -> bool {
+        self.0.lock().is_ok_and(|m| m.keys().any(|k| k.starts_with(root)))
+    }
+    fn known_under(&self, root: &Path) -> Vec<PathBuf> {
+        self.0.lock().map(|m| m.keys().filter(|k| k.starts_with(root)).cloned().collect()).unwrap_or_default()
+    }
+}
+
+fn content_hash(data: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    data.hash(&mut h);
+    h.finish()
+}
+
+fn file_hash(p: &Path) -> Option<u64> {
+    fs::read(p).ok().map(|d| content_hash(&d))
+}
+
+/// One step of a save.
+enum SaveOp {
+    Write(PathBuf, Vec<u8>),
+    Remove(PathBuf),
+    /// A cell directory of a deleted, renamed or GDS-stored cell.
+    RemoveDir(PathBuf),
 }
 
 pub type Result<T> = std::result::Result<T, ProjectError>;
@@ -59,8 +115,8 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
     serde_json::from_str(&text).map_err(|source| ProjectError::Parse { path: path.to_path_buf(), source })
 }
 
-fn write_json<T: Serialize>(path: &Path, v: &T) -> Result<()> {
-    write_atomic(path, serde_json::to_string_pretty(v).expect("serializable").as_bytes())
+fn json_bytes<T: Serialize>(v: &T) -> Vec<u8> {
+    serde_json::to_string_pretty(v).expect("serializable").into_bytes()
 }
 
 /// Write via a temporary file so a crash never leaves a truncated file behind.
@@ -202,6 +258,13 @@ struct GdsCellMeta {
     schematic: Option<Schematic>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sim: Option<SimSetup>,
+    /// Layout data GDSII has no record for (the file keeps item ids for the constraints).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    constraints: Vec<crate::constraints::Constraint>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    rulers: Vec<((i64, i64), (i64, i64))>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tracks: Vec<crate::tracks::TrackPattern>,
 }
 
 /// How a library is stored on disk (see the module docs).
@@ -269,6 +332,8 @@ pub struct Project {
     pub tech: Tech,
     pub libraries: Vec<Library>,
     pub settings: ProjectSettings,
+    /// The files on disk as last read or written (see [`ProjectError::Conflict`]).
+    pub disk: DiskState,
 }
 
 pub fn valid_name(name: &str) -> bool {
@@ -276,6 +341,20 @@ pub fn valid_name(name: &str) -> bool {
 }
 
 impl Project {
+    /// The project's ngspice executable (`settings.ngspice_path`) when it can be trusted: an
+    /// absolute path to a file named `ngspice` / `ngspice_con` outside the project folder. A
+    /// project from elsewhere must not choose which program the tools run.
+    pub fn trusted_ngspice(&self) -> Option<String> {
+        let raw = self.settings.ngspice_path.as_deref()?.trim();
+        let path = Path::new(raw);
+        let stem = path.file_stem()?.to_str()?.to_ascii_lowercase();
+        let inside = self.root.as_ref().is_some_and(|r| {
+            let canon = |p: &Path| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+            canon(path).starts_with(canon(r))
+        });
+        (path.is_absolute() && matches!(stem.as_str(), "ngspice" | "ngspice_con") && !inside).then(|| raw.to_string())
+    }
+
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             root: None,
@@ -284,6 +363,7 @@ impl Project {
             tech: Tech::generic(),
             libraries: vec![Library::new("work")],
             settings: ProjectSettings::default(),
+            disk: DiskState::default(),
         }
     }
 
@@ -471,16 +551,10 @@ impl Project {
         Ok(warnings)
     }
 
-    /// Delete a cell from memory and (if saved) from disk.
+    /// Delete a cell. Its files go with the next [`Project::save`], like every other edit.
     pub fn delete_cell(&mut self, r: &CellRef) -> Result<()> {
         if let Some(l) = self.library_mut(&r.lib) {
             l.cells.retain(|c| c.name != r.cell);
-        }
-        if let Some(root) = &self.root {
-            let dir = root.join(&r.lib).join(&r.cell);
-            if dir.join("cell.json").exists() {
-                fs::remove_dir_all(&dir).map_err(io_err(&dir))?;
-            }
         }
         Ok(())
     }
@@ -491,12 +565,6 @@ impl Project {
         }
         if self.cell(&CellRef::new(&r.lib, new_name)).is_some() {
             return Err(format!("cell '{new_name}' already exists"));
-        }
-        if let Some(root) = &self.root {
-            let from = root.join(&r.lib).join(&r.cell);
-            if from.exists() {
-                fs::rename(&from, root.join(&r.lib).join(new_name)).map_err(|e| e.to_string())?;
-            }
         }
         let c = self.cell_mut(r).ok_or("no such cell")?;
         c.name = new_name.to_string();
@@ -512,8 +580,7 @@ impl Project {
     }
 
     /// Rename library `old` to `new_name`, updating every layout instance that refers to its
-    /// cells. A saved library's directory (and GDS file) is renamed on disk and the manifest is
-    /// rewritten, so the project on disk stays consistent.
+    /// cells. The files on disk follow with the next [`Project::save`].
     pub fn rename_library(&mut self, old: &str, new_name: &str) -> std::result::Result<(), String> {
         if !valid_name(new_name) {
             return Err(format!("'{new_name}' is not a valid library name (use letters, digits, _ and -)"));
@@ -525,17 +592,6 @@ impl Project {
             return Err(format!("library '{new_name}' already exists"));
         }
         let idx = self.libraries.iter().position(|l| l.name == old).ok_or_else(|| format!("no library '{old}'"))?;
-        if let Some(root) = &self.root {
-            let from = root.join(old);
-            if from.exists() {
-                let to = root.join(new_name);
-                fs::rename(&from, &to).map_err(|e| format!("cannot rename {}: {e}", from.display()))?;
-                let gds = gds_file(&to, old);
-                if gds.exists() {
-                    fs::rename(&gds, gds_file(&to, new_name)).map_err(|e| format!("cannot rename {}: {e}", gds.display()))?;
-                }
-            }
-        }
         self.libraries[idx].name = new_name.to_string();
         for c in self.libraries.iter_mut().flat_map(|l| &mut l.cells) {
             if let Some(l) = c.layout.as_mut() {
@@ -545,11 +601,6 @@ impl Project {
                     }
                 }
             }
-        }
-        if let Some(root) = &self.root
-            && root.join(MANIFEST).exists()
-        {
-            self.write_manifest(root).map_err(|e| e.to_string())?;
         }
         Ok(())
     }
@@ -585,23 +636,14 @@ impl Project {
             .collect()
     }
 
-    /// Delete library `lib` with all of its cells, from memory and (if saved) from disk.
+    /// Delete library `lib` with all of its cells. Its files go with the next [`Project::save`].
     pub fn delete_library(&mut self, lib: &str) -> std::result::Result<(), String> {
         let idx = self.libraries.iter().position(|l| l.name == lib).ok_or_else(|| format!("no library '{lib}'"))?;
         self.libraries.remove(idx);
-        if let Some(root) = &self.root {
-            let dir = root.join(lib);
-            if dir.is_dir() {
-                fs::remove_dir_all(&dir).map_err(|e| format!("cannot remove {}: {e}", dir.display()))?;
-            }
-            if root.join(MANIFEST).exists() {
-                self.write_manifest(root).map_err(|e| e.to_string())?;
-            }
-        }
         Ok(())
     }
 
-    fn write_manifest(&self, root: &Path) -> Result<()> {
+    fn manifest_json(&self) -> Vec<u8> {
         let manifest = Manifest {
             name: self.name.clone(),
             format_version: FORMAT_VERSION,
@@ -609,7 +651,101 @@ impl Project {
             libraries: self.libraries.iter().map(LibEntry::of).collect(),
             settings: self.settings.clone(),
         };
-        write_json(&root.join(MANIFEST), &manifest)
+        json_bytes(&manifest)
+    }
+
+    /// Files a project with this library layout keeps on disk (whether or not they exist).
+    fn tracked_files(&self, root: &Path) -> Vec<PathBuf> {
+        let mut v = vec![root.join(MANIFEST), root.join("tech.json")];
+        for lib in &self.libraries {
+            let dir = root.join(&lib.name);
+            v.push(gds_file(&dir, &lib.name));
+            v.push(dir.join(LIBRARY_FILE));
+            for c in &lib.cells {
+                for f in ["cell.json", "sim.json", "schematic.json", "layout.json"] {
+                    v.push(dir.join(&c.name).join(f));
+                }
+            }
+        }
+        v
+    }
+
+    /// Remember the content of every project file as it is now on disk.
+    fn record_disk(&self) {
+        let Some(root) = &self.root else { return };
+        for f in self.tracked_files(root) {
+            self.disk.set(&f, file_hash(&f));
+        }
+    }
+
+    /// The writes and removals that make the files under `root` match this project.
+    fn save_plan(&self, root: &Path) -> Result<Vec<SaveOp>> {
+        let mut ops = vec![SaveOp::Write(root.join(MANIFEST), self.manifest_json())];
+        let tech = if self.drc_deck_path().is_some_and(|f| f.is_file()) {
+            // The shared deck file holds the deck; `tech.json` only links it. While the file
+            // cannot be found, the copy (from an older save, or the last deck) is kept.
+            json_bytes(&Tech { drc_deck: None, ..self.tech.clone() })
+        } else {
+            json_bytes(&self.tech)
+        };
+        ops.push(SaveOp::Write(root.join("tech.json"), tech));
+        let mut keep_dirs: HashSet<PathBuf> = HashSet::new();
+        for lib in &self.libraries {
+            let lib_dir = root.join(&lib.name);
+            match lib.storage {
+                LibStorage::Json => {
+                    for cell in &lib.cells {
+                        let dir = lib_dir.join(&cell.name);
+                        keep_dirs.insert(dir.clone());
+                        let meta = CellMeta { description: cell.description.clone(), pcell: cell.pcell.clone() };
+                        ops.push(SaveOp::Write(dir.join("cell.json"), json_bytes(&meta)));
+                        ops.push(SaveOp::Write(dir.join("sim.json"), json_bytes(&cell.sim)));
+                        for (f, view) in [
+                            ("schematic.json", cell.schematic.as_ref().map(json_bytes)),
+                            ("layout.json", cell.layout.as_ref().map(json_bytes)),
+                        ] {
+                            ops.push(match view {
+                                Some(b) => SaveOp::Write(dir.join(f), b),
+                                None => SaveOp::Remove(dir.join(f)),
+                            });
+                        }
+                    }
+                    ops.push(SaveOp::Remove(gds_file(&lib_dir, &lib.name)));
+                    ops.push(SaveOp::Remove(lib_dir.join(LIBRARY_FILE)));
+                }
+                LibStorage::Gds => {
+                    let (gds, meta) = gds_library_files(lib, &self.tech);
+                    ops.push(SaveOp::Write(gds_file(&lib_dir, &lib.name), gds));
+                    ops.push(SaveOp::Write(lib_dir.join(LIBRARY_FILE), meta));
+                    if let Ok(rd) = fs::read_dir(&lib_dir) {
+                        for e in rd.flatten() {
+                            if e.path().join("cell.json").is_file() {
+                                ops.push(SaveOp::RemoveDir(e.path()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Files this project knew that no longer belong to it: deleted or renamed cells and
+        // libraries. Files it never knew (made by another program) are left alone.
+        let wanted: HashSet<PathBuf> = self.tracked_files(root).into_iter().collect();
+        let mut gone_dirs: HashSet<PathBuf> = HashSet::new();
+        for f in self.disk.known_under(root) {
+            if wanted.contains(&f) || !f.exists() {
+                continue;
+            }
+            match f.file_name().and_then(|n| n.to_str()) {
+                Some("cell.json" | "sim.json" | "schematic.json" | "layout.json") => {
+                    if let Some(dir) = f.parent().filter(|d| !keep_dirs.contains(*d)) {
+                        gone_dirs.insert(dir.to_path_buf());
+                    }
+                }
+                _ => ops.push(SaveOp::Remove(f)),
+            }
+        }
+        ops.extend(gone_dirs.into_iter().map(SaveOp::RemoveDir));
+        Ok(ops)
     }
 
     pub fn save_as(&mut self, root: &Path) -> Result<()> {
@@ -617,36 +753,95 @@ impl Project {
         self.save()
     }
 
+    /// Write the project. Files that another program changed since this project read or
+    /// wrote them are not overwritten: the save stops with [`ProjectError::Conflict`] before
+    /// writing anything. Files whose content did not change are not rewritten.
     pub fn save(&self) -> Result<()> {
+        self.save_with(false)
+    }
+
+    /// [`Project::save`] that replaces files changed on disk by other programs.
+    pub fn save_overwriting(&self) -> Result<()> {
+        self.save_with(true)
+    }
+
+    fn save_with(&self, force: bool) -> Result<()> {
         let root = self.root.as_ref().ok_or_else(|| ProjectError::Other("project has no location".into()))?;
         fs::create_dir_all(root).map_err(io_err(root))?;
-        self.write_manifest(root)?;
-        if self.drc_deck_path().is_some_and(|f| f.is_file()) {
-            // The shared deck file holds the deck; `tech.json` only links it. While the file
-            // cannot be found, the copy (from an older save, or the last deck) is kept.
-            write_json(&root.join("tech.json"), &Tech { drc_deck: None, ..self.tech.clone() })?;
-        } else {
-            write_json(&root.join("tech.json"), &self.tech)?;
-        }
-        for lib in &self.libraries {
-            let lib_dir = root.join(&lib.name);
-            match lib.storage {
-                LibStorage::Json => {
-                    for cell in &lib.cells {
-                        let dir = lib_dir.join(&cell.name);
-                        fs::create_dir_all(&dir).map_err(io_err(&dir))?;
-                        write_json(
-                            &dir.join("cell.json"),
-                            &CellMeta { description: cell.description.clone(), pcell: cell.pcell.clone() },
-                        )?;
-                        write_json(&dir.join("sim.json"), &cell.sim)?;
-                        sync_view(&dir.join("schematic.json"), cell.schematic.as_ref())?;
-                        sync_view(&dir.join("layout.json"), cell.layout.as_ref())?;
+        let ops = self.save_plan(root)?;
+        // Only a project that read or wrote this folder knows what its files were.
+        if !force && self.disk.tracks_under(root) {
+            let changed = |p: &Path| {
+                let now = file_hash(p);
+                now.is_some() && now != self.disk.get(p)
+            };
+            let mut conflicts = vec![];
+            for op in &ops {
+                match op {
+                    SaveOp::Write(p, data) => {
+                        if changed(p) && file_hash(p) != Some(content_hash(data)) {
+                            conflicts.push(p.clone());
+                        }
                     }
-                    remove_file_if_exists(&gds_file(&lib_dir, &lib.name))?;
-                    remove_file_if_exists(&lib_dir.join(LIBRARY_FILE))?;
+                    SaveOp::Remove(p) => {
+                        if changed(p) && self.disk.get(p).is_some() {
+                            conflicts.push(p.clone());
+                        }
+                    }
+                    SaveOp::RemoveDir(d) => {
+                        for e in fs::read_dir(d).into_iter().flatten().flatten() {
+                            let p = e.path();
+                            if self.disk.get(&p).is_some() && changed(&p) {
+                                conflicts.push(p);
+                            }
+                        }
+                    }
                 }
-                LibStorage::Gds => save_gds_library(&lib_dir, lib, &self.tech)?,
+            }
+            if !conflicts.is_empty() {
+                return Err(ProjectError::Conflict(conflicts));
+            }
+        }
+        for op in ops {
+            match op {
+                SaveOp::Write(p, data) => {
+                    let h = content_hash(&data);
+                    if file_hash(&p) != Some(h) {
+                        if let Some(dir) = p.parent() {
+                            fs::create_dir_all(dir).map_err(io_err(dir))?;
+                        }
+                        write_atomic(&p, &data)?;
+                    }
+                    self.disk.set(&p, Some(h));
+                }
+                SaveOp::Remove(p) => {
+                    remove_file_if_exists(&p)?;
+                    self.disk.set(&p, None);
+                }
+                SaveOp::RemoveDir(d) => {
+                    if d.is_dir() {
+                        fs::remove_dir_all(&d).map_err(io_err(&d))?;
+                    }
+                    for f in ["cell.json", "sim.json", "schematic.json", "layout.json"] {
+                        self.disk.set(&d.join(f), None);
+                    }
+                    // A library directory left empty by its last cell goes too.
+                    if let Some(parent) = d.parent().filter(|p| *p != root.as_path())
+                        && fs::read_dir(parent).is_ok_and(|mut r| r.next().is_none())
+                    {
+                        let _ = fs::remove_dir(parent);
+                    }
+                }
+            }
+        }
+        // Library directories of deleted or renamed GDS libraries, now empty.
+        for lib_dir in fs::read_dir(root).into_iter().flatten().flatten().map(|e| e.path()) {
+            let name = lib_dir.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
+            if lib_dir.is_dir()
+                && !self.libraries.iter().any(|l| l.name == name)
+                && fs::read_dir(&lib_dir).is_ok_and(|mut r| r.next().is_none())
+            {
+                let _ = fs::remove_dir(&lib_dir);
             }
         }
         Ok(())
@@ -702,7 +897,9 @@ impl Project {
             tech,
             libraries,
             settings: manifest.settings,
+            disk: DiskState::default(),
         };
+        p.record_disk();
         // Without the shared deck file the deck derived from the layer rules is used;
         // `reload_drc_deck` reports why.
         let _ = p.reload_drc_deck();
@@ -847,39 +1044,43 @@ fn gds_file(lib_dir: &Path, lib: &str) -> PathBuf {
     lib_dir.join(format!("{lib}.gds"))
 }
 
-fn save_gds_library(dir: &Path, lib: &Library, tech: &Tech) -> Result<()> {
-    fs::create_dir_all(dir).map_err(io_err(dir))?;
+/// The GDS file and `library.json` of a GDS-stored library.
+fn gds_library_files(lib: &Library, tech: &Tech) -> (Vec<u8>, Vec<u8>) {
     let refs: Vec<CellRef> = lib.cells.iter().filter(|c| c.layout.is_some()).map(|c| CellRef::new(&lib.name, &c.name)).collect();
     let cells: Vec<(&CellRef, &Layout)> = refs.iter().zip(lib.cells.iter().filter_map(|c| c.layout.as_ref())).collect();
-    write_atomic(&gds_file(dir, &lib.name), &write_gds(&lib.name, &cells, tech))?;
+    let gds = crate::gds::write_gds_with_ids(&lib.name, &cells, tech);
     let default_sim = SimSetup::default();
     let file = GdsLibraryFile {
         cells: lib
             .cells
             .iter()
             .map(|c| {
+                let lay = c.layout.as_ref();
                 let meta = GdsCellMeta {
                     description: c.description.clone(),
                     pcell: c.pcell.clone(),
                     schematic: c.schematic.clone(),
                     sim: (c.sim != default_sim).then(|| c.sim.clone()),
+                    constraints: lay.map(|l| l.constraints.clone()).unwrap_or_default(),
+                    rulers: lay.map(|l| l.rulers.clone()).unwrap_or_default(),
+                    tracks: lay.map(|l| l.tracks.clone()).unwrap_or_default(),
                 };
                 (c, meta)
             })
             .filter(|(c, m)| {
-                c.layout.is_none() || !m.description.is_empty() || m.pcell.is_some() || m.schematic.is_some() || m.sim.is_some()
+                c.layout.is_none()
+                    || !m.description.is_empty()
+                    || m.pcell.is_some()
+                    || m.schematic.is_some()
+                    || m.sim.is_some()
+                    || !m.constraints.is_empty()
+                    || !m.rulers.is_empty()
+                    || !m.tracks.is_empty()
             })
             .map(|(c, m)| (c.name.clone(), m))
             .collect(),
     };
-    write_json(&dir.join(LIBRARY_FILE), &file)?;
-    for e in fs::read_dir(dir).map_err(io_err(dir))?.flatten() {
-        let p = e.path();
-        if p.join("cell.json").is_file() {
-            fs::remove_dir_all(&p).map_err(io_err(&p))?;
-        }
-    }
-    Ok(())
+    (gds, json_bytes(&file))
 }
 
 /// Cells of a GDS-stored library. Layers the technology lacks are appended to `tech`;
@@ -911,6 +1112,9 @@ fn open_gds_library(dir: &Path, lib: &str, tech: &mut Tech) -> Result<Vec<Cell>>
         }
         let name = renamed.get(&name).cloned().unwrap_or(name);
         let m = meta.cells.remove(&name).unwrap_or_default();
+        layout.constraints = m.constraints;
+        layout.rulers = m.rulers;
+        layout.tracks = m.tracks;
         cells.push(Cell {
             name,
             description: m.description,
@@ -1027,18 +1231,6 @@ fn scale_layout(l: &mut Layout, f: f64) {
     }
 }
 
-fn sync_view<T: Serialize>(path: &Path, view: Option<&T>) -> Result<()> {
-    match view {
-        Some(v) => write_json(path, v),
-        None => {
-            if path.exists() {
-                fs::remove_file(path).map_err(io_err(path))?;
-            }
-            Ok(())
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1056,7 +1248,50 @@ mod tests {
         let r = q.all_cells().next().unwrap().0;
         let mut q = q;
         q.delete_cell(&r).unwrap();
+        assert!(dir.join(&r.lib).join(&r.cell).exists(), "deleting is an edit like any other: on disk after a save");
+        q.save().unwrap();
         assert!(!dir.join(&r.lib).join(&r.cell).exists());
+        // Renaming moves the cell's files with the save, and a cell another program added
+        // meanwhile is left alone.
+        let r2 = q.all_cells().next().unwrap().0;
+        let to = q.rename_cell(&r2, "renamed").unwrap();
+        let foreign = dir.join(&r2.lib).join("from_cli");
+        fs::create_dir_all(&foreign).unwrap();
+        fs::write(foreign.join("cell.json"), "{}").unwrap();
+        q.save().unwrap();
+        assert!(dir.join(&to.lib).join("renamed").join("cell.json").is_file());
+        assert!(!dir.join(&r2.lib).join(&r2.cell).exists());
+        assert!(foreign.join("cell.json").is_file());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn save_does_not_overwrite_changes_made_elsewhere() {
+        let dir = temp_dir("conflict");
+        let mut p = crate::examples::demo_project();
+        p.save_as(&dir).unwrap();
+        let mut gui = Project::open(&dir).unwrap();
+        // Another program (the CLI, git) changes a cell while the project is open...
+        let mut cli = Project::open(&dir).unwrap();
+        let r = CellRef::new("work", "cmos_inverter");
+        cli.cell_mut(&r).unwrap().description = "edited by the CLI".into();
+        cli.save().unwrap();
+        // ...then the window saves its own edit of the same cell: nothing is written.
+        gui.cell_mut(&r).unwrap().description = "edited in the window".into();
+        let before = fs::read(dir.join("work/cmos_inverter/cell.json")).unwrap();
+        match gui.save() {
+            Err(ProjectError::Conflict(files)) => assert_eq!(files, [dir.join("work/cmos_inverter/cell.json")]),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(fs::read(dir.join("work/cmos_inverter/cell.json")).unwrap(), before);
+        // Saving an unrelated change still conflicts (the save is all or nothing); overwriting works.
+        gui.save_overwriting().unwrap();
+        assert_eq!(Project::open(&dir).unwrap().cell(&r).unwrap().description, "edited in the window");
+        // Unchanged files are not rewritten.
+        let t0 = fs::metadata(dir.join("tech.json")).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        gui.save().unwrap();
+        assert_eq!(fs::metadata(dir.join("tech.json")).unwrap().modified().unwrap(), t0);
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1269,6 +1504,43 @@ mod tests {
     }
 
     #[test]
+    fn gds_library_keeps_ids_constraints_rulers_and_tracks() {
+        use crate::constraints::{Constraint, Edge};
+        let dir = temp_dir("gdsmeta");
+        let mut p = crate::examples::demo_project();
+        p.set_library_storage("work", LibStorage::Gds).unwrap();
+        let r = CellRef::new("work", "cmos_inverter");
+        let lay = p.cell_mut(&r).unwrap().layout.as_mut().unwrap();
+        // Ids with gaps, as after deletions: the constraint must still find its items.
+        lay.shapes.remove(1);
+        let items = vec![lay.shapes[1].id, lay.shapes[3].id];
+        lay.constraints.push(Constraint::Align { edge: Edge::Left, items: items.clone() });
+        lay.rulers.push(((0, 0), (1000, 0)));
+        lay.tracks.push(crate::tracks::TrackPattern {
+            layer: 6,
+            horizontal: true,
+            start: 0,
+            period: 560,
+            tracks: vec![(140, 230)],
+        });
+        let want = lay.clone();
+        p.save_as(&dir).unwrap();
+        let q = Project::open(&dir).unwrap();
+        let got = q.cell(&r).unwrap().layout.as_ref().unwrap();
+        assert_eq!(got.constraints, want.constraints);
+        assert_eq!(got.rulers, want.rulers);
+        assert_eq!(got.tracks, want.tracks);
+        for id in items {
+            assert_eq!(got.shape(id).map(|s| &s.geom), want.shape(id).map(|s| &s.geom), "item {id} keeps its id");
+        }
+        assert!(got.next_id >= want.shapes.iter().map(|s| s.id).max().unwrap());
+        // Exports carry no id properties.
+        let out = crate::gds::write_gds("x", &[(&r, got)], &q.tech);
+        assert!(out.len() < crate::gds::write_gds_with_ids("x", &[(&r, got)], &q.tech).len());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn rename_and_delete_library_on_disk() {
         let dir = temp_dir("libops");
         let mut p = crate::examples::demo_project();
@@ -1279,17 +1551,20 @@ mod tests {
         assert!(p.rename_library("chip", "work").is_err(), "names must be unique");
         p.rename_library("other", "ext").unwrap();
         p.rename_library("chip", "soc").unwrap();
+        assert!(dir.join("chip").exists(), "renames reach the disk with the save");
+        p.save().unwrap();
         assert!(dir.join("soc").join("soc.gds").is_file());
         assert!(!dir.join("chip").exists());
         let top = p.cell(&CellRef::new("soc", "top")).unwrap().layout.as_ref().unwrap();
         assert!(top.instances.iter().any(|i| i.cell == CellRef::new("ext", "leaf")));
         assert!(top.instances.iter().all(|i| i.cell.lib != "chip"));
-        // Renames are on disk at once: the saved project opens with the new names.
+        // The saved project opens with the new names.
         let q = Project::open(&dir).unwrap();
         assert!(q.cell(&CellRef::new("soc", "leaf")).is_some());
         assert!(q.cell(&CellRef::new("ext", "leaf")).is_some());
 
         p.delete_library("soc").unwrap();
+        p.save().unwrap();
         assert!(!dir.join("soc").exists());
         assert!(Project::open(&dir).unwrap().libraries.iter().all(|l| l.name != "soc"));
         fs::remove_dir_all(&dir).unwrap();
@@ -1358,7 +1633,7 @@ mod tests {
         p.save_as(&dir).unwrap();
         let mut tech = p.tech.clone();
         tech.layers.pop();
-        write_json(&dir.join("tech.json"), &tech).unwrap();
+        write_atomic(&dir.join("tech.json"), &json_bytes(&tech)).unwrap();
         let q = Project::open(&dir).unwrap();
         assert_eq!(q.tech.layers.len(), p.tech.layers.len());
         assert_eq!(q.tech.layers[extra].name, "L120D3");

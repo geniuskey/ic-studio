@@ -88,6 +88,10 @@ pub struct LvsReport {
     /// (schematic net, layout net) pairs.
     pub nets: Vec<(String, String)>,
     pub errors: Vec<LvsError>,
+    /// Findings that do not fail the comparison: wells or substrate only device bodies
+    /// connect to (leaf cells are often tapped by the cell that places them) and extraction
+    /// warnings.
+    pub warnings: Vec<LvsError>,
     pub schematic_devices: usize,
     pub layout_devices: usize,
 }
@@ -753,10 +757,51 @@ pub fn compare(sch: &Schematic, lay: &Extraction, opts: &LvsOptions) -> LvsRepor
             errors.push(err(LvsErrorKind::Net, format!("layout net '{}' has no schematic counterpart", n.name), n.marker));
         }
     }
+    let mut warnings = floating_bulks(lay);
+    warnings.extend(lay.warnings.iter().map(|w| err(LvsErrorKind::Net, format!("extraction: {w}"), None)));
     devices.sort();
     nets.sort();
     let layout_devices = lay.devices.iter().filter(|d| !(opts.filter_off && d.g == d.b)).count() + lay.passives.len();
-    LvsReport { matched: errors.is_empty(), devices, nets, errors, schematic_devices, layout_devices }
+    LvsReport { matched: errors.is_empty(), devices, nets, errors, warnings, schematic_devices, layout_devices }
+}
+
+/// Wells and substrate regions that only MOS bulks connect to: no tap ties them to a supply
+/// and no label makes them a port of the cell, so the devices' bodies float unless the cell
+/// placing this one taps them. Reported whether or not bulks are compared
+/// ([`LvsOptions::ignore_bulk`]).
+fn floating_bulks(lay: &Extraction) -> Vec<LvsError> {
+    let mut other = vec![false; lay.nets.len()];
+    let mut bulks = vec![0usize; lay.nets.len()];
+    for d in &lay.devices {
+        for n in [d.d, d.g, d.s] {
+            if let Some(o) = other.get_mut(n) {
+                *o = true;
+            }
+        }
+        if let Some(b) = bulks.get_mut(d.b) {
+            *b += 1;
+        }
+    }
+    for p in &lay.passives {
+        for n in [p.a, p.b] {
+            if let Some(o) = other.get_mut(n) {
+                *o = true;
+            }
+        }
+    }
+    lay.nets
+        .iter()
+        .enumerate()
+        .filter(|(i, n)| bulks[*i] > 0 && !other[*i] && !n.labelled)
+        .map(|(i, n)| LvsError {
+            kind: LvsErrorKind::Net,
+            message: format!(
+                "layout net '{}' is a well / substrate that only device bodies connect to ({} device(s)): add a tap to its supply, or label it as a port",
+                n.name, bulks[i]
+            ),
+            marker: n.bbox,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -869,6 +914,11 @@ mod tests {
         assert!(r.errors[0].message.starts_with("schematic device C1 (capacitor C="), "{}", r.errors[0].message);
         assert_eq!(r.errors[1].message, "M1 / M2: W 2µm (schematic) vs 1.2µm (layout)");
         assert_eq!(r.errors[1].marker, Some(x.devices[1].gate));
+        // Its n-well has no tap and the substrate none either: both float, which LVS reports.
+        let floating: Vec<&str> =
+            r.warnings.iter().filter(|w| w.message.contains("only device bodies")).map(|w| w.message.as_str()).collect();
+        assert_eq!(floating.len(), 2, "{floating:?}");
+        assert!(floating.iter().any(|m| m.contains("'nwell1'")) && floating.iter().any(|m| m.contains("'sub'")));
     }
 
     #[test]

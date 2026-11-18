@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use eframe::egui::{self, Color32, RichText};
 use egui_plot::{Legend, Line, Plot, PlotPoints};
+use ics_core::sim_setup::AcSweep;
 use ics_core::tech::ModelLib;
 use ics_core::units::{format_eng, parse_spice};
 use ics_core::{Analysis, Backend, Cell, DeviceKind, SimSetup};
@@ -364,16 +365,36 @@ pub fn setup_panel(
                         field(ui, "Stop", stop);
                         field(ui, "Step", step);
                     }
-                    Analysis::Ac { points_per_decade, fstart, fstop } => {
+                    Analysis::Ac { points_per_decade, fstart, fstop, sweep } => {
                         field(ui, "Start freq", fstart);
                         field(ui, "Stop freq", fstop);
-                        let l = ui.label("Points/dec");
-                        ui.add(egui::DragValue::new(points_per_decade).range(1..=1000)).labelled_by(l.id);
+                        let l = ui.label("Sweep");
+                        egui::ComboBox::from_id_salt("ac_sweep")
+                            .selected_text(sweep.keyword())
+                            .show_ui(ui, |ui| {
+                                for s in [AcSweep::Dec, AcSweep::Oct, AcSweep::Lin] {
+                                    ui.selectable_value(sweep, s, s.keyword());
+                                }
+                            })
+                            .response
+                            .labelled_by(l.id);
+                        ui.end_row();
+                        let l = ui.label(match sweep {
+                            AcSweep::Dec => "Points/dec",
+                            AcSweep::Oct => "Points/oct",
+                            AcSweep::Lin => "Points",
+                        });
+                        ui.add(egui::DragValue::new(points_per_decade).range(1..=100_000)).labelled_by(l.id);
                         ui.end_row();
                     }
-                    Analysis::Tran { tstep, tstop } => {
+                    Analysis::Tran { tstep, tstop, tstart, tmax, uic } => {
                         field(ui, "Step", tstep);
                         field(ui, "Stop time", tstop);
+                        field(ui, "Start (opt.)", tstart);
+                        field(ui, "Max step (opt.)", tmax);
+                        let l = ui.label("Use .ic (uic)");
+                        ui.checkbox(uic, "").labelled_by(l.id);
+                        ui.end_row();
                     }
                     Analysis::Noise { output, source, points_per_decade, fstart, fstop } => {
                         let l = ui.label("Output node");

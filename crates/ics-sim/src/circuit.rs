@@ -11,9 +11,30 @@ use crate::bsim4;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Wave {
-    Pulse { v1: f64, v2: f64, td: f64, tr: f64, tf: f64, pw: f64, per: f64 },
-    Sin { vo: f64, va: f64, freq: f64, td: f64, theta: f64 },
+    Pulse {
+        v1: f64,
+        v2: f64,
+        td: f64,
+        tr: f64,
+        tf: f64,
+        pw: f64,
+        per: f64,
+    },
+    /// `phase` in degrees.
+    Sin {
+        vo: f64,
+        va: f64,
+        freq: f64,
+        td: f64,
+        theta: f64,
+        phase: f64,
+    },
     Pwl(Vec<(f64, f64)>),
+    /// PWL with `r=`: after its last point the waveform repeats from time `r` on.
+    PwlRepeat {
+        pts: Vec<(f64, f64)>,
+        r: f64,
+    },
 }
 
 impl Wave {
@@ -39,14 +60,16 @@ impl Wave {
                     *v1
                 }
             }
-            Wave::Sin { vo, va, freq, td, theta } => {
+            Wave::Sin { vo, va, freq, td, theta, phase } => {
+                let ph = phase.to_radians();
                 if t < *td {
-                    *vo
+                    vo + va * ph.sin()
                 } else {
                     let tt = t - td;
-                    vo + va * (-tt * theta).exp() * (2.0 * std::f64::consts::PI * freq * tt).sin()
+                    vo + va * (-tt * theta).exp() * (2.0 * std::f64::consts::PI * freq * tt + ph).sin()
                 }
             }
+            Wave::PwlRepeat { pts, r } => Wave::Pwl(pts.clone()).value(Self::repeat_time(pts, *r, t)),
             Wave::Pwl(pts) => {
                 if pts.is_empty() {
                     return 0.0;
@@ -85,8 +108,29 @@ impl Wave {
                 v
             }
             Wave::Pwl(pts) => pts.iter().map(|p| p.0).filter(|t| *t <= tstop).collect(),
+            Wave::PwlRepeat { pts, r } => {
+                let mut v: Vec<f64> = pts.iter().map(|p| p.0).filter(|t| *t <= tstop).collect();
+                let (Some(last), true) = (pts.last().map(|p| p.0), pts.len() >= 2) else { return v };
+                let period = last - r;
+                if period > 0.0 {
+                    let inner: Vec<f64> = pts.iter().map(|p| p.0).filter(|t| *t > *r).collect();
+                    let mut base = last;
+                    while base < tstop && v.len() < 10_000 {
+                        v.extend(inner.iter().map(|t| base + t - r).filter(|t| *t <= tstop));
+                        base += period;
+                    }
+                }
+                v
+            }
             Wave::Sin { .. } => vec![],
         }
+    }
+
+    /// The time within the PWL points that `t` maps to when it repeats from `r` after the last point.
+    fn repeat_time(pts: &[(f64, f64)], r: f64, t: f64) -> f64 {
+        let Some(last) = pts.last().map(|p| p.0) else { return t };
+        let period = last - r;
+        if t <= last || period <= 0.0 { t } else { r + (t - last) % period }
     }
 }
 
@@ -180,6 +224,8 @@ pub struct MosModel {
 pub struct Bsim4Dev {
     pub card: Arc<bsim4::Card>,
     pub nf: f64,
+    /// Instance threshold shift and mobility multiplier (`delvto`, `mulu0`).
+    pub shift: bsim4::Shift,
     pub inst: Option<Arc<bsim4::Inst>>,
 }
 
@@ -399,9 +445,9 @@ const MOS_PARAMS: &[&str] = &[
 const DIODE_PARAMS: &[&str] =
     &["is", "n", "cjo", "cj0", "vj", "m", "fc", "tt", "rs", "bv", "ibv", "kf", "af", "eg", "xti", "tnom"];
 /// MOS instance parameters the built-in engine evaluates.
-const MOS_INSTANCE_PARAMS: &[&str] = &["w", "l", "m", "ad", "as", "pd", "ps", "nrd", "nrs"];
+const MOS_INSTANCE_PARAMS: &[&str] = &["w", "l", "m", "ad", "as", "pd", "ps", "nrd", "nrs", "delvto", "mulu0"];
 /// BSIM4 instance parameters the built-in engine evaluates.
-const BSIM4_INSTANCE_PARAMS: &[&str] = &["w", "l", "m", "nf", "ad", "as", "pd", "ps", "nrd", "nrs"];
+const BSIM4_INSTANCE_PARAMS: &[&str] = &["w", "l", "m", "nf", "ad", "as", "pd", "ps", "nrd", "nrs", "delvto", "mulu0"];
 /// Dot-commands the built-in engine reads.
 const DOT_COMMANDS: &[&str] = &[".model", ".temp", ".end", ".title", ".op", ".dc", ".ac", ".tran", ".noise"];
 
@@ -485,11 +531,47 @@ fn parse_source(rest: &str) -> Result<Source, String> {
             "sin" => {
                 let v = nums_from(&mut i);
                 let g = |k: usize, d: f64| v.get(k).copied().unwrap_or(d);
-                src.tran = Some(Wave::Sin { vo: g(0, 0.0), va: g(1, 0.0), freq: g(2, 0.0), td: g(3, 0.0), theta: g(4, 0.0) });
+                src.tran = Some(Wave::Sin {
+                    vo: g(0, 0.0),
+                    va: g(1, 0.0),
+                    freq: g(2, 0.0),
+                    td: g(3, 0.0),
+                    theta: g(4, 0.0),
+                    phase: g(5, 0.0),
+                });
             }
             "pwl" => {
-                let v = nums_from(&mut i);
-                src.tran = Some(Wave::Pwl(v.as_chunks::<2>().0.iter().map(|c| (c[0], c[1])).collect()));
+                // Time / value pairs, then the optional `r=` (repeat from) and `td=` (delay).
+                let (mut v, mut r, mut td) = (vec![], None, 0.0);
+                while i < toks.len() && !is_kw(&toks[i]) {
+                    let k = toks[i].to_ascii_lowercase();
+                    if k == "r" || k == "td" {
+                        let x =
+                            toks.get(i + 1).and_then(|t| parse_spice(t)).ok_or_else(|| format!("PWL: '{k}=' needs a value"))?;
+                        if k == "r" {
+                            r = Some(x)
+                        } else {
+                            td = x
+                        }
+                        i += 2;
+                        continue;
+                    }
+                    v.push(parse_spice(&toks[i]).ok_or_else(|| format!("PWL: '{}' is not a number", toks[i]))?);
+                    i += 1;
+                }
+                if v.len() % 2 != 0 {
+                    return Err("PWL needs time / value pairs".into());
+                }
+                let pts: Vec<(f64, f64)> = v.as_chunks::<2>().0.iter().map(|c| (c[0] + td, c[1])).collect();
+                src.tran = Some(match r {
+                    Some(r) => {
+                        if !pts.iter().any(|p| (p.0 - td - r).abs() <= 1e-15 * r.abs().max(1e-12)) && r != 0.0 {
+                            return Err(format!("PWL: r={r} is not one of its time points"));
+                        }
+                        Wave::PwlRepeat { pts, r: r + td }
+                    }
+                    None => Wave::Pwl(pts),
+                });
             }
             other => {
                 if let Some(x) = parse_spice(other) {
@@ -531,10 +613,23 @@ fn dot_analysis(l: &str) -> Option<Analysis> {
     Some(match t.first()?.to_ascii_lowercase().as_str() {
         ".op" => Analysis::Op,
         ".dc" => Analysis::Dc { source: num(1), start: num(2), stop: num(3), step: num(4) },
-        ".ac" => {
-            Analysis::Ac { points_per_decade: t.get(2).and_then(|s| s.parse().ok()).unwrap_or(10), fstart: num(3), fstop: num(4) }
+        ".ac" => Analysis::Ac {
+            points_per_decade: t.get(2).and_then(|s| s.parse().ok()).unwrap_or(10),
+            fstart: num(3),
+            fstop: num(4),
+            sweep: t.get(1).and_then(|s| ics_core::sim_setup::AcSweep::parse(s)).unwrap_or_default(),
+        },
+        ".tran" => {
+            let uic = t.iter().any(|s| s.eq_ignore_ascii_case("uic"));
+            let nums: Vec<String> = t.iter().skip(3).filter(|s| !s.eq_ignore_ascii_case("uic")).map(|s| s.to_string()).collect();
+            Analysis::Tran {
+                tstep: num(1),
+                tstop: num(2),
+                tstart: nums.first().cloned().unwrap_or_default(),
+                tmax: nums.get(1).cloned().unwrap_or_default(),
+                uic,
+            }
         }
-        ".tran" => Analysis::Tran { tstep: num(1), tstop: num(2) },
         ".noise" => Analysis::Noise {
             output: num(1).trim_start_matches(['v', 'V']).trim_matches(['(', ')']).to_string(),
             source: num(2),
@@ -585,11 +680,14 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
     let lines = logical_lines(deck);
     // (.ic rather than .nodeset, node, value, line), resolved once all nodes are known.
     let mut pending_ic: Vec<(bool, String, f64, usize)> = vec![];
+    // Resistor temperature coefficients, applied once `.temp` is known: (element, (tc1, tc2)).
+    let mut pending_tc: Vec<(usize, (f64, f64))> = vec![];
+    let mut scale = 1.0;
     // First pass: models.
     let mut diode_models: HashMap<String, DiodeModel> = HashMap::new();
     let mut mos_models: HashMap<String, MosModel> = HashMap::new();
     let mut in_control = false;
-    for (_, l) in &lines {
+    for (model_line, l) in &lines {
         let lower = l.to_ascii_lowercase();
         if lower.starts_with(".control") {
             in_control = true;
@@ -655,13 +753,21 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
                 kf: g("kf", 0.0),
                 af: g("af", 1.0),
                 tnom: g("tnom", 27.0),
-                bsim4: Some(Bsim4Dev { card: Arc::new(card), nf: 1.0, inst: None }),
+                bsim4: Some(Bsim4Dev { card: Arc::new(card), nf: 1.0, shift: bsim4::Shift::default(), inst: None }),
             };
             mos_models.insert(name, m);
             continue;
         }
         if known == Some(MOS_PARAMS) && g("level", 1.0) != 1.0 {
-            c.warnings.push(format!("model {name}: level={} is evaluated as level 1", g("level", 1.0)));
+            // Running another model as level 1 gives plausible but wrong currents: refuse, so
+            // that Auto picks ngspice and the built-in engine says why.
+            return Err(SimError::Parse {
+                line: *model_line,
+                msg: format!(
+                    "model {name}: MOS level={} is not supported by the built-in engine (it evaluates levels 1, 14 and 54); use ngspice",
+                    g("level", 1.0)
+                ),
+            });
         }
         match ty.as_str() {
             "d" => {
@@ -752,6 +858,12 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
                 if cmd == ".tran" && lower.split_whitespace().any(|w| w == "uic") {
                     c.uic = true;
                 }
+                if cmd == ".dc" && lower.split_whitespace().count() > 5 {
+                    c.warnings.push(format!("line {ln}: the second '.dc' sweep source is ignored by the built-in engine"));
+                }
+                if cmd == ".ac" && !lower.split_whitespace().nth(1).is_some_and(|k| matches!(k, "dec" | "oct" | "lin")) {
+                    c.warnings.push(format!("line {ln}: '.ac' needs dec, oct or lin; read as dec"));
+                }
                 c.analyses.push(a);
             } else if cmd == ".temp" {
                 c.temp = l.split_whitespace().nth(1).and_then(parse_spice).unwrap_or(27.0);
@@ -766,6 +878,10 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
                     let used = match (name.as_str(), value) {
                         ("temp", Some(v)) => {
                             c.temp = v;
+                            true
+                        }
+                        ("scale", Some(v)) if v > 0.0 => {
+                            scale = v;
                             true
                         }
                         (_, Some(v)) => c.options.set(&name, v),
@@ -809,15 +925,29 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
                 need(4)?;
                 let (a, b) = (node(t[1], &mut c), node(t[2], &mut c));
                 let v = value(3)?;
+                let p = kv_params(&tokens(&t[4..].join(" ")));
+                let m = p.get("m").copied().unwrap_or(1.0);
+                if m <= 0.0 {
+                    return Err(err(ln, format!("{name}: m must be positive")));
+                }
+                let known: &[&str] = if first == 'r' { &["m", "tc1", "tc2"] } else { &["m"] };
+                let ignored = ignored_params(&p, known);
+                if !ignored.is_empty() {
+                    c.warnings.push(format!("{name}: parameters not evaluated: {}", ignored.join(" ")));
+                }
                 match first {
                     'r' => {
                         if v == 0.0 {
                             return Err(err(ln, format!("{name}: zero resistance")));
                         }
-                        Element::R { name, a, b, r: v }
+                        let tc = (p.get("tc1").copied().unwrap_or(0.0), p.get("tc2").copied().unwrap_or(0.0));
+                        if tc != (0.0, 0.0) {
+                            pending_tc.push((c.elements.len(), tc));
+                        }
+                        Element::R { name, a, b, r: v / m }
                     }
-                    'c' => Element::C { name, a, b, c: v },
-                    _ => Element::L { name, a, b, l: v },
+                    'c' => Element::C { name, a, b, c: v * m },
+                    _ => Element::L { name, a, b, l: v / m },
                 }
             }
             'v' | 'i' => {
@@ -834,6 +964,33 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
                     .get(&t[3].to_ascii_lowercase())
                     .cloned()
                     .ok_or_else(|| err(ln, format!("unknown diode model '{}'", t[3])))?;
+                // Optional area (bare number or area=) and multiplier m scale the junction.
+                let rest = tokens(&t[4..].join(" "));
+                let mut area = 1.0;
+                let mut j = 0;
+                if let Some(x) = rest.first().and_then(|s| parse_spice(s)) {
+                    area = x;
+                    j = 1;
+                }
+                let p = kv_params(&rest[j..]);
+                let off = rest[j..].iter().any(|s| s.eq_ignore_ascii_case("off"));
+                let ignored = ignored_params(&p, &["area", "m"]);
+                if !ignored.is_empty() || off {
+                    let mut what = ignored;
+                    if off {
+                        what.push("off".into());
+                    }
+                    c.warnings.push(format!("{name}: parameters not evaluated: {}", what.join(" ")));
+                }
+                let scale = p.get("area").copied().unwrap_or(area) * p.get("m").copied().unwrap_or(1.0);
+                if scale <= 0.0 {
+                    return Err(err(ln, format!("{name}: area and m must be positive")));
+                }
+                let mut model = model;
+                model.is *= scale;
+                model.cjo *= scale;
+                model.ibv *= scale;
+                model.rs /= scale;
                 let a = series(&mut c, &mut node, &name, "a", a, model.rs);
                 Element::D { name, a, k, model }
             }
@@ -848,12 +1005,19 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
                     .cloned()
                     .ok_or_else(|| err(ln, format!("unknown MOS model '{}'", t[5])))?;
                 let p = kv_params(&tokens(&t[6..].join(" ")));
+                let delvto = p.get("delvto").copied().unwrap_or(0.0);
+                let mulu0 = p.get("mulu0").copied().unwrap_or(1.0);
                 let known: &[&str] = match &mut model.bsim4 {
                     Some(b) => {
                         b.nf = p.get("nf").copied().unwrap_or(1.0).max(1.0);
+                        b.shift = bsim4::Shift { delvto, mulu0 };
                         BSIM4_INSTANCE_PARAMS
                     }
-                    None => MOS_INSTANCE_PARAMS,
+                    None => {
+                        model.vto += delvto;
+                        model.kp *= mulu0;
+                        MOS_INSTANCE_PARAMS
+                    }
                 };
                 let ignored = ignored_params(&p, known);
                 if !ignored.is_empty() {
@@ -886,6 +1050,25 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
             _ => return Err(err(ln, format!("unsupported element '{}' (built-in engine supports R C L V I D M)", t[0]))),
         };
         c.elements.push(el);
+    }
+    // `.option scale`: MOS geometry is written in units of `scale` metres.
+    if scale != 1.0 {
+        for e in &mut c.elements {
+            if let Element::M { w, l, junctions: j, .. } = e {
+                *w *= scale;
+                *l *= scale;
+                j.ad *= scale * scale;
+                j.as_ *= scale * scale;
+                j.pd *= scale;
+                j.ps *= scale;
+            }
+        }
+    }
+    for (k, (tc1, tc2)) in pending_tc {
+        if let Some(Element::R { r, .. }) = c.elements.get_mut(k) {
+            let dt = c.temp - 27.0;
+            *r *= 1.0 + tc1 * dt + tc2 * dt * dt;
+        }
     }
     for (is_ic, name, v, ln) in pending_ic {
         match node_map.get(&name) {
@@ -921,14 +1104,82 @@ mod tests {
     }
 
     #[test]
+    fn sources_with_delay_repeat_and_phase() {
+        // PWL with td= delays it and r= repeats it from that time point after the last one.
+        let s = parse_source("PWL(0 0 1n 1 2n 0) r=0 td=1n").unwrap();
+        let w = s.tran.unwrap();
+        assert_eq!(w.value(0.5e-9), 0.0);
+        assert!((w.value(2e-9) - 1.0).abs() < 1e-12, "delayed peak");
+        assert!((w.value(4e-9) - 1.0).abs() < 1e-12, "repeats with period 2n");
+        assert!(w.breakpoints(6e-9).iter().any(|t| (t - 5e-9).abs() < 1e-18));
+        assert!(parse_source("PWL(0 0 1n 1) r=0.5n").is_err(), "r= must be a time point");
+        assert!(parse_source("PWL(0 0 1n)").is_err());
+        // SIN phase in degrees.
+        let s = parse_source("SIN(0 1 1meg 0 0 90)").unwrap();
+        assert!((s.tran.unwrap().value(0.0) - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn device_multipliers_and_scale() {
+        let c = parse_deck(
+            "* t\nR1 a 0 1k m=2 tc1=1e-3\nC1 a 0 1p m=3\nD1 a 0 dm 4 m=2\n.model dm d (is=1e-14 rs=8)\n\
+            .temp 127\n.op\n.end\n",
+        )
+        .unwrap();
+        let find = |n: &str| c.elements.iter().find(|e| e.name() == n).unwrap().clone();
+        let Element::R { r, .. } = find("r1") else { panic!() };
+        assert!((r - 500.0 * 1.1).abs() < 1e-9, "{r}");
+        let Element::C { c: cap, .. } = find("c1") else { panic!() };
+        assert!((cap - 3e-12).abs() < 1e-24);
+        let Element::D { model, .. } = find("d1") else { panic!() };
+        assert!((model.is - 8e-14).abs() < 1e-26 && (model.rs - 1.0).abs() < 1e-12, "{model:?}");
+        let c = parse_deck("* t\n.option scale=1e-6\nM1 d g 0 0 nm w=2 l=0.5 ad=1\n.model nm nmos (vto=0.4 kp=100u)\nV1 d 0 1\nV2 g 0 1\n.op\n.end\n").unwrap();
+        let Element::M { w, l, junctions, .. } = &c.elements.iter().find(|e| e.name() == "m1").unwrap() else { panic!() };
+        assert!((w - 2e-6).abs() < 1e-18 && (l - 0.5e-6).abs() < 1e-18 && (junctions.ad - 1e-12).abs() < 1e-24);
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+    }
+
+    #[test]
+    fn ac_sweeps_and_tran_window() {
+        use ics_core::sim_setup::AcSweep;
+        let deck = "* t\nV1 in 0 dc 0 ac 1\nR1 in out 1k\nC1 out 0 1n\n.ac lin 11 0 1meg\n.ac oct 2 1k 4k\n\
+            .tran 1n 100n 50n 0.5n\n.end\n";
+        let c = parse_deck(deck).unwrap();
+        assert!(matches!(c.analyses[0], Analysis::Ac { sweep: AcSweep::Lin, .. }));
+        let mut e = crate::engine::Engine::new(c.clone()).unwrap();
+        let lin = e.run(&c.analyses[0]).unwrap();
+        assert_eq!(lin.vectors[0].re, (0..11).map(|k| k as f64 * 1e5).collect::<Vec<_>>());
+        let oct = e.run(&c.analyses[1]).unwrap();
+        assert_eq!(oct.vectors[0].re.len(), 5, "{:?}", oct.vectors[0].re);
+        let tran = e.run(&c.analyses[2]).unwrap();
+        let t = &tran.vectors[0].re;
+        assert!(
+            t[0] >= 50e-9 && t.windows(2).all(|w| w[1] - w[0] <= 0.5e-9 * (1.0 + 1e-9)),
+            "starts at tstart, steps under tmax"
+        );
+        assert_eq!(c.analyses[2].spice_command(), "tran 1n 100n 50n 0.5n");
+    }
+
+    #[test]
     fn warns_about_what_it_does_not_evaluate() {
-        let deck = "* t\n.param wn=1u\n.option reltol=1e-4 post\n.model nm nmos (level=8 vto=0.4 u0=0.03)\n\
-                    .model dm d (is=1e-14 rs=10 trs=1e-3)\nM1 d g 0 0 nm w=1u l=1u nf=2 sa=0.2u\nV1 d 0 1\nV2 g 0 1\n.op\n.end\n";
+        let deck = "* t\n.param wn=1u\n.option reltol=1e-4 post\n.model nm nmos (vto=0.4 u0=0.03)\n\
+                    .model dm d (is=1e-14 rs=10 trs=1e-3)\nM1 d g 0 0 nm w=1u l=1u nf=2 sa=0.2u\nV1 d 0 1\nV2 g 0 1 \n\
+                    R1 d 0 1k ic=1\n.dc V1 0 1 0.1 V2 0 1 0.5\n.op\n.end\n";
         let c = parse_deck(deck).unwrap();
         let w = c.warnings.join("\n");
-        for s in ["'.param'", "option 'post'", "level=8", "parameters not evaluated by the built-in engine: trs", "nf sa"] {
+        for s in [
+            "'.param'",
+            "option 'post'",
+            "parameters not evaluated by the built-in engine: trs",
+            "nf sa",
+            "r1: parameters not evaluated: ic",
+            "second '.dc'",
+        ] {
             assert!(w.contains(s), "{s} missing from\n{w}");
         }
+        // Another MOS level is refused rather than evaluated as level 1.
+        let e = parse_deck("* t\n.model nm nmos (level=8 vto=0.4)\nM1 d g 0 0 nm\nV1 d 0 1\nV2 g 0 1\n.op\n.end\n").unwrap_err();
+        assert!(e.to_string().contains("level=8 is not supported"), "{e}");
         let clean = format!(
             "* t\nV1 a 0 1\nR1 a 0 1k\nM1 a a 0 0 nmos w=1u l=1u ad=1p\n{}\n.op\n.end\n",
             ics_core::netlist::DEFAULT_MODELS

@@ -94,6 +94,23 @@ main() {
     say "Downloading $url"
     download "$url" "$tmp/$asset" || err "download failed: $url"
 
+    # The release lists the SHA-256 of every file it holds; releases before v0.3 have no list.
+    if download "${url%/*}/SHA256SUMS" "$tmp/SHA256SUMS" 2>/dev/null; then
+        want="$(awk -v f="$asset" '$2 == f || $2 == "*" f { print $1 }' "$tmp/SHA256SUMS")"
+        [ -n "$want" ] || err "SHA256SUMS does not list $asset"
+        if has sha256sum; then
+            got="$(sha256sum "$tmp/$asset" | awk '{ print $1 }')"
+        elif has shasum; then
+            got="$(shasum -a 256 "$tmp/$asset" | awk '{ print $1 }')"
+        else
+            err "sha256sum or shasum is required to check the download"
+        fi
+        [ "$got" = "$want" ] || err "the download does not match its SHA-256 (got $got, expected $want)"
+        say "SHA-256 verified"
+    else
+        say "warning: this release lists no SHA-256 checksums; the download is not verified"
+    fi
+
     say "Extracting"
     mkdir -p "$tmp/unpacked"
     tar -xzf "$tmp/$asset" -C "$tmp/unpacked"

@@ -149,6 +149,7 @@ const UNMODELLED: &[(&str, f64, &str)] = &[
     ("trnqsmod", 0.0, "transient non-quasi-static model"),
     ("acnqsmod", 0.0, "AC non-quasi-static model"),
     ("mtrlmod", 0.0, "material (high-k) model"),
+    ("capmod", 2.0, "charge model other than capmod=2"),
 ];
 
 impl Card {
@@ -216,6 +217,22 @@ pub struct Geometry {
     pub as_: f64,
     pub pd: f64,
     pub ps: f64,
+}
+
+/// Per-instance shifts of a BSIM4 device (ngspice's `delvto` and `mulu0` instance
+/// parameters): Monte Carlo mismatch and process draws go through them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Shift {
+    /// Added to vth0 (V, in the card's sign convention: negative values raise a PMOS |Vth|).
+    pub delvto: f64,
+    /// Multiplies the low-field mobility u0.
+    pub mulu0: f64,
+}
+
+impl Default for Shift {
+    fn default() -> Self {
+        Self { delvto: 0.0, mulu0: 1.0 }
+    }
 }
 
 impl Geometry {
@@ -589,6 +606,12 @@ pub struct Eval {
 impl Inst {
     /// The device of `card` at size `geo` and temperature `temp` °C.
     pub fn new(card: &Card, geo: Geometry, temp: f64) -> Result<Inst, String> {
+        Self::with_shift(card, geo, temp, Shift::default())
+    }
+
+    /// [`Inst::new`] with the instance's threshold shift and mobility multiplier (`delvto`,
+    /// `mulu0`), applied where ngspice's BSIM4 applies them.
+    pub fn with_shift(card: &Card, geo: Geometry, temp: f64, shift: Shift) -> Result<Inst, String> {
         let c = card;
         let ty = if c.pmos { -1.0 } else { 1.0 };
         let mobmod = c.g("mobmod", 0.0) as i32;
@@ -721,7 +744,7 @@ impl Inst {
             u0 /= 1.0e4;
         }
         let t5 = 1.0 - b("up", 0.0) * (-leff / b("lp", 1.0e-8)).exp();
-        let u0temp = u0 * t5 * tratio.powf(ute);
+        let u0temp = u0 * t5 * tratio.powf(ute) * shift.mulu0;
         eu = eu.max(0.0);
         voff *= 1.0 + b("tvoff", 0.0) * del_temp;
         nfactor += b("tnfactor", 0.0) * del_temp / tnom;
@@ -782,6 +805,8 @@ impl Inst {
             -1.0
         };
         let vth0 = if vth0_given { b("vth0", 0.0) } else { ty * (vfb + phi + k1 * sqrt_phi) };
+        // `delvto` moves vth0 and vfb together, as ngspice's b4temp.c does.
+        let (vth0, vfb) = (vth0 + shift.delvto, vfb + ty * shift.delvto);
         let k1ox = k1 * toxe / toxm;
         let k2ox = k2 * toxe / toxm;
 
@@ -1893,6 +1918,24 @@ mod tests {
         // Hotter: lower mobility, less on-current.
         let hot = Inst::new(&nmos(), Geometry::new(1e-6, 0.1e-6, 1.0), 125.0).unwrap();
         assert!(hot.eval(1.0, 1.0, 0.0).ids.v < id(1.0, 1.0));
+    }
+
+    #[test]
+    fn delvto_and_mulu0_shift_the_instance() {
+        // delvto moves vth0 and vfb together: the same device as a card with vth0 + delvto.
+        let shifted =
+            Inst::with_shift(&nmos(), Geometry::new(1e-6, 0.1e-6, 1.0), 27.0, Shift { delvto: 0.03, mulu0: 1.0 }).unwrap();
+        let mut moved = nmos();
+        moved.p.insert("vth0".into(), 0.43);
+        let card = Inst::new(&moved, Geometry::new(1e-6, 0.1e-6, 1.0), 27.0).unwrap();
+        for (vds, vgs, vbs) in [(0.05, 0.8, 0.0), (1.0, 1.0, -0.3), (0.6, 0.3, 0.0)] {
+            let (a, b) = (shifted.eval(vds, vgs, vbs).ids.v, card.eval(vds, vgs, vbs).ids.v);
+            assert!((a / b - 1.0).abs() < 1e-9, "bias {vds} {vgs} {vbs}: {a} vs {b}");
+        }
+        let base = Inst::new(&nmos(), Geometry::new(1e-6, 0.1e-6, 1.0), 27.0).unwrap();
+        assert!(shifted.eval(1.0, 1.0, 0.0).ids.v < base.eval(1.0, 1.0, 0.0).ids.v, "a higher Vth carries less current");
+        let fast = Inst::with_shift(&nmos(), Geometry::new(1e-6, 0.1e-6, 1.0), 27.0, Shift { delvto: 0.0, mulu0: 1.2 }).unwrap();
+        assert!(fast.eval(0.05, 1.0, 0.0).ids.v > 1.1 * base.eval(0.05, 1.0, 0.0).ids.v, "mulu0 raises the mobility");
     }
 
     #[test]

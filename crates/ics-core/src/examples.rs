@@ -49,7 +49,7 @@ pub fn rc_lowpass() -> Cell {
         *fstart = "10".into();
         *fstop = "100meg".into();
     }
-    if let Some(Analysis::Tran { tstep, tstop }) = sim.get_mut("tran") {
+    if let Some(Analysis::Tran { tstep, tstop, .. }) = sim.get_mut("tran") {
         *tstep = "20n".into();
         *tstop = "20u".into();
     }
@@ -156,7 +156,7 @@ pub fn diode_clipper() -> Cell {
     let mut sim = SimSetup::default();
     sim.set_enabled("tran", true);
     sim.set_enabled("dc", true);
-    if let Some(Analysis::Tran { tstep, tstop }) = sim.get_mut("tran") {
+    if let Some(Analysis::Tran { tstep, tstop, .. }) = sim.get_mut("tran") {
         *tstep = "5u".into();
         *tstop = "3m".into();
     }
@@ -322,7 +322,7 @@ fn sim(enable: &[&str]) -> SimSetup {
 }
 
 fn set_tran(sim: &mut SimSetup, step: &str, stop: &str) {
-    if let Some(Analysis::Tran { tstep, tstop }) = sim.get_mut("tran") {
+    if let Some(Analysis::Tran { tstep, tstop, .. }) = sim.get_mut("tran") {
         *tstep = step.into();
         *tstop = stop.into();
     }

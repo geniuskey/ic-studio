@@ -69,6 +69,9 @@ jobs:
           merge-multiple: true
       - name: Add the installers
         run: cp scripts/install.ps1 scripts/install.sh dist/
+      # The installers and the in-app updater check every download against this list.
+      - name: Checksums
+        run: cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*

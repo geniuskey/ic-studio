@@ -15,13 +15,24 @@ pub enum Analysis {
         step: String,
     },
     Ac {
+        /// Points per decade (`dec`), per octave (`oct`) or in all (`lin`).
         points_per_decade: u32,
         fstart: String,
         fstop: String,
+        #[serde(default, skip_serializing_if = "AcSweep::is_dec")]
+        sweep: AcSweep,
     },
     Tran {
         tstep: String,
         tstop: String,
+        /// Results start at `tstart` (empty: 0); `tmax` caps the time step (empty: none).
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        tstart: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        tmax: String,
+        /// Start from the `.ic` values without an operating point.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        uic: bool,
     },
     /// Noise spectral density at node `output`, also referred to the input `source`.
     Noise {
@@ -31,6 +42,64 @@ pub enum Analysis {
         fstart: String,
         fstop: String,
     },
+}
+
+/// Frequency spacing of an AC sweep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AcSweep {
+    #[default]
+    Dec,
+    Oct,
+    Lin,
+}
+
+impl AcSweep {
+    pub fn is_dec(&self) -> bool {
+        *self == AcSweep::Dec
+    }
+
+    pub fn keyword(self) -> &'static str {
+        match self {
+            AcSweep::Dec => "dec",
+            AcSweep::Oct => "oct",
+            AcSweep::Lin => "lin",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<AcSweep> {
+        match s.to_ascii_lowercase().as_str() {
+            "dec" => Some(AcSweep::Dec),
+            "oct" => Some(AcSweep::Oct),
+            "lin" => Some(AcSweep::Lin),
+            _ => None,
+        }
+    }
+
+    /// The swept frequencies: `n` per decade or octave, or `n` in all for `lin`.
+    pub fn frequencies(self, n: u32, fstart: f64, fstop: f64) -> Vec<f64> {
+        let n = n.max(1);
+        match self {
+            AcSweep::Lin => {
+                if n == 1 || fstop == fstart {
+                    return vec![fstart];
+                }
+                (0..n).map(|k| fstart + (fstop - fstart) * k as f64 / (n - 1) as f64).collect()
+            }
+            AcSweep::Dec | AcSweep::Oct => {
+                if fstart <= 0.0 || fstop < fstart {
+                    return vec![];
+                }
+                let base: f64 = if self == AcSweep::Dec { 10.0 } else { 2.0 };
+                let steps = ((fstop / fstart).log(base) * n as f64 + 1e-9).floor() as usize;
+                let mut v: Vec<f64> = (0..=steps).map(|k| fstart * base.powf(k as f64 / n as f64)).collect();
+                if v.last().is_some_and(|f| (fstop - f) / fstop > 1e-9) {
+                    v.push(fstop);
+                }
+                v
+            }
+        }
+    }
 }
 
 impl Analysis {
@@ -59,12 +128,31 @@ impl Analysis {
         match self {
             Analysis::Op => "op".into(),
             Analysis::Dc { source, start, stop, step } => format!("dc {source} {start} {stop} {step}"),
-            Analysis::Ac { points_per_decade, fstart, fstop } => format!("ac dec {points_per_decade} {fstart} {fstop}"),
-            Analysis::Tran { tstep, tstop } => format!("tran {tstep} {tstop}"),
+            Analysis::Ac { points_per_decade, fstart, fstop, sweep } => {
+                format!("ac {} {points_per_decade} {fstart} {fstop}", sweep.keyword())
+            }
+            Analysis::Tran { tstep, tstop, tstart, tmax, uic } => {
+                let mut s = format!("tran {tstep} {tstop}");
+                if !tstart.trim().is_empty() || !tmax.trim().is_empty() {
+                    s += &format!(" {}", if tstart.trim().is_empty() { "0" } else { tstart.trim() });
+                }
+                if !tmax.trim().is_empty() {
+                    s += &format!(" {}", tmax.trim());
+                }
+                if *uic {
+                    s += " uic";
+                }
+                s
+            }
             Analysis::Noise { output, source, points_per_decade, fstart, fstop } => {
                 format!("noise v({output}) {source} dec {points_per_decade} {fstart} {fstop}")
             }
         }
+    }
+
+    /// `.tran tstep tstop` without start, step limit or `uic`.
+    pub fn tran(tstep: &str, tstop: &str) -> Analysis {
+        Analysis::Tran { tstep: tstep.into(), tstop: tstop.into(), tstart: String::new(), tmax: String::new(), uic: false }
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -83,14 +171,18 @@ impl Analysis {
                 }
                 Ok(())
             }
-            Analysis::Ac { points_per_decade, fstart, fstop } => {
+            Analysis::Ac { points_per_decade, fstart, fstop, sweep } => {
                 num("fstart", fstart)?;
                 num("fstop", fstop)?;
                 if *points_per_decade == 0 {
-                    return Err("AC: points per decade must be > 0".into());
+                    return Err("AC: the number of points must be > 0".into());
                 }
-                if parse_spice(fstart).unwrap_or(0.0) <= 0.0 {
-                    return Err("AC: fstart must be > 0".into());
+                let f0 = parse_spice(fstart).unwrap_or(0.0);
+                if *sweep == AcSweep::Lin && f0 < 0.0 {
+                    return Err("AC: fstart must be >= 0".into());
+                }
+                if *sweep != AcSweep::Lin && f0 <= 0.0 {
+                    return Err("AC: fstart must be > 0 (a lin sweep may start at 0)".into());
                 }
                 Ok(())
             }
@@ -105,9 +197,14 @@ impl Analysis {
                 }
                 Ok(())
             }
-            Analysis::Tran { tstep, tstop } => {
+            Analysis::Tran { tstep, tstop, tstart, tmax, .. } => {
                 num("tstep", tstep)?;
                 num("tstop", tstop)?;
+                for (label, v) in [("tstart", tstart), ("tmax", tmax)] {
+                    if !v.trim().is_empty() {
+                        num(label, v)?;
+                    }
+                }
                 if parse_spice(tstep).unwrap_or(0.0) <= 0.0 || parse_spice(tstop).unwrap_or(0.0) <= 0.0 {
                     return Err("Transient: tstep and tstop must be > 0".into());
                 }
@@ -248,9 +345,14 @@ impl Default for SimSetup {
                 },
                 AnalysisEntry {
                     enabled: false,
-                    analysis: Analysis::Ac { points_per_decade: 20, fstart: "1".into(), fstop: "10g".into() },
+                    analysis: Analysis::Ac {
+                        points_per_decade: 20,
+                        fstart: "1".into(),
+                        fstop: "10g".into(),
+                        sweep: AcSweep::Dec,
+                    },
                 },
-                AnalysisEntry { enabled: false, analysis: Analysis::Tran { tstep: "10p".into(), tstop: "20n".into() } },
+                AnalysisEntry { enabled: false, analysis: Analysis::tran("10p", "20n") },
                 AnalysisEntry {
                     enabled: false,
                     analysis: Analysis::Noise {

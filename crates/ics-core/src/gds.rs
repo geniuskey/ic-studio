@@ -7,6 +7,7 @@ use crate::geom::IRect;
 use crate::hier::{LayoutSource, descendants};
 use crate::layout::{ArraySpec, Geometry, Layout, Trans};
 use crate::project::{CellRef, valid_name};
+use crate::region::BoolOp;
 use crate::tech::{LayerDef, Tech};
 
 const HEADER: u16 = 0x0002;
@@ -36,6 +37,8 @@ const STRANS: u16 = 0x1A01;
 const MAG: u16 = 0x1B05;
 const ANGLE: u16 = 0x1C05;
 const PATHTYPE: u16 = 0x2102;
+const BGNEXTN: u16 = 0x3003;
+const ENDEXTN: u16 = 0x3103;
 const BOX: u16 = 0x2D00;
 const BOXTYPE: u16 = 0x2E02;
 const PROPATTR: u16 = 0x2B02;
@@ -45,6 +48,9 @@ const PROPVALUE: u16 = 0x2C06;
 /// ([`CellInst::name`](crate::layout::CellInst::name)), written as PROPATTR / PROPVALUE.
 /// KLayout shows it as user property 61. Other properties are ignored on read.
 pub const INST_NAME_ATTR: i16 = 61;
+/// Property attribute holding the database id of a shape or instance in GDS-stored libraries
+/// ([`write_gds_with_ids`]): constraints refer to items by id.
+pub const ITEM_ID_ATTR: i16 = 62;
 
 fn real8(v: f64) -> [u8; 8] {
     if v == 0.0 {
@@ -80,8 +86,82 @@ fn from_real8(b: &[u8]) -> f64 {
 
 struct W(Vec<u8>);
 
+/// Most points one XY record holds: its length field counts at most 65535 bytes.
+const MAX_XY: usize = 8191;
+
+/// `points` as BOUNDARY outlines of at most `MAX_XY - 1` vertices (the record repeats the
+/// first point): larger polygons are cut into strips, alternating vertical and horizontal.
+fn boundary_pieces(points: &[(i64, i64)], depth: u32) -> Vec<Vec<(i64, i64)>> {
+    use crate::polybool::PolySet;
+    if points.len() < MAX_XY - 1 {
+        return vec![points.to_vec()];
+    }
+    let set = PolySet::from_polygon(points);
+    let Some(b) = set.bbox() else { return vec![] };
+    let strips = (points.len() / (MAX_XY / 2) + 2) as i64;
+    let vertical = depth.is_multiple_of(2);
+    let (lo, hi) = if vertical { (b.x0, b.x1) } else { (b.y0, b.y1) };
+    let step = ((hi - lo + strips - 1) / strips).max(1);
+    let mut out = vec![];
+    let mut at = lo;
+    while at < hi {
+        let next = (at + step).min(hi);
+        let cut = if vertical { IRect::new(at, b.y0, next, b.y1) } else { IRect::new(b.x0, at, b.x1, next) };
+        for piece in set.boolean(&PolySet::from_rect(cut), BoolOp::And).to_polygons() {
+            if piece.len() >= MAX_XY - 1 && depth < 16 {
+                out.extend(boundary_pieces(&piece, depth + 1));
+            } else {
+                out.push(piece);
+            }
+        }
+        at = next;
+    }
+    out
+}
+
+/// After restoring stored ids: give repeated ids (the pieces of a split polygon, a split
+/// array, or ids clashing with freshly allocated ones) new ids, and move `next_id` past them all.
+fn unique_ids(l: &mut Layout) {
+    let max = l.shapes.iter().map(|s| s.id).chain(l.instances.iter().map(|i| i.id)).max().unwrap_or(0);
+    let mut next = max.max(l.next_id);
+    let mut seen = HashSet::new();
+    for id in l.shapes.iter_mut().map(|s| &mut s.id).chain(l.instances.iter_mut().map(|i| &mut i.id)) {
+        if !seen.insert(*id) {
+            next += 1;
+            *id = next;
+        }
+    }
+    l.next_id = next;
+}
+
+/// Whether moving path end `k` (neighbour `prev`) outwards by `by` keeps its end segment
+/// pointing the same way.
+fn path_end_moves(v: &[(i64, i64)], k: usize, prev: usize, by: i64) -> bool {
+    let len = ((v[k].0 - v[prev].0) as f64).hypot((v[k].1 - v[prev].1) as f64);
+    len > 0.0 && (by >= 0 || (-by as f64) < len)
+}
+
+/// Move path end `k` (neighbour `prev`) outwards along its end segment by `by` (inwards when negative).
+fn move_path_end(v: &mut [(i64, i64)], k: usize, prev: usize, by: i64) {
+    let (dx, dy) = ((v[k].0 - v[prev].0) as f64, (v[k].1 - v[prev].1) as f64);
+    let len = dx.hypot(dy);
+    if by != 0 && len > 0.0 {
+        v[k].0 += (dx / len * by as f64).round() as i64;
+        v[k].1 += (dy / len * by as f64).round() as i64;
+    }
+}
+
 impl W {
+    /// The item id property of [`write_gds_with_ids`].
+    fn id(&mut self, on: bool, id: u64) {
+        if on {
+            self.i16s(PROPATTR, &[ITEM_ID_ATTR]);
+            self.str(PROPVALUE, &id.to_string());
+        }
+    }
+
     fn rec(&mut self, tag: u16, data: &[u8]) {
+        debug_assert!(data.len() + 4 <= u16::MAX as usize, "GDS record of {} bytes", data.len() + 4);
         let len = (data.len() + 4) as u16;
         self.0.extend_from_slice(&len.to_be_bytes());
         self.0.extend_from_slice(&tag.to_be_bytes());
@@ -181,6 +261,16 @@ pub(crate) fn child_first_order(cells: &[(&CellRef, &Layout)]) -> Vec<usize> {
 /// Serialize the given cells to a GDSII byte stream, children before their parents, with
 /// structure names as described at [`StreamNames`].
 pub fn write_gds(lib_name: &str, cells: &[(&CellRef, &Layout)], tech: &Tech) -> Vec<u8> {
+    write_gds_opts(lib_name, cells, tech, false)
+}
+
+/// [`write_gds`] with each element's database id as a property, so that reading the file back
+/// keeps the ids constraints refer to. Used for libraries stored as GDS, not for exports.
+pub fn write_gds_with_ids(lib_name: &str, cells: &[(&CellRef, &Layout)], tech: &Tech) -> Vec<u8> {
+    write_gds_opts(lib_name, cells, tech, true)
+}
+
+fn write_gds_opts(lib_name: &str, cells: &[(&CellRef, &Layout)], tech: &Tech, ids: bool) -> Vec<u8> {
     let est: usize = cells.iter().map(|(_, l)| 64 + l.shapes.len() * 64 + l.instances.len() * 80).sum();
     let mut w = W(Vec::with_capacity(est + 256));
     let date: [i16; 12] = [2026, 1, 1, 0, 0, 0, 2026, 1, 1, 0, 0, 0];
@@ -206,25 +296,37 @@ pub fn write_gds(lib_name: &str, cells: &[(&CellRef, &Layout)], tech: &Tech) -> 
                     w.i16s(LAYER, &[layer]);
                     w.i16s(DATATYPE, &[dt]);
                     w.xy(&[(r.x0, r.y0), (r.x1, r.y0), (r.x1, r.y1), (r.x0, r.y1), (r.x0, r.y0)]);
+                    w.id(ids, s.id);
                     w.rec(ENDEL, &[]);
                 }
                 Geometry::Polygon { points } if points.len() >= 3 => {
-                    w.rec(BOUNDARY, &[]);
-                    w.i16s(LAYER, &[layer]);
-                    w.i16s(DATATYPE, &[dt]);
-                    let mut p = points.clone();
-                    p.push(points[0]);
-                    w.xy(&p);
-                    w.rec(ENDEL, &[]);
+                    for piece in boundary_pieces(points, 0) {
+                        w.rec(BOUNDARY, &[]);
+                        w.i16s(LAYER, &[layer]);
+                        w.i16s(DATATYPE, &[dt]);
+                        let mut p = piece.clone();
+                        p.push(piece[0]);
+                        w.xy(&p);
+                        w.id(ids, s.id);
+                        w.rec(ENDEL, &[]);
+                    }
                 }
                 Geometry::Path { points, width } if points.len() >= 2 => {
-                    w.rec(PATH, &[]);
-                    w.i16s(LAYER, &[layer]);
-                    w.i16s(DATATYPE, &[dt]);
-                    w.i16s(PATHTYPE, &[2]);
-                    w.i32s(WIDTH, &[*width as i32]);
-                    w.xy(points);
-                    w.rec(ENDEL, &[]);
+                    // Consecutive pieces share their joining vertex; the half-width end
+                    // extensions there cover the bend as the whole path does.
+                    let mut start = 0;
+                    while start + 1 < points.len() {
+                        let end = (start + MAX_XY - 1).min(points.len() - 1);
+                        w.rec(PATH, &[]);
+                        w.i16s(LAYER, &[layer]);
+                        w.i16s(DATATYPE, &[dt]);
+                        w.i16s(PATHTYPE, &[2]);
+                        w.i32s(WIDTH, &[*width as i32]);
+                        w.xy(&points[start..=end]);
+                        w.id(ids, s.id);
+                        w.rec(ENDEL, &[]);
+                        start = end;
+                    }
                 }
                 Geometry::Label { text, at, size } => {
                     let (layer, dt) = l.text_stream.map_or((layer, dt), |(g, d)| (g as i16, d as i16));
@@ -234,6 +336,7 @@ pub fn write_gds(lib_name: &str, cells: &[(&CellRef, &Layout)], tech: &Tech) -> 
                     w.rec(MAG, &real8(*size as f64 / tech.dbu_per_um as f64));
                     w.xy(&[*at]);
                     w.str(STRING, text);
+                    w.id(ids, s.id);
                     w.rec(ENDEL, &[]);
                 }
                 _ => {}
@@ -242,29 +345,49 @@ pub fn write_gds(lib_name: &str, cells: &[(&CellRef, &Layout)], tech: &Tech) -> 
         for inst in &layout.instances {
             let (cols, rows) = inst.dims();
             let array = inst.array.filter(|_| cols * rows > 1);
-            w.rec(if array.is_some() { AREF } else { SREF }, &[]);
-            w.str(SNAME, &names.reference(&inst.cell));
             let t = inst.trans;
-            if t.mirror || t.rot % 4 != 0 {
-                w.rec(STRANS, &(if t.mirror { 0x8000u16 } else { 0 }).to_be_bytes());
-                if t.rot % 4 != 0 {
-                    w.rec(ANGLE, &real8((t.rot % 4) as f64 * 90.0));
+            // COLROW holds 16-bit counts: a larger array goes out as several AREFs.
+            const MAX_COLROW: u32 = i16::MAX as u32;
+            let chunks: Vec<(u32, u32, u32, u32)> = match array {
+                Some(_) => (0..cols)
+                    .step_by(MAX_COLROW as usize)
+                    .flat_map(|c0| {
+                        (0..rows)
+                            .step_by(MAX_COLROW as usize)
+                            .map(move |r0| (c0, r0, (cols - c0).min(MAX_COLROW), (rows - r0).min(MAX_COLROW)))
+                    })
+                    .collect(),
+                None => vec![(0, 0, 1, 1)],
+            };
+            for (c0, r0, nc, nr) in chunks {
+                let o = match array {
+                    Some(a) => (t.x + c0 as i64 * a.col.0 + r0 as i64 * a.row.0, t.y + c0 as i64 * a.col.1 + r0 as i64 * a.row.1),
+                    None => (t.x, t.y),
+                };
+                let arr = array.filter(|_| nc * nr > 1);
+                w.rec(if arr.is_some() { AREF } else { SREF }, &[]);
+                w.str(SNAME, &names.reference(&inst.cell));
+                if t.mirror || t.rot % 4 != 0 {
+                    w.rec(STRANS, &(if t.mirror { 0x8000u16 } else { 0 }).to_be_bytes());
+                    if t.rot % 4 != 0 {
+                        w.rec(ANGLE, &real8((t.rot % 4) as f64 * 90.0));
+                    }
                 }
-            }
-            let o = (t.x, t.y);
-            match array {
-                Some(a) => {
-                    w.i16s(COLROW, &[cols as i16, rows as i16]);
-                    let (c, r) = (cols as i64, rows as i64);
-                    w.xy(&[o, (o.0 + c * a.col.0, o.1 + c * a.col.1), (o.0 + r * a.row.0, o.1 + r * a.row.1)]);
+                match arr {
+                    Some(a) => {
+                        w.i16s(COLROW, &[nc as i16, nr as i16]);
+                        let (c, r) = (nc as i64, nr as i64);
+                        w.xy(&[o, (o.0 + c * a.col.0, o.1 + c * a.col.1), (o.0 + r * a.row.0, o.1 + r * a.row.1)]);
+                    }
+                    None => w.xy(&[o]),
                 }
-                None => w.xy(&[o]),
+                if let Some(name) = &inst.name {
+                    w.i16s(PROPATTR, &[INST_NAME_ATTR]);
+                    w.str(PROPVALUE, name);
+                }
+                w.id(ids, inst.id);
+                w.rec(ENDEL, &[]);
             }
-            if let Some(name) = &inst.name {
-                w.i16s(PROPATTR, &[INST_NAME_ATTR]);
-                w.str(PROPVALUE, name);
-            }
-            w.rec(ENDEL, &[]);
         }
         w.rec(ENDSTR, &[]);
     }
@@ -435,6 +558,10 @@ struct El {
     colrow: (u16, u16),
     propattr: i16,
     inst_name: Option<String>,
+    /// Path end style: 0 flush, 1 round, 2 half-width extension, 4 BGNEXTN / ENDEXTN.
+    pathtype: i16,
+    ext: (i64, i64),
+    item_id: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -462,7 +589,7 @@ pub fn read_gds_with(data: &[u8], tech: &Tech, lib: &str, opts: ReadOptions) -> 
     let mut el = El::default();
     let mut in_el = false;
     let mut scale = 1.0f64;
-    let (mut odd_angles, mut mags) = (0usize, 0usize);
+    let (mut odd_angles, mut mags, mut round_paths, mut short_paths) = (0usize, 0usize, 0usize, 0usize);
     let sc = |v: f64, scale: f64| (v * scale).round() as i64;
     while i + 4 <= data.len() {
         let len = u16::from_be_bytes([data[i], data[i + 1]]) as usize;
@@ -491,7 +618,8 @@ pub fn read_gds_with(data: &[u8], tech: &Tech, lib: &str, opts: ReadOptions) -> 
                 }
             }
             ENDSTR => {
-                if let Some(c) = cur.take() {
+                if let Some(mut c) = cur.take() {
+                    unique_ids(&mut c.1);
                     out.cells.push(c);
                 }
             }
@@ -500,6 +628,9 @@ pub fn read_gds_with(data: &[u8], tech: &Tech, lib: &str, opts: ReadOptions) -> 
                 el.layer = 0;
                 el.dt = 0;
                 el.width = 0;
+                el.pathtype = 0;
+                el.ext = (0, 0);
+                el.item_id = None;
                 el.xy.clear();
                 el.mag = 1.0;
                 el.angle = 0.0;
@@ -513,6 +644,9 @@ pub fn read_gds_with(data: &[u8], tech: &Tech, lib: &str, opts: ReadOptions) -> 
             LAYER if d.len() >= 2 => el.layer = i16_at(0) as u16,
             DATATYPE | TEXTTYPE | BOXTYPE if d.len() >= 2 => el.dt = i16_at(0) as u16,
             WIDTH if d.len() >= 4 => el.width = i32::from_be_bytes([d[0], d[1], d[2], d[3]]).unsigned_abs() as i64,
+            PATHTYPE if d.len() >= 2 => el.pathtype = i16_at(0),
+            BGNEXTN if d.len() >= 4 => el.ext.0 = i32::from_be_bytes([d[0], d[1], d[2], d[3]]) as i64,
+            ENDEXTN if d.len() >= 4 => el.ext.1 = i32::from_be_bytes([d[0], d[1], d[2], d[3]]) as i64,
             STRANS if d.len() >= 2 => el.mirror = d[0] & 0x80 != 0,
             MAG if d.len() >= 8 => el.mag = from_real8(d),
             ANGLE if d.len() >= 8 => el.angle = from_real8(d),
@@ -528,6 +662,9 @@ pub fn read_gds_with(data: &[u8], tech: &Tech, lib: &str, opts: ReadOptions) -> 
             STRING => set_str(&mut el.text),
             SNAME => set_str(&mut el.sname),
             PROPATTR if d.len() >= 2 => el.propattr = i16_at(0),
+            PROPVALUE if el.propattr == ITEM_ID_ATTR => {
+                el.item_id = String::from_utf8_lossy(d).trim_end_matches('\0').trim().parse().ok();
+            }
             PROPVALUE if el.propattr == INST_NAME_ATTR && matches!(el.kind, SREF | AREF) => {
                 el.inst_name = Some(String::from_utf8_lossy(d).trim_end_matches('\0').to_string());
             }
@@ -560,6 +697,9 @@ pub fn read_gds_with(data: &[u8], tech: &Tech, lib: &str, opts: ReadOptions) -> 
                     c.1.add_instance(CellRef::new(lib, el.sname.as_str()), trans, array);
                     if let Some(i) = c.1.instances.last_mut() {
                         i.name = el.inst_name.take();
+                        if let Some(id) = el.item_id {
+                            i.id = id;
+                        }
                     }
                     continue;
                 }
@@ -580,7 +720,35 @@ pub fn read_gds_with(data: &[u8], tech: &Tech, lib: &str, opts: ReadOptions) -> 
                         }
                         if let Some(r) = as_rect(&p) { Geometry::Rect(r) } else { Geometry::Polygon { points: p } }
                     }
-                    PATH => Geometry::Path { points: pts().collect(), width: (el.width as f64 * scale) as i64 },
+                    PATH => {
+                        let width = (el.width as f64 * scale) as i64;
+                        let mut points: Vec<(i64, i64)> = pts().collect();
+                        // The database extends every path end by half its width (PATHTYPE 2):
+                        // other end styles move the end points by the difference.
+                        let ext = match el.pathtype {
+                            0 => Some((0, 0)),
+                            4 => Some(((el.ext.0 as f64 * scale) as i64, (el.ext.1 as f64 * scale) as i64)),
+                            1 => {
+                                round_paths += 1;
+                                None
+                            }
+                            _ => None,
+                        };
+                        if let Some((b, e)) = ext
+                            && points.len() >= 2
+                        {
+                            let n = points.len();
+                            if !path_end_moves(&points, 0, 1, b - width / 2)
+                                || !path_end_moves(&points, n - 1, n - 2, e - width / 2)
+                            {
+                                short_paths += 1;
+                            } else {
+                                move_path_end(&mut points, 0, 1, b - width / 2);
+                                move_path_end(&mut points, n - 1, n - 2, e - width / 2);
+                            }
+                        }
+                        Geometry::Path { points, width }
+                    }
                     _ => Geometry::Label {
                         text: std::mem::take(&mut el.text),
                         at: pts().next().unwrap_or_default(),
@@ -588,12 +756,23 @@ pub fn read_gds_with(data: &[u8], tech: &Tech, lib: &str, opts: ReadOptions) -> 
                     },
                 };
                 c.1.add(layer, geom);
+                if let (Some(id), Some(s)) = (el.item_id, c.1.shapes.last_mut()) {
+                    s.id = id;
+                }
             }
             _ => {}
         }
     }
     if odd_angles > 0 {
         out.warnings.push(format!("{odd_angles} instance(s) with a rotation that is not a multiple of 90 degrees were rounded"));
+    }
+    if round_paths > 0 {
+        out.warnings.push(format!("{round_paths} path(s) with round ends (PATHTYPE 1) were read with square ends"));
+    }
+    if short_paths > 0 {
+        out.warnings.push(format!(
+            "{short_paths} path(s) with flush or custom ends have an end segment shorter than the change: read with half-width ends"
+        ));
     }
     if mags > 0 {
         out.warnings.push(format!("{mags} instance(s) with magnification other than 1 were placed unscaled"));
@@ -731,6 +910,79 @@ pub(crate) mod tests {
         assert!(matches!(&shapes[2].geom, Geometry::Label { text, .. } if text == "out"));
         assert!(matches!(&shapes[3].geom, Geometry::Polygon { points } if points.len() == 5));
         assert!(imp.warnings.is_empty());
+    }
+
+    #[test]
+    fn large_records_are_split() {
+        use crate::polybool::PolySet;
+        let tech = Tech::generic();
+        // A staircase of 8402 vertices: more than one XY record holds.
+        let mut pts = vec![];
+        for i in 0..4200i64 {
+            pts.push((i * 200, i * 200));
+            pts.push(((i + 1) * 200, i * 200));
+        }
+        pts.push((4200 * 200, -1000));
+        pts.push((0, -1000));
+        let mut l = Layout::default();
+        l.add(6, Geometry::Polygon { points: pts.clone() });
+        l.add(7, Geometry::Path { points: (0..9000).map(|i| (i * 100, (i % 2) * 100)).collect(), width: 50 });
+        let leaf = CellRef::new("lib", "leaf");
+        let mut top = Layout::default();
+        top.add_instance(leaf.clone(), Trans::IDENTITY, Some(ArraySpec { cols: 40000, rows: 2, col: (10, 0), row: (0, 10) }));
+        let tr = CellRef::new("lib", "top");
+        let bytes = write_gds("lib", &[(&leaf, &l), (&tr, &top)], &tech);
+        let imp = read_gds(&bytes, &tech, "lib").expect("the file reads back");
+        let back = &imp.cells.iter().find(|(n, _)| n == "leaf").unwrap().1;
+        let polys: Vec<&Geometry> = back.shapes.iter().filter(|s| s.layer == 6).map(|s| &s.geom).collect();
+        assert!(polys.len() > 1);
+        let area = |g: Vec<&Geometry>| PolySet::from_geometries(g).area();
+        assert_eq!(area(polys), PolySet::from_polygon(&pts).area(), "the pieces cover the polygon");
+        let paths = back.shapes.iter().filter(|s| s.layer == 7).count();
+        assert_eq!(paths, 2);
+        let t = &imp.cells.iter().find(|(n, _)| n == "top").unwrap().1;
+        assert_eq!(t.instances.iter().map(|i| i.count()).sum::<u64>(), 80000, "two AREFs of 32767 and 7233 columns");
+    }
+
+    #[test]
+    fn path_end_types() {
+        // PATHTYPE 0 (flush) and 4 (custom extensions) read as the same mask with half-width ends.
+        let tech = Tech::generic();
+        let rec = |t: u16, d: &[u8]| {
+            let mut v = ((d.len() + 4) as u16).to_be_bytes().to_vec();
+            v.extend_from_slice(&t.to_be_bytes());
+            v.extend_from_slice(d);
+            v
+        };
+        let i4 = |v: &[i32]| v.iter().flat_map(|x| x.to_be_bytes()).collect::<Vec<u8>>();
+        let path = |pt: i16, ext: Option<(i32, i32)>| {
+            let mut d = rec(HEADER, &600i16.to_be_bytes());
+            d.extend(rec(BGNLIB, &[0; 24]));
+            d.extend(rec(LIBNAME, b"LB"));
+            let mut u = real8(1e-3).to_vec();
+            u.extend_from_slice(&real8(1e-9));
+            d.extend(rec(UNITS, &u));
+            d.extend(rec(BGNSTR, &[0; 24]));
+            d.extend(rec(STRNAME, b"P\0"));
+            d.extend(rec(PATH, &[]));
+            d.extend(rec(LAYER, &7i16.to_be_bytes()));
+            d.extend(rec(DATATYPE, &0i16.to_be_bytes()));
+            d.extend(rec(PATHTYPE, &pt.to_be_bytes()));
+            d.extend(rec(WIDTH, &i4(&[200])));
+            if let Some((b, e)) = ext {
+                d.extend(rec(BGNEXTN, &i4(&[b])));
+                d.extend(rec(ENDEXTN, &i4(&[e])));
+            }
+            d.extend(rec(XY, &i4(&[0, 0, 2000, 0])));
+            d.extend(rec(ENDEL, &[]));
+            d.extend(rec(ENDSTR, &[]));
+            d.extend(rec(ENDLIB, &[]));
+            let imp = read_gds(&d, &tech, "lib").unwrap();
+            imp.cells[0].1.shapes[0].bbox()
+        };
+        assert_eq!(path(2, None), IRect::new(-100, -100, 2100, 100));
+        assert_eq!(path(0, None), IRect::new(0, -100, 2000, 100), "flush ends");
+        assert_eq!(path(4, Some((300, 0))), IRect::new(-300, -100, 2000, 100), "custom extensions");
     }
 
     #[test]

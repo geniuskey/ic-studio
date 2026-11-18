@@ -182,8 +182,20 @@ pub fn monte_carlo(
                     spec.mismatch.as_ref().and_then(|mm| mm.per_device(model.pmos)).unwrap_or((spec.avt, spec.abeta));
                 let dv = dvto[p] + rng.normal() * avt / area;
                 let db = dkp[p] + rng.normal() * abeta / area;
-                model.vto += if model.pmos { -dv } else { dv };
-                model.kp *= (1.0 + db).max(0.05);
+                let delvto = if model.pmos { -dv } else { dv };
+                let mulu0 = (1.0 + db).max(0.05);
+                match &mut model.bsim4 {
+                    // BSIM4 takes its current from the card: shift the instance like ngspice's
+                    // `delvto` / `mulu0` (the level-1 vto / kp fields only describe junctions).
+                    Some(b) => {
+                        b.shift.delvto += delvto;
+                        b.shift.mulu0 *= mulu0;
+                    }
+                    None => {
+                        model.vto += delvto;
+                        model.kp *= mulu0;
+                    }
+                }
             }
         }
         let res = Engine::new(c).and_then(|mut eng| analyses.iter().map(|a| eng.run(a)).collect::<Result<Vec<_>, _>>());
@@ -290,6 +302,24 @@ mod tests {
     fn rejects_external_models() {
         let e = monte_carlo("* t\n.lib \"x.lib\" tt\nR1 a 0 1\n.op\n.end\n", &[], &[], &McSpec::default(), None).unwrap_err();
         assert!(e.to_string().contains("statistical"), "{e}");
+    }
+
+    #[test]
+    fn varies_bsim4_devices() {
+        // BSIM4 takes its current from the card, so the draws must reach the instance: a
+        // diode-connected device at constant current moves its gate by its ΔVth.
+        let deck = "* t\nI1 0 g 10u\nM1 g g 0 0 nm w=1u l=1u\n\
+            .model nm nmos (level=54 toxe=4e-9 vth0=0.4 u0=0.04 vsat=1e5 ndep=2e17)\n.op\n.end\n";
+        let spec =
+            McSpec { runs: 400, seed: 3, vto_sigma: 0.0, kp_sigma: 0.0, avt: 5e-9, abeta: 0.0, process: None, mismatch: None };
+        let ms = [Measure { analysis: "op".into(), expr: "v(g)".into() }];
+        let r = monte_carlo(deck, &[], &ms, &spec, None).unwrap();
+        assert!(r.failed.is_empty() && r.stats[0].n == 400, "{:?}", r.failed);
+        assert!((r.stats[0].sigma / 5e-3 - 1.0).abs() < 0.12, "{:?}", r.stats[0]);
+        // The global (process) shift reaches it too.
+        let global = McSpec { vto_sigma: 0.02, avt: 0.0, ..spec };
+        let r = monte_carlo(deck, &[], &ms, &global, None).unwrap();
+        assert!((r.stats[0].sigma / 0.02 - 1.0).abs() < 0.12, "{:?}", r.stats[0]);
     }
 
     #[test]

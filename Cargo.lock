@@ -2173,6 +2173,7 @@ dependencies = [
  "ics-optics",
  "ics-sim",
  "rfd",
+ "ring",
  "serde",
  "serde_json",
  "ureq",

@@ -55,13 +55,36 @@ pub struct Release {
     pub size: u64,
     /// `(binary, url, size)` of the command-line tools.
     pub tools: Vec<(String, String, u64)>,
+    /// SHA-256 (lower-case hex) of each asset by name, from the release's `SHA256SUMS`.
+    pub checksums: std::collections::HashMap<String, String>,
 }
+
+/// The release asset listing the SHA-256 of every other asset (`sha256sum` format).
+const CHECKSUMS: &str = "SHA256SUMS";
 
 /// One file to download and swap in.
 struct Job {
     url: String,
     size: u64,
+    /// Expected SHA-256 (lower-case hex).
+    sha256: String,
     target: PathBuf,
+}
+
+/// `sha256sum` output: `<hex>  <name>` (or `<hex> *<name>`) per line.
+fn parse_checksums(text: &str) -> std::collections::HashMap<String, String> {
+    text.lines()
+        .filter_map(|l| {
+            let (hash, name) = l.trim().split_once(char::is_whitespace)?;
+            let name = name.trim().trim_start_matches('*');
+            (hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()))
+                .then(|| (name.to_string(), hash.to_ascii_lowercase()))
+        })
+        .collect()
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
@@ -97,6 +120,17 @@ fn fetch_latest() -> Result<Release, String> {
     let find = |bin: &str| asset_name(bin).and_then(|n| r.assets.iter().find(|a| a.name == n));
     let asset = find("ic-studio");
     let tools = TOOLS.iter().filter_map(|t| find(t).map(|a| (t.to_string(), a.browser_download_url.clone(), a.size))).collect();
+    // Without checksums nothing is installed (see `jobs`).
+    let checksums = match r.assets.iter().find(|a| a.name == CHECKSUMS) {
+        Some(a) => ureq::get(&a.browser_download_url)
+            .header("User-Agent", concat!("ic-studio/", env!("CARGO_PKG_VERSION")))
+            .call()
+            .ok()
+            .and_then(|mut res| res.body_mut().with_config().limit(1 << 20).read_to_string().ok())
+            .map(|t| parse_checksums(&t))
+            .unwrap_or_default(),
+        None => Default::default(),
+    };
     Ok(Release {
         version: r.tag_name.trim_start_matches('v').to_string(),
         page: r.html_url,
@@ -104,6 +138,7 @@ fn fetch_latest() -> Result<Release, String> {
         url: asset.map(|a| a.browser_download_url.clone()),
         size: asset.map_or(0, |a| a.size),
         tools,
+        checksums,
     })
 }
 
@@ -116,11 +151,18 @@ fn current_exe() -> Result<PathBuf, String> {
 fn jobs(r: &Release) -> Result<Vec<Job>, String> {
     let exe = current_exe()?;
     let url = r.url.clone().ok_or("no download for this platform")?;
-    let mut v = vec![Job { url, size: r.size, target: exe.clone() }];
+    let sum = |bin: &str| {
+        let name = asset_name(bin).unwrap_or_default();
+        r.checksums
+            .get(&name)
+            .cloned()
+            .ok_or_else(|| format!("release v{} lists no SHA-256 for {name}: download it from {} instead", r.version, r.page))
+    };
+    let mut v = vec![Job { url, size: r.size, sha256: sum("ic-studio")?, target: exe.clone() }];
     for (bin, url, size) in &r.tools {
         let target = exe.with_file_name(format!("{bin}{}", std::env::consts::EXE_SUFFIX));
         if target.exists() {
-            v.push(Job { url: url.clone(), size: *size, target });
+            v.push(Job { url: url.clone(), size: *size, sha256: sum(bin)?, target });
         }
     }
     Ok(v)
@@ -130,7 +172,7 @@ fn jobs(r: &Release) -> Result<Vec<Job>, String> {
 fn download_all(jobs: &[Job], done: &AtomicU64) -> Result<PathBuf, String> {
     let mut base = 0;
     for j in jobs {
-        if let Err(e) = download(&j.url, j.size, &with_suffix(&j.target, "new"), base, done) {
+        if let Err(e) = download(&j.url, j.size, &j.sha256, &with_suffix(&j.target, "new"), base, done) {
             for j in jobs {
                 let _ = std::fs::remove_file(with_suffix(&j.target, "new"));
             }
@@ -162,7 +204,7 @@ fn download_all(jobs: &[Job], done: &AtomicU64) -> Result<PathBuf, String> {
 /// Downloads `url` to `new`, adding the bytes read to `base` in `done`. [`install`] then
 /// swaps it in: on Windows a running file cannot be overwritten but can be renamed, so it
 /// is moved aside to `<exe>.old` (removed on the next start by [`cleanup`]).
-fn download(url: &str, size: u64, new: &Path, base: u64, done: &AtomicU64) -> Result<(), String> {
+fn download(url: &str, size: u64, sha256: &str, new: &Path, base: u64, done: &AtomicU64) -> Result<(), String> {
     let res = ureq::get(url)
         .header("User-Agent", concat!("ic-studio/", env!("CARGO_PKG_VERSION")))
         .call()
@@ -172,11 +214,13 @@ fn download(url: &str, size: u64, new: &Path, base: u64, done: &AtomicU64) -> Re
     let mut file = std::fs::File::create(new).map_err(|e| format!("cannot write {}: {e}", new.display()))?;
     let mut buf = vec![0u8; 1 << 16];
     let mut total = 0u64;
+    let mut digest = ring::digest::Context::new(&ring::digest::SHA256);
     loop {
         let n = reader.read(&mut buf).map_err(|e| format!("download failed: {e}"))?;
         if n == 0 {
             break;
         }
+        digest.update(&buf[..n]);
         file.write_all(&buf[..n]).map_err(|e| format!("write failed: {e}"))?;
         total += n as u64;
         done.store(base + total, Ordering::Relaxed);
@@ -184,7 +228,13 @@ fn download(url: &str, size: u64, new: &Path, base: u64, done: &AtomicU64) -> Re
     file.sync_all().map_err(|e| format!("write failed: {e}"))?;
     drop(file);
     if size > 0 && total != size {
+        let _ = std::fs::remove_file(new);
         return Err(format!("incomplete download ({total} of {size} bytes)"));
+    }
+    let got = hex(digest.finish().as_ref());
+    if !got.eq_ignore_ascii_case(sha256) {
+        let _ = std::fs::remove_file(new);
+        return Err(format!("the download does not match the release's SHA-256 ({got}, expected {sha256}): not installed"));
     }
     Ok(())
 }
@@ -445,6 +495,17 @@ mod tests {
         assert!(!is_newer("0.0.9", "0.1.0"));
         assert!(!is_newer("nightly", "0.1.0"));
         assert!(is_newer("0.2.0-rc1", "0.1.0"));
+    }
+
+    #[test]
+    fn checksum_list() {
+        let h = "a".repeat(64);
+        let m = parse_checksums(&format!("{h}  ics-linux-x86_64\n{}  *ic-studio.exe\nbad line\nshort  x\n", "B".repeat(64)));
+        assert_eq!(m.get("ics-linux-x86_64"), Some(&h));
+        assert_eq!(m.get("ic-studio.exe").map(String::as_str), Some("b".repeat(64).as_str()));
+        assert_eq!(m.len(), 2);
+        let d = ring::digest::digest(&ring::digest::SHA256, b"abc");
+        assert_eq!(hex(d.as_ref()), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     }
 
     #[test]

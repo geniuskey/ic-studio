@@ -339,13 +339,48 @@ impl Default for Settings {
 }
 
 enum Dialog {
-    NewProject { name: String, dir: String, demo: bool, error: String },
-    NewCell { lib: String, name: String, description: String, schematic: bool, layout: bool, error: String },
-    RenameCell { cell: CellRef, name: String, error: String },
+    NewProject {
+        name: String,
+        dir: String,
+        demo: bool,
+        error: String,
+    },
+    NewCell {
+        lib: String,
+        name: String,
+        description: String,
+        schematic: bool,
+        layout: bool,
+        error: String,
+    },
+    RenameCell {
+        cell: CellRef,
+        name: String,
+        error: String,
+    },
     ConfirmDelete(CellRef),
-    RenameLibrary { lib: String, name: String, error: String },
+    RenameLibrary {
+        lib: String,
+        name: String,
+        error: String,
+    },
     ConfirmDeleteLibrary(String),
-    Unsaved { then: Box<Command> },
+    Unsaved {
+        then: Box<Command>,
+    },
+    /// Saving stopped: these files changed on disk since the project was opened. `then` runs
+    /// after overwriting them (the command that asked to save first).
+    SaveConflict {
+        files: Vec<std::path::PathBuf>,
+        then: Option<Box<Command>>,
+    },
+    /// An autosaved copy of the project just opened is newer than its files (the app quit
+    /// without saving).
+    Recover {
+        dir: std::path::PathBuf,
+        root: std::path::PathBuf,
+        saved: u64,
+    },
     Settings,
     Shortcuts,
     About,
@@ -398,23 +433,34 @@ struct McpJob {
 type McpArgs = serde_json::Map<String, serde_json::Value>;
 type McpSnapshot = (Project, McpArgs, Option<CellRef>);
 
-/// MCP tools that change layouts or the project; their edits invalidate editor state.
-const MCP_EDITS: [&str; 15] = [
-    "add_rect",
-    "abut",
-    "update_from_source",
-    "load_pdk",
-    "add_path",
-    "add_label",
-    "place_instance",
-    "place_pcell",
-    "delete_items",
-    "generate_layout",
-    "import_gds",
-    "import_lef",
-    "import_def",
-    "open_project",
-    "new_project",
+/// MCP tools that change neither layouts nor schematics. Every other tool runs between
+/// snapshots of the project, so whatever it changes is undoable and redrawn.
+const MCP_READ_ONLY: [&str; 25] = [
+    "project_info",
+    "gui_status",
+    "get_netlist",
+    "simulate",
+    "run_spice",
+    "layout_summary",
+    "flylines",
+    "run_drc",
+    "extract",
+    "run_lvs",
+    "run_signoff",
+    "post_layout_parasitics",
+    "emir",
+    "diff_layout",
+    "check_against_source",
+    "export_gds",
+    "export_lef",
+    "export_def",
+    "export_skill_schematic",
+    "verify",
+    "predict_yield",
+    "process_data",
+    "process_cross_section",
+    "extract_mismatch",
+    "extract_corners",
 ];
 
 /// Virtuoso dumping a library in the background ([`IcStudio::import_virtuoso`]).
@@ -444,6 +490,10 @@ enum SkillJobKind {
 /// Every cell layout, to tell afterwards which ones a SKILL script changed.
 fn layout_snapshot(p: &Project) -> HashMap<CellRef, Layout> {
     p.all_cells().filter_map(|(r, c)| Some((r, c.layout.clone()?))).collect()
+}
+
+fn schematic_snapshot(p: &Project) -> HashMap<CellRef, Schematic> {
+    p.all_cells().filter_map(|(r, c)| Some((r, c.schematic.clone()?))).collect()
 }
 
 /// One-line console summary of an MCP tool result.
@@ -665,6 +715,8 @@ pub struct IcStudio {
     copilot: crate::copilot::Copilot,
     ai_models: crate::llm::AiSettingsWindow,
     updater: crate::update::Updater,
+    /// Background copies of the project while it has unsaved changes ([`crate::recovery`]).
+    autosave: crate::recovery::Autosave,
     /// Version announced by the start-up update check, until dismissed.
     update_toast: Option<String>,
     optimizer: crate::optimizer_view::Optimizer,
@@ -748,6 +800,7 @@ impl IcStudio {
             copilot: Default::default(),
             ai_models: Default::default(),
             updater: Default::default(),
+            autosave: Default::default(),
             update_toast: None,
             optimizer: Default::default(),
             stream_map: StreamMapEditor::default(),
@@ -874,6 +927,9 @@ impl IcStudio {
                 }
                 self.set_project(p);
                 self.remember_recent(&root);
+                if let Some((dir, info)) = crate::recovery::pending(&root) {
+                    self.dialog = Some(Dialog::Recover { dir, root, saved: info.saved });
+                }
             }
             Err(e) => self.error(format!("Cannot open project: {e}")),
         }
@@ -894,14 +950,33 @@ impl IcStudio {
             };
             p.root = Some(target);
         }
-        match p.save() {
+        let res = p.save();
+        self.saved(res)
+    }
+
+    /// Save over files other programs changed since the project was opened.
+    fn save_overwriting(&mut self) -> bool {
+        let Some(p) = self.project.as_mut() else { return false };
+        let res = p.save_overwriting();
+        self.saved(res)
+    }
+
+    fn saved(&mut self, res: Result<(), ics_core::project::ProjectError>) -> bool {
+        match res {
             Ok(()) => {
-                let root = p.root.clone().unwrap();
+                let Some(p) = self.project.as_ref() else { return false };
+                let root = p.root.clone().unwrap_or_default();
                 let name = p.name.clone();
                 self.dirty = false;
+                crate::recovery::discard(&root);
                 self.ok(format!("Saved '{name}' to {}", root.display()));
                 self.remember_recent(&root);
                 true
+            }
+            Err(ics_core::project::ProjectError::Conflict(files)) => {
+                self.warn(format!("Not saved: {} file(s) changed on disk since the project was opened", files.len()));
+                self.dialog = Some(Dialog::SaveConflict { files, then: None });
+                false
             }
             Err(e) => {
                 self.error(format!("Save failed: {e}"));
@@ -928,7 +1003,9 @@ impl IcStudio {
     }
 
     fn sim_options(&self, backend: ics_core::Backend) -> SimOptions {
-        SimOptions { backend, ngspice_exe: self.settings.ngspice_path.clone(), ..Default::default() }
+        // Relative `.include` / `.lib` paths in a cell's setup are relative to the project.
+        let deck_dir = self.project.as_ref().and_then(|p| p.root.clone());
+        SimOptions { backend, ngspice_exe: self.settings.ngspice_path.clone(), deck_dir }
     }
 
     fn netlist_active(&self) -> Option<(String, Vec<String>)> {
@@ -943,6 +1020,10 @@ impl IcStudio {
     fn run_command(&mut self, ctx: &egui::Context, cmd: Command) {
         match cmd {
             Command::NewProjectDialog => {
+                // Creating a project replaces the open one: save or discard its changes first.
+                if !self.guard_unsaved(Command::NewProjectDialog) {
+                    return;
+                }
                 let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).unwrap_or(".".into());
                 self.dialog = Some(Dialog::NewProject {
                     name: "my_project".into(),
@@ -1016,7 +1097,13 @@ impl IcStudio {
             }
             Command::NewCellDialog => {
                 if let Some(p) = &self.project {
-                    let lib = self.active.as_ref().map(|r| r.lib.clone()).unwrap_or_else(|| p.libraries[0].name.clone());
+                    // With every library deleted the cell goes to a new "work" library.
+                    let lib = self
+                        .active
+                        .as_ref()
+                        .map(|r| r.lib.clone())
+                        .or_else(|| p.libraries.iter().find(|l| l.name != ics_core::pcell::PCELL_LIB).map(|l| l.name.clone()))
+                        .unwrap_or_else(|| "work".into());
                     self.dialog = Some(Dialog::NewCell {
                         lib,
                         name: String::new(),
@@ -2872,6 +2959,30 @@ impl IcStudio {
     /// After an external edit of any number of layouts (a SKILL script): record undo history
     /// for each changed cell that had a layout, refresh the editors and mark the project dirty.
     /// Returns the changed cells.
+    /// Push an undo step for every schematic that differs from `before` (an MCP tool or a
+    /// script changed it) and refit its editor.
+    fn schematics_edited(&mut self, before: HashMap<CellRef, Schematic>) {
+        let Some(p) = &self.project else { return };
+        let changed: Vec<(CellRef, Schematic)> = p
+            .all_cells()
+            .filter(|(r, c)| c.schematic.is_some() && c.schematic.as_ref() != before.get(r))
+            .map(|(r, _)| {
+                let old = before.get(&r).cloned().unwrap_or_default();
+                (r, old)
+            })
+            .collect();
+        if changed.is_empty() {
+            return;
+        }
+        for (r, old) in changed {
+            let ed = self.sch_eds.entry(r).or_default();
+            ed.history.push(&old);
+            ed.selection.clear();
+            ed.request_fit();
+        }
+        self.mark_dirty();
+    }
+
     fn layouts_edited(&mut self, before: HashMap<CellRef, Layout>) -> Vec<CellRef> {
         let Some(p) = &self.project else { return vec![] };
         let mut changed: Vec<CellRef> =
@@ -4730,7 +4841,12 @@ impl IcStudio {
                                 c.layout = Some(Layout::default());
                             }
                             let ws = if *schematic { Workspace::Schematic } else { Workspace::Layout };
-                            match self.project.as_mut().map(|p| p.add_cell(lib, c)) {
+                            match self.project.as_mut().map(|p| {
+                                if !p.libraries.iter().any(|l| l.name == *lib) {
+                                    p.add_library(lib)?;
+                                }
+                                p.add_cell(lib, c)
+                            }) {
                                 Some(Ok(r)) => {
                                     self.info(format!("Created cell {r}"));
                                     self.dirty = true;
@@ -4787,7 +4903,7 @@ impl IcStudio {
                 }
                 Dialog::ConfirmDelete(r) => {
                     ui.heading("Delete cell?");
-                    ui.label(format!("'{r}' and all of its views will be permanently deleted, including files on disk."));
+                    ui.label(format!("'{r}' and all of its views will be deleted; its files go when the project is saved."));
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if ui.button("Cancel").clicked() {
@@ -4846,7 +4962,7 @@ impl IcStudio {
                         (p.libraries.iter().find(|l| &l.name == lib).map_or(0, |l| l.cells.len()), p.library_users(lib))
                     });
                     ui.label(format!(
-                        "Library '{lib}' and its {cells} cell(s) will be permanently deleted, including files on disk."
+                        "Library '{lib}' and its {cells} cell(s) will be deleted; the files go when the project is saved."
                     ));
                     if users > 0 {
                         ui.colored_label(pal.danger, format!("{users} instance(s) in other libraries place its cells."));
@@ -4882,12 +4998,94 @@ impl IcStudio {
                         }
                         if ui.button(RichText::new("Discard").color(pal.danger)).clicked() {
                             self.dirty = false;
+                            if let Some(root) = self.project.as_ref().and_then(|p| p.root.as_deref()) {
+                                crate::recovery::discard(root);
+                            }
                             self.queue.push((**then).clone());
                             close = true;
                         }
                         if ui.button(RichText::new("Save").strong()).clicked() {
                             if self.save(false) {
                                 self.queue.push((**then).clone());
+                            } else if let Some(Dialog::SaveConflict { then: after, .. }) = &mut self.dialog {
+                                *after = Some(then.clone());
+                            }
+                            close = true;
+                        }
+                    });
+                }
+                Dialog::Recover { dir, root, saved } => {
+                    ui.heading("Recover unsaved changes?");
+                    let ago = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_secs())
+                        .saturating_sub(*saved);
+                    let when = if ago < 120 {
+                        format!("{ago} s ago")
+                    } else if ago < 7200 {
+                        format!("{} min ago", ago / 60)
+                    } else {
+                        format!("{} h ago", ago / 3600)
+                    };
+                    ui.label(format!(
+                        "IC Studio closed with unsaved changes to this project. An automatic copy from {when} is newer than the saved files."
+                    ));
+                    ui.label(
+                        RichText::new("Recover opens the copy; Save then writes it to the project. Discard deletes the copy.")
+                            .small()
+                            .color(pal.text_weak),
+                    );
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button(RichText::new("Discard copy").color(pal.danger)).clicked() {
+                            crate::recovery::discard(root);
+                            close = true;
+                        }
+                        if ui.button(RichText::new("Recover").strong()).clicked() {
+                            match crate::recovery::restore(dir, root) {
+                                Ok(p) => {
+                                    self.set_project(p);
+                                    self.dirty = true;
+                                    self.ok("Recovered the unsaved changes: save to keep them".into());
+                                }
+                                Err(e) => self.error(format!("Cannot read the recovery copy: {e}")),
+                            }
+                            close = true;
+                        }
+                    });
+                }
+                Dialog::SaveConflict { files, then } => {
+                    ui.heading("Files changed on disk");
+                    ui.label(
+                        "Another program (git, the ics command line, an AI agent) changed these files after the \
+                         project was opened, so nothing was saved:",
+                    );
+                    let root = self.project.as_ref().and_then(|p| p.root.clone()).unwrap_or_default();
+                    for f in files.iter().take(8) {
+                        let shown = f.strip_prefix(&root).unwrap_or(f);
+                        ui.label(RichText::new(shown.display().to_string()).monospace().small());
+                    }
+                    if files.len() > 8 {
+                        ui.label(RichText::new(format!("and {} more", files.len() - 8)).small());
+                    }
+                    ui.label(
+                        RichText::new(
+                            "Overwrite replaces them with the project in this window. To keep their version, \
+                             cancel and reopen the project.",
+                        )
+                        .small()
+                        .color(pal.text_weak),
+                    );
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            close = true;
+                        }
+                        if ui.button(RichText::new("Overwrite").color(pal.danger)).clicked() {
+                            if self.save_overwriting()
+                                && let Some(t) = then.take()
+                            {
+                                self.queue.push(*t);
                             }
                             close = true;
                         }
@@ -5324,26 +5522,22 @@ impl IcStudio {
     /// Run a tool on the UI thread, directly on the open project.
     fn mcp_call(&mut self, tool: &str, args: &McpArgs) -> ToolResult {
         let cell = args.get("cell").and_then(|v| v.as_str()).map(str::to_string);
-        let edits = MCP_EDITS.contains(&tool);
-        let before = cell.as_deref().filter(|_| edits).and_then(|c| {
-            let p = self.project.as_ref()?;
-            let r = tools::find(p, c)?;
-            Some((p.cell(&r)?.layout.clone()?, r))
-        });
-        let sch_before = cell.as_deref().filter(|_| tool == "write_schematic").and_then(|c| {
-            let p = self.project.as_ref()?;
-            let r = tools::find(p, c)?;
-            Some((p.cell(&r)?.schematic.clone().unwrap_or_default(), r))
-        });
-        let skill_before = self.project.as_ref().filter(|_| tool == "run_skill").map(layout_snapshot);
+        let replaces = matches!(tool, "open_project" | "new_project");
+        if replaces && self.dirty {
+            return ToolResult::error(
+                "the IC Studio window has unsaved changes: save or discard them there before opening another project",
+            );
+        }
+        // Snapshots of every layout and schematic: whatever the tool changes becomes one undo
+        // step per cell, and the editors redraw it.
+        let edits = !replaces && !MCP_READ_ONLY.contains(&tool);
+        let lay_before = self.project.as_ref().filter(|_| edits).map(layout_snapshot);
+        let sch_before = self.project.as_ref().filter(|_| edits).map(schematic_snapshot);
         let mut state = tools::State::in_gui(self.project.take(), self.dirty);
         let res = ics_mcp::call_tool(&mut state, tool, args);
         let (project, dirty) = state.into_parts();
         match project {
-            Some(p) if !res.is_error && matches!(tool, "open_project" | "new_project") => {
-                if self.dirty {
-                    self.warn("MCP replaced the project; unsaved changes were discarded".into());
-                }
+            Some(p) if !res.is_error && replaces => {
                 let root = p.root.clone();
                 self.set_project(p);
                 if let Some(root) = root {
@@ -5353,30 +5547,18 @@ impl IcStudio {
             p => self.project = p,
         }
         self.dirty = dirty;
-        if edits && !res.is_error {
-            self.hier.clear();
-            if let Some(p) = &self.project {
-                if let Some((lay, r)) = before
-                    && p.cell(&r).and_then(|c| c.layout.as_ref()) != Some(&lay)
-                {
-                    self.lay_eds.entry(r).or_default().history.push(&lay);
-                }
-                for (r, ed) in self.lay_eds.iter_mut() {
-                    ed.layout_changed();
-                    let lay = p.cell(r).and_then(|c| c.layout.as_ref());
-                    ed.selection.retain(|id| lay.is_some_and(|l| l.ids().any(|i| i == *id)));
-                }
-            }
-        }
-        if let Some((sch, r)) = sch_before.filter(|_| !res.is_error) {
-            let ed = self.sch_eds.entry(r).or_default();
-            ed.history.push(&sch);
-            ed.selection.clear();
-            ed.request_fit();
-        }
         let mut target = cell.as_deref().and_then(|c| self.project.as_ref().and_then(|p| tools::find(p, c)));
-        if let Some(before) = skill_before {
-            target = self.layouts_edited(before).into_iter().next().filter(|_| self.active.is_none());
+        if !res.is_error {
+            let mut changed = vec![];
+            if let Some(before) = lay_before {
+                changed = self.layouts_edited(before);
+            }
+            if let Some(before) = sch_before {
+                self.schematics_edited(before);
+            }
+            if tool == "run_skill" {
+                target = changed.into_iter().next().filter(|_| self.active.is_none());
+            }
         }
         self.mcp_done(tool, target, &res, None);
         res
@@ -6200,6 +6382,9 @@ Cells (views):";
 
 impl eframe::App for IcStudio {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if let Some(e) = self.autosave.tick(self.project.as_ref(), self.dirty) {
+            self.warn(format!("Autosave failed: {e}"));
+        }
         // Window close with unsaved work.
         if ctx.input(|i| i.viewport().close_requested()) && self.dirty && !self.allow_close {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);

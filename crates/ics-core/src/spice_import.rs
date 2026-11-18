@@ -212,14 +212,24 @@ fn dot_line(cmd: &str, t: &[String], line: &str, out: &mut Imported) -> Result<(
         "op" => Analysis::Op,
         "dc" => Analysis::Dc { source: arg(1)?, start: arg(2)?, stop: arg(3)?, step: arg(4)? },
         "ac" => {
-            if !arg(1)?.eq_ignore_ascii_case("dec") {
-                return Err(".ac: only 'dec' sweeps are supported (.ac dec <points> <fstart> <fstop>)".into());
-            }
+            let sweep = crate::sim_setup::AcSweep::parse(&arg(1)?)
+                .ok_or(".ac: the sweep is dec, oct or lin (.ac dec <points> <fstart> <fstop>)")?;
             let n = arg(2)?;
-            let points_per_decade = n.parse().map_err(|_| format!(".ac: points per decade '{n}' is not an integer"))?;
-            Analysis::Ac { points_per_decade, fstart: arg(3)?, fstop: arg(4)? }
+            let points_per_decade = n.parse().map_err(|_| format!(".ac: number of points '{n}' is not an integer"))?;
+            Analysis::Ac { points_per_decade, fstart: arg(3)?, fstop: arg(4)?, sweep }
         }
-        "tran" => Analysis::Tran { tstep: arg(1)?, tstop: arg(2)? },
+        "tran" => {
+            let rest: Vec<&String> = t.iter().skip(3).collect();
+            let uic = rest.iter().any(|s| s.eq_ignore_ascii_case("uic"));
+            let nums: Vec<String> = rest.iter().filter(|s| !s.eq_ignore_ascii_case("uic")).map(|s| s.to_string()).collect();
+            Analysis::Tran {
+                tstep: arg(1)?,
+                tstop: arg(2)?,
+                tstart: nums.first().cloned().unwrap_or_default(),
+                tmax: nums.get(1).cloned().unwrap_or_default(),
+                uic,
+            }
+        }
         "noise" => {
             let out_node = arg(1)?;
             let output = out_node.strip_prefix(['v', 'V']).and_then(|s| s.strip_prefix('(')).and_then(|s| s.strip_suffix(')'));

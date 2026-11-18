@@ -206,10 +206,8 @@ pub fn dump_library_with(
         Some(c) => format!("INCLUDE {}\n", cds_path(c)?),
         None => format!("DEFINE {lib} {}\n", cds_path(dir)?),
     };
-    static RUN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let run = RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let work = std::env::temp_dir().join(format!("ics-virtuoso-{}-{run}-{lib}", std::process::id()));
-    std::fs::create_dir_all(&work).map_err(|e| format!("{}: {e}", work.display()))?;
+    let work =
+        crate::tmp::private_dir(&format!("ics-virtuoso-{lib}")).map_err(|e| format!("cannot create a work folder: {e}"))?;
     let script = work.join("icsDump.il");
     let out = work.join(format!("{lib}.icsdump"));
     let replay = work.join("ics_replay.il");
@@ -234,6 +232,8 @@ pub fn dump_library_with(
         .arg(&log)
         .current_dir(&work)
         .stdin(std::process::Stdio::null())
+        // Its console output goes to CDS.log; on stdout it would break `ics mcp`'s JSON-RPC.
+        .stdout(std::process::Stdio::null())
         .spawn()
         .map_err(|e| format!("cannot run {}: {e}", virtuoso.display()))?;
     let status = loop {

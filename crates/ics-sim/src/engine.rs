@@ -315,8 +315,8 @@ impl Engine {
                     *model = model.at_temp(temp);
                     if let Some(b) = &mut model.bsim4 {
                         let geo = crate::bsim4::Geometry { w: *w, l: *l, nf: b.nf, ad: j.ad, as_: j.as_, pd: j.pd, ps: j.ps };
-                        let inst =
-                            crate::bsim4::Inst::new(&b.card, geo, temp).map_err(|e| SimError::Engine(format!("{name}: {e}")))?;
+                        let inst = crate::bsim4::Inst::with_shift(&b.card, geo, temp, b.shift)
+                            .map_err(|e| SimError::Engine(format!("{name}: {e}")))?;
                         b.inst = Some(std::sync::Arc::new(inst));
                     }
                 }
@@ -971,13 +971,24 @@ impl Engine {
     }
 
     pub fn run_ac(&mut self, ppd: u32, fstart: f64, fstop: f64) -> Result<Dataset, SimError> {
+        self.run_ac_sweep(ics_core::sim_setup::AcSweep::Dec, ppd, fstart, fstop)
+    }
+
+    /// AC analysis over `sweep`'s frequencies (`n` per decade / octave, or `n` in all for lin).
+    pub fn run_ac_sweep(
+        &mut self,
+        sweep: ics_core::sim_setup::AcSweep,
+        n: u32,
+        fstart: f64,
+        fstop: f64,
+    ) -> Result<Dataset, SimError> {
         let x0 = self.op(None)?;
         let caps_at_op: Vec<f64> = (0..self.caps.len()).map(|k| self.cap_qc(k, &x0, None).1).collect();
         let mut ds = self.new_dataset("ac", "AC analysis", Some(("frequency", VecKind::Frequency)));
         for v in ds.vectors.iter_mut().skip(1) {
             v.im = Some(vec![]);
         }
-        for f in Self::log_frequencies(ppd, fstart, fstop) {
+        for f in sweep.frequencies(n, fstart, fstop) {
             let (mut m, mut rhs) = self.ac_system(&x0, &caps_at_op, 2.0 * std::f64::consts::PI * f, None);
             if !solve(&mut m, &mut rhs) {
                 return Err(SimError::Engine(format!("AC: singular matrix at f={f:.3e}")));
@@ -1101,7 +1112,12 @@ impl Engine {
     }
 
     pub fn run_tran(&mut self, tstep: f64, tstop: f64) -> Result<Dataset, SimError> {
-        let hmax = tstep.min(tstop / 100.0);
+        self.run_tran_limited(tstep, tstop, None)
+    }
+
+    /// Transient analysis whose time step stays below `tmax` when given.
+    pub fn run_tran_limited(&mut self, tstep: f64, tstop: f64, tmax: Option<f64>) -> Result<Dataset, SimError> {
+        let hmax = tstep.min(tstop / 100.0).min(tmax.filter(|t| *t > 0.0).unwrap_or(f64::INFINITY));
         if tstop / hmax > 2.0e6 {
             return Err(SimError::Engine("transient would need more than 2M points; increase tstep".into()));
         }
@@ -1348,8 +1364,26 @@ impl Engine {
         match a {
             Analysis::Op => self.run_op(),
             Analysis::Dc { source, start, stop, step } => self.run_dc(source, num(start)?, num(stop)?, num(step)?),
-            Analysis::Ac { points_per_decade, fstart, fstop } => self.run_ac(*points_per_decade, num(fstart)?, num(fstop)?),
-            Analysis::Tran { tstep, tstop } => self.run_tran(num(tstep)?, num(tstop)?),
+            Analysis::Ac { points_per_decade, fstart, fstop, sweep } => {
+                self.run_ac_sweep(*sweep, *points_per_decade, num(fstart)?, num(fstop)?)
+            }
+            Analysis::Tran { tstep, tstop, tstart, tmax, .. } => {
+                let opt = |s: &String| if s.trim().is_empty() { Ok(None) } else { num(s).map(Some) };
+                let (tstart, tmax) = (opt(tstart)?, opt(tmax)?);
+                let mut ds = self.run_tran_limited(num(tstep)?, num(tstop)?, tmax)?;
+                if let Some(t0) = tstart.filter(|t| *t > 0.0) {
+                    let keep: Vec<bool> = ds.vectors[0].re.iter().map(|t| *t >= t0).collect();
+                    for v in &mut ds.vectors {
+                        let mut k = keep.iter();
+                        v.re.retain(|_| *k.next().unwrap_or(&true));
+                        if let Some(im) = &mut v.im {
+                            let mut k = keep.iter();
+                            im.retain(|_| *k.next().unwrap_or(&true));
+                        }
+                    }
+                }
+                Ok(ds)
+            }
             Analysis::Noise { output, source, points_per_decade, fstart, fstop } => {
                 self.run_noise(output, source, *points_per_decade, num(fstart)?, num(fstop)?)
             }

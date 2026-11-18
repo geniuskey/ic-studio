@@ -42,6 +42,28 @@ fn live_file() -> io::Result<PathBuf> {
     live_dir().map(|d| d.join(LIVE_FILE)).ok_or_else(|| io::Error::other("no per-user directory for live.json"))
 }
 
+/// Write `data` to `path` readable only by its owner: the token in `live.json` lets whoever
+/// reads it drive the app. Its folder is made owner-only too.
+fn write_private(path: &std::path::Path, data: &[u8]) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+        }
+        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?;
+        // An existing file keeps its mode on open: set it before writing the token.
+        f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        f.write_all(data)
+    }
+    #[cfg(not(unix))]
+    {
+        // %LOCALAPPDATA% is private to the user.
+        std::fs::write(path, data)
+    }
+}
+
 fn random_token() -> String {
     let nanos = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     (0..2u8)
@@ -82,7 +104,7 @@ impl Server {
         let listener = TcpListener::bind(("127.0.0.1", 0))?;
         let port = listener.local_addr()?.port();
         let token = random_token();
-        std::fs::write(&path, json!({"port": port, "token": token, "pid": std::process::id()}).to_string())?;
+        write_private(&path, json!({"port": port, "token": token, "pid": std::process::id()}).to_string().as_bytes())?;
         let (tx, rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(wake);
@@ -255,6 +277,13 @@ mod tests {
         assert_eq!(live["port"], server.port());
         assert_eq!(live["pid"], std::process::id());
         assert_eq!(live["token"].as_str().unwrap().len(), 32);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&dir.join(LIVE_FILE)), 0o600, "only the user reads the token");
+            assert_eq!(mode(&dir), 0o700);
+        }
         let app = std::thread::spawn(move || {
             let mut state = State::in_gui(None, false);
             for p in rx {

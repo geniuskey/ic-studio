@@ -22,7 +22,6 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -233,16 +232,10 @@ impl SignoffReport {
     }
 }
 
+/// A private folder for one run; it is kept for its reports (`SignoffReport::dir`).
 fn work_dir(cell: &str) -> Result<PathBuf, String> {
-    static N: AtomicU64 = AtomicU64::new(0);
-    let d = std::env::temp_dir().join(format!(
-        "ic-studio-signoff-{}-{}-{}",
-        cell.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect::<String>(),
-        std::process::id(),
-        N.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&d).map_err(|e| format!("{}: {e}", d.display()))?;
-    Ok(d)
+    let name: String = cell.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect();
+    crate::tmp::private_dir(&format!("ic-studio-signoff-{name}")).map_err(|e| format!("cannot create a work folder: {e}"))
 }
 
 /// The runset of `tech` named `name` (case-insensitive), or the only one whose name contains it.

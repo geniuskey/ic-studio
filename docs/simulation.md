@@ -292,8 +292,9 @@ without `tox`).
 
 #### What the built-in engine approximates
 
-The engine reports what it does not evaluate as written: a MOS `level` other than 1
-(evaluated as level 1), model and instance parameters it ignores, and dot lines it skips.
+The engine reports what it does not evaluate as written: model and instance parameters it
+ignores and dot lines it skips. A MOS `level` other than 1, 14 or 54 (BSIM4) is an error
+rather than an approximation, so **Auto** runs such decks on ngspice.
 The warnings appear in the console log, in the status line of the run (the first one,
 with a count of the rest), in `ics sim` / `ics spice` output and in the MCP `simulate`
 result. Check them before trusting a built-in result of a foreign deck.
