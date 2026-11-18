@@ -348,6 +348,33 @@ impl PCellDesigner {
                 self.tpl = Some(t);
                 self.touch();
             }
+            if let Some(t) = &self.tpl
+                && ui
+                    .button("Export SKILL…")
+                    .on_hover_text(
+                        "Write the PCell as a SKILL pcDefinePCell for Cadence Virtuoso (.il), generating the same \
+                         layout. Layer names are the technology's.",
+                    )
+                    .clicked()
+            {
+                let lib = if self.lib.is_empty() { "myLib".to_string() } else { self.lib.clone() };
+                match t.to_skill(&project.tech, &lib) {
+                    Ok((text, warnings)) => {
+                        let pick = rfd::FileDialog::new()
+                            .add_filter("SKILL", &["il"])
+                            .set_file_name(format!("{}.il", t.name))
+                            .save_file();
+                        if let Some(path) = pick {
+                            self.status = Some(match std::fs::write(&path, text) {
+                                Ok(()) if warnings.is_empty() => (true, format!("Wrote {}", path.display())),
+                                Ok(()) => (true, format!("Wrote {} ({})", path.display(), warnings.join("; "))),
+                                Err(e) => (false, format!("{}: {e}", path.display())),
+                            });
+                        }
+                    }
+                    Err(e) => self.status = Some((false, format!("SKILL export: {e}"))),
+                }
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("Close").clicked() {
                     self.open = false;
@@ -1414,7 +1441,8 @@ impl PCellDesigner {
             ui.label(
                 "Save PCell stores the master cell (its layout is the default variant). In the layout editor, the instance \
                  tool lists it under Designed PCells; placed instances can be edited in the inspector and stretched by their \
-                 handles. Saving again updates every placed variant.",
+                 handles. Saving again updates every placed variant. Export SKILL writes the same PCell as a \
+                 pcDefinePCell for Cadence Virtuoso.",
             );
         });
         concepts(ui, pal);

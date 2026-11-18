@@ -261,6 +261,18 @@ enum Cmd {
         #[arg(long)]
         allow_opens: bool,
     },
+    /// Export a PCell Designer master as a SKILL pcDefinePCell for Cadence Virtuoso.
+    PcellSkill {
+        project: PathBuf,
+        /// The master cell (made with the PCell Designer).
+        cell: String,
+        /// Virtuoso library of the PCell (default: the master's library).
+        #[arg(long)]
+        lib: Option<String>,
+        /// Output file (.il; default: standard output).
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
     /// Run DRC on a cell layout with the technology deck (or `--deck FILE`).
     Drc {
         project: PathBuf,
@@ -1320,6 +1332,24 @@ fn run(cli: Cli) -> Result<(), String> {
                     }
                     None => println!("no shared deck linked"),
                 },
+            }
+        }
+        Cmd::PcellSkill { project, cell, lib, out } => {
+            let p = Project::open(&project).map_err(|e| e.to_string())?;
+            let r = resolve(&p, &cell)?;
+            let Some(ics_core::pcell::PCell::Template { def, .. }) = p.cell(&r).and_then(|c| c.pcell.as_ref()) else {
+                return Err(format!("{r} is not a PCell Designer master"));
+            };
+            let (text, warnings) = def.to_skill(&p.tech, lib.as_deref().unwrap_or(&r.lib))?;
+            for w in &warnings {
+                eprintln!("warning: {w}");
+            }
+            match out {
+                Some(f) => {
+                    std::fs::write(&f, &text).map_err(|e| format!("{}: {e}", f.display()))?;
+                    eprintln!("wrote {}", f.display());
+                }
+                None => print!("{text}"),
             }
         }
         Cmd::Drc { project, cell, deck, fix } => {

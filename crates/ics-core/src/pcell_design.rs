@@ -735,6 +735,8 @@ impl Template {
                     Target::Param(i),
                     format!("'{}' is not a usable name (letters, digits, _; not a function)", p.name),
                 );
+            } else if matches!(p.name.as_str(), "t" | "nil" | "pcCellView") || p.name.starts_with("ics") {
+                push(Level::Error, Target::Param(i), format!("'{}' is reserved in SKILL or by the SKILL export", p.name));
             }
             if self.params.iter().filter(|q| q.name == p.name).count() > 1 {
                 push(Level::Error, Target::Param(i), format!("'{}' is defined twice", p.name));
@@ -1268,6 +1270,392 @@ pub fn canonical(l: &Layout) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------------------------
+// SKILL export
+
+/// A float literal SKILL reads back exactly (always with a decimal point, never an exponent).
+fn skill_num(v: f64) -> String {
+    let s = format!("{v}");
+    let s = if s.contains('.') || s.contains("inf") || s.contains("NaN") { s } else { format!("{s}.0") };
+    if v < 0.0 { format!("({s})") } else { s }
+}
+
+/// An integer literal; negative ones in parentheses, as `list(1 -2)` reads as `list(1 - 2)`.
+fn skill_int(v: i64) -> String {
+    if v < 0 { format!("({v})") } else { v.to_string() }
+}
+
+fn skill_str(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// The expression as SKILL computing a float, with the semantics of [`Expr::eval`].
+pub fn skill_expr(e: &Expr) -> String {
+    let b = |c: String| format!("if({c} 1.0 0.0)");
+    let nz = |e: &Expr| format!("({} != 0.0)", skill_expr(e));
+    match e {
+        Expr::Num(v) => skill_num(*v),
+        Expr::Var(n) => format!("float({n})"),
+        Expr::Neg(x) => format!("(-{})", skill_expr(x)),
+        Expr::Not(x) => b(format!("{} == 0.0", skill_expr(x))),
+        Expr::Bin(op, l, r) => {
+            let (a, c) = (skill_expr(l), skill_expr(r));
+            match op {
+                '+' | '-' | '*' | '/' => format!("({a} {op} {c})"),
+                // Remainder truncating toward zero, as Rust's `%` on floats.
+                '%' => format!("let((icsA icsB) icsA = {a} icsB = {c} icsA - icsB * float(fix(icsA / icsB)))"),
+                '|' => b(format!("{} || {}", nz(l), nz(r))),
+                '&' => b(format!("{} && {}", nz(l), nz(r))),
+                '=' => b(format!("abs({a} - {c}) < 0.000000001")),
+                '~' => b(format!("abs({a} - {c}) >= 0.000000001")),
+                'l' => b(format!("{a} <= {c} + 0.000000001")),
+                'g' => b(format!("{a} + 0.000000001 >= {c}")),
+                '<' => b(format!("{a} < {c} - 0.000000001")),
+                _ => b(format!("{a} > {c} + 0.000000001")),
+            }
+        }
+        Expr::Call(f, args) => {
+            let a: Vec<String> = args.iter().map(skill_expr).collect();
+            match f.as_str() {
+                "min" | "max" | "abs" | "sqrt" => format!("{f}({})", a.join(" ")),
+                "floor" => format!("float(floor({}))", a.join(" ")),
+                "ceil" => format!("float(ceiling({}))", a.join(" ")),
+                "round" => format!("float(round({}))", a.join(" ")),
+                _ => format!("if({} != 0.0 {} {})", a[0], a.get(1).map_or("0.0", |s| s), a.get(2).map_or("0.0", |s| s)),
+            }
+        }
+    }
+}
+
+fn skill_of(text: &str, what: &str) -> Result<String, String> {
+    parse_expr(text).map(|e| skill_expr(&e)).map_err(|e| format!("{what} '{text}': {e}"))
+}
+
+const SKILL_ENGINE: &str = r#"    icsSnap = lambda((v) if(icsGrid <= 1 v icsGrid * floor((v + fix(icsGrid / 2.0)) / float(icsGrid))))
+    icsUm = lambda((u) funcall(icsSnap round(u * icsDbu)))
+    icsOn = lambda((oIt oLs) if(oLs then and(nth(1 oIt) member(nth(1 oIt) oLs) t) else t))
+    icsBox = lambda((bIt) let((bK bP bXs bYs bW)
+      bK = car(bIt)  bP = nth(2 bIt)
+      bXs = mapcar(lambda((bQ) car(bQ)) bP)  bYs = mapcar(lambda((bQ) cadr(bQ)) bP)
+      cond(
+        (eq(bK 'label)
+          bW = max(strlen(car(nth(3 bIt))) 1) * cadr(nth(3 bIt)) * 6
+          bW = fix(bW / 10.0)
+          list(car(bXs) car(bYs) car(bXs) + bW car(bYs) + cadr(nth(3 bIt))))
+        (eq(bK 'path)
+          bW = fix(nth(3 bIt) / 2.0)
+          list(apply('min bXs) - bW apply('min bYs) - bW apply('max bXs) + bW apply('max bYs) + bW))
+        (eq(bK 'inst) list(car(bXs) car(bYs) car(bXs) car(bYs)))
+        (eq(bK 'poly) list(apply('min bXs) apply('min bYs) apply('max bXs) apply('max bYs)))
+        (t list(car(bXs) car(bYs) cadr(bXs) cadr(bYs))))))
+    icsInside = lambda((iR iB) and(nth(0 iB) >= nth(0 iR) nth(1 iB) >= nth(1 iR) nth(2 iB) <= nth(2 iR) nth(3 iB) <= nth(3 iR)))
+    icsMap = lambda((mIt mAx mF) list(car(mIt) nth(1 mIt)
+      mapcar(lambda((mQ) if(eq(mAx 'x) list(funcall(mF car(mQ)) cadr(mQ)) list(car(mQ) funcall(mF cadr(mQ))))) nth(2 mIt))
+      nth(3 mIt) nth(4 mIt)))
+    icsMove = lambda((vIt vDx vDy) list(car(vIt) nth(1 vIt)
+      mapcar(lambda((vQ) list(car(vQ) + vDx cadr(vQ) + vDy)) nth(2 vIt)) nth(3 vIt) nth(4 vIt)))
+    icsPt = lambda((pQ) list(car(pQ) / icsDbu cadr(pQ) / icsDbu))
+"#;
+
+const SKILL_OUTPUT: &str = r#"    ;; Create the shapes; contact fills become the largest centred array of cuts.
+    foreach(oIt icsItems
+      let((oP oL oX)
+        oP = nth(2 oIt)  oL = nth(1 oIt)  oX = nth(3 oIt)
+        cond(
+          (eq(car(oIt) 'rect) dbCreateRect(pcCellView oL list(funcall(icsPt car(oP)) funcall(icsPt cadr(oP)))))
+          (eq(car(oIt) 'poly) dbCreatePolygon(pcCellView oL mapcar(icsPt oP)))
+          (eq(car(oIt) 'path) dbCreatePath(pcCellView oL mapcar(icsPt oP) oX / icsDbu))
+          (eq(car(oIt) 'label)
+            dbCreateLabel(pcCellView oL funcall(icsPt car(oP)) car(oX) "lowerLeft" "R0" "roman" cadr(oX) / icsDbu))
+          (eq(car(oIt) 'inst)
+            dbCreateInstByMasterName(pcCellView car(oX) cadr(oX) "layout" nil funcall(icsPt car(oP)) caddr(oX)))
+          (eq(car(oIt) 'fill)
+            let((fC fS fX0 fY0 fNx fNy fOx fOy fL fX fY)
+              fC = car(oX)  fS = cadr(oX)
+              fX0 = car(car(oP))  fY0 = cadr(car(oP))
+              fL = car(cadr(oP)) - fX0
+              if(fL < fC then fNx = 0 fOx = 0 else
+                fNx = fix((fL - fC) / float(fC + fS)) + 1
+                fOx = fix((fL - (fNx * fC + (fNx - 1) * fS)) / 2.0)
+                when(icsGrid > 1 fOx = fix(fOx / float(icsGrid)) * icsGrid))
+              fL = cadr(cadr(oP)) - fY0
+              if(fL < fC then fNy = 0 fOy = 0 else
+                fNy = fix((fL - fC) / float(fC + fS)) + 1
+                fOy = fix((fL - (fNy * fC + (fNy - 1) * fS)) / 2.0)
+                when(icsGrid > 1 fOy = fix(fOy / float(icsGrid)) * icsGrid))
+              when(fNx == 0 || fNy == 0
+                error("%s: a contact fill is too small for one %s cut" icsName oL))
+              for(fJ 0 fNy - 1
+                for(fI 0 fNx - 1
+                  fX = fX0 + fOx + fI * (fC + fS)
+                  fY = fY0 + fOy + fJ * (fC + fS)
+                  dbCreateRect(pcCellView oL list(funcall(icsPt list(fX fY)) funcall(icsPt list(fX + fC fY + fC)))))))))))
+"#;
+
+impl Template {
+    /// The PCell as a SKILL `pcDefinePCell` for Cadence Virtuoso (library `lib`), generating
+    /// the same layout as [`Template::generate`]: the drawing is data (database units) and a
+    /// small engine in the body runs the operations. Layer names are the technology's; flag
+    /// parameters are integers 0 / 1. Returns the text and warnings.
+    pub fn to_skill(&self, tech: &Tech, lib: &str) -> Result<(String, Vec<String>), String> {
+        let mut warnings = vec![];
+        let lname = |l: usize| tech.layer(l).map(|d| d.name.clone()).ok_or_else(|| format!("no layer {l}"));
+        let defaults = self.defaults();
+        let dbu = tech.dbu_per_um.max(1);
+        let mut s = String::new();
+        let _ = writeln!(s, ";; {}: PCell exported from the IC Studio PCell Designer", self.name);
+        if !self.description.is_empty() {
+            let _ = writeln!(s, ";; {}", self.description);
+        }
+        let _ = writeln!(
+            s,
+            ";; Technology {}: layer names as in IC Studio (map them if Virtuoso names differ).\n\
+             ;; The drawing below is in database units of 1/{dbu} um; shapes are made in user units (um).\n\
+             ;; Parameters: lengths in um, counts as integers, switches as 0 / 1.",
+            tech.name
+        );
+        let _ = writeln!(s, "pcDefinePCell(\n  list(ddGetObj({}) {} \"layout\")\n  (", skill_str(lib), skill_str(&self.name));
+        for p in &self.params {
+            let v = match p.kind {
+                ParamKind::Length => skill_num(p.default),
+                _ => skill_int(p.default.round() as i64),
+            };
+            let note = if p.description.is_empty() { String::new() } else { format!("  ; {}", p.description) };
+            let _ = writeln!(s, "    ({} {v}){note}", p.name);
+        }
+        s.push_str("  )\n");
+        // Locals: engine helpers, the per-operation lines / regions and the working values.
+        let mut locals: Vec<String> = [
+            "icsName",
+            "icsDbu",
+            "icsGrid",
+            "icsItems",
+            "icsSnap",
+            "icsUm",
+            "icsOn",
+            "icsBox",
+            "icsInside",
+            "icsMap",
+            "icsMove",
+            "icsPt",
+            "icsD",
+            "icsHi",
+            "icsLo",
+            "icsAt",
+            "icsSh",
+            "icsCross",
+            "icsN",
+            "icsP",
+            "icsExt",
+            "icsReg",
+            "icsMem",
+            "icsRest",
+        ]
+        .map(String::from)
+        .to_vec();
+        for (k, op) in self.ops.iter().enumerate() {
+            match op {
+                Op::Stretch { .. } => locals.push(format!("icsA{k}")),
+                Op::Repeat { .. } => locals.extend([format!("icsR{k}"), format!("icsRa{k}")]),
+                _ => {}
+            }
+        }
+        let _ = writeln!(s, "  let(({})", locals.join(" "));
+        let _ = writeln!(
+            s,
+            "    icsName = {}\n    icsDbu = {}\n    icsGrid = {}",
+            skill_str(&self.name),
+            skill_num(dbu as f64),
+            tech.grid
+        );
+        s.push_str(SKILL_ENGINE);
+        // The drawing: list(kind layer points extra home).
+        s.push_str("    ;; The drawing: list(kind layer points extra)\n    icsItems = list(\n");
+        let pts = |p: &[(i64, i64)]| {
+            p.iter().map(|(x, y)| format!("list({} {})", skill_int(*x), skill_int(*y))).collect::<Vec<_>>().join(" ")
+        };
+        for sh in &self.source.shapes {
+            let l = skill_str(&lname(sh.layer)?);
+            let line = match &sh.geom {
+                Geometry::Rect(r) => format!("list('rect {l} list({}) nil nil)", pts(&[(r.x0, r.y0), (r.x1, r.y1)])),
+                Geometry::Polygon { points } => format!("list('poly {l} list({}) nil nil)", pts(points)),
+                Geometry::Path { points, width } => format!("list('path {l} list({}) {width} nil)", pts(points)),
+                Geometry::Label { text, at, size } => {
+                    format!("list('label {l} list({}) list({} {size}) nil)", pts(&[*at]), skill_str(text))
+                }
+            };
+            let _ = writeln!(s, "      {line}");
+        }
+        for i in &self.source.instances {
+            if i.array.is_some() {
+                warnings.push(format!("instance of {} is an array: exported as its first element", i.cell));
+            }
+            let orient = match (i.trans.rot % 4, i.trans.mirror) {
+                (0, false) => "R0",
+                (1, false) => "R90",
+                (2, false) => "R180",
+                (3, false) => "R270",
+                (0, true) => "MX",
+                (1, true) => "MXR90",
+                (2, true) => "MY",
+                _ => "MYR90",
+            };
+            let _ = writeln!(
+                s,
+                "      list('inst nil list({}) list({} {} {}) nil)",
+                pts(&[(i.trans.x, i.trans.y)]),
+                skill_str(&i.cell.lib),
+                skill_str(&i.cell.cell),
+                skill_str(orient)
+            );
+        }
+        for op in &self.ops {
+            if let Op::ContactFill { rect, via } = op {
+                let def = tech.via(via).ok_or_else(|| format!("contact fill: technology has no via '{via}'"))?;
+                let _ = writeln!(
+                    s,
+                    "      list('fill {} list({}) list({} {}) nil)",
+                    skill_str(&def.cut),
+                    pts(&[(rect.x0, rect.y0), (rect.x1, rect.y1)]),
+                    def.cut_size,
+                    def.cut_spacing
+                );
+            }
+        }
+        s.push_str("    )\n");
+        let layers = |ls: &[usize]| -> Result<String, String> {
+            if ls.is_empty() {
+                return Ok("nil".into());
+            }
+            let names: Vec<String> = ls.iter().map(|&l| lname(l).map(|n| skill_str(&n))).collect::<Result<_, _>>()?;
+            Ok(format!("list({})", names.join(" ")))
+        };
+        let rect = |r: &IRect| format!("list({} {} {} {})", skill_int(r.x0), skill_int(r.y0), skill_int(r.x1), skill_int(r.y1));
+        for (k, op) in self.ops.iter().enumerate() {
+            match op {
+                Op::Stretch { at, .. } => {
+                    let _ = writeln!(s, "    icsA{k} = {}", skill_int(*at));
+                }
+                Op::Repeat { region, at, .. } => {
+                    let _ = writeln!(s, "    icsR{k} = {}\n    icsRa{k} = {}", rect(region), at.map_or("nil".into(), skill_int));
+                }
+                _ => {}
+            }
+        }
+        for (k, op) in self.ops.iter().enumerate() {
+            if let Op::Condition { region, when, layers: ls } = op {
+                let c = skill_of(when, &format!("condition {}", k + 1))?;
+                let _ = writeln!(
+                    s,
+                    "    ;; {}. keep if {when}\n    when({c} == 0.0\n      icsItems = setof(cIt icsItems !and(funcall(icsOn cIt {}) funcall(icsInside {} funcall(icsBox cIt)))))",
+                    k + 1,
+                    layers(ls)?,
+                    rect(region)
+                );
+            }
+        }
+        for (k, op) in self.ops.iter().enumerate() {
+            let Op::Stretch { axis, side, amount, layers: ls, .. } = op else { continue };
+            let what = format!("stretch {}", k + 1);
+            let e = parse_expr(amount).map_err(|e| format!("{what} '{amount}': {e}"))?;
+            let d0 = e.eval(&defaults).map_err(|e| format!("{what} '{amount}': {e}"))?;
+            let ax = axis.label();
+            let (hi, lo) = match side {
+                Side::High => ("icsD", "0"),
+                Side::Low => ("0", "icsD"),
+                Side::Both => ("funcall(icsSnap fix(icsD / 2.0))", "icsD - icsHi"),
+            };
+            let _ = writeln!(s, "    ;; {}. stretch along {ax} by {amount}", k + 1);
+            let _ = writeln!(s, "    icsD = funcall(icsUm {} - {})", skill_expr(&e), skill_num(d0));
+            let _ = writeln!(
+                s,
+                "    unless(icsD == 0\n      icsHi = {hi}\n      icsLo = {lo}\n      icsAt = icsA{k}\n      icsCross = nil"
+            );
+            s.push_str(
+                "      icsSh = lambda((sC) let((sN)\n        sN = if(sC > icsAt sC + icsHi if(sC < icsAt sC - icsLo sC))\n        \
+                 when(or(and(sC > icsAt sN < icsAt) and(sC < icsAt sN > icsAt)) icsCross = t)\n        sN))\n",
+            );
+            let _ = writeln!(
+                s,
+                "      icsItems = mapcar(lambda((sIt) if(funcall(icsOn sIt {}) funcall(icsMap sIt '{ax} icsSh) sIt)) icsItems)",
+                layers(ls)?
+            );
+            let _ = writeln!(
+                s,
+                "      when(icsCross error(\"%s: {what} ({}): the value is too small, edges would pass the line\" icsName))",
+                amount.replace('"', "'")
+            );
+            for (j, o) in self.ops.iter().enumerate().skip(k + 1) {
+                match o {
+                    Op::Stretch { axis: a2, .. } if a2 == axis => {
+                        let _ = writeln!(s, "      icsA{j} = funcall(icsSh icsA{j})");
+                    }
+                    Op::Repeat { axis: a2, at, .. } => {
+                        let r = format!("icsR{j}");
+                        let m = match axis {
+                            Axis::X => format!("list(funcall(icsSh nth(0 {r})) nth(1 {r}) funcall(icsSh nth(2 {r})) nth(3 {r}))"),
+                            Axis::Y => format!("list(nth(0 {r}) funcall(icsSh nth(1 {r})) nth(2 {r}) funcall(icsSh nth(3 {r})))"),
+                        };
+                        let _ = writeln!(s, "      {r} = {m}");
+                        if a2 == axis && at.is_some() {
+                            let _ = writeln!(s, "      icsRa{j} = funcall(icsSh icsRa{j})");
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let _ = writeln!(
+                s,
+                "      when(exists(sIt icsItems and(memq(car(sIt) '(rect fill))\n          \
+                 or(car(cadr(nth(2 sIt))) - car(car(nth(2 sIt))) <= 0 cadr(cadr(nth(2 sIt))) - cadr(car(nth(2 sIt))) <= 0)))\n        \
+                 error(\"%s: {what} ({}) collapses a shape: the value is too small\" icsName)))",
+                amount.replace('"', "'")
+            );
+        }
+        s.push_str("    ;; Extents after stretching select what repeats.\n");
+        s.push_str(
+            "    icsItems = mapcar(lambda((hIt) list(car(hIt) nth(1 hIt) nth(2 hIt) nth(3 hIt) funcall(icsBox hIt))) icsItems)\n",
+        );
+        for (k, op) in self.ops.iter().enumerate() {
+            let Op::Repeat { axis, count, pitch, layers: ls, .. } = op else { continue };
+            let what = format!("repeat {}", k + 1);
+            let (ax, lo, hi, dx, dy) = match axis {
+                Axis::X => ("x", 0, 2, "rI * icsP", "0"),
+                Axis::Y => ("y", 1, 3, "0", "rI * icsP"),
+            };
+            let ls = layers(ls)?;
+            let _ = writeln!(s, "    ;; {}. repeat along {ax}: {count} copies, pitch {pitch}", k + 1);
+            let _ = writeln!(s, "    icsN = round({})", skill_of(count, &what)?);
+            let _ = writeln!(
+                s,
+                "    unless(and(icsN >= 0 icsN <= 10000) error(\"%s: {what}: count %d is out of range\" icsName icsN))"
+            );
+            let _ = writeln!(s, "    icsP = funcall(icsUm {})", skill_of(pitch, &what)?);
+            let _ = writeln!(s, "    when(and(icsP <= 0 icsN > 1) error(\"%s: {what}: pitch must be positive\" icsName))");
+            let _ = writeln!(
+                s,
+                "    icsReg = icsR{k}\n    icsAt = or(icsRa{k} funcall(icsSnap fix((nth({lo} icsReg) + nth({hi} icsReg)) / 2.0)))\n    icsExt = (icsN - 1) * icsP"
+            );
+            let _ =
+                writeln!(s, "    icsMem = setof(rIt icsItems and(funcall(icsOn rIt {ls}) funcall(icsInside icsReg nth(4 rIt))))");
+            let _ = writeln!(
+                s,
+                "    icsRest = setof(rIt icsItems !and(funcall(icsOn rIt {ls}) funcall(icsInside icsReg nth(4 rIt))))"
+            );
+            let _ = writeln!(
+                s,
+                "    unless(icsExt == 0\n      icsRest = mapcar(lambda((rIt) funcall(icsMap rIt '{ax} lambda((eC) if(eC > icsAt eC + icsExt eC)))) icsRest))"
+            );
+            let _ =
+                writeln!(s, "    for(rI 1 icsN - 1 foreach(rIt icsMem icsRest = cons(funcall(icsMove rIt {dx} {dy}) icsRest)))");
+            s.push_str("    when(icsN >= 1 icsRest = append(icsRest icsMem))\n    icsItems = icsRest\n");
+        }
+        s.push_str(SKILL_OUTPUT);
+        s.push_str("    t))\n");
+        Ok((s, warnings))
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 // Expressions
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1660,6 +2048,79 @@ mod tests {
         let v = p.stretched(&p.defaults(), true, 500, &tech).unwrap();
         assert_eq!(v["w"], 1.5);
         assert!(p.stretched(&p.defaults(), false, 500, &tech).is_none());
+    }
+
+    /// The SKILL export, run by the SKILL interpreter, makes the same layouts as `generate`.
+    #[test]
+    fn skill_export_matches_generate() {
+        let tech = Tech::generic();
+        let drawn = PCell::mos(false, 1000, 180, 3).generate(&tech).unwrap();
+        let mut t = Template::from_layout("pc_nmos", &drawn);
+        t.suggest_contact_fills(&tech);
+        t.suggest_fingers(&tech).unwrap();
+        t.suggest_width(&tech).unwrap();
+        t.suggest_length(&tech).unwrap();
+        // A centred stretch, a condition and a flag exercise the other paths.
+        let m2 = tech.layer_index("metal2").unwrap();
+        t.source.add_rect(m2, 0, 1700, 400, 2000);
+        t.params.push(Param::new("strap", ParamKind::Bool, 1.0));
+        t.params.push(Param::new("ext", ParamKind::Length, 0.4));
+        t.ops.push(Op::Condition {
+            region: IRect::new(0, 1700, 400, 2000),
+            when: "strap && nf % 2 == 1".into(),
+            layers: vec![m2],
+        });
+        t.ops.insert(
+            2,
+            Op::Stretch { axis: Axis::Y, at: 1850, side: Side::Both, amount: "max(ext, 0.2) * 2".into(), layers: vec![m2] },
+        );
+        let (text, warnings) = t.to_skill(&tech, "pclib").unwrap();
+        assert!(warnings.is_empty());
+        let sets: Vec<Vec<(String, f64)>> = vec![
+            vec![],
+            vals(&[("nf", 5.0), ("w", 2.0)]),
+            vals(&[("nf", 2.0), ("l", 0.3), ("strap", 0.0)]),
+            vals(&[("nf", 4.0), ("w", 1.5), ("ext", 0.9)]),
+        ];
+        let mut src = text.clone();
+        src.push_str("cv = dbOpenCellViewByType(\"work\" \"top\" \"layout\" \"maskLayout\" \"w\")\n");
+        for (i, set) in sets.iter().enumerate() {
+            let ps: Vec<String> = set
+                .iter()
+                .map(|(n, v)| {
+                    let kind = t.param(n).unwrap().kind;
+                    if kind == ParamKind::Length {
+                        format!("list(\"{n}\" \"float\" {v:?})")
+                    } else {
+                        format!("list(\"{n}\" \"int\" {})", *v as i64)
+                    }
+                })
+                .collect();
+            src.push_str(&format!(
+                "dbCreateParamInstByMasterName(cv \"pclib\" \"pc_nmos\" \"layout\" \"I{i}\" {}:0 \"R0\" 1 list({}))\n",
+                i * 100,
+                ps.join(" ")
+            ));
+        }
+        let mut p = crate::project::Project::new("t");
+        p.tech = tech.clone();
+        let r = crate::skill::run(&mut p, &src, None).unwrap_or_else(|e| panic!("{e}\n{text}"));
+        let top = p.cell(&crate::project::CellRef::new("work", "top")).and_then(|c| c.layout.clone()).unwrap();
+        assert_eq!(top.instances.len(), sets.len(), "{}", r.output);
+        for (inst, set) in top.instances.iter().zip(&sets) {
+            let got = p.cell(&inst.cell).and_then(|c| c.layout.clone()).unwrap();
+            let want = t.generate(&tech, set).unwrap();
+            assert_eq!(canonical(&got), canonical(&want), "{set:?}");
+        }
+        // Errors surface as SKILL errors.
+        let bad = format!(
+            "{text}\ncv = dbOpenCellViewByType(\"work\" \"t2\" \"layout\" \"maskLayout\" \"w\")\n\
+            dbCreateParamInstByMasterName(cv \"pclib\" \"pc_nmos\" \"layout\" \"X\" 0:0 \"R0\" 1 list(list(\"w\" \"float\" 0.05)))"
+        );
+        let mut q = crate::project::Project::new("t");
+        q.tech = tech.clone();
+        let e = crate::skill::run(&mut q, &bad, None).unwrap_err();
+        assert!(e.to_string().contains("too small"), "{e}");
     }
 
     #[test]
