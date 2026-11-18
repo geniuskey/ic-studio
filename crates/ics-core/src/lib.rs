@@ -32,6 +32,7 @@ pub mod oasis;
 pub mod opc;
 pub mod optimize;
 pub mod pcell;
+pub mod pcell_design;
 pub mod pdk;
 pub mod pex;
 pub mod pixel_layout;

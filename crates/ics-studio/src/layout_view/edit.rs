@@ -727,7 +727,7 @@ impl LayoutEditor {
     }
 
     /// PCell picker and parameters for the instance tool.
-    pub(super) fn pcell_panel(&mut self, ui: &mut egui::Ui, tech: &Tech) {
+    pub(super) fn pcell_panel(&mut self, ui: &mut egui::Ui, tech: &Tech, src: &ics_core::Project) {
         let pal = theme::palette(ui.ctx());
         theme::section(ui, "PCell");
         ui.horizontal_wrapped(|ui| {
@@ -739,6 +739,21 @@ impl LayoutEditor {
                 }
             }
         });
+        let masters = src.template_masters();
+        if !masters.is_empty() {
+            ui.label(egui::RichText::new("Designed PCells").small().color(pal.text_weak));
+            ui.horizontal_wrapped(|ui| {
+                for (r, def) in masters {
+                    let on = matches!(&self.ed.pcell, Some(PCell::Template { def: d, .. }) if d.name == def.name);
+                    let resp = ui.selectable_label(on, def.name.as_str()).on_hover_text(format!("PCell Designer master {r}"));
+                    if resp.clicked() {
+                        self.ed.pcell =
+                            if on { None } else { Some(PCell::Template { def: Box::new(def.clone()), values: vec![] }) };
+                        self.place = None;
+                    }
+                }
+            });
+        }
         if let Some(p) = self.ed.pcell.as_mut() {
             pcell_params(ui, p, tech, "place");
             match p.generate(tech) {
@@ -756,6 +771,7 @@ impl LayoutEditor {
 
 /// Parameter editors for a PCell. Returns true if a value changed.
 pub(super) fn pcell_params(ui: &mut egui::Ui, p: &mut PCell, tech: &Tech, salt: &str) -> bool {
+    use ics_core::pcell_design::ParamKind;
     let k = tech.dbu_per_um as f64;
     let before = p.clone();
     let len = |ui: &mut egui::Ui, label: &str, v: &mut i64| {
@@ -826,6 +842,40 @@ pub(super) fn pcell_params(ui: &mut egui::Ui, p: &mut PCell, tech: &Tech, salt: 
             len(ui, "Inner H", h);
             len(ui, "Ring width", width);
             len(ui, "Gap", gap);
+        }
+        PCell::Template { def, values } => {
+            let mut v = def.defaults();
+            v.extend(values.iter().cloned());
+            let step = tech.grid.max(1) as f64 / k;
+            for prm in &def.params {
+                let x = v.entry(prm.name.clone()).or_insert(prm.default);
+                let lo = prm.min.unwrap_or(match prm.kind {
+                    ParamKind::Length => step,
+                    _ => 0.0,
+                });
+                let hi = prm.max.unwrap_or(1e6);
+                let lb = ui.label(prm.name.as_str());
+                let r = match prm.kind {
+                    ParamKind::Bool => {
+                        let mut on = *x != 0.0;
+                        let r = ui.checkbox(&mut on, "");
+                        *x = if on { 1.0 } else { 0.0 };
+                        r
+                    }
+                    ParamKind::Int => ui.add(egui::DragValue::new(x).speed(0.1).range(lo..=hi).max_decimals(0)),
+                    ParamKind::Length => {
+                        let r = ui.add(egui::DragValue::new(x).speed(step).range(lo..=hi).max_decimals(4).suffix(" µm"));
+                        *x = (*x / step).round() * step;
+                        r
+                    }
+                };
+                let r = r.labelled_by(lb.id);
+                if !prm.description.is_empty() {
+                    r.on_hover_text(&prm.description);
+                }
+                ui.end_row();
+            }
+            *values = def.params.iter().map(|q| (q.name.clone(), v[&q.name])).collect();
         }
     });
     *p != before

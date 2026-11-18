@@ -2154,7 +2154,10 @@ impl LayoutEditor {
         // Which end of the cell's own axis is dragged (ring paths move only that side's vertices).
         let lv = s.trans.inverse().apply_vec(s.side);
         let low = lv.0 < 0 || lv.1 < 0;
-        let pcell = s.pcell.stretched_side(along_x, grow, low)?;
+        let pcell = match s.pcell {
+            ics_core::pcell::PCell::Template { .. } => s.pcell.stretched_in(along_x, grow, Some(tech))?,
+            _ => s.pcell.stretched_side(along_x, grow, low)?,
+        };
         let child = pcell.generate(tech).ok()?.shapes_bbox()?;
         let mut trans = s.trans;
         let nb = trans.apply_rect(child);
@@ -3121,7 +3124,7 @@ impl LayoutEditor {
             self.via_panel(ui, tech);
         }
         if self.tool == LayTool::Instance {
-            self.pcell_panel(ui, tech);
+            self.pcell_panel(ui, tech, cx.src);
             self.placement_panel(ui, cx);
         }
         matches!(

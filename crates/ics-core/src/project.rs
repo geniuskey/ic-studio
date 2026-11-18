@@ -448,6 +448,74 @@ impl Project {
         self.add_cell(PCELL_LIB, cell)
     }
 
+    /// Store PCell Designer template `def` as the master cell `lib/<name>` (its layout is the
+    /// default variant) and regenerate the variants already placed, which keep their values.
+    /// A cell of that name may only be replaced when it is a designer master or has no layout.
+    /// Returns the master and the variants updated, with warnings.
+    pub fn publish_template(
+        &mut self,
+        lib: &str,
+        def: crate::pcell_design::Template,
+    ) -> std::result::Result<(CellRef, usize, Vec<String>), String> {
+        if lib == PCELL_LIB {
+            return Err(format!("store the master outside the generated '{PCELL_LIB}' library"));
+        }
+        let layout = def.generate(&self.tech, &[])?;
+        let master = CellRef::new(lib, &def.name);
+        let pcell = PCell::Template { def: Box::new(def.clone()), values: vec![] };
+        let description = format!("PCell Designer master: {}", pcell.summary(self.tech.dbu_per_um));
+        match self.cell_mut(&master) {
+            Some(c) if c.layout.is_some() && !matches!(c.pcell, Some(PCell::Template { .. })) => {
+                return Err(format!("{master} already has a drawn layout; give the PCell another name"));
+            }
+            Some(c) => {
+                c.layout = Some(layout);
+                c.description = description;
+                c.pcell = Some(pcell);
+            }
+            None => {
+                let cell = Cell { description, layout: Some(layout), pcell: Some(pcell), ..Cell::new(&def.name) };
+                self.add_cell(lib, cell)?;
+            }
+        }
+        let (mut updated, mut warnings) = (0, vec![]);
+        let tech = self.tech.clone();
+        if let Some(l) = self.library_mut(PCELL_LIB) {
+            for c in &mut l.cells {
+                let Some(PCell::Template { def: old, values }) = &c.pcell else { continue };
+                if old.name != def.name {
+                    continue;
+                }
+                let values: Vec<(String, f64)> = values.iter().filter(|(n, _)| def.param(n).is_some()).cloned().collect();
+                let p = PCell::Template { def: Box::new(def.clone()), values };
+                match p.generate(&tech) {
+                    Ok(lay) => {
+                        c.layout = Some(lay);
+                        c.description = p.summary(tech.dbu_per_um);
+                        c.pcell = Some(p);
+                        updated += 1;
+                    }
+                    Err(e) => warnings.push(format!("{} kept its old layout: {e}", c.name)),
+                }
+            }
+        }
+        Ok((master, updated, warnings))
+    }
+
+    /// PCell Designer masters (cells holding a template outside the generated library).
+    pub fn template_masters(&self) -> Vec<(CellRef, &crate::pcell_design::Template)> {
+        self.libraries
+            .iter()
+            .filter(|l| l.name != PCELL_LIB)
+            .flat_map(|l| {
+                l.cells.iter().filter_map(move |c| match &c.pcell {
+                    Some(PCell::Template { def, .. }) => Some((CellRef::new(&l.name, &c.name), def.as_ref())),
+                    _ => None,
+                })
+            })
+            .collect()
+    }
+
     /// Add the cells of a GDS import as a new library named after `name_hint` (made valid and
     /// unique). The import's `new_layers` are appended to the technology unless a layer with
     /// the same GDS numbers exists. The library is stored as GDS ([`LibStorage::Gds`]).
@@ -507,6 +575,15 @@ impl Project {
                 }
             }
         }
+        for c in self.libraries.iter().flat_map(|l| &l.cells) {
+            if let Some(PCell::Template { def, .. }) = &c.pcell {
+                for l in def.layers() {
+                    if let Some(u) = used.get_mut(l) {
+                        *u = true;
+                    }
+                }
+            }
+        }
         let mut warnings = vec![];
         let mut map: Vec<Option<usize>> = vec![None; used.len()];
         for (i, old) in self.tech.layers.iter().enumerate().filter(|&(i, _)| used[i]) {
@@ -552,6 +629,15 @@ impl Project {
             }
             if let Some(f) = scale {
                 scale_layout(l, f);
+            }
+        }
+        for c in self.libraries.iter_mut().flat_map(|l| &mut l.cells) {
+            if let Some(PCell::Template { def, .. }) = &mut c.pcell {
+                def.remap_layers(&|l| map.get(l).copied().flatten().unwrap_or(l));
+                if scale.is_some() {
+                    warnings
+                        .push(format!("PCell Designer cell {}: its drawing was not rescaled to the new database unit", def.name));
+                }
             }
         }
         self.tech = tech;

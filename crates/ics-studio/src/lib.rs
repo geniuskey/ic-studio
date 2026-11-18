@@ -21,6 +21,7 @@ pub mod mc_view;
 pub mod net_view;
 pub mod opc_view;
 pub mod optimizer_view;
+pub mod pcell_designer;
 pub mod pixel_view;
 pub mod process_data_view;
 pub mod process_view;

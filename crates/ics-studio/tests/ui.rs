@@ -438,6 +438,60 @@ fn rule_designer() {
     shot(&mut h, "30_rule_designer");
 }
 
+/// PCell Designer: a drawn 3-finger NMOS becomes a PCell with nf / w / l through the
+/// suggestions, passes the corner check and is saved as a placeable master.
+#[test]
+fn pcell_designer() {
+    use egui_kittest::kittest::Queryable;
+    let args = LaunchArgs {
+        project: None,
+        demo: true,
+        workspace: Some("layout".into()),
+        cell: Some("cmos_inverter".into()),
+        run: false,
+    };
+    let mut h = app(args);
+    let r = {
+        let p = h.state_mut().project_mut().unwrap();
+        let drawn = ics_core::pcell::PCell::mos(false, 1000, 180, 3).generate(&p.tech).unwrap();
+        let mut c = ics_core::Cell::new("nmos_drawn");
+        c.layout = Some(drawn);
+        p.add_cell("work", c).unwrap()
+    };
+    h.state_mut().command(Command::OpenCell(r.clone(), Some(Workspace::Layout)));
+    h.run_steps(3);
+    h.state_mut().command(Command::PCellFromActive);
+    h.run_steps(4);
+    assert!(h.state().pcell_designer().open);
+    assert_eq!(h.state().pcell_designer().template().unwrap().name, "nmos_drawn_pc");
+    shot(&mut h, "32_pcell_designer_guide");
+    for label in ["Contacts to fills", "Detect fingers (nf)", "Width stretch (w)", "Length stretch (l)"] {
+        h.get_all_by_label(label).next().unwrap().click();
+        h.run_steps(2);
+    }
+    let t = h.state().pcell_designer().template().unwrap().clone();
+    let names: Vec<&str> = t.params.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["nf", "w", "l"]);
+    h.get_by_label("Design").click();
+    h.run_steps(3);
+    shot(&mut h, "32_pcell_designer");
+    h.get_all_by_label("Corners").next().unwrap().click();
+    h.run_steps(2);
+    h.get_by_label("Run corner check").click();
+    h.run_steps(2);
+    settle(&mut h, "pcell corners");
+    h.run_steps(3);
+    shot(&mut h, "32_pcell_designer_corners");
+    h.get_by_label("Save PCell").click();
+    h.run_steps(3);
+    let p = h.state().project().unwrap();
+    let masters = p.template_masters();
+    assert_eq!(masters.len(), 1, "saved");
+    assert_eq!(masters[0].0, CellRef::new("work", "nmos_drawn_pc"));
+    let variant = ics_core::pcell::PCell::Template { def: Box::new(t), values: vec![("nf".into(), 4.0)] };
+    assert!(variant.generate(&p.tech).unwrap().shapes.len() > 20);
+}
+
 #[test]
 fn rule_designer_without_project() {
     let args = LaunchArgs { project: None, demo: false, workspace: None, cell: None, run: false };
@@ -1024,6 +1078,8 @@ fn glyph_coverage() {
         include_str!("../src/schematic_view.rs"),
         include_str!("../src/sim_view.rs"),
         include_str!("../src/rule_designer.rs"),
+        include_str!("../src/pcell_designer.rs"),
+        include_str!("../../ics-core/src/pcell_design.rs"),
         include_str!("../src/ciw.rs"),
         include_str!("../src/copilot.rs"),
         include_str!("../src/chat.rs"),

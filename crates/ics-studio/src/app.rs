@@ -26,6 +26,7 @@ use crate::icons::{self, Icon};
 use crate::layout_view::{EipContext, LayAction, LayCtx, LayRequest, LayTool, LayoutEditor, Verify, fmt_count, um};
 use crate::net_view::{NetAction, NetBrowser};
 use crate::opc_view::OpcTool;
+use crate::pcell_designer::{PCellAction, PCellDesigner};
 use crate::pixel_view::{PixelAction, PixelOptics};
 use crate::rule_designer::{DesignerAction, RuleDesigner};
 use crate::schematic_view::{SchAction, SchRequest, SchTool, SchematicEditor, device_palette};
@@ -187,6 +188,10 @@ pub enum Command {
     IrDrop(Option<String>),
     /// Open the DRC Rule Designer window on the technology's deck.
     RuleDesigner,
+    /// Open the PCell Designer (on the active layout cell when nothing is being designed).
+    PCellDesigner,
+    /// Start a PCell Designer design from the active layout cell.
+    PCellFromActive,
     /// Draw new MOS devices with a body pin (`true`) or without one, the arrow on the source.
     MosSymbol(bool),
     /// Set the project's body net of new 3-terminal PMOS (`true`) or NMOS devices; empty is the
@@ -741,6 +746,7 @@ pub struct IcStudio {
     last_title: String,
     bridge: Option<Bridge>,
     rule_designer: RuleDesigner,
+    pcell_designer: PCellDesigner,
     copilot: crate::copilot::Copilot,
     ai_models: crate::llm::AiSettingsWindow,
     updater: crate::update::Updater,
@@ -827,6 +833,7 @@ impl IcStudio {
             last_title: String::new(),
             bridge: None,
             rule_designer: RuleDesigner::default(),
+            pcell_designer: PCellDesigner::default(),
             copilot: Default::default(),
             ai_models: Default::default(),
             updater: Default::default(),
@@ -1476,6 +1483,20 @@ impl IcStudio {
             Command::RuleDesigner => match &self.project {
                 Some(p) => self.rule_designer.show(&p.tech),
                 None => self.rule_designer.show_standalone(),
+            },
+            Command::PCellDesigner => match &self.project {
+                Some(p) => {
+                    let active = self.active_layout();
+                    self.pcell_designer.show(p, active.as_ref());
+                }
+                None => self.warn("Open a project to design PCells".into()),
+            },
+            Command::PCellFromActive => match (&self.project, self.active_layout()) {
+                (Some(p), Some(r)) => {
+                    self.pcell_designer.load(p, &r);
+                    self.pcell_designer.show(p, Some(&r));
+                }
+                _ => self.warn("Open a layout cell to make a PCell from it".into()),
             },
             Command::MosSymbol(body) => {
                 self.settings.mos_body_pin = body;
@@ -3536,6 +3557,9 @@ impl IcStudio {
                 if ui.button("DRC Rule Designer…").clicked() {
                     q.push(Command::RuleDesigner);
                 }
+                if menu_item(ui, has_project, "PCell Designer…", NEED_PROJECT) {
+                    q.push(Command::PCellDesigner);
+                }
                 ui.menu_button("DRC Deck", |ui| {
                     let linked = self.project.as_ref().and_then(Project::drc_deck_path);
                     if let Some(f) = &linked {
@@ -4713,6 +4737,8 @@ impl IcStudio {
             ("Run LVS".into(), "", Command::RunLvs),
             ("IR drop / EM analysis".into(), "", Command::IrDrop(None)),
             ("DRC rule designer".into(), "", Command::RuleDesigner),
+            ("PCell designer".into(), "", Command::PCellDesigner),
+            ("PCell designer: make a PCell from the active layout".into(), "", Command::PCellFromActive),
             ("MOS symbol: body pin (4-terminal)".into(), "", Command::MosSymbol(true)),
             ("MOS symbol: arrow on source, body hidden (3-terminal)".into(), "", Command::MosSymbol(false)),
             ("DRC deck: import from a file".into(), "", Command::ImportDrcDeck(None)),
@@ -5988,6 +6014,7 @@ impl IcStudio {
             || self.lay_eds.values().any(LayoutEditor::is_verifying)
             || self.bridge.as_ref().is_some_and(|b| b.job.is_some() || !b.waiting.is_empty())
             || self.rule_designer.is_checking()
+            || self.pcell_designer.is_checking()
             || self.sweep.is_running()
             || self.silicon.is_running()
             || self.process_data.is_running()
@@ -5995,6 +6022,42 @@ impl IcStudio {
             || self.optimizer.is_running()
             || self.monte_carlo.is_running()
             || self.verification.is_running()
+    }
+
+    fn pcell_designer_window(&mut self, ctx: &egui::Context) {
+        let active = self.active_layout();
+        let Some(PCellAction::Publish { lib, def }) = self.pcell_designer.window(ctx, self.project.as_ref(), active.as_ref())
+        else {
+            return;
+        };
+        let Some(p) = self.project.as_mut() else { return };
+        match p.publish_template(&lib, def) {
+            Ok((master, updated, warnings)) => {
+                let mut msg = format!("Saved PCell {master}");
+                if updated > 0 {
+                    msg.push_str(&format!(", {updated} placed variant(s) updated"));
+                }
+                for w in &warnings {
+                    self.warn(format!("PCell Designer: {w}"));
+                }
+                self.pcell_designer.saved(msg.clone(), true);
+                self.hier.clear();
+                self.mark_dirty();
+                self.ok(msg);
+            }
+            Err(e) => {
+                self.pcell_designer.saved(e.clone(), false);
+                self.error(format!("PCell Designer: {e}"));
+            }
+        }
+    }
+
+    pub fn pcell_designer(&self) -> &PCellDesigner {
+        &self.pcell_designer
+    }
+
+    pub fn pcell_designer_mut(&mut self) -> &mut PCellDesigner {
+        &mut self.pcell_designer
     }
 
     fn rule_designer_window(&mut self, ctx: &egui::Context) {
@@ -6884,6 +6947,7 @@ impl eframe::App for IcStudio {
         self.dialogs(&ctx);
         self.update_toast(&ctx);
         self.rule_designer_window(&ctx);
+        self.pcell_designer_window(&ctx);
         self.optimizer_window(&ctx);
         if let Some(r) = self.copilot.window(&ctx, &self.settings.llm) {
             self.copilot_reply(&ctx, r);

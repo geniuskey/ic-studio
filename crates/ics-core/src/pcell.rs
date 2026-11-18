@@ -78,6 +78,13 @@ pub enum PCell {
         master: String,
         params: Vec<(String, String)>,
     },
+    /// A PCell made in the PCell Designer from a drawn layout, with parameter values (the
+    /// others take the defaults). The master cell holds it with no values.
+    Template {
+        def: Box<crate::pcell_design::Template>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        values: Vec<(String, f64)>,
+    },
 }
 
 impl PCell {
@@ -111,6 +118,7 @@ impl PCell {
             PCell::RingPath { well: false, .. } => "pring_path",
             PCell::SkillDef { .. } => "skill_pcell",
             PCell::SkillVariant { .. } => "skill_variant",
+            PCell::Template { .. } => "template",
         }
     }
 
@@ -135,6 +143,11 @@ impl PCell {
                 format!("{k}_{}pt_{h:016x}", points.len())
             }
             PCell::SkillDef { .. } => k.to_string(),
+            PCell::Template { def, values } => def.variant_name(&self.template_values().unwrap_or_else(|| {
+                let mut v = def.defaults();
+                v.extend(values.iter().cloned());
+                v
+            })),
             PCell::SkillVariant { master, params } => {
                 let mut h: u64 = 0xcbf2_9ce4_8422_2325;
                 for (n, v) in params {
@@ -176,6 +189,18 @@ impl PCell {
                 let p: Vec<String> = params.iter().map(|(n, v)| format!("{n}={v}")).collect();
                 format!("{master} {}", p.join(" "))
             }
+            PCell::Template { def, .. } => {
+                let v = self.template_values().unwrap_or_else(|| def.defaults());
+                format!("{} {}", def.name, def.values_text(&v)).trim_end().to_string()
+            }
+        }
+    }
+
+    /// Resolved parameter values of a designer PCell.
+    pub fn template_values(&self) -> Option<crate::pcell_design::Values> {
+        match self {
+            PCell::Template { def, values } => def.resolve(values).ok(),
+            _ => None,
         }
     }
 
@@ -184,6 +209,16 @@ impl PCell {
     /// MOM capacitor: x is W, y is H; tap: y is its height. `None` when the axis has no
     /// parameter or the size would not stay positive.
     pub fn stretched(&self, along_x: bool, d: i64) -> Option<PCell> {
+        self.stretched_in(along_x, d, None)
+    }
+
+    /// [`Self::stretched`]; a designer PCell needs the technology (its grid and unit).
+    pub fn stretched_in(&self, along_x: bool, d: i64, tech: Option<&Tech>) -> Option<PCell> {
+        if let (PCell::Template { def, .. }, Some(tech)) = (self, tech) {
+            let v = def.stretched(&self.template_values()?, along_x, d, tech)?;
+            let values = def.params.iter().filter_map(|p| v.get(&p.name).map(|x| (p.name.clone(), *x))).collect();
+            return Some(PCell::Template { def: def.clone(), values });
+        }
         let add = |v: i64, d: i64| (v + d > 0).then_some(v + d);
         let mut p = self.clone();
         match &mut p {
@@ -198,6 +233,7 @@ impl PCell {
             PCell::GuardRing { h, .. } => *h = add(*h, d)?,
             PCell::RingPath { .. } => return self.stretched_side(along_x, d, false),
             PCell::SkillDef { .. } | PCell::SkillVariant { .. } => return None,
+            PCell::Template { .. } => return None,
         }
         (p != *self).then_some(p)
     }
@@ -228,6 +264,9 @@ impl PCell {
 
     /// Generate the layout (origin-relative), checking parameters against the technology.
     pub fn generate(&self, tech: &Tech) -> Result<Layout, String> {
+        if let PCell::Template { def, values } = self {
+            return def.generate(tech, values);
+        }
         let mut lay = match *self {
             PCell::Mos { pmos, w, l, fingers, ref device } => gen_mos(tech, pmos, w, l, fingers, mos_def(tech, pmos, device)?),
             PCell::PolyRes { w, l } => gen_poly_res(tech, w, l),
@@ -245,6 +284,7 @@ impl PCell {
             PCell::SkillDef { .. } | PCell::SkillVariant { .. } => {
                 Err("SKILL PCells are evaluated by the SKILL interpreter (dbCreateParamInst)".to_string())
             }
+            PCell::Template { .. } => unreachable!("handled above"),
             PCell::RingPath { well, ref points, closed, width } => {
                 let ring = crate::layout_gen::RingPath { points: points.clone(), closed, well, width };
                 let mut lay = Layout::default();
@@ -388,7 +428,7 @@ fn grow_to(mut r: IRect, w: i64, h: i64, g: i64) -> IRect {
 }
 
 /// Largest centred grid of `cut` x `cut` squares spaced `sp` apart inside `inner`.
-fn cut_grid(inner: IRect, cut: i64, sp: i64, g: i64) -> Vec<IRect> {
+pub(crate) fn cut_grid(inner: IRect, cut: i64, sp: i64, g: i64) -> Vec<IRect> {
     let axis = |len: i64| -> (i64, i64) {
         if len < cut {
             return (0, 0);

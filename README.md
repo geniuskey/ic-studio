@@ -209,6 +209,10 @@ Linux needs the usual windowing libraries:
 - Model-based OPC: a Gaussian-blur / threshold litho model, edge fragmentation and
   iterative correction of the edge placement error, with a preview of the mask and what
   prints with and without correction
+- PCell designer: turn a drawn layout into a parametric cell with stretch lines, repeats,
+  conditional regions and re-arraying contact fills driven by parameter expressions;
+  suggestions read a drawn MOS (contacts, fingers, W, L), a corner check runs DRC at the
+  parameter extremes, and the saved master is placed and stretched like a built-in PCell
 - Hierarchy and net browsers; a visual DRC rule designer that self-tests every rule; a
   stream layer map (Virtuoso layer map files) for GDSII / OASIS import and export
 
