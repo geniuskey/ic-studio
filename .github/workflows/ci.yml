@@ -55,7 +55,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
-            mesa-vulkan-drivers ngspice
+            mesa-vulkan-drivers ngspice fonts-noto-cjk
+          # fonts-noto-cjk: Korean UI text (the copilot test) needs a CJK font, as Windows and
+          # macOS have; the UI tests fail on any character no font can draw.
       - name: Build all crates
         run: cargo build --workspace --all-targets
       - name: Core, simulator and CLI tests
