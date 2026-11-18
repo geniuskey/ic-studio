@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "extensions": [
+    {
+      "id": "design-report",
+      "name": "Design report",
+      "description": "Writes a Markdown report of a cell: devices by kind, DRC and LVS results.",
+      "repository": "https://github.com/geniuskey/ic-studio",
+      "path": "extensions/design-report",
+      "license": "MIT",
+      "authors": ["IC Studio contributors"],
+      "tags": ["report", "drc", "lvs", "python", "example"]
+    },
+    {
+      "id": "metal-frame",
+      "name": "Metal frame",
+      "description": "Draws a metal1 frame around the active cell's layout (a SKILL script, no program).",
+      "repository": "https://github.com/geniuskey/ic-studio",
+      "path": "extensions/metal-frame",
+      "license": "MIT",
+      "authors": ["IC Studio contributors"],
+      "tags": ["layout", "skill", "example"]
+    }
+  ]
+}

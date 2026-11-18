@@ -41,7 +41,8 @@ PNGs. The UI tests use egui_kittest with a real wgpu renderer (DX12 on Windows).
 - `crates/ics-studio`: the desktop app. It is also a lib target so `tests/ui.rs` can
   drive it.
 - `crates/ics-cli`: the `ics` binary.
-- `crates/ics-mcp`: MCP tools and stdio server (library), run as `ics mcp`.
+- `crates/ics-mcp`: MCP tools and stdio server (library), run as `ics mcp`, and the extension
+  host (`ext`: `extension.toml`, the stdio protocol, install / index; see `docs/extensions.md`).
 
 ## Conventions
 

@@ -19,6 +19,7 @@ it with `cargo build --release -p ics-cli` (binary `target/release/ics`) or run 
 | Command | Purpose |
 |---|---|
 | `ics mcp` | Run the MCP server for AI agents on stdio (see [MCP server](mcp.md)) |
+| `ics ext list\|install\|update\|remove\|enable\|disable\|search\|new\|check\|call\|run` | Manage, create and run [extensions](extensions.md): `install <folder\|git URL\|index id> [--path P] [--rev R] [--force]`, `call <PROJECT> <TOOL> [JSON]`, `run <PROJECT> <ID>/<COMMAND> [--cell C]` |
 | `ics new <DIR> [--template empty\|demo]` | Create a project (default template `demo`) |
 | `ics examples [DIR] [--force]` | Write the example projects, one per topic, to `DIR/<topic>` (existing ones are kept unless `--force`); without `DIR`, list the topics |
 | `ics info <PROJECT>` | List libraries, cells and views |

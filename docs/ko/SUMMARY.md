@@ -41,6 +41,7 @@
 - [명령줄](cli.md)
 - [AI 에이전트용 MCP 서버](mcp.md)
 - [Python API](python.md)
+- [확장](extensions.md)
 
 # 참고
 

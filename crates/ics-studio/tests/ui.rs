@@ -3310,3 +3310,82 @@ fn virtuoso_cds_lib_import_asks_for_the_library() {
     shot(&mut h, "virtuoso_cds_lib");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Extensions: a Python extension's tool runs from the bridge and calls a built-in tool back
+/// (undoably), a SKILL command runs from the Extensions menu, and the Extensions window lists
+/// them.
+#[test]
+fn extensions_run_in_the_app() {
+    use egui_kittest::kittest::Queryable;
+    use std::path::Path;
+    let Some(py) = ["python3", "python"].into_iter().find(|p| std::process::Command::new(p).arg("-V").output().is_ok()) else {
+        eprintln!("no Python: skipped");
+        return;
+    };
+    let root = std::env::temp_dir().join(format!("ics-ui-ext-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let rect = root.join("rect");
+    std::fs::create_dir_all(&rect).unwrap();
+    std::fs::write(
+        rect.join("extension.toml"),
+        format!(
+            "[extension]\nid = \"rect\"\nname = \"Rect maker\"\nversion = \"0.1.0\"\ndescription = \"Adds a metal1 square.\"\n\
+             [run]\ncommand = [\"{py}\", \"main.py\"]\n[[tools]]\nname = \"square\"\ndescription = \"Add a square.\"\n\
+             [[commands]]\nid = \"square\"\ntitle = \"Add a square\"\ntool = \"square\"\narguments = {{ cell = \"${{cell}}\" }}\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        rect.join("main.py"),
+        "from ics_extension import Extension\next = Extension()\n@ext.tool('square')\ndef square(cell):\n    \
+         r = ext.call('add_rect', cell=cell, layer='metal1', x0=0, y0=-9, x1=1, y1=-8)\n    \
+         ext.log('square added')\n    return {'message': 'added ' + str(r['id']), 'id': r['id']}\next.run()\n",
+    )
+    .unwrap();
+    let frame = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../extensions/metal-frame");
+    ics_mcp::ext::install::install(&root, &ics_mcp::ext::install::Source::Folder(frame), false).unwrap();
+
+    let args = LaunchArgs { project: None, demo: true, workspace: Some("home".into()), cell: None, run: false };
+    let mut h = Harness::builder().with_size(egui::vec2(1440.0, 900.0)).wgpu().build_eframe(|cc| IcStudio::new(cc, args));
+    h.state_mut().set_extensions(ics_mcp::ext::Registry::load_from(&root));
+    let (tx, rx) = std::sync::mpsc::channel();
+    h.state_mut().attach_bridge(rx);
+    h.run_steps(2);
+
+    let before = shape_count(&h, "cmos_inverter");
+    let (reply, answer) = std::sync::mpsc::channel();
+    let arguments = serde_json::json!({"cell": "cmos_inverter"}).as_object().unwrap().clone();
+    tx.send(ics_mcp::bridge::Pending { tool: "rect__square".into(), arguments, reply }).unwrap();
+    let mut res = None;
+    for _ in 0..500 {
+        h.step();
+        if let Ok(r) = answer.try_recv() {
+            res = Some(r);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let res = res.expect("the extension answered");
+    assert!(!res.is_error, "{res:?}");
+    assert_eq!(shape_count(&h, "cmos_inverter"), before + 1);
+    h.state_mut().command(Command::Undo);
+    h.run_steps(2);
+    assert_eq!(shape_count(&h, "cmos_inverter"), before, "edits an extension makes are undoable");
+
+    // The SKILL command of metal-frame draws four rectangles around the active cell.
+    let cell = h.state().project().unwrap().all_cells().find(|(_, c)| c.name == "cmos_inverter").unwrap().0;
+    h.state_mut().command(Command::OpenCell(cell, Some(Workspace::Layout)));
+    h.run_steps(2);
+    h.state_mut().command(Command::RunExtension("metal-frame".into(), "frame".into()));
+    h.run_steps(4);
+    settle(&mut h, "metal frame");
+    assert_eq!(shape_count(&h, "cmos_inverter"), before + 4);
+
+    h.state_mut().command(Command::Extensions);
+    h.run_steps(4);
+    assert!(h.query_by_label_contains("Installed (2)").is_some());
+    assert!(h.query_by_label_contains("rect__square").is_some(), "tools are listed");
+    shot(&mut h, "15_extensions");
+    h.state().extensions().stop_all();
+    let _ = std::fs::remove_dir_all(&root);
+}

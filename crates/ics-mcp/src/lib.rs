@@ -3,6 +3,7 @@
 pub mod bridge;
 pub mod confine;
 pub mod docs;
+pub mod ext;
 pub mod server;
 pub mod tools;
 

@@ -276,6 +276,12 @@ pub enum Command {
     CopilotStop,
     /// Run a Cadence SKILL (.il) script on the project; `None` asks for the file.
     LoadSkill(Option<PathBuf>),
+    /// Open the Extensions window (installed extensions, install, update, remove).
+    Extensions,
+    /// Load the installed extensions again (after installing one by hand).
+    ReloadExtensions,
+    /// Run menu command `.1` of extension `.0` on the active cell.
+    RunExtension(String, String),
     /// Replace the technology with a PDK file (see `ics_core::pdk`); `None` asks for the file.
     LoadPdk(Option<PathBuf>),
     ExportNetlist,
@@ -558,6 +564,8 @@ fn mcp_summary(tool: &str, res: &ToolResult) -> String {
         "import_gds" | "import_lef" => format!("library '{}'", v["library"].as_str().unwrap_or("?")),
         "import_def" => format!("cell '{}'", v["cell"].as_str().unwrap_or("?")),
         "run_skill" => format!("{} cell(s) modified", len("modified")),
+        // Extension tools: their "message", if any, is the line shown in the console.
+        _ if tool.contains(ics_mcp::ext::SEP) => v["message"].as_str().unwrap_or("ok").chars().take(240).collect(),
         _ => "ok".into(),
     }
 }
@@ -790,6 +798,41 @@ pub struct IcStudio {
     /// A SKILL evaluation running in the background, on a copy of the project.
     skill_job: Option<SkillJob>,
     tutorial: crate::tutorial::Tutorial,
+    /// Installed extensions ([`ics_mcp::ext`]).
+    extensions: ics_mcp::ext::Registry,
+    ext_manager: crate::ext_view::ExtensionManager,
+    /// Calls back and log lines from extension programs running a tool.
+    ext_tx: Sender<ExtMsg>,
+    ext_rx: Receiver<ExtMsg>,
+}
+
+/// From an extension program, while one of its tools runs on a worker thread.
+enum ExtMsg {
+    /// A built-in tool to run on the open project.
+    Call(Pending),
+    Log(String, String),
+}
+
+/// The app as seen by an extension program: its calls run on the UI thread.
+struct ExtHost {
+    tx: Sender<ExtMsg>,
+    wake: egui::Context,
+}
+
+impl ics_mcp::ext::Host for ExtHost {
+    fn call(&mut self, tool: &str, args: &McpArgs) -> ToolResult {
+        let (reply, answer) = mpsc::channel();
+        if self.tx.send(ExtMsg::Call(Pending { tool: tool.to_string(), arguments: args.clone(), reply })).is_err() {
+            return ToolResult::error("IC Studio is closing");
+        }
+        self.wake.request_repaint();
+        answer.recv().unwrap_or_else(|_| ToolResult::error("IC Studio dropped the call"))
+    }
+
+    fn log(&mut self, level: &str, message: &str) {
+        let _ = self.tx.send(ExtMsg::Log(level.to_string(), message.to_string()));
+        self.wake.request_repaint();
+    }
 }
 
 const SETTINGS_KEY: &str = "ic-studio-settings";
@@ -808,6 +851,7 @@ impl IcStudio {
         theme::apply(&cc.egui_ctx, settings.dark);
         cc.egui_ctx.set_zoom_factor(settings.ui_scale);
         let ngspice = ics_sim::ngspice::detect(&settings.ngspice_path);
+        let (ext_tx, ext_rx) = mpsc::channel();
         let mut app = Self {
             project: None,
             dirty: false,
@@ -868,6 +912,10 @@ impl IcStudio {
             skill_forms: vec![],
             skill_job: None,
             tutorial: Default::default(),
+            extensions: ics_mcp::ext::Registry::load(),
+            ext_manager: Default::default(),
+            ext_tx,
+            ext_rx,
         };
         app.info(format!("IC Studio {} ready — renderer: wgpu", env!("CARGO_PKG_VERSION")));
         match &app.ngspice {
@@ -900,7 +948,87 @@ impl IcStudio {
         if args.run {
             app.queue.push(Command::RunSimulation);
         }
+        app.copilot.ext = app.extensions.clone();
+        for (p, e) in app.extensions.errors.clone() {
+            app.warn(format!("extension in {}: {e}", p.display()));
+        }
         app
+    }
+
+    /// The installed extensions.
+    pub fn extensions(&self) -> &ics_mcp::ext::Registry {
+        &self.extensions
+    }
+
+    /// Use these extensions (tests, or after installing one).
+    pub fn set_extensions(&mut self, reg: ics_mcp::ext::Registry) {
+        self.extensions.stop_all();
+        self.copilot.ext = reg.clone();
+        self.extensions = reg;
+    }
+
+    /// Queue a tool call as if an agent sent it (extension commands; the reply is logged).
+    fn queue_tool(&mut self, tool: String, arguments: McpArgs) {
+        let (reply, _) = mpsc::channel();
+        self.bridge_queue().push_back(Pending { tool, arguments, reply });
+    }
+
+    /// Tool calls waiting to run, created without a live-mode bridge.
+    fn bridge_queue(&mut self) -> &mut VecDeque<Pending> {
+        &mut self
+            .bridge
+            .get_or_insert_with(|| Bridge {
+                rx: std::sync::mpsc::channel().1,
+                calls: 0,
+                last: None,
+                waiting: VecDeque::new(),
+                job: None,
+            })
+            .waiting
+    }
+
+    /// Run extension tool `p` on a worker thread; its program's calls back come through `ext_rx`.
+    fn start_ext_job(&mut self, ctx: &egui::Context, p: Pending) {
+        let (tx, rx) = mpsc::channel();
+        let (reg, host_tx, wake) = (self.extensions.clone(), self.ext_tx.clone(), ctx.clone());
+        let (tool, args) = (p.tool.clone(), p.arguments.clone());
+        std::thread::spawn(move || {
+            let mut host = ExtHost { tx: host_tx, wake: wake.clone() };
+            let res = reg.call(&tool, &args, &mut host);
+            let _ = tx.send((res, None));
+            wake.request_repaint();
+        });
+        self.info(format!("Extension · {} running", p.tool));
+        if let Some(b) = &mut self.bridge {
+            b.job = Some(McpJob { tool: p.tool, cell: None, generation: 0, started: Instant::now(), rx, reply: p.reply });
+        }
+    }
+
+    /// Serve extension programs: their calls run right away (their tool's job waits for them).
+    fn serve_extensions(&mut self) {
+        let msgs: Vec<ExtMsg> = self.ext_rx.try_iter().collect();
+        for m in msgs {
+            match m {
+                ExtMsg::Call(p) => {
+                    let res = self.mcp_call(&p.tool, &p.arguments);
+                    let _ = p.reply.send(res);
+                }
+                ExtMsg::Log(level, text) => match level.as_str() {
+                    "error" | "warning" | "warn" => self.warn(format!("Extension · {text}")),
+                    _ => self.info(format!("Extension · {text}")),
+                },
+            }
+        }
+    }
+
+    fn extensions_window(&mut self, ctx: &egui::Context) {
+        match self.ext_manager.window(ctx, &self.extensions) {
+            Some(crate::ext_view::ExtAction::Reload) => self.queue.push(Command::ReloadExtensions),
+            Some(crate::ext_view::ExtAction::OpenFolder(d)) => {
+                ctx.open_url(egui::OpenUrl::new_tab(crate::ext_view::folder_url(&d)));
+            }
+            None => {}
+        }
     }
 
     // ----- logging -----
@@ -1659,6 +1787,33 @@ impl IcStudio {
             Command::Settings => self.dialog = Some(Dialog::Settings),
             Command::Shortcuts => self.dialog = Some(Dialog::Shortcuts),
             Command::UserGuide => ctx.open_url(egui::OpenUrl::new_tab(GUIDE_URL)),
+            Command::Extensions => self.ext_manager.open = true,
+            Command::ReloadExtensions => {
+                let reg = match self.extensions.dir.clone() {
+                    Some(d) => ics_mcp::ext::Registry::load_from(&d),
+                    None => ics_mcp::ext::Registry::load(),
+                };
+                let usable = reg.extensions.iter().filter(|e| e.usable()).count();
+                self.info(format!("{} extension(s) loaded, {usable} enabled", reg.extensions.len()));
+                for (p, e) in &reg.errors {
+                    self.warn(format!("extension in {}: {e}", p.display()));
+                }
+                self.set_extensions(reg);
+            }
+            Command::RunExtension(id, cmd) => {
+                let ctx_ = ics_mcp::ext::Context {
+                    cell: self.active.as_ref().map(CellRef::to_string),
+                    project: self.project.as_ref().and_then(|p| p.root.clone()),
+                };
+                match self.extensions.invocation(&id, &cmd, &ctx_) {
+                    Ok(inv) if self.project.is_none() => {
+                        let _ = inv;
+                        self.warn(format!("{id}: open a project first"));
+                    }
+                    Ok(inv) => self.queue_tool(inv.tool, inv.arguments),
+                    Err(e) => self.warn(e),
+                }
+            }
             Command::Tutorial => self.tutorial.start(),
             Command::About => self.dialog = Some(Dialog::About),
             Command::CheckForUpdates => {
@@ -3611,6 +3766,35 @@ impl IcStudio {
             if lay {
                 ui.menu_button("Options", |ui| lay_menu_items(ui, "Options", q));
             }
+            ui.menu_button("Extensions", |ui| {
+                if ui.button("Manage Extensions…").clicked() {
+                    q.push(Command::Extensions);
+                }
+                let pdks = self.extensions.pdks();
+                let with_commands: Vec<_> =
+                    self.extensions.extensions.iter().filter(|e| e.usable() && !e.manifest.commands.is_empty()).collect();
+                if !with_commands.is_empty() || !pdks.is_empty() {
+                    ui.separator();
+                }
+                for e in with_commands {
+                    ui.menu_button(&e.manifest.extension.name, |ui| {
+                        for c in &e.manifest.commands {
+                            if menu_item(ui, has_project, &c.title, NEED_PROJECT) {
+                                q.push(Command::RunExtension(e.id().to_string(), c.id.clone()));
+                            }
+                        }
+                    });
+                }
+                if !pdks.is_empty() {
+                    ui.menu_button("Load PDK", |ui| {
+                        for (label, file) in pdks {
+                            if menu_item(ui, has_project, &label, NEED_PROJECT) {
+                                q.push(Command::LoadPdk(Some(file)));
+                            }
+                        }
+                    });
+                }
+            });
             ui.menu_button("Help", |ui| {
                 if ui.button("Interactive Tutorial").clicked() {
                     q.push(Command::Tutorial);
@@ -4802,6 +4986,8 @@ impl IcStudio {
             ("Import technology (KLayout .lyp)…".into(), "", Command::ImportTech),
             ("Load PDK…".into(), "", Command::LoadPdk(None)),
             ("Load SKILL (.il)…".into(), "", Command::LoadSkill(None)),
+            ("Manage extensions…".into(), "", Command::Extensions),
+            ("Reload extensions".into(), "", Command::ReloadExtensions),
             ("SKILL command interpreter (CIW)".into(), "", Command::Ciw),
             ("Design copilot (AI chat)".into(), "", Command::Copilot),
             ("AI models (provider, model, API key)…".into(), "", Command::AiModels),
@@ -4823,6 +5009,12 @@ impl IcStudio {
             ("Copy MCP server config".into(), "", Command::CopyMcpConfig),
         ];
         v.extend(examples);
+        for (e, c) in self.extensions.commands() {
+            v.push((format!("{}: {}", e.manifest.extension.name, c.title), "", Command::RunExtension(e.id().to_string(), c.id)));
+        }
+        for (label, file) in self.extensions.pdks() {
+            v.push((format!("Load PDK: {label}"), "", Command::LoadPdk(Some(file))));
+        }
         if self.workspace == Workspace::Schematic && self.active.is_some() {
             for a in SchAction::PALETTE {
                 v.push((format!("Schematic: {}", a.name()), "", Command::Sch(*a)));
@@ -5830,11 +6022,16 @@ impl IcStudio {
         loop {
             let Some(b) = &mut self.bridge else { return };
             let Some(next) = b.waiting.front() else { return };
-            let background = tools::BACKGROUND.contains(&next.tool.as_str());
+            let ext = self.extensions.has_tool(&next.tool);
+            let background = ext || tools::BACKGROUND.contains(&next.tool.as_str());
             if background && b.job.is_some() {
                 return;
             }
             let p = b.waiting.pop_front().expect("front exists");
+            if ext {
+                self.start_ext_job(ctx, p);
+                continue;
+            }
             match self.mcp_snapshot(&p.arguments).filter(|_| background) {
                 Some((snap, args, cell)) => self.start_mcp_job(ctx, p, snap, args, cell),
                 None => {
@@ -6882,16 +7079,10 @@ impl eframe::App for IcStudio {
                 })
                 .collect();
             if !calls.is_empty() {
-                let b = self.bridge.get_or_insert_with(|| Bridge {
-                    rx: std::sync::mpsc::channel().1,
-                    calls: 0,
-                    last: None,
-                    waiting: VecDeque::new(),
-                    job: None,
-                });
-                b.waiting.extend(calls);
+                self.bridge_queue().extend(calls);
             }
         }
+        self.serve_extensions();
         self.serve_bridge(ctx);
         if self.is_busy() {
             ctx.request_repaint_after(Duration::from_millis(250));
@@ -6968,6 +7159,7 @@ impl eframe::App for IcStudio {
         let dirs: Vec<PathBuf> = self.project.as_ref().and_then(|p| p.root.clone()).into_iter().collect();
         self.ai_models.window(&ctx, &mut self.settings.llm, &dirs);
         self.stream_map_window(&ctx);
+        self.extensions_window(&ctx);
         self.layer_display_window(&ctx);
         self.fill_window(&ctx);
         self.opc_window(&ctx);

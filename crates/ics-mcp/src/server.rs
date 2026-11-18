@@ -23,6 +23,8 @@ struct Rpc {
     live: Option<Option<u32>>,
     /// Folders file arguments must lie in.
     roots: crate::confine::Roots,
+    /// Installed extensions, whose tools are listed with the built-in ones.
+    ext: crate::ext::Registry,
 }
 
 impl Default for Rpc {
@@ -32,6 +34,8 @@ impl Default for Rpc {
             standalone: std::env::var_os("ICS_MCP_STANDALONE").is_some_and(|v| v == "1"),
             live: None,
             roots: crate::confine::Roots::from_env(),
+            // Unit tests do not see the user's extensions.
+            ext: if cfg!(test) { crate::ext::Registry::default() } else { crate::ext::Registry::load() },
         }
     }
 }
@@ -78,7 +82,11 @@ impl Rpc {
         let result = match method {
             "initialize" => Ok(initialize(&params)),
             "ping" => Ok(json!({})),
-            "tools/list" => Ok(json!({"tools": tools::definitions()})),
+            "tools/list" => {
+                let mut list = tools::definitions();
+                list.extend(self.ext.definitions());
+                Ok(json!({"tools": list}))
+            }
             "tools/call" => self.call_tool(&params),
             _ => Err((-32601, format!("method not found: {method}"))),
         };
@@ -96,7 +104,7 @@ impl Rpc {
             Some(Value::Object(m)) => m,
             Some(_) => return Err((-32602, "tools/call: arguments must be an object".into())),
         };
-        if !has_tool(name) {
+        if !has_tool(name) && !self.ext.has_tool(name) {
             return Err((-32602, format!("unknown tool: {name}")));
         }
         eprintln!("ics mcp: tool {name}");
@@ -128,6 +136,10 @@ impl Rpc {
         match client {
             Some(mut c) => {
                 c.call(name, args).unwrap_or_else(|e| ToolResult::error(format!("lost the connection to IC Studio: {e}")))
+            }
+            None if self.ext.has_tool(name) => {
+                let state = &mut self.state;
+                self.ext.call(name, args, &mut |tool: &str, a: &Map<String, Value>| call_tool(state, tool, a))
             }
             None => call_tool(&mut self.state, name, args),
         }
@@ -168,6 +180,35 @@ mod tests {
         let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let roots = crate::confine::Roots::new(cwd.clone(), vec![cwd, repo, std::env::temp_dir()]);
         Rpc { standalone: true, roots, ..Rpc::default() }
+    }
+
+    #[test]
+    fn extension_tools_are_listed_and_call_back() {
+        let Some(py) = ["python3", "python"].into_iter().find(|p| std::process::Command::new(p).arg("-V").output().is_ok())
+        else {
+            return;
+        };
+        let root = std::env::temp_dir().join(format!("ics-mcp-ext-{}", std::process::id()));
+        let dir = root.join("libs");
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = format!(
+            "[extension]\nid = \"libs\"\nname = \"Libs\"\nversion = \"1.0.0\"\n[run]\ncommand = [\"{py}\", \"main.py\"]\n\
+             [[tools]]\nname = \"names\"\ndescription = \"Library names.\"\n"
+        );
+        std::fs::write(dir.join("extension.toml"), manifest).unwrap();
+        let main = "from ics_extension import Extension\next = Extension()\n@ext.tool('names')\ndef names():\n    \
+                    return [l['name'] for l in ext.call('project_info')['libraries']]\next.run()\n";
+        std::fs::write(dir.join("main.py"), main).unwrap();
+        let mut s = Rpc { ext: crate::ext::Registry::load_from(&root), ..standalone() };
+        let list = request(&mut s, "tools/list", json!({}));
+        assert!(list["result"]["tools"].as_array().unwrap().iter().any(|t| t["name"] == "libs__names"));
+        let dir_s = std::env::temp_dir().join(format!("ics-mcp-ext-proj-{}", std::process::id()));
+        call(&mut s, "new_project", json!({"path": dir_s.to_str().unwrap(), "template": "demo"})).unwrap();
+        let names = call(&mut s, "libs__names", json!({})).unwrap();
+        assert!(names.as_array().unwrap().iter().any(|n| n == "work"), "{names}");
+        s.ext.stop_all();
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&dir_s);
     }
 
     #[test]

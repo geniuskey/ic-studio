@@ -1,0 +1,24 @@
+[extension]
+id = "design-report"
+name = "Design report"
+version = "0.1.0"
+description = "Writes a Markdown report of a cell: devices by kind, DRC and LVS results."
+authors = ["IC Studio contributors"]
+license = "MIT"
+repository = "https://github.com/geniuskey/ic-studio"
+ics = ">=0.2.9"
+
+[run]
+command = ["python3", "main.py"]
+windows = ["python", "main.py"]
+
+[[tools]]
+name = "report"
+description = "Check a cell (device count from its schematic, DRC and LVS of its layout) and return a Markdown report. With write = true (default) it is also saved as reports/<cell>.md in the project folder."
+input_schema = { type = "object", properties = { cell = { type = "string", description = "Cell (cell or lib/cell)" }, write = { type = "boolean", description = "Save reports/<cell>.md (default true)" } }, required = ["cell"] }
+
+[[commands]]
+id = "report"
+title = "Design report of the active cell"
+tool = "report"
+arguments = { cell = "${cell}" }

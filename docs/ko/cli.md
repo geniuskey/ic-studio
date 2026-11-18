@@ -19,6 +19,7 @@
 | 명령 | 용도 |
 |---|---|
 | `ics mcp` | AI 에이전트용 MCP 서버를 stdio로 실행([MCP 서버](mcp.md) 참고) |
+| `ics ext list\|install\|update\|remove\|enable\|disable\|search\|new\|check\|call\|run` | [확장](extensions.md) 관리, 생성, 실행: `install <폴더\|git URL\|인덱스 id> [--path P] [--rev R] [--force]`, `call <PROJECT> <TOOL> [JSON]`, `run <PROJECT> <ID>/<COMMAND> [--cell C]` |
 | `ics new <DIR> [--template empty\|demo]` | 프로젝트 생성(기본 템플릿 `demo`) |
 | `ics examples [DIR] [--force]` | 주제별 예제 프로젝트를 `DIR/<topic>`에 씀(`--force`가 없으면 기존 것은 유지). `DIR`이 없으면 주제 목록 출력 |
 | `ics info <PROJECT>` | 라이브러리, 셀, 뷰 목록 |

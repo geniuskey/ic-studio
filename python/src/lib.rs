@@ -105,6 +105,19 @@ struct Project {
 impl Project {
     fn tool(&mut self, py: Python<'_>, name: &str, args: Value) -> PyResult<PyObject> {
         let Value::Object(map) = args else { return Err(err("tool arguments must be a dict")) };
+        if name.contains(ics_mcp::ext::SEP) {
+            // An extension tool (`<id>__<tool>`); its program calls back into this project.
+            let reg = ics_mcp::ext::Registry::load();
+            if reg.has_tool(name) {
+                let st = &mut self.st;
+                let r = reg.call(name, &map, &mut |t: &str, a: &Map<String, Value>| ics_mcp::call_tool(st, t, a));
+                reg.stop_all();
+                if r.is_error {
+                    return Err(err(r.text));
+                }
+                return to_py(py, &r.value().unwrap_or(Value::String(r.text)));
+            }
+        }
         let res = self.st.call(name, &map).ok_or_else(|| err(format!("no tool '{name}' (see icstudio.tools())")))?;
         to_py(py, &res.map_err(err)?)
     }
@@ -246,7 +259,9 @@ impl Project {
 /// The tools `Project.call` runs: name, description and JSON schema of the arguments.
 #[pyfunction]
 fn tools(py: Python<'_>) -> PyResult<PyObject> {
-    to_py(py, &Value::Array(definitions()))
+    let mut list = definitions();
+    list.extend(ics_mcp::ext::Registry::load().definitions());
+    to_py(py, &Value::Array(list))
 }
 
 /// Simulate a SPICE (or Spectre) deck with its own analyses; same result form as

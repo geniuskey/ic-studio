@@ -94,6 +94,9 @@ p.call("export_gds", cell="cmos_inverter", path="inv.gds")
 
 A failing tool raises `icstudio.IcsError`, with the tool's message.
 
+Tools of installed [extensions](extensions.md) work the same way, by their full name
+(`p.call("design-report__report", cell="nand2")`), and are listed by `icstudio.tools()`.
+
 ## Example: a regression check in CI
 
 ```python

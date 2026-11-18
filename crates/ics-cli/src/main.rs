@@ -51,10 +51,100 @@ enum DeckCmd {
     Unlink,
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum ExtTemplate {
+    /// A Python program with one tool and a menu command.
+    Python,
+    /// A SKILL script as a menu command, no program.
+    Skill,
+}
+
+#[derive(Subcommand)]
+enum ExtCmd {
+    /// List the installed extensions (and folders that failed to load).
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Install from a folder, a git repository URL or an id of the extension index.
+    Install {
+        source: String,
+        /// Sub-folder of the repository holding extension.toml.
+        #[arg(long)]
+        path: Option<String>,
+        /// Git tag or branch.
+        #[arg(long)]
+        rev: Option<String>,
+        /// Replace an installed extension of the same id.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Install an extension again from where it came from.
+    Update {
+        id: String,
+    },
+    /// Delete an installed extension.
+    Remove {
+        id: String,
+    },
+    Enable {
+        id: String,
+    },
+    Disable {
+        id: String,
+    },
+    /// Search the extension index (all entries without a query).
+    Search {
+        query: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Start a new extension in a folder.
+    New {
+        dir: PathBuf,
+        /// Extension id (default: the folder name).
+        #[arg(long)]
+        id: Option<String>,
+        #[arg(long, value_enum, default_value = "python")]
+        template: ExtTemplate,
+    },
+    /// Check an extension folder's extension.toml without installing it.
+    Check {
+        dir: PathBuf,
+    },
+    /// Run a tool (an extension's `<id>__<tool>` or a built-in one) on a project; saves the
+    /// project when the tool changed it.
+    Call {
+        project: PathBuf,
+        tool: String,
+        /// Arguments as a JSON object.
+        #[arg(default_value = "{}")]
+        arguments: String,
+        #[arg(long)]
+        no_save: bool,
+    },
+    /// Run an extension's menu command on a cell of a project.
+    Run {
+        project: PathBuf,
+        /// `<extension id>/<command id>`.
+        command: String,
+        /// The cell `${cell}` stands for.
+        #[arg(long)]
+        cell: Option<String>,
+        #[arg(long)]
+        no_save: bool,
+    },
+}
+
 #[derive(Subcommand)]
 enum Cmd {
     /// Run the MCP server for AI agents on stdio (`claude mcp add ic-studio -- ics mcp`).
     Mcp,
+    /// Manage extensions: install, list, create and run them.
+    Ext {
+        #[command(subcommand)]
+        cmd: ExtCmd,
+    },
     /// Create a new project directory.
     New {
         dir: PathBuf,
@@ -867,6 +957,7 @@ fn print_results(res: &SimResults, json: bool) {
 fn run(cli: Cli) -> Result<(), String> {
     match cli.cmd {
         Cmd::Mcp => ics_mcp::server::serve_stdio(),
+        Cmd::Ext { cmd } => ext(cmd)?,
         Cmd::New { dir, template } => {
             let name = dir.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or("project".into());
             let mut p = match template {
@@ -2916,6 +3007,218 @@ fn run(cli: Cli) -> Result<(), String> {
                     eprintln!("modified {} cell(s): {}", modified.len(), modified.join(", "));
                 }
             }
+        }
+    }
+    Ok(())
+}
+
+fn ext_root() -> Result<PathBuf, String> {
+    ics_mcp::ext::user_dir().ok_or_else(|| "no per-user data folder; set ICS_EXTENSIONS_DIR".to_string())
+}
+
+/// Run `tool` on the project in `dir` and print its result; save when it changed the project.
+fn ext_call(
+    dir: &std::path::Path,
+    tool: &str,
+    args: &serde_json::Map<String, serde_json::Value>,
+    no_save: bool,
+) -> Result<(), String> {
+    use ics_mcp::ext::Registry;
+    let reg = Registry::load();
+    let p = Project::open(dir).map_err(|e| e.to_string())?;
+    let mut state = ics_mcp::tools::State::with_project(p);
+    let res = if reg.has_tool(tool) {
+        let r = reg.call(tool, args, &mut |t: &str, a: &serde_json::Map<String, serde_json::Value>| {
+            ics_mcp::call_tool(&mut state, t, a)
+        });
+        reg.stop_all();
+        r
+    } else if ics_mcp::has_tool(tool) {
+        ics_mcp::call_tool(&mut state, tool, args)
+    } else {
+        return Err(format!("unknown tool '{tool}' (see `ics ext list`)"));
+    };
+    if res.is_error {
+        return Err(res.text);
+    }
+    match res.value() {
+        Some(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap_or(res.text)),
+        None => println!("{}", res.text),
+    }
+    let (project, dirty) = state.into_parts();
+    if dirty
+        && !no_save
+        && let Some(p) = project
+    {
+        p.save().map_err(|e| e.to_string())?;
+        eprintln!("saved {}", dir.display());
+    }
+    Ok(())
+}
+
+fn ext(cmd: ExtCmd) -> Result<(), String> {
+    use ics_mcp::ext::install::{self, Source};
+    use ics_mcp::ext::{Context, Registry};
+    match cmd {
+        ExtCmd::List { json } => {
+            let root = ext_root()?;
+            let reg = Registry::load_from(&root);
+            if json {
+                let list: Vec<serde_json::Value> = reg
+                    .extensions
+                    .iter()
+                    .map(|e| {
+                        let i = &e.manifest.extension;
+                        serde_json::json!({
+                            "id": i.id, "name": i.name, "version": i.version, "description": i.description,
+                            "enabled": e.enabled, "problem": e.problem, "dir": e.dir,
+                            "tools": e.manifest.tools.iter().map(|t| e.manifest.tool_name(&t.name)).collect::<Vec<_>>(),
+                            "commands": e.manifest.commands.iter().map(|c| format!("{}/{}", i.id, c.id)).collect::<Vec<_>>(),
+                            "source": e.source().map(|s| s.describe()),
+                        })
+                    })
+                    .collect();
+                let errors: Vec<serde_json::Value> =
+                    reg.errors.iter().map(|(p, e)| serde_json::json!({"dir": p, "error": e})).collect();
+                println!("{}", serde_json::json!({"dir": root, "extensions": list, "errors": errors}));
+                return Ok(());
+            }
+            println!("extensions in {}", root.display());
+            if reg.extensions.is_empty() {
+                println!("  (none; `ics ext search` lists published ones)");
+            }
+            for e in &reg.extensions {
+                let i = &e.manifest.extension;
+                let state = match (&e.problem, e.enabled) {
+                    (Some(p), _) => format!("unusable: {p}"),
+                    (None, true) => "enabled".into(),
+                    (None, false) => "disabled".into(),
+                };
+                println!("  {} {}  {}  [{state}]", i.id, i.version, i.name);
+                if !i.description.is_empty() {
+                    println!("      {}", i.description);
+                }
+                for t in &e.manifest.tools {
+                    println!("      tool    {}", e.manifest.tool_name(&t.name));
+                }
+                for c in &e.manifest.commands {
+                    println!("      command {}/{}  {}", i.id, c.id, c.title);
+                }
+                for p in &e.manifest.pdks {
+                    println!("      pdk     {}  {}", p.name, p.file);
+                }
+            }
+            for (p, e) in &reg.errors {
+                println!("  ! {}: {e}", p.display());
+            }
+        }
+        ExtCmd::Install { source, path, rev, force } => {
+            let root = ext_root()?;
+            let src = match Source::parse(&source, rev.clone(), path.clone()) {
+                Ok(s) => s,
+                // Not a folder or URL: an id of the index.
+                Err(_) if !source.contains(['/', '\\', ':']) => {
+                    let index = install::fetch_index(&install::index_location())?;
+                    let e = index.into_iter().find(|e| e.id == source).ok_or_else(|| {
+                        format!("'{source}' is not a folder, a git URL or an extension of the index (`ics ext search`)")
+                    })?;
+                    let mut s = e.source();
+                    if let Source::Git { rev: r, .. } = &mut s
+                        && rev.is_some()
+                    {
+                        *r = rev;
+                    }
+                    s
+                }
+                Err(e) => return Err(e),
+            };
+            let (m, dir) = install::install(&root, &src, force)?;
+            let i = &m.extension;
+            println!("installed {} {} into {}", i.id, i.version, dir.display());
+            if m.run.is_some() {
+                println!(
+                    "note: it runs its own program ({}) with your rights",
+                    m.run.as_ref().map(|r| r.argv().join(" ")).unwrap_or_default()
+                );
+            }
+        }
+        ExtCmd::Update { id } => {
+            let (m, _) = install::update(&ext_root()?, &id)?;
+            println!("updated {} to {}", id, m.extension.version);
+        }
+        ExtCmd::Remove { id } => {
+            install::remove(&ext_root()?, &id)?;
+            println!("removed {id}");
+        }
+        ExtCmd::Enable { id } => install::set_enabled(&ext_root()?, &id, true)?,
+        ExtCmd::Disable { id } => install::set_enabled(&ext_root()?, &id, false)?,
+        ExtCmd::Search { query, json } => {
+            let index = install::fetch_index(&install::index_location())?;
+            let installed = ext_root().map(|r| Registry::load_from(&r)).unwrap_or_default();
+            let hits: Vec<_> = index.iter().filter(|e| e.matches(query.as_deref().unwrap_or(""))).collect();
+            if json {
+                let v: Vec<serde_json::Value> = hits
+                    .iter()
+                    .map(|e| {
+                        serde_json::json!({"id": e.id, "name": e.name, "description": e.description,
+                        "repository": e.repository, "path": e.path, "installed": installed.get(&e.id).is_some()})
+                    })
+                    .collect();
+                println!("{}", serde_json::Value::Array(v));
+                return Ok(());
+            }
+            for e in &hits {
+                let mark = if installed.get(&e.id).is_some() { " (installed)" } else { "" };
+                println!("{}{mark}  {}\n    {}", e.id, e.name, e.description);
+            }
+            if hits.is_empty() {
+                println!("no extension matches");
+            }
+        }
+        ExtCmd::New { dir, id, template } => {
+            let id = id.unwrap_or_else(|| dir.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default());
+            let t = match template {
+                ExtTemplate::Python => install::Template::Python,
+                ExtTemplate::Skill => install::Template::Skill,
+            };
+            install::scaffold(&dir, &id, t)?;
+            install::read_manifest(&dir)?;
+            println!("created {} in {}; try it with `ics ext install {}`", id, dir.display(), dir.display());
+        }
+        ExtCmd::Check { dir } => {
+            let m = install::read_manifest(&dir)?;
+            for c in &m.commands {
+                if let Some(f) = &c.skill
+                    && !dir.join(f).is_file()
+                {
+                    return Err(format!("command {}: {} does not exist", c.id, f));
+                }
+            }
+            for p in &m.pdks {
+                if !dir.join(&p.file).is_file() {
+                    return Err(format!("pdk {}: {} does not exist", p.name, p.file));
+                }
+            }
+            println!(
+                "{} {}: {} tools, {} commands, {} PDKs",
+                m.id(),
+                m.extension.version,
+                m.tools.len(),
+                m.commands.len(),
+                m.pdks.len()
+            );
+        }
+        ExtCmd::Call { project, tool, arguments, no_save } => {
+            let args: serde_json::Value = serde_json::from_str(&arguments).map_err(|e| format!("arguments: {e}"))?;
+            let args = args.as_object().cloned().ok_or("arguments must be a JSON object")?;
+            ext_call(&project, &tool, &args, no_save)?;
+        }
+        ExtCmd::Run { project, command, cell, no_save } => {
+            let (id, cmd) = command.split_once('/').ok_or("give the command as <extension id>/<command id>")?;
+            let reg = Registry::load();
+            let root = std::fs::canonicalize(&project).ok();
+            let inv = reg.invocation(id, cmd, &Context { cell, project: root })?;
+            ext_call(&project, &inv.tool, &inv.arguments, no_save)?;
         }
     }
     Ok(())

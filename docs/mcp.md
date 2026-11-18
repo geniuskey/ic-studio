@@ -53,6 +53,8 @@ or copy `skills/ic-studio` into `~/.claude/skills/`.
 - A `cell` argument is a cell name or `lib/cell`. Layout edit tools create the cell (in
   library `work`) and its layout view if they do not exist.
 - Edits stay in memory until `save_project`.
+- Tools of installed [extensions](extensions.md) are listed after the built-in ones as
+  `<extension id>__<tool>` and are called the same way (in live mode they run in the app).
 
 ## Tools
 

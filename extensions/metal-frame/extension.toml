@@ -1,0 +1,14 @@
+[extension]
+id = "metal-frame"
+name = "Metal frame"
+version = "0.1.0"
+description = "Draws a 0.5 µm metal1 frame 1 µm outside the active cell's layout, with a SKILL script."
+authors = ["IC Studio contributors"]
+license = "MIT"
+repository = "https://github.com/geniuskey/ic-studio"
+ics = ">=0.2.9"
+
+[[commands]]
+id = "frame"
+title = "Draw a metal1 frame around the active cell"
+skill = "frame.il"

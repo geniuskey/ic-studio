@@ -2136,7 +2136,9 @@ version = "0.2.9"
 dependencies = [
  "ics-core",
  "ics-sim",
+ "serde",
  "serde_json",
+ "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]

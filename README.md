@@ -381,7 +381,28 @@ print(p.drc("cmos_inverter")["violations"], p.verify()["status"])
 p.call("route", cell="cmos_inverter")        # any MCP tool by name
 ```
 
-See [Python API](https://pages.euiyun.com/ic-studio/python.html).
+See [Python API](https://pages.euiyun.com/ic-studio/python.html). Tools of installed
+[extensions](#extensions) are called the same way.
+
+## Extensions
+
+Third parties can add tools, menu commands, SKILL scripts and PDKs as **extensions**: a folder
+with an `extension.toml`, kept in its author's git repository. A tool is served by the
+extension's own program in any language (a Python helper is built in) over newline-delimited
+JSON-RPC on stdio, a subset of MCP, and can call every built-in tool back on the open project.
+Extension tools appear as `<id>__<tool>` in the **Extensions** menu, the command palette, the
+Design Copilot, `ics mcp`, the CLI and the Python API.
+
+```sh
+ics ext search                          # the community index (extensions/index.json)
+ics ext install design-report           # by id, or a folder, or any git URL (--rev, --path)
+ics ext new my-tool                     # start one (Python or --template skill)
+ics ext call myproj design-report__report '{"cell": "nand2"}'
+```
+
+In the app: **Extensions > Manage Extensions…**. Examples are in [`extensions/`](extensions);
+see [Extensions](https://pages.euiyun.com/ic-studio/extensions.html) for the manifest and the
+protocol, and [`extensions/README.md`](extensions/README.md) to list yours in the index.
 
 ## Architecture
 
@@ -398,9 +419,9 @@ crates/
   ics-studio  desktop app (eframe/egui on wgpu)
               app (shell, commands) · schematic_view · sim_view · layout_view (edit, verify)
               tool windows: calc_view · sweep_view · verify_view · rule_designer · stream_map_view
-              fill_view · opc_view · gen_view · net_view · hier_view · ciw
+              fill_view · opc_view · gen_view · net_view · hier_view · ciw · ext_view
   ics-cli     `ics` command line and `ics mcp`
-  ics-mcp     MCP tools, stdio server and live-mode bridge (library)
+  ics-mcp     MCP tools, stdio server, live-mode bridge and the extension host (ext)
   python/     `icstudio` Python package (PyO3, built by maturin; outside the workspace)
 ```
 
@@ -409,6 +430,8 @@ Design decisions:
 - **The core is UI-free.** The GUI, the CLI, the MCP server and Python are clients of the same
   `ics-core` / `ics-sim` API.
 - **Commands are the single path for user actions**, which keeps the app scriptable.
+- **Extensions are separate programs** speaking a small, MCP-shaped protocol, so they can be
+  written in any language, licensed by their authors and cannot crash the app.
 - **One database for schematic and layout.** Instance names tie schematic devices to
   placed cells; LVS net matches carry parasitics back to simulation.
 - **External engines where they add value.** ngspice is a first-class backend; the

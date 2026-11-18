@@ -8,6 +8,7 @@ pub mod chat;
 pub mod ciw;
 pub mod copilot;
 pub mod display_view;
+pub mod ext_view;
 pub mod fill_view;
 pub mod float;
 pub mod gen_view;

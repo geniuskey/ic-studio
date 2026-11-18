@@ -134,6 +134,8 @@ pub struct Copilot {
     /// Tool calls from the worker, for the app to run.
     pub calls: Option<Receiver<Pending>>,
     factory: LlmFactory,
+    /// Installed extensions, whose tools the agent may call too.
+    pub ext: ics_mcp::ext::Registry,
 }
 
 impl Default for Copilot {
@@ -152,6 +154,7 @@ impl Default for Copilot {
             cancel: Arc::default(),
             calls: None,
             factory: Box::new(crate::llm::client),
+            ext: Default::default(),
         }
     }
 }
@@ -195,8 +198,14 @@ fn agent_declarations() -> Vec<Value> {
 
 /// The MCP tools and the copilot's own tools as Gemini function declarations.
 pub fn declarations() -> Vec<Value> {
+    declarations_with(vec![])
+}
+
+/// [`declarations`] with extension tools (MCP definitions) added.
+pub fn declarations_with(ext: Vec<Value>) -> Vec<Value> {
     ics_mcp::tools::definitions()
         .into_iter()
+        .chain(ext)
         .filter(|t| !HIDDEN.contains(&t["name"].as_str().unwrap_or_default()))
         .map(|t| json!({"name": t["name"], "description": t["description"], "parametersJsonSchema": t["inputSchema"]}))
         .chain(agent_declarations())
@@ -292,6 +301,7 @@ struct Run {
     events: Sender<Event>,
     wake: egui::Context,
     cancel: Arc<AtomicBool>,
+    ext: ics_mcp::ext::Registry,
 }
 
 impl Run {
@@ -340,7 +350,7 @@ impl Run {
     /// The conversation loop on a worker thread: ask the model, run the tools it calls, feed the
     /// results back, until it answers in text, asks the user, presents a plan or is stopped.
     fn converse(mut self) {
-        let decl = declarations();
+        let decl = declarations_with(self.ext.definitions());
         let mut wait: Option<Wait> = None;
         for turn in 0..=MAX_TURNS {
             if self.cancelled() {
@@ -425,7 +435,7 @@ impl Run {
                             continue;
                         }
                         "exit_plan_mode" => json!({"result": "plan mode is off; go ahead with the work"}),
-                        _ if self.plan_mode && !read_only(&name, &args) => json!({"error": format!(
+                        _ if self.plan_mode && !read_only(&name, &args) && !self.ext.read_only(&name) => json!({"error": format!(
                             "plan mode is on, so '{name}' did not run: only read-only tools work. Put this step in the \
                              plan and present it with exit_plan_mode."
                         )}),
@@ -543,6 +553,7 @@ impl Copilot {
             events: ev_tx,
             wake: ctx.clone(),
             cancel: self.cancel.clone(),
+            ext: self.ext.clone(),
         };
         std::thread::spawn(move || run.converse());
         self.calls = Some(tool_rx);

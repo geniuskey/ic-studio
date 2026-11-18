@@ -90,6 +90,9 @@ p.call("export_gds", cell="cmos_inverter", path="inv.gds")
 
 도구가 실패하면 그 메시지와 함께 `icstudio.IcsError`가 발생합니다.
 
+설치된 [확장](extensions.md)의 도구도 전체 이름으로 같은 방법으로 호출하며
+(`p.call("design-report__report", cell="nand2")`), `icstudio.tools()` 목록에도 나옵니다.
+
 ## 예: CI에서 regression 검사
 
 ```python
