@@ -7,4 +7,6 @@ license.workspace = true
 [dependencies]
 ics-core = { version = "0.2.9", path = "../ics-core" }
 num-complex = "0.4.6"
+# Sparse LU of large MNA systems.
+faer = "0.24.4"
 thiserror = "2.0.21"

@@ -48,6 +48,37 @@ fn suite() -> Vec<(&'static str, String, f64)> {
             format!("* pmos 85C\n.temp 85\nVD d 0 -1\nVG g 0 -1\nM1 d g 0 0 p45 w=1u l=45n\n{b4}.dc VD 0 -1 -0.05\n.end\n"),
             1e-3,
         ),
+        (
+            "bjt_common_emitter",
+            "* CE amplifier with Early effect, knee, leakage, charges, series R and a PNP diode\nV1 vcc 0 5\n\
+             Vin in 0 dc 0.68 ac 1 sin(0.68 5m 1meg)\nRb in b 1k\nQ1 c b 0 qn\nRc vcc c 2k\nQ2 x x vcc qp\nRx x 0 10k\n\
+             .model qn npn (is=1e-15 bf=150 br=2 vaf=60 ikf=20m cje=1p cjc=0.5p tf=0.3n rb=50 rc=10 re=2 ise=1e-14 ne=1.6)\n\
+             .model qp pnp (is=2e-16 bf=60 vaf=40)\n.op\n.ac dec 10 1k 1g\n.tran 5n 4u\n.end\n"
+                .into(),
+            1e-2,
+        ),
+        (
+            "bjt_temperature",
+            "* vbe over temperature\n.temp 100\nI1 0 b 10u\nQ1 b b 0 qn 4\nQ2 c b 0 qp_like\nV2 c 0 1\n\
+             .model qn npn (is=2e-17 bf=120 xtb=1.5 ise=1e-15 ne=1.5 cje=1p vje=0.8)\n.model qp_like npn (is=1e-16 bf=80 eg=1.17 xti=3.5)\n\
+             .op\n.end\n"
+                .into(),
+            1e-3,
+        ),
+        (
+            "bandgap_hot",
+            "* bandgap\n.temp 100\nE1 out 0 a b 1e4\nR1 out a 51k\nQ1 a a 0 npn\nR2 out b 51k\nR3 b c2 5k\nQ2 c2 c2 0 npn 8\n\
+             .model npn npn (is=1e-16 bf=100 br=1 vaf=50 rb=100 re=1 rc=10 cje=0.5p cjc=0.3p tf=0.2n)\n.op\n.end\n"
+                .into(),
+            1e-3,
+        ),
+        (
+            "controlled_sources",
+            "* E F G H\nV1 in 0 dc 1 ac 1 sin(1 0.5 1meg)\nVs in s 0\nRs s 0 1k\nE1 e 0 in 0 2\nRe e 0 1k\nG1 0 g in 0 1m\nRg g 0 2k\n\
+             F1 0 f Vs 3\nRf f 0 1k\nH1 h 0 Vs 500\nRh h 0 1k\n.op\n.ac dec 5 1k 10meg\n.tran 10n 2u\n.end\n"
+                .into(),
+            1e-3,
+        ),
         ("rc_ic", "* rc ic\nV1 in 0 0\nR1 in out 1k\nC1 out 0 1n\n.ic v(out)=1\n.tran 10n 5u\n.end\n".into(), 1e-3),
         (
             "rc_uic",

@@ -1,7 +1,9 @@
-//! Built-in Modified Nodal Analysis engine: OP, DC sweep, AC and transient.
+//! Built-in Modified Nodal Analysis engine: OP, DC sweep, AC, noise and transient.
 //!
-//! Intended for quick, dependency-free simulation of small circuits. For production
-//! accuracy and full device models, use the ngspice backend.
+//! Devices: R C L V I, diodes, MOS (level 1 and BSIM4), Gummel-Poon BJTs and linear
+//! controlled sources, on a dense solver for small circuits and a sparse one for large ones
+//! ([`crate::linalg`]). Decks needing other models (BSIM-CMG, PSP, behavioural sources) go to
+//! ngspice through the Auto backend.
 
 use num_complex::Complex64;
 
@@ -9,7 +11,7 @@ use ics_core::Analysis;
 use ics_core::units::parse_spice;
 
 use crate::SimError;
-use crate::circuit::{Circuit, DiodeModel, Element, MosModel, Node};
+use crate::circuit::{BjtModel, Circuit, CtrlKind, DiodeModel, Element, MosModel, Node};
 use crate::linalg::{Matrix, solve};
 use crate::results::{Dataset, DeviceOp, VecKind, Vector};
 
@@ -109,8 +111,10 @@ enum Mode<'s> {
 pub struct Engine {
     c: Circuit,
     nn: usize,
-    /// Branch row for each element (V sources and inductors).
+    /// Branch row for each element (V sources, inductors, E and H sources).
     branch: Vec<Option<usize>>,
+    /// For F / H sources: the branch row of their controlling voltage source.
+    ctrl: Vec<Option<usize>>,
     size: usize,
     caps: Vec<Cap>,
     inductors: Vec<usize>,
@@ -118,6 +122,39 @@ pub struct Engine {
     qdevs: Vec<(usize, [Node; 4])>,
     vt: f64,
     pub log: Vec<String>,
+    /// Set for the first Newton iteration of a cold operating point: junctions are linearised
+    /// at their critical voltage instead of at zero (SPICE's MODEINITJCT), so that circuits with
+    /// a zero-current solution (a bandgap) start towards the working one.
+    init_jct: std::cell::Cell<bool>,
+    /// Junction voltages (vbe, vbc / vd) each BJT and diode was last evaluated at, by element:
+    /// the next iteration limits their change logarithmically (SPICE's pnjlim).
+    jct: std::cell::RefCell<std::collections::HashMap<usize, [f64; 2]>>,
+    /// Set by `assemble` when a junction voltage was limited: the iteration has not converged.
+    limited: std::cell::Cell<bool>,
+    /// Newton steps of node voltages are clipped to 0.5 V when the circuit has MOS devices
+    /// (they have no junction limiting); BJTs and diodes are limited by pnjlim alone, as in
+    /// SPICE, which keeps circuits with several solutions on SPICE's path.
+    damp: bool,
+}
+
+/// SPICE's `DEVpnjlim`: the junction voltage to evaluate at, given the raw new value, the last
+/// one, `nvt` and the critical voltage.
+fn pnjlim(vnew: f64, vold: f64, nvt: f64, vcrit: f64) -> (f64, bool) {
+    if vnew > vcrit && (vnew - vold).abs() > 2.0 * nvt {
+        let v = if vold > 0.0 {
+            let arg = 1.0 + (vnew - vold) / nvt;
+            if arg > 0.0 { vold + nvt * arg.ln() } else { vcrit }
+        } else {
+            nvt * (vnew / nvt).ln()
+        };
+        (v, true)
+    } else {
+        (vnew, false)
+    }
+}
+
+fn vcrit(is: f64, nvt: f64) -> f64 {
+    nvt * (nvt / (std::f64::consts::SQRT_2 * is.max(1e-300))).ln()
 }
 
 struct MosEval {
@@ -186,6 +223,64 @@ fn exp_iv(is: f64, nvt: f64, v: f64) -> (f64, f64) {
     } else {
         let e = arg.exp();
         (is * (e - 1.0), is * e / nvt)
+    }
+}
+
+/// `is · (e^(v / nvt) − 1)` as a dual number, continued linearly above 40 nvt (as `exp_iv`).
+fn exp_d(is: f64, nvt: f64, v: crate::bsim4::D) -> crate::bsim4::D {
+    use crate::bsim4::D;
+    const MAXARG: f64 = 40.0;
+    let arg = v / nvt;
+    if arg.v > MAXARG {
+        let e = MAXARG.exp();
+        is * (e * (arg + (1.0 - MAXARG)) - 1.0)
+    } else {
+        is * (arg.exp() - D::c(1.0))
+    }
+}
+
+/// Gummel-Poon bipolar currents in the NPN frame: collector and base currents (into the device)
+/// with their derivatives by (vbe, vbc).
+pub(crate) struct BjtEval {
+    pub ic: f64,
+    pub ib: f64,
+    pub dic: [f64; 2],
+    pub dib: [f64; 2],
+}
+
+pub(crate) fn bjt_eval(m: &BjtModel, area: f64, vbe: f64, vbc: f64, vt: f64) -> BjtEval {
+    use crate::bsim4::D;
+    let (be, bc) = (D::var(vbe, 0), D::var(vbc, 1));
+    let is = m.is * area;
+    let f = exp_d(is, m.nf * vt, be);
+    let r = exp_d(is, m.nr * vt, bc);
+    // Base charge: Early effect (q1) and high injection (q2).
+    let inv = |v: f64| if v.is_finite() && v > 0.0 { 1.0 / v } else { 0.0 };
+    let q1 = D::c(1.0) / (D::c(1.0) - bc * inv(m.vaf) - be * inv(m.var));
+    let q2 = f * inv(m.ikf * area) + r * inv(m.ikr * area);
+    let qb = q1 * 0.5 * (D::c(1.0) + (D::c(1.0) + 4.0 * q2).sqrt());
+    let ict = (f - r) / qb;
+    let ibe = f / m.bf + exp_d(m.ise * area, m.ne * vt, be);
+    let ibc = r / m.br + exp_d(m.isc * area, m.nc * vt, bc);
+    let ic = ict - ibc;
+    let ib = ibe + ibc;
+    BjtEval { ic: ic.v, ib: ib.v, dic: [ic.d[0], ic.d[1]], dib: [ib.d[0], ib.d[1]] }
+}
+
+impl Engine {
+    /// The linearised currents of bipolar `model` at `x`: (node, current into the device,
+    /// d current / d node voltage for (c, b, e)) for its collector, base and emitter.
+    fn bjt_stamp(&self, model: &BjtModel, area: f64, nodes: [Node; 3], x: &[f64]) -> [(Node, f64, [f64; 3]); 3] {
+        let p = if model.pnp { -1.0 } else { 1.0 };
+        let [c, b, e] = nodes;
+        let (vc, vb, ve) = (self.v(x, c), self.v(x, b), self.v(x, e));
+        let ev = bjt_eval(model, area, p * (vb - ve), p * (vb - vc), self.vt);
+        // d/d(vc, vb, ve) of a current p·I(vbe, vbc) with vbe = p(vb - ve), vbc = p(vb - vc).
+        let row = |i: f64, d: [f64; 2]| (p * i, [-d[1], d[0] + d[1], -d[0]]);
+        let (ic, gc) = row(ev.ic, ev.dic);
+        let (ib, gb) = row(ev.ib, ev.dib);
+        let ge = [-(gc[0] + gb[0]), -(gc[1] + gb[1]), -(gc[2] + gb[2])];
+        [(c, ic, gc), (b, ib, gb), (e, -(ic + ib), ge)]
     }
 }
 
@@ -306,6 +401,63 @@ fn bulk_diodes(model: &MosModel, d: Node, s: Node, b: Node, m: f64, j: &crate::c
         .collect()
 }
 
+/// Stamp a linear controlled source: `nodes` are (+, −, control +, control −), `br` its own
+/// branch row (E, H) and `ctl` the controlling source's branch (F, H).
+#[allow(clippy::too_many_arguments)]
+fn stamp_ctrl<T: crate::linalg::Scalar>(
+    m: &mut Matrix<T>,
+    kind: CtrlKind,
+    nodes: [Node; 4],
+    br: Option<usize>,
+    ctl: Option<usize>,
+    gain: f64,
+    one: T,
+    of: impl Fn(f64) -> T,
+) {
+    let idx = |n: Node| if n == 0 { None } else { Some(n - 1) };
+    let [a, b, cp, cn] = nodes;
+    let neg = |v: T| T::zero() - v;
+    match kind {
+        CtrlKind::E | CtrlKind::H => {
+            let br = br.expect("E / H have a branch");
+            for (n, s) in [(a, one), (b, neg(one))] {
+                if let Some(i) = idx(n) {
+                    m.add(i, br, s);
+                    m.add(br, i, s);
+                }
+            }
+            if kind == CtrlKind::E {
+                for (n, s) in [(cp, neg(of(gain))), (cn, of(gain))] {
+                    if let Some(j) = idx(n) {
+                        m.add(br, j, s);
+                    }
+                }
+            } else if let Some(c) = ctl {
+                m.add(br, c, neg(of(gain)));
+            }
+        }
+        CtrlKind::G => {
+            for (r, rs) in [(a, one), (b, neg(one))] {
+                let Some(i) = idx(r) else { continue };
+                for (c, cs) in [(cp, of(gain)), (cn, neg(of(gain)))] {
+                    if let Some(j) = idx(c) {
+                        m.add(i, j, rs * cs);
+                    }
+                }
+            }
+        }
+        CtrlKind::F => {
+            if let Some(c) = ctl {
+                for (r, rs) in [(a, of(gain)), (b, neg(of(gain)))] {
+                    if let Some(i) = idx(r) {
+                        m.add(i, c, rs);
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl Engine {
     pub fn new(mut c: Circuit) -> Result<Self, SimError> {
         let temp = c.temp;
@@ -321,6 +473,7 @@ impl Engine {
                     }
                 }
                 Element::D { model, .. } => *model = model.at_temp(temp),
+                Element::Q { model, .. } => *model = model.at_temp(temp),
                 _ => {}
             }
         }
@@ -341,7 +494,51 @@ impl Engine {
                     size += 1;
                     inductors.push(i);
                 }
+                Element::Ctrl { kind: CtrlKind::E | CtrlKind::H, .. } => {
+                    branch[i] = Some(size);
+                    size += 1;
+                }
                 Element::C { a, b, c, .. } => caps.push(Cap { a: *a, b: *b, kind: CapKind::Linear(*c) }),
+                Element::Q { c: cn, b, e, model, area, .. } => {
+                    // Base-emitter and base-collector junctions: depletion plus diffusion charge
+                    // (tf · If, tr · Ir), as the diode's.
+                    let sign = |a: Node, k: Node| if model.pnp { (k, a) } else { (a, k) };
+                    for (a, k, cj, vj, mj, tt, n) in [
+                        (*b, *e, model.cje, model.vje, model.mje, model.tf, model.nf),
+                        (*b, *cn, model.cjc, model.vjc, model.mjc, model.tr, model.nr),
+                    ] {
+                        if cj > 0.0 || tt > 0.0 {
+                            let (a, k) = sign(a, k);
+                            let d = DiodeModel {
+                                is: model.is * area,
+                                n,
+                                cjo: cj * area,
+                                vj,
+                                m: mj,
+                                fc: model.fc,
+                                tt,
+                                rs: 0.0,
+                                bv: f64::INFINITY,
+                                ibv: 0.0,
+                                kf: 0.0,
+                                af: 1.0,
+                                eg: 1.11,
+                                xti: 3.0,
+                                tnom: 27.0,
+                            };
+                            caps.push(Cap {
+                                a,
+                                b: k,
+                                kind: CapKind::Junction {
+                                    terms: [(d.cjo, mj), (0.0, 0.5)],
+                                    pb: vj,
+                                    fc: model.fc,
+                                    diode: (tt > 0.0).then_some(d),
+                                },
+                            });
+                        }
+                    }
+                }
                 Element::D { a, k, model, .. } if model.cjo > 0.0 || model.tt > 0.0 => caps.push(Cap {
                     a: *a,
                     b: *k,
@@ -381,7 +578,33 @@ impl Engine {
             return Err(SimError::Engine("circuit has no nodes besides ground".into()));
         }
         let vt = BOLTZMANN * (c.temp + 273.15) / CHARGE;
-        Ok(Self { c, nn, branch, size, caps, inductors, qdevs, vt, log: vec![] })
+        let mut ctrl = vec![None; c.elements.len()];
+        for (i, e) in c.elements.iter().enumerate() {
+            if let Element::Ctrl { name, kind: CtrlKind::F | CtrlKind::H, vctl, .. } = e {
+                let k = c
+                    .elements
+                    .iter()
+                    .position(|v| matches!(v, Element::V { .. }) && v.name().eq_ignore_ascii_case(vctl))
+                    .ok_or_else(|| SimError::Engine(format!("{name}: no voltage source '{vctl}' to sense the current of")))?;
+                ctrl[i] = branch[k];
+            }
+        }
+        Ok(Self {
+            nn,
+            branch,
+            ctrl,
+            size,
+            caps,
+            inductors,
+            qdevs,
+            vt,
+            log: vec![],
+            init_jct: std::cell::Cell::new(false),
+            jct: Default::default(),
+            limited: std::cell::Cell::new(false),
+            damp: c.elements.iter().any(|e| matches!(e, Element::M { .. })),
+            c,
+        })
     }
 
     /// Bulk junction diodes of a MOS at `x`: (anode, cathode, current, conductance).
@@ -507,6 +730,55 @@ impl Engine {
         for (ei, e) in self.c.elements.iter().enumerate() {
             match e {
                 Element::R { a, b, r, .. } => cond(&mut m, *a, *b, 1.0 / r),
+                Element::Ctrl { kind, a, b, cp, cn, gain, .. } => {
+                    stamp_ctrl(&mut m, *kind, [*a, *b, *cp, *cn], self.branch[ei], self.ctrl[ei], *gain, 1.0, |g| g);
+                }
+                Element::Q { c, b, e, model, area, .. } => {
+                    let nodes = [*c, *b, *e];
+                    // Junction voltages to linearise at: critical voltages on a cold start, else
+                    // the node voltages with the change since the last iteration limited.
+                    let p = if model.pnp { -1.0 } else { 1.0 };
+                    let (vbn, ven, vcn) = (self.v(x, *b), self.v(x, *e), self.v(x, *c));
+                    let (raw_be, raw_bc) = (p * (vbn - ven), p * (vbn - vcn));
+                    let (vbe, vbc) = if self.init_jct.get() {
+                        (vcrit(model.is * area, model.nf * self.vt).min(0.9), 0.0)
+                    } else if let Some([ob, oc]) = self.jct.borrow().get(&ei).copied() {
+                        let (be, l1) = pnjlim(raw_be, ob, model.nf * self.vt, vcrit(model.is * area, model.nf * self.vt));
+                        let (bc, l2) = pnjlim(raw_bc, oc, model.nr * self.vt, vcrit(model.is * area, model.nr * self.vt));
+                        if l1 || l2 {
+                            self.limited.set(true);
+                        }
+                        (be, bc)
+                    } else {
+                        (raw_be, raw_bc)
+                    };
+                    self.jct.borrow_mut().insert(ei, [vbe, vbc]);
+                    // Node voltages that give those junction voltages (the emitter kept).
+                    let vb0 = ven + p * vbe;
+                    let v0 = [vb0 - p * vbc, vb0, ven];
+                    let xs: Vec<f64> = (0..self.size).map(|k| x[k]).collect();
+                    let mut xl = xs;
+                    for (n, val) in nodes.iter().zip(v0) {
+                        if *n > 0 {
+                            xl[*n - 1] = val;
+                        }
+                    }
+                    for (n, i, g) in self.bjt_stamp(model, *area, nodes, &xl) {
+                        let Some(r) = idx(n) else { continue };
+                        let mut lin = i;
+                        for (k, &col) in nodes.iter().enumerate() {
+                            lin -= g[k] * v0[k];
+                            if let Some(j) = idx(col) {
+                                m.add(r, j, g[k]);
+                            }
+                        }
+                        rhs[r] -= lin;
+                    }
+                    // A tiny conductance across each junction, as for diodes, keeps cut-off
+                    // transistors from leaving nodes floating.
+                    cond(&mut m, *b, *e, gmin);
+                    cond(&mut m, *b, *c, gmin);
+                }
                 Element::C { .. } => {}
                 Element::L { a, b, l, .. } => {
                     let br = self.branch[ei].unwrap();
@@ -548,7 +820,20 @@ impl Engine {
                 }
                 Element::I { a, b, src, .. } => cur(&mut rhs, *a, *b, src.at(t) * src_scale),
                 Element::D { a, k, model, .. } => {
-                    let vd = self.v(x, *a) - self.v(x, *k);
+                    let nvt = model.n * self.vt;
+                    let raw = self.v(x, *a) - self.v(x, *k);
+                    let vd = if self.init_jct.get() {
+                        vcrit(model.is, nvt).min(0.9)
+                    } else if let Some([old, _]) = self.jct.borrow().get(&ei).copied() {
+                        let (v, lim) = pnjlim(raw, old, nvt, vcrit(model.is, nvt));
+                        if lim {
+                            self.limited.set(true);
+                        }
+                        v
+                    } else {
+                        raw
+                    };
+                    self.jct.borrow_mut().insert(ei, [vd, 0.0]);
                     let (id, gd) = diode_eval(model, vd, self.vt);
                     cond(&mut m, *a, *k, gd);
                     cur(&mut rhs, *a, *k, id - gd * vd);
@@ -654,7 +939,10 @@ impl Engine {
 
     fn newton(&self, x: &mut [f64], mode: Mode, gmin: f64, max_iter: usize) -> Result<usize, SimError> {
         for it in 0..max_iter {
+            self.limited.set(false);
             let (mut m, mut rhs) = self.assemble(x, mode, gmin);
+            self.init_jct.set(false);
+            let limited = self.limited.get();
             if !solve(&mut m, &mut rhs) {
                 return Err(SimError::Engine("singular matrix (floating node or voltage source loop?)".into()));
             }
@@ -662,7 +950,7 @@ impl Engine {
             for i in 0..self.size {
                 let mut dx = rhs[i] - x[i];
                 let is_v = i < self.nn;
-                if is_v && dx.abs() > 0.5 {
+                if self.damp && is_v && dx.abs() > 0.5 {
                     dx = 0.5 * dx.signum(); // damp large voltage steps
                     converged = false;
                 }
@@ -676,7 +964,7 @@ impl Engine {
             if !x.iter().all(|v| v.is_finite()) {
                 return Err(SimError::Engine("numerical overflow".into()));
             }
-            if converged && it > 0 {
+            if converged && !limited && it > 0 {
                 return Ok(it + 1);
             }
         }
@@ -687,6 +975,8 @@ impl Engine {
     /// starting point.
     pub fn op(&mut self, x0: Option<&[f64]>) -> Result<Vec<f64>, SimError> {
         let mut x = x0.map(|v| v.to_vec()).unwrap_or_else(|| vec![0.0; self.size]);
+        let has_junctions = self.c.elements.iter().any(|e| matches!(e, Element::Q { .. } | Element::D { .. }));
+        self.init_jct.set(x0.is_none() && self.c.nodeset.is_empty() && has_junctions);
         if x0.is_none() && !self.c.nodeset.is_empty() {
             let nodeset = self.c.nodeset.clone();
             if let Ok(xs) = self.op_forced(&nodeset) {
@@ -703,21 +993,27 @@ impl Engine {
 
     fn op_forced_from(&mut self, mut x: Vec<f64>, force: &[(Node, f64)]) -> Result<Vec<f64>, SimError> {
         let (gmin0, itl) = (self.c.options.gmin, self.c.options.itl1);
+        let start = x.clone();
         if self.newton(&mut x, Mode::Dc { src_scale: 1.0, force }, gmin0, itl).is_ok() {
             return Ok(x);
         }
         self.log.push("OP: direct Newton failed, trying gmin stepping".into());
-        let mut x = vec![0.0; self.size];
-        let mut ok = true;
-        for k in (0..=10).rev() {
-            let g = gmin0 * 10f64.powi(k);
-            if self.newton(&mut x, Mode::Dc { src_scale: 1.0, force }, g, itl).is_err() {
-                ok = false;
-                break;
+        // From the start point first (a `.nodeset` state picks the solution of circuits with
+        // several, such as a bandgap's zero-current state), then from zero.
+        let starts = if start.iter().any(|v| *v != 0.0) { vec![start, vec![0.0; self.size]] } else { vec![start] };
+        for s0 in starts {
+            let mut x = s0;
+            let mut ok = true;
+            for k in (0..=10).rev() {
+                let g = gmin0 * 10f64.powi(k);
+                if self.newton(&mut x, Mode::Dc { src_scale: 1.0, force }, g, itl).is_err() {
+                    ok = false;
+                    break;
+                }
             }
-        }
-        if ok {
-            return Ok(x);
+            if ok {
+                return Ok(x);
+            }
         }
         self.log.push("OP: gmin stepping failed, trying source stepping".into());
         let mut x = vec![0.0; self.size];
@@ -788,6 +1084,30 @@ impl Engine {
                             ("cgs".into(), cgs),
                             ("cgd".into(), cgd),
                             ("cgb".into(), cgb),
+                        ],
+                    });
+                }
+                Element::Q { name, c, b, e, model, area } => {
+                    let [(_, ic, gc), (_, ib, _), _] = self.bjt_stamp(model, *area, [*c, *b, *e], x);
+                    let p = if model.pnp { -1.0 } else { 1.0 };
+                    let (vbe, vce) = (self.v(x, *b) - self.v(x, *e), self.v(x, *c) - self.v(x, *e));
+                    let (vbe_n, vbc_n) = (p * vbe, p * (self.v(x, *b) - self.v(x, *c)));
+                    let region = match (vbe_n > 0.4, vbc_n > 0.4) {
+                        (true, false) => "active",
+                        (true, true) => "saturation",
+                        (false, false) => "cutoff",
+                        (false, true) => "reverse",
+                    };
+                    out.push(DeviceOp {
+                        name: name.clone(),
+                        region: Some(region.into()),
+                        values: vec![
+                            ("ic".into(), ic),
+                            ("ib".into(), ib),
+                            ("vbe".into(), vbe),
+                            ("vce".into(), vce),
+                            ("gm".into(), gc[1]),
+                            ("beta".into(), if ib.abs() > 0.0 { ic / ib } else { f64::NAN }),
                         ],
                     });
                 }
@@ -892,6 +1212,29 @@ impl Engine {
         for (ei, e) in self.c.elements.iter().enumerate() {
             match e {
                 Element::R { a, b, r, .. } => y(&mut m, *a, *b, Complex64::new(1.0 / r, 0.0)),
+                Element::Q { c, b, e, model, area, .. } => {
+                    let nodes = [*c, *b, *e];
+                    for (n, _, g) in self.bjt_stamp(model, *area, nodes, x0) {
+                        let Some(r) = idx(n) else { continue };
+                        for (k, &col) in nodes.iter().enumerate() {
+                            if let Some(j) = idx(col) {
+                                m.add(r, j, Complex64::new(g[k], 0.0));
+                            }
+                        }
+                    }
+                    y(&mut m, *b, *e, Complex64::new(self.c.options.gmin, 0.0));
+                    y(&mut m, *b, *c, Complex64::new(self.c.options.gmin, 0.0));
+                }
+                Element::Ctrl { kind, a, b, cp, cn, gain, .. } => stamp_ctrl(
+                    &mut m,
+                    *kind,
+                    [*a, *b, *cp, *cn],
+                    self.branch[ei],
+                    self.ctrl[ei],
+                    *gain,
+                    Complex64::new(1.0, 0.0),
+                    |g| Complex64::new(g, 0.0),
+                ),
                 Element::C { .. } => {}
                 Element::L { a, b, l, .. } => {
                     let br = self.branch[ei].unwrap();
@@ -1011,6 +1354,12 @@ impl Engine {
         for e in &self.c.elements {
             match e {
                 Element::R { a, b, r, .. } => out.push((*a, *b, 4.0 * kt / r.abs())),
+                Element::Q { c, b, e, model, area, .. } => {
+                    // Shot noise of the collector and base currents, flicker on the base.
+                    let [(_, ic, _), (_, ib, _), _] = self.bjt_stamp(model, *area, [*c, *b, *e], x0);
+                    out.push((*c, *e, 2.0 * CHARGE * ic.abs()));
+                    out.push((*b, *e, 2.0 * CHARGE * ib.abs() + model.kf * ib.abs().powf(model.af) / f));
+                }
                 Element::D { a, k, model, .. } => {
                     let (id, _) = diode_eval(model, self.v(x0, *a) - self.v(x0, *k), self.vt);
                     let flicker = model.kf * id.abs().powf(model.af) / f;
@@ -1084,12 +1433,7 @@ impl Engine {
             let w = 2.0 * std::f64::consts::PI * f;
             let (m, mut gain) = self.ac_system(&x0, &caps_at_op, w, Some(src));
             // Adjoint: z = Y^-T e_out gives the output voltage per unit current into each node.
-            let mut mt = m.clone();
-            for r in 0..self.size {
-                for c in 0..self.size {
-                    mt.a[r * self.size + c] = m.a[c * self.size + r];
-                }
-            }
+            let mut mt = m.transposed();
             let mut z = vec![Complex64::new(0.0, 0.0); self.size];
             z[out_node - 1] = Complex64::new(1.0, 0.0);
             let mut m = m;
@@ -1394,6 +1738,87 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bipolar_transistors() {
+        // A diode-connected NPN at 100 µA: vbe = vt ln(ic / is) for an ideal device, and the
+        // mirrored collector carries the same current; beta = bf.
+        let deck = "* t\nI1 0 b 100u\nQ1 b b 0 qn\nQ2 c b 0 qn\nV2 c 0 1\n.model qn npn (is=1e-16 bf=100)\n.end";
+        let mut e = engine(deck);
+        let op = e.run_op().unwrap();
+        let vbe = op.get("v(b)").unwrap().re[0];
+        let vt = 8.617333262e-5 * 300.15;
+        let ic = 100e-6 * 100.0 / 102.0; // two base currents from the reference
+        assert!((vbe - vt * (ic / 1e-16f64).ln()).abs() < 1e-3, "vbe {vbe}");
+        let i2 = -op.get("i(v2)").unwrap().re[0];
+        assert!((i2 / ic - 1.0).abs() < 1e-3, "mirrored {i2} vs {ic}");
+        // PNP: the same circuit upside down.
+        let pnp = "* t\nV1 vcc 0 2\nI1 b 0 100u\nQ1 b b vcc qp\n.model qp pnp (is=1e-16 bf=100)\n.end";
+        let op = engine(pnp).run_op().unwrap();
+        let veb = 2.0 - op.get("v(b)").unwrap().re[0];
+        assert!((veb - vt * (100e-6 * 100.0 / 101.0 / 1e-16f64).ln()).abs() < 1e-3, "veb {veb}");
+        // Derivatives match finite differences (Early effect, knee, leakage on).
+        let m = BjtModel {
+            pnp: false,
+            is: 1e-15,
+            bf: 150.0,
+            br: 2.0,
+            nf: 1.0,
+            nr: 1.0,
+            vaf: 60.0,
+            var: 20.0,
+            ikf: 0.02,
+            ikr: 0.01,
+            ise: 1e-14,
+            ne: 1.6,
+            isc: 1e-15,
+            nc: 2.0,
+            rb: 0.0,
+            re: 0.0,
+            rc: 0.0,
+            cje: 0.0,
+            vje: 0.75,
+            mje: 0.33,
+            cjc: 0.0,
+            vjc: 0.75,
+            mjc: 0.33,
+            fc: 0.5,
+            tf: 0.0,
+            tr: 0.0,
+            kf: 0.0,
+            af: 1.0,
+            eg: 1.11,
+            xti: 3.0,
+            xtb: 0.0,
+            tnom: 27.0,
+        };
+        let h = 1e-7;
+        for (vbe, vbc) in [(0.7, -2.0), (0.8, 0.5), (0.3, -1.0)] {
+            let ev = bjt_eval(&m, 1.0, vbe, vbc, vt);
+            let f = |a, b| bjt_eval(&m, 1.0, a, b, vt);
+            let num = (f(vbe + h, vbc).ic - f(vbe - h, vbc).ic) / (2.0 * h);
+            assert!((ev.dic[0] - num).abs() <= 1e-4 * num.abs().max(1e-12), "{vbe} {vbc}: {} vs {num}", ev.dic[0]);
+            let num = (f(vbe, vbc + h).ib - f(vbe, vbc - h).ib) / (2.0 * h);
+            assert!((ev.dib[1] - num).abs() <= 1e-4 * num.abs().max(1e-12), "{vbe} {vbc}: {} vs {num}", ev.dib[1]);
+        }
+    }
+
+    #[test]
+    fn controlled_sources() {
+        // 1 mA through Vs (into a 1k load) senses F and H; E and G sense v(in) = 1 V.
+        let deck = "* t\nV1 in 0 dc 1 ac 1\nVs in s 0\nRs s 0 1k\nE1 e 0 in 0 2\nRe e 0 1k\nG1 0 g in 0 1m\nRg g 0 2k\n\
+                    F1 0 f Vs 3\nRf f 0 1k\nH1 h 0 Vs 500\nRh h 0 1k\n.end";
+        let op = engine(deck).run_op().unwrap();
+        let v = |n: &str| op.get(n).unwrap().re[0];
+        assert!((v("v(e)") - 2.0).abs() < 1e-6, "VCVS");
+        assert!((v("v(g)") - 2.0).abs() < 1e-6, "VCCS 1 mS into 2k");
+        assert!((v("v(f)") - 3.0).abs() < 1e-6, "CCCS 3 x 1 mA into 1k");
+        assert!((v("v(h)") - 0.5).abs() < 1e-6, "CCVS 500 ohm x 1 mA");
+        let ac = engine(deck).run_ac(1, 1e3, 1e3).unwrap();
+        assert!((ac.get("v(f)").unwrap().re[0] - 3.0).abs() < 1e-6, "the same in AC");
+        assert!(parse_deck("* t\nE1 a 0 POLY(1) b 0 0 1\nR1 a 0 1\n.end").is_err());
+        assert!(Engine::new(parse_deck("* t\nF1 a 0 Vx 1\nR1 a 0 1\n.end").unwrap()).is_err(), "no Vx");
+    }
     use crate::circuit::parse_deck;
 
     fn engine(deck: &str) -> Engine {

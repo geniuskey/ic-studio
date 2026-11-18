@@ -26,10 +26,19 @@ pub enum DeviceKind {
     /// An instance of another cell's schematic ([`Instance::cell`]); its pins are that
     /// schematic's pins ([`Instance::ports`]), drawn as a generated box symbol.
     Cell,
+    /// Bipolar transistors (pins c, b, e).
+    Npn,
+    Pnp,
+    /// Voltage-controlled voltage and current sources (output p, n; control cp, cn).
+    Vcvs,
+    Vccs,
+    /// Current-controlled current and voltage sources: the current of voltage source `vctl`.
+    Cccs,
+    Ccvs,
 }
 
 impl DeviceKind {
-    pub const ALL: [DeviceKind; 12] = [
+    pub const ALL: [DeviceKind; 18] = [
         DeviceKind::Resistor,
         DeviceKind::Capacitor,
         DeviceKind::Inductor,
@@ -42,11 +51,17 @@ impl DeviceKind {
         DeviceKind::Pmos3,
         DeviceKind::Ground,
         DeviceKind::Supply,
+        DeviceKind::Npn,
+        DeviceKind::Pnp,
+        DeviceKind::Vcvs,
+        DeviceKind::Vccs,
+        DeviceKind::Cccs,
+        DeviceKind::Ccvs,
     ];
 
     /// The kinds of the device library: one NMOS and one PMOS, placed with or without a body pin
     /// as the user prefers ([`with_body_pin`](Self::with_body_pin)).
-    pub const PALETTE: [DeviceKind; 10] = [
+    pub const PALETTE: [DeviceKind; 16] = [
         DeviceKind::Resistor,
         DeviceKind::Capacitor,
         DeviceKind::Inductor,
@@ -55,6 +70,12 @@ impl DeviceKind {
         DeviceKind::Diode,
         DeviceKind::Nmos,
         DeviceKind::Pmos,
+        DeviceKind::Npn,
+        DeviceKind::Pnp,
+        DeviceKind::Vcvs,
+        DeviceKind::Vccs,
+        DeviceKind::Cccs,
+        DeviceKind::Ccvs,
         DeviceKind::Ground,
         DeviceKind::Supply,
     ];
@@ -106,13 +127,27 @@ impl DeviceKind {
             DeviceKind::Ground => "Ground",
             DeviceKind::Supply => "Supply Net",
             DeviceKind::Cell => "Cell Instance",
+            DeviceKind::Npn => "NPN",
+            DeviceKind::Pnp => "PNP",
+            DeviceKind::Vcvs => "VCVS (E)",
+            DeviceKind::Vccs => "VCCS (G)",
+            DeviceKind::Cccs => "CCCS (F)",
+            DeviceKind::Ccvs => "CCVS (H)",
         }
     }
 
     /// Keyboard shortcut used by the schematic editor to place this device.
     pub fn shortcut(self) -> Option<char> {
         Some(match self {
-            DeviceKind::Nmos3 | DeviceKind::Pmos3 | DeviceKind::Cell => return None,
+            DeviceKind::Nmos3
+            | DeviceKind::Pmos3
+            | DeviceKind::Cell
+            | DeviceKind::Pnp
+            | DeviceKind::Vcvs
+            | DeviceKind::Vccs
+            | DeviceKind::Cccs
+            | DeviceKind::Ccvs => return None,
+            DeviceKind::Npn => 'Q',
             DeviceKind::Resistor => 'R',
             DeviceKind::Capacitor => 'C',
             DeviceKind::Inductor => 'L',
@@ -137,6 +172,11 @@ impl DeviceKind {
             DeviceKind::Diode => Some('D'),
             DeviceKind::Nmos | DeviceKind::Pmos | DeviceKind::Nmos3 | DeviceKind::Pmos3 => Some('M'),
             DeviceKind::Cell => Some('X'),
+            DeviceKind::Npn | DeviceKind::Pnp => Some('Q'),
+            DeviceKind::Vcvs => Some('E'),
+            DeviceKind::Vccs => Some('G'),
+            DeviceKind::Cccs => Some('F'),
+            DeviceKind::Ccvs => Some('H'),
             DeviceKind::Ground | DeviceKind::Supply => None,
         }
     }
@@ -153,6 +193,11 @@ impl DeviceKind {
             DeviceKind::Ground => "GND",
             DeviceKind::Supply => "VDD",
             DeviceKind::Cell => "X",
+            DeviceKind::Npn | DeviceKind::Pnp => "Q",
+            DeviceKind::Vcvs => "E",
+            DeviceKind::Vccs => "G",
+            DeviceKind::Cccs => "F",
+            DeviceKind::Ccvs => "H",
         }
     }
 
@@ -171,6 +216,12 @@ impl DeviceKind {
             DeviceKind::Pmos3 => vec![("model", "pmos"), ("w", "2u"), ("l", "180n"), ("m", "1"), ("bulk", "vdd")],
             DeviceKind::Ground | DeviceKind::Cell => vec![],
             DeviceKind::Supply => vec![("net", "vdd")],
+            DeviceKind::Npn => vec![("model", "npn"), ("area", "1")],
+            DeviceKind::Pnp => vec![("model", "pnp"), ("area", "1")],
+            DeviceKind::Vcvs => vec![("gain", "1")],
+            DeviceKind::Vccs => vec![("gm", "1m")],
+            DeviceKind::Cccs => vec![("vctl", "V1"), ("gain", "1")],
+            DeviceKind::Ccvs => vec![("vctl", "V1"), ("r", "1k")],
         }
     }
 
@@ -185,6 +236,10 @@ impl DeviceKind {
             DeviceKind::Nmos | DeviceKind::Pmos | DeviceKind::Nmos3 | DeviceKind::Pmos3 => None,
             DeviceKind::Ground | DeviceKind::Cell => None,
             DeviceKind::Supply => Some("net"),
+            DeviceKind::Npn | DeviceKind::Pnp => Some("model"),
+            DeviceKind::Vcvs | DeviceKind::Cccs => Some("gain"),
+            DeviceKind::Vccs => Some("gm"),
+            DeviceKind::Ccvs => Some("r"),
         }
     }
 
@@ -392,6 +447,58 @@ mod symbols {
         }
     }
 
+    fn bjt(pnp: bool) -> Symbol {
+        let mut prims = vec![
+            Prim::Circle(0.4, 0.0, 1.25),
+            Prim::Line(-2.0, 0.0, -0.3, 0.0),
+            Prim::Line(-0.3, -0.8, -0.3, 0.8),
+            Prim::Poly(vec![(-0.3, -0.35), (1.0, -1.1), (1.0, -2.0)]),
+            Prim::Poly(vec![(-0.3, 0.35), (1.0, 1.1), (1.0, 2.0)]),
+        ];
+        // The emitter arrow: out of the base for NPN (bottom lead), into it for PNP (top lead).
+        if pnp {
+            prims.push(Prim::Fill(vec![(-0.2, -0.4), (0.25, -0.45), (0.05, -0.8)]));
+        } else {
+            prims.push(Prim::Fill(vec![(0.95, 1.07), (0.45, 1.05), (0.68, 0.65)]));
+        }
+        let (top, bottom) = if pnp { ("e", "c") } else { ("c", "e") };
+        Symbol {
+            pins: vec![
+                SymPin { name: top, at: Pt::new(1, -2) },
+                SymPin { name: "b", at: Pt::new(-2, 0) },
+                SymPin { name: bottom, at: Pt::new(1, 2) },
+            ],
+            prims,
+            bbox: (-2.0, -2.0, 1.8, 2.0),
+            label_at: (1.9, -1.4),
+        }
+    }
+
+    /// Diamond of a controlled source with `+` / `−` (voltage output) or an arrow (current).
+    fn controlled(voltage: bool, sense: bool) -> Symbol {
+        let mut prims = vec![
+            Prim::Line(0.0, -2.0, 0.0, -1.0),
+            Prim::Line(0.0, 1.0, 0.0, 2.0),
+            Prim::Poly(vec![(0.0, -1.0), (1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0)]),
+        ];
+        if voltage {
+            prims.push(Prim::Line(-0.2, -0.45, 0.2, -0.45));
+            prims.push(Prim::Line(0.0, -0.65, 0.0, -0.25));
+            prims.push(Prim::Line(-0.2, 0.45, 0.2, 0.45));
+        } else {
+            prims.push(Prim::Line(0.0, -0.5, 0.0, 0.5));
+            prims.push(Prim::Fill(vec![(0.0, 0.6), (-0.2, 0.25), (0.2, 0.25)]));
+        }
+        let mut pins = vec![SymPin { name: "p", at: Pt::new(0, -2) }, SymPin { name: "n", at: Pt::new(0, 2) }];
+        if sense {
+            prims.push(Prim::Poly(vec![(-2.0, -1.0), (-1.4, -1.0), (-1.4, -0.6)]));
+            prims.push(Prim::Poly(vec![(-2.0, 1.0), (-1.4, 1.0), (-1.4, 0.6)]));
+            pins.push(SymPin { name: "cp", at: Pt::new(-2, -1) });
+            pins.push(SymPin { name: "cn", at: Pt::new(-2, 1) });
+        }
+        Symbol { pins, prims, bbox: (if sense { -2.0 } else { -1.0 }, -2.0, 1.0, 2.0), label_at: (1.2, -0.6) }
+    }
+
     /// Box symbol of a cell instance with `pins` on their sides ([`SymbolSpec::arrange`]); 2
     /// grid units between pins. Interned per arrangement (pin names must be `&'static str`).
     pub fn cell_box(arranged: &[(String, PinSide)]) -> &'static Symbol {
@@ -469,6 +576,12 @@ mod symbols {
                 (DeviceKind::Pmos3, mos3(true)),
                 (DeviceKind::Ground, ground()),
                 (DeviceKind::Supply, supply()),
+                (DeviceKind::Npn, bjt(false)),
+                (DeviceKind::Pnp, bjt(true)),
+                (DeviceKind::Vcvs, controlled(true, true)),
+                (DeviceKind::Vccs, controlled(false, true)),
+                (DeviceKind::Cccs, controlled(false, false)),
+                (DeviceKind::Ccvs, controlled(true, false)),
             ]
         });
         &lib.iter().find(|(k, _)| *k == kind).expect("symbol defined").1

@@ -12,6 +12,11 @@ pub const DEFAULT_MODELS: &str = "\
 .model pmos pmos (level=1 vto=-0.45 kp=70u lambda=0.1 gamma=0.4 phi=0.8 tox=4n cgso=0.3n cgdo=0.3n cj=1m cjsw=0.3n)
 .model dmod d (is=1e-14 n=1 rs=10 cjo=1p)";
 
+/// Bipolar models for NPN / PNP devices placed with the default model names.
+pub const DEFAULT_BJT_MODELS: &str = "\
+.model npn npn (is=1e-16 bf=100 br=1 vaf=50 rb=100 re=1 rc=10 cje=0.5p cjc=0.3p tf=0.2n)
+.model pnp pnp (is=5e-17 bf=50 br=1 vaf=30 rb=100 re=1 rc=10 cje=0.5p cjc=0.3p tf=0.5n)";
+
 #[derive(Debug, Clone)]
 pub struct Netlist {
     /// Element and model lines (no analyses / no .end).
@@ -77,6 +82,13 @@ pub fn write(sch: &Schematic, tech: &Tech, setup: &SimSetup, title: &str, format
     (text, nl.warnings)
 }
 
+/// The element name the netlist gives voltage source instance `name` (see [`spice_name`]):
+/// what an F / H source refers to.
+fn vsource_name(name: &str) -> String {
+    let n = name.trim().replace(' ', "_");
+    if n.starts_with(['v', 'V']) { n } else { format!("V{n}") }
+}
+
 pub(crate) fn spice_name(inst: &Instance) -> String {
     let prefix = inst.kind.spice_prefix().unwrap_or('X');
     let name = inst.name.trim().replace(' ', "_");
@@ -128,7 +140,7 @@ pub fn netlist_for(sch: &Schematic, tech: &Tech, corner: &str) -> Netlist {
     let conn = extract(sch);
     let mut warnings = conn.warnings.clone();
     let mut body = String::new();
-    let (mut needs_mos, mut needs_diode) = (false, false);
+    let (mut needs_mos, mut needs_diode, mut needs_bjt) = (false, false, false);
 
     let mut instances: Vec<&Instance> = sch.instances.iter().collect();
     instances.sort_by(|a, b| a.name.cmp(&b.name));
@@ -153,6 +165,20 @@ pub fn netlist_for(sch: &Schematic, tech: &Tech, corner: &str) -> Netlist {
             DeviceKind::Diode => {
                 needs_diode = true;
                 format!("{name} {} {} {}", net("a"), net("k"), inst.param("model"))
+            }
+            DeviceKind::Npn | DeviceKind::Pnp => {
+                needs_bjt = true;
+                let area = inst.param("area").trim();
+                let area = if area.is_empty() || area == "1" { String::new() } else { format!(" {area}") };
+                format!("{name} {} {} {} {}{area}", net("c"), net("b"), net("e"), inst.param("model"))
+            }
+            DeviceKind::Vcvs => format!("{name} {} {} {} {} {}", net("p"), net("n"), net("cp"), net("cn"), inst.param("gain")),
+            DeviceKind::Vccs => format!("{name} {} {} {} {} {}", net("p"), net("n"), net("cp"), net("cn"), inst.param("gm")),
+            DeviceKind::Cccs => {
+                format!("{name} {} {} {} {}", net("p"), net("n"), vsource_name(inst.param("vctl")), inst.param("gain"))
+            }
+            DeviceKind::Ccvs => {
+                format!("{name} {} {} {} {}", net("p"), net("n"), vsource_name(inst.param("vctl")), inst.param("r"))
             }
             // A placed cell: its pins in subcircuit order. Simulation and LVS flatten the
             // hierarchy first ([`crate::sch_hier::flatten`]); this line is for netlist exports.
@@ -231,6 +257,10 @@ pub fn netlist_for(sch: &Schematic, tech: &Tech, corner: &str) -> Netlist {
             body.push('\n');
         }
         None => {}
+    }
+    if needs_bjt {
+        body += DEFAULT_BJT_MODELS;
+        body.push('\n');
     }
 
     // Supply nets get no implicit source: users must place a voltage source.

@@ -45,7 +45,7 @@ impl D {
         D { v, d: [0.0; 3] }
     }
 
-    fn var(v: f64, k: usize) -> D {
+    pub(crate) fn var(v: f64, k: usize) -> D {
         let mut d = [0.0; 3];
         d[k] = 1.0;
         D { v, d }

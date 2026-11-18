@@ -109,3 +109,20 @@ fn two_inverters_pass_the_level_through() {
     sch.add_cell_instance(r.clone(), vec![], Pt::new(50, 50), Orient::default());
     assert!(p.circuit(&r).unwrap_err().contains("places itself"));
 }
+
+#[test]
+fn demo_bandgap_is_flat_over_temperature() {
+    let p = ics_core::examples::demo_project();
+    let r = CellRef::new("work", "bandgap");
+    let c = p.cell(&r).unwrap();
+    let mut out = vec![];
+    for temp in [0.0, 27.0, 100.0] {
+        let mut sim = c.sim.clone();
+        sim.temp = temp;
+        let deck = ics_core::netlist::netlist_for(c.schematic.as_ref().unwrap(), &p.tech, "").deck("bandgap", &sim);
+        let res = ics_sim::simulate(&deck, &[Analysis::Op], &ics_sim::SimOptions::default()).unwrap();
+        out.push(res.datasets[0].vectors.iter().find(|v| v.name == "v(out)").unwrap().re[0]);
+    }
+    assert!(out.iter().all(|v| (1.15..1.25).contains(v)), "{out:?}");
+    assert!((out[2] - out[0]).abs() < 0.03, "within 30 mV over 100 °C: {out:?}");
+}

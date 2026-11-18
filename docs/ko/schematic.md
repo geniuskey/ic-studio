@@ -29,6 +29,12 @@
 | `D` | 다이오드 (Diode) | D | a, k | `model=dmod` |
 | `N` | NMOS | M | d, g, s, b | `model=nmos w=1u l=180n m=1` |
 | `P` | PMOS | M | d, g, s, b | `model=pmos w=2u l=180n m=1` |
+| `Q` | NPN | Q | c, b, e | `model=npn area=1` |
+| | PNP | Q | e, b, c | `model=pnp area=1` |
+| | VCVS (E) | E | p, n, cp, cn | `gain=1` |
+| | VCCS (G) | G | p, n, cp, cn | `gm=1m` |
+| | CCCS (F) | F | p, n | `vctl=V1 gain=1` (전압원 `vctl`의 전류) |
+| | CCVS (H) | H | p, n | `vctl=V1 r=1k` |
 | `G` | 접지 (Ground) | GND | gnd | (넷 `0`) |
 | `S` | 전원 넷 (Supply Net) | VDD | net | `net=vdd` |
 

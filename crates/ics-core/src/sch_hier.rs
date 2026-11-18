@@ -105,6 +105,13 @@ fn collect<'a>(
             }
             kind => {
                 let mut params = inst.params.clone();
+                // A current-controlled source senses a voltage source of its own level.
+                if matches!(kind, DeviceKind::Cccs | DeviceKind::Ccvs) && !path.is_empty() {
+                    let v = inst.param("vctl").trim();
+                    if !v.is_empty() {
+                        params.insert("vctl".into(), format!("{path}/{v}"));
+                    }
+                }
                 // The body net of a 3-terminal MOS is named by its `bulk` parameter.
                 if kind.implicit_bulk() {
                     let b = inst.param("bulk").trim();

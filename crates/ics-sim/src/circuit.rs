@@ -340,13 +340,168 @@ pub type Node = usize;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Element {
-    R { name: String, a: Node, b: Node, r: f64 },
-    C { name: String, a: Node, b: Node, c: f64 },
-    L { name: String, a: Node, b: Node, l: f64 },
-    V { name: String, a: Node, b: Node, src: Source },
-    I { name: String, a: Node, b: Node, src: Source },
-    D { name: String, a: Node, k: Node, model: DiodeModel },
-    M { name: String, d: Node, g: Node, s: Node, b: Node, model: MosModel, w: f64, l: f64, m: f64, junctions: Junctions },
+    R {
+        name: String,
+        a: Node,
+        b: Node,
+        r: f64,
+    },
+    C {
+        name: String,
+        a: Node,
+        b: Node,
+        c: f64,
+    },
+    L {
+        name: String,
+        a: Node,
+        b: Node,
+        l: f64,
+    },
+    V {
+        name: String,
+        a: Node,
+        b: Node,
+        src: Source,
+    },
+    I {
+        name: String,
+        a: Node,
+        b: Node,
+        src: Source,
+    },
+    D {
+        name: String,
+        a: Node,
+        k: Node,
+        model: DiodeModel,
+    },
+    M {
+        name: String,
+        d: Node,
+        g: Node,
+        s: Node,
+        b: Node,
+        model: MosModel,
+        w: f64,
+        l: f64,
+        m: f64,
+        junctions: Junctions,
+    },
+    /// A linear controlled source between `a` (+) and `b` (−): `E` / `G` controlled by the
+    /// voltage `cp` − `cn`, `F` / `H` by the current through voltage source `vctl`.
+    Ctrl {
+        name: String,
+        kind: CtrlKind,
+        a: Node,
+        b: Node,
+        cp: Node,
+        cn: Node,
+        vctl: String,
+        gain: f64,
+    },
+    /// A bipolar transistor (Gummel-Poon) between the internal collector, base and emitter
+    /// nodes (behind `rc`, `rb`, `re`), scaled by `area`.
+    Q {
+        name: String,
+        c: Node,
+        b: Node,
+        e: Node,
+        model: BjtModel,
+        area: f64,
+    },
+}
+
+/// SPICE Gummel-Poon bipolar transistor model (`.model q npn` / `pnp`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct BjtModel {
+    pub pnp: bool,
+    pub is: f64,
+    pub bf: f64,
+    pub br: f64,
+    pub nf: f64,
+    pub nr: f64,
+    /// Forward and reverse Early voltages (infinite: none) and knee currents.
+    pub vaf: f64,
+    pub var: f64,
+    pub ikf: f64,
+    pub ikr: f64,
+    /// Base-emitter and base-collector leakage (non-ideal base current).
+    pub ise: f64,
+    pub ne: f64,
+    pub isc: f64,
+    pub nc: f64,
+    pub rb: f64,
+    pub re: f64,
+    pub rc: f64,
+    /// Junction capacitances, potentials and grading; transit times.
+    pub cje: f64,
+    pub vje: f64,
+    pub mje: f64,
+    pub cjc: f64,
+    pub vjc: f64,
+    pub mjc: f64,
+    pub fc: f64,
+    pub tf: f64,
+    pub tr: f64,
+    pub kf: f64,
+    pub af: f64,
+    /// Temperature: band gap (eV), saturation current and beta exponents, and the temperature
+    /// (°C) the parameters were measured at.
+    pub eg: f64,
+    pub xti: f64,
+    pub xtb: f64,
+    pub tnom: f64,
+}
+
+impl BjtModel {
+    /// The model at `temp` °C, as SPICE's `bjttemp`: saturation and leakage currents, betas,
+    /// junction potentials and capacitances.
+    pub fn at_temp(&self, temp: f64) -> BjtModel {
+        let (tnom, t) = (self.tnom + KELVIN, temp + KELVIN);
+        if (t - tnom).abs() < 1e-9 {
+            return self.clone();
+        }
+        let (g, g1) = (silicon(t), silicon(tnom));
+        let ratlog = (t / tnom).ln();
+        let factlog = (t / tnom - 1.0) * self.eg / g.vt + self.xti * ratlog;
+        let bfactor = (ratlog * self.xtb).exp();
+        let (vje, cape) = junction_temp(self.vje, g, g1);
+        let (vjc, capc) = junction_temp(self.vjc, g, g1);
+        BjtModel {
+            is: self.is * factlog.exp(),
+            bf: self.bf * bfactor,
+            br: self.br * bfactor,
+            ise: self.ise * (factlog / self.ne).exp() / bfactor,
+            isc: self.isc * (factlog / self.nc).exp() / bfactor,
+            vje,
+            vjc,
+            cje: self.cje * cape(self.mje),
+            cjc: self.cjc * capc(self.mjc),
+            tnom: temp,
+            ..self.clone()
+        }
+    }
+}
+
+/// Bipolar model parameters the built-in engine evaluates.
+const BJT_PARAMS: &[&str] = &[
+    "is", "bf", "br", "nf", "nr", "vaf", "va", "var", "vb", "ikf", "ik", "ikr", "ise", "ne", "isc", "nc", "rb", "re", "rc",
+    "cje", "vje", "pe", "mje", "me", "cjc", "vjc", "pc", "mjc", "mc", "fc", "tf", "tr", "kf", "af", "level", "tnom", "eg", "xti",
+    "xtb",
+];
+
+/// The four linear controlled sources of SPICE.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CtrlKind {
+    /// Voltage-controlled voltage source.
+    E,
+    /// Current-controlled current source.
+    F,
+    /// Voltage-controlled current source.
+    G,
+    /// Current-controlled voltage source.
+    H,
 }
 
 impl Element {
@@ -358,7 +513,9 @@ impl Element {
             | Element::V { name, .. }
             | Element::I { name, .. }
             | Element::D { name, .. }
-            | Element::M { name, .. } => name,
+            | Element::M { name, .. }
+            | Element::Ctrl { name, .. }
+            | Element::Q { name, .. } => name,
         }
     }
 }
@@ -685,6 +842,7 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
     let mut scale = 1.0;
     // First pass: models.
     let mut diode_models: HashMap<String, DiodeModel> = HashMap::new();
+    let mut bjt_models: HashMap<String, BjtModel> = HashMap::new();
     let mut mos_models: HashMap<String, MosModel> = HashMap::new();
     let mut in_control = false;
     for (model_line, l) in &lines {
@@ -710,6 +868,7 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
         let known = match ty.as_str() {
             "d" => Some(DIODE_PARAMS),
             "nmos" | "pmos" => Some(MOS_PARAMS),
+            "npn" | "pnp" => Some(BJT_PARAMS),
             _ => None,
         };
         let bsim4_card = known == Some(MOS_PARAMS) && matches!(g("level", 1.0) as i64, 14 | 54);
@@ -770,6 +929,47 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
             });
         }
         match ty.as_str() {
+            "npn" | "pnp" => {
+                let inf = |k: &str, alt: &str| {
+                    let v = g(k, g(alt, 0.0));
+                    if v > 0.0 { v } else { f64::INFINITY }
+                };
+                let q = BjtModel {
+                    pnp: ty == "pnp",
+                    is: g("is", 1e-16),
+                    bf: g("bf", 100.0),
+                    br: g("br", 1.0),
+                    nf: g("nf", 1.0),
+                    nr: g("nr", 1.0),
+                    vaf: inf("vaf", "va"),
+                    var: inf("var", "vb"),
+                    ikf: inf("ikf", "ik"),
+                    ikr: inf("ikr", "ikr"),
+                    ise: g("ise", 0.0),
+                    ne: g("ne", 1.5),
+                    isc: g("isc", 0.0),
+                    nc: g("nc", 2.0),
+                    rb: g("rb", 0.0),
+                    re: g("re", 0.0),
+                    rc: g("rc", 0.0),
+                    cje: g("cje", 0.0),
+                    vje: g("vje", g("pe", 0.75)),
+                    mje: g("mje", g("me", 0.33)),
+                    cjc: g("cjc", 0.0),
+                    vjc: g("vjc", g("pc", 0.75)),
+                    mjc: g("mjc", g("mc", 0.33)),
+                    fc: g("fc", 0.5),
+                    tf: g("tf", 0.0),
+                    tr: g("tr", 0.0),
+                    kf: g("kf", 0.0),
+                    af: g("af", 1.0),
+                    eg: g("eg", 1.11),
+                    xti: g("xti", 3.0),
+                    xtb: g("xtb", 0.0),
+                    tnom: g("tnom", 27.0),
+                };
+                bjt_models.insert(name, q);
+            }
             "d" => {
                 let d = DiodeModel {
                     is: g("is", 1e-14),
@@ -1047,7 +1247,76 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
                     },
                 }
             }
-            _ => return Err(err(ln, format!("unsupported element '{}' (built-in engine supports R C L V I D M)", t[0]))),
+            'q' => {
+                // Q c b e [substrate] model [area] [area=..] [m=..]
+                need(5)?;
+                let is_model = |k: usize| t.get(k).is_some_and(|m| bjt_models.contains_key(&m.to_ascii_lowercase()));
+                let mi = if is_model(4) {
+                    4
+                } else if is_model(5) {
+                    5
+                } else {
+                    return Err(err(ln, format!("{name}: unknown bipolar model '{}'", t[4])));
+                };
+                if mi == 5 {
+                    c.warnings.push(format!("{name}: the substrate node is not evaluated"));
+                }
+                let model = bjt_models[&t[mi].to_ascii_lowercase()].clone();
+                let rest = tokens(&t[mi + 1..].join(" "));
+                let mut area = 1.0;
+                let mut j = 0;
+                if let Some(x) = rest.first().and_then(|s| parse_spice(s)) {
+                    area = x;
+                    j = 1;
+                }
+                let p = kv_params(&rest[j..]);
+                let ignored = ignored_params(&p, &["area", "m"]);
+                if !ignored.is_empty() {
+                    c.warnings.push(format!("{name}: parameters not evaluated: {}", ignored.join(" ")));
+                }
+                let area = p.get("area").copied().unwrap_or(area) * p.get("m").copied().unwrap_or(1.0);
+                if area <= 0.0 {
+                    return Err(err(ln, format!("{name}: area must be positive")));
+                }
+                let (cn, bn, en) = (node(t[1], &mut c), node(t[2], &mut c), node(t[3], &mut c));
+                let cn = series(&mut c, &mut node, &name, "c", cn, model.rc / area);
+                let bn = series(&mut c, &mut node, &name, "b", bn, model.rb / area);
+                let en = series(&mut c, &mut node, &name, "e", en, model.re / area);
+                Element::Q { name, c: cn, b: bn, e: en, model, area }
+            }
+            'e' | 'f' | 'g' | 'h' => {
+                // Linear forms only: E/G n+ n- nc+ nc- gain, F/H n+ n- vname gain.
+                if t.iter().skip(3).any(|w| {
+                    let w = w.to_ascii_lowercase();
+                    w.starts_with("poly") || w.starts_with("value") || w.starts_with("table") || w.starts_with("laplace")
+                }) {
+                    return Err(err(
+                        ln,
+                        format!("{name}: POLY / VALUE / TABLE sources are not supported by the built-in engine"),
+                    ));
+                }
+                let (a, b) = (node(t[1], &mut c), node(t[2], &mut c));
+                let kind = match first {
+                    'e' => CtrlKind::E,
+                    'f' => CtrlKind::F,
+                    'g' => CtrlKind::G,
+                    _ => CtrlKind::H,
+                };
+                if matches!(kind, CtrlKind::E | CtrlKind::G) {
+                    need(6)?;
+                    let (cp, cn) = (node(t[3], &mut c), node(t[4], &mut c));
+                    Element::Ctrl { name, kind, a, b, cp, cn, vctl: String::new(), gain: value(5)? }
+                } else {
+                    need(5)?;
+                    Element::Ctrl { name, kind, a, b, cp: 0, cn: 0, vctl: t[3].to_ascii_lowercase(), gain: value(4)? }
+                }
+            }
+            _ => {
+                return Err(err(
+                    ln,
+                    format!("unsupported element '{}' (built-in engine supports R C L V I D M Q E F G H)", t[0]),
+                ));
+            }
         };
         c.elements.push(el);
     }

@@ -68,7 +68,7 @@
 
 ### 넷리스트로 회로도 만들기
 
-`ics schematic`은 평탄한 SPICE 넷리스트(R, C, L, V, I, D, M 줄과 PDK MOS 서브서킷용 X 줄)를 읽어
+`ics schematic`은 평탄한 SPICE 넷리스트(R, C, L, V, I, D, M, Q, E, F, G, H 줄과 PDK MOS 서브서킷용 X 줄)를 읽어
 셀의 회로도로 그립니다. 모든 핀에 넷 라벨이 붙고(노드 `0` 또는 `gnd`는 접지 심볼), 소자는 행 단위로
 배치됩니다(PMOS, NMOS, 수동 소자, 소스). 해석 줄(`.op`, `.dc`, `.ac dec`, `.tran`)과 `.temp`는 셀의
 시뮬레이션 설정이 되고, 그 밖의 점 명령(`.model`, `.include`, `.param`, `.ic`, `.meas`)은 추가

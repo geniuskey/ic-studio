@@ -2154,6 +2154,7 @@ dependencies = [
 name = "ics-sim"
 version = "0.2.9"
 dependencies = [
+ "faer",
  "ics-core",
  "num-complex",
  "thiserror 2.0.21",

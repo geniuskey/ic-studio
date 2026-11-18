@@ -209,9 +209,19 @@ Calibre xRC, StarRC, Quantus가 만든 DSPF 넷리스트는 그대로 시뮬레�
 
 Rust로 작성한 수정 절점 해석(MNA) 엔진입니다. 다음을 지원합니다.
 
-- 소자 `R C L V I D M`와 서브서킷 인스턴스 `X`(동작 모델(behavioural) 소스는 미지원),
+- 소자 `R C L V I D M`, 바이폴라 트랜지스터 `Q`(Gummel-Poon: Early 전압, knee 전류, 비이상
+  베이스 전류, 접합·확산 전하, 직렬 저항, `eg xti xtb` 온도 특성), 선형 제어 전원 `E F G H`,
+  서브서킷 인스턴스 `X`(동작 모델 `B` 소스와 `POLY` / `VALUE` 형식은 미지원: 이런 덱은 **Auto**에서
+  ngspice로 실행),
 - 소스: `DC`, `AC mag [phase]`, `PULSE(v1 v2 td tr tf pw per)`,
-  `SIN(vo va freq td theta)`, `PWL(t v ...)`,
+  `SIN(vo va freq td theta phase)`, `r=` / `td=`가 있는 `PWL(t v ...)`,
+- `m`이 있는 `R` / `C` / `L`(저항은 `tc1` / `tc2`도), `area`와 `m`이 있는 다이오드와 `Q`,
+  `.option scale`, `.ac dec | oct | lin`, `.tran tstep tstop [tstart [tmax]] [uic]`. MOS level이
+  1, 14, 54가 아니면 오류입니다.
+- 미지수 120개를 넘는 회로는 희소 행렬 솔버(faer LU, 채움을 줄이는 순서, Newton 반복마다
+  기호 분석 재사용)로 풀어, 수만 노드의 post-layout RC 회로도 ngspice와 비슷한 시간에 계산합니다.
+  SPICE의 접합 전압 제한(`pnjlim`)과 임계 전압에서 시작하는 접합 초기화로, 동작점이 여러 개인
+  회로(밴드갭)도 SPICE와 같은 해로 수렴합니다.
 - 지시어 `.model`, `.op`, `.dc`, `.ac`, `.tran`, `.noise`, `.temp`, `.title`, `.end`.
   `.ic v(node)=value`(ngspice처럼 과도 해석의 초기 동작점에서 노드를 고정, `.tran ... uic`면 동작점
   없이 그 값에서 시작), `.nodeset`(동작점 계산의 시작값), `.option`의 `reltol abstol vntol gmin trtol

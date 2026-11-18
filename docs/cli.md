@@ -68,7 +68,7 @@ it with `cargo build --release -p ics-cli` (binary `target/release/ics`) or run 
 
 ### Schematic from a netlist
 
-`ics schematic` reads a flat SPICE netlist (R, C, L, V, I, D and M lines, and X lines for
+`ics schematic` reads a flat SPICE netlist (R, C, L, V, I, D, M, Q, E, F, G and H lines, and X lines for
 PDK MOS subcircuits) and draws it as the cell's schematic: every pin gets a net label
 (node `0` or `gnd` gets a ground symbol) and devices are laid out in rows (PMOS, NMOS,
 passives, sources). Analysis lines (`.op`, `.dc`, `.ac dec`, `.tran`) and `.temp` set the

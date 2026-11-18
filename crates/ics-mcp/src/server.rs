@@ -529,7 +529,7 @@ mod tests {
         assert!(w["deck"].as_str().unwrap().contains("M2 out in 0 0 nmos w=1u l=180n"));
         let again = call(&mut s, "write_schematic", json!({"cell": "inv", "netlist": netlist})).unwrap_err();
         assert!(again.contains("overwrite"), "{again}");
-        let bad = call(&mut s, "write_schematic", json!({"cell": "inv2", "netlist": "Q1 c b e npn"})).unwrap_err();
+        let bad = call(&mut s, "write_schematic", json!({"cell": "inv2", "netlist": "J1 d g s jmod"})).unwrap_err();
         assert!(bad.contains("line 1"), "{bad}");
         let info = call(&mut s, "project_info", json!({})).unwrap();
         assert!(!info.to_string().contains("inv2"), "a failed write creates no cell");

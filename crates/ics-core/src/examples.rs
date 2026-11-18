@@ -110,6 +110,29 @@ pub fn buffer_tb() -> Cell {
     }
 }
 
+/// A ΔVbe bandgap reference: two NPN of area 1 and 8 held at equal voltages by an ideal
+/// amplifier (a VCVS); about 1.2 V, swept over temperature with a spec on the output.
+pub fn bandgap() -> Cell {
+    let deck = "* bandgap\nE1 out 0 a b 1e4\nR1 out a 51k\nQ1 a a 0 npn\nR2 out b 51k\nR3 b c2 5k\nQ2 c2 c2 0 npn 8\n.op\n.end\n";
+    let imp = crate::spice_import::import(deck, &Tech::generic()).expect("the bandgap deck imports");
+    let mut sim = SimSetup::default();
+    imp.apply_to(&mut sim);
+    sim.sweep.temps = "0 27 100".into();
+    sim.sweep.specs = vec![crate::sweep::Spec {
+        name: "vref".into(),
+        analysis: "op".into(),
+        expr: "v(out)".into(),
+        min: "1.15".into(),
+        max: "1.25".into(),
+    }];
+    Cell {
+        description: "ΔVbe bandgap reference: NPN 1:8 and an ideal amplifier (VCVS), about 1.2 V over 0 to 100 °C".into(),
+        schematic: Some(imp.schematic),
+        sim,
+        ..Cell::new("bandgap")
+    }
+}
+
 fn inv_ports() -> Vec<(String, crate::schematic::PortDir)> {
     inv().schematic.expect("schematic").ports()
 }
@@ -1616,7 +1639,7 @@ pub fn demo_project() -> Project {
     let mut p = Project::new("demo");
     p.description = "Example designs shipped with IC Studio".into();
     let hier = hierarchy_cells(&p.tech, "work");
-    for c in [cmos_inverter(), rc_lowpass(), diode_clipper(), inv(), buffer_tb()].into_iter().chain(hier) {
+    for c in [cmos_inverter(), rc_lowpass(), diode_clipper(), inv(), buffer_tb(), bandgap()].into_iter().chain(hier) {
         p.add_cell("work", c).expect("unique");
     }
     for make in [nand2, nor2, ring_osc5, current_mirror, ota5t, sram6t, dram1t1c, nand_string, aps4t, full_adder, ota2s] {
@@ -1663,7 +1686,7 @@ pub const TOPICS: [Topic; 5] = [
         title: "Analog",
         summary: "Current mirror and OTAs",
         description: "Current mirror and OTAs: AC gain, matched placement with dummies, DRC, LVS and post-layout simulation",
-        cells: &["current_mirror", "ota5t", "ota2s"],
+        cells: &["current_mirror", "ota5t", "ota2s", "bandgap"],
     },
     Topic {
         name: "digital",

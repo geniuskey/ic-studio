@@ -80,7 +80,8 @@ Linux needs the usual windowing libraries:
   interactive CIW prompt
 
 **Schematic and simulation**
-- analogLib-style primitives (R, C, L, V, I, diode, NMOS, PMOS, ground, supply), wiring,
+- analogLib-style primitives (R, C, L, V, I, diode, NMOS, PMOS, NPN, PNP, controlled sources
+  E / F / G / H, ground, supply), wiring,
   labels, live connectivity, property inspector, SPICE netlister
 - Operating point, DC sweep, AC and transient analyses on the built-in Rust MNA engine or
   ngspice; waveform viewer with Bode plots and automatic measurements

@@ -148,6 +148,8 @@ fn is_ground(net: &str) -> bool {
 pub fn import(text: &str, tech: &Tech) -> Result<Imported, String> {
     let mut out = Imported::default();
     let mut model_types: BTreeMap<String, MosType> = BTreeMap::new();
+    // Bipolar models: true for PNP.
+    let mut bjt_types: BTreeMap<String, bool> = BTreeMap::new();
     let lines = logical_lines(text);
     // .model cards first, so polarity is known for MOS lines that come before them.
     for (_, l) in &lines {
@@ -157,6 +159,8 @@ pub fn import(text: &str, tech: &Tech) -> Result<Imported, String> {
             match ty.as_str() {
                 "nmos" => _ = model_types.insert(t[1].to_ascii_lowercase(), MosType::Nmos),
                 "pmos" => _ = model_types.insert(t[1].to_ascii_lowercase(), MosType::Pmos),
+                "npn" => _ = bjt_types.insert(t[1].to_ascii_lowercase(), false),
+                "pnp" => _ = bjt_types.insert(t[1].to_ascii_lowercase(), true),
                 _ => {}
             }
         }
@@ -174,7 +178,7 @@ pub fn import(text: &str, tech: &Tech) -> Result<Imported, String> {
             }
             continue;
         }
-        match element(&t, tech, &model_types, &mut out.warnings) {
+        match element(&t, tech, &model_types, &bjt_types, &mut out.warnings) {
             Ok(Some(d)) => devs.push(d),
             Ok(None) => {}
             Err(m) => errors.push(err(m)),
@@ -290,6 +294,7 @@ fn element(
     t: &[String],
     tech: &Tech,
     model_types: &BTreeMap<String, MosType>,
+    bjt_types: &BTreeMap<String, bool>,
     ignored: &mut Vec<String>,
 ) -> Result<Option<Dev>, String> {
     let name = t[0].clone();
@@ -378,7 +383,40 @@ fn element(
             let kind = if ty == MosType::Pmos { DeviceKind::Pmos } else { DeviceKind::Nmos };
             Ok(Some(Dev { kind, name, nets: nets(4), params }))
         }
-        _ => Err(format!("{name}: element type '{letter}' is not supported (use R, C, L, V, I, D, M, or X for PDK MOS devices)")),
+        'Q' => {
+            need(4, &format!("{name} <c> <b> <e> <model> [area]"))?;
+            // An optional substrate node comes before the model.
+            // An optional substrate node comes before the model; a number after it is the area.
+            let known = |k: usize| positional.get(k).is_some_and(|m| bjt_types.contains_key(&m.to_ascii_lowercase()));
+            let mi = if known(4) || (!known(3) && positional.get(4).is_some_and(|s| parse_spice(s).is_none())) { 4 } else { 3 };
+            let model = positional[mi].to_string();
+            let pnp = match bjt_types.get(&model.to_ascii_lowercase()) {
+                Some(p) => *p,
+                None => {
+                    ignored.push(format!("{name}: model '{model}' has no .model card here; placed as NPN"));
+                    model.to_ascii_lowercase().contains("pnp")
+                }
+            };
+            let mut params = BTreeMap::from([("model".to_string(), model)]);
+            let area = positional.get(mi + 1).map(|s| s.to_string()).or_else(|| params_kv().get("area").cloned());
+            params.insert("area".into(), area.unwrap_or_else(|| "1".into()));
+            dev(if pnp { DeviceKind::Pnp } else { DeviceKind::Npn }, nets(3), params)
+        }
+        'E' | 'G' => {
+            need(5, &format!("{name} <n+> <n-> <nc+> <nc-> <gain>"))?;
+            let (kind, key) = if letter == 'E' { (DeviceKind::Vcvs, "gain") } else { (DeviceKind::Vccs, "gm") };
+            dev(kind, nets(4), BTreeMap::from([(key.to_string(), positional[4].to_string())]))
+        }
+        'F' | 'H' => {
+            need(4, &format!("{name} <n+> <n-> <vname> <gain>"))?;
+            let (kind, key) = if letter == 'F' { (DeviceKind::Cccs, "gain") } else { (DeviceKind::Ccvs, "r") };
+            let params =
+                BTreeMap::from([("vctl".to_string(), positional[2].to_string()), (key.to_string(), positional[3].to_string())]);
+            dev(kind, nets(2), params)
+        }
+        _ => Err(format!(
+            "{name}: element type '{letter}' is not supported (use R, C, L, V, I, D, M, Q, E, F, G, H, or X for PDK MOS devices)"
+        )),
     }
 }
 
@@ -396,6 +434,8 @@ fn pin_order(kind: DeviceKind) -> &'static [&'static str] {
     match kind {
         DeviceKind::Nmos | DeviceKind::Pmos | DeviceKind::Nmos3 | DeviceKind::Pmos3 => &["d", "g", "s", "b"],
         DeviceKind::Diode => &["a", "k"],
+        DeviceKind::Npn | DeviceKind::Pnp => &["c", "b", "e"],
+        DeviceKind::Vcvs | DeviceKind::Vccs => &["p", "n", "cp", "cn"],
         _ => &["p", "n"],
     }
 }
@@ -478,8 +518,15 @@ V2 in 0 DC 0 PULSE(0 1.8 1n 100p 100p 4n 10n)
 
     #[test]
     fn errors_name_the_line() {
-        let e = import("R1 a 0 1k\nE1 a 0 b 0 10\n", &Tech::generic()).unwrap_err();
-        assert!(e.contains("line 2") && e.contains("'E'"), "{e}");
+        let e = import("R1 a 0 1k\nJ1 a 0 b jmod\n", &Tech::generic()).unwrap_err();
+        assert!(e.contains("line 2") && e.contains("'J'"), "{e}");
+        // Bipolar and controlled sources come in as devices.
+        let imp = import("Q1 c b 0 npn 8\nE1 o 0 c 0 10\nV1 c 0 1\nF1 o 0 V1 2\n", &Tech::generic()).unwrap();
+        let q = imp.schematic.instance_by_name("Q1").unwrap();
+        assert_eq!((q.kind, q.param("model"), q.param("area")), (DeviceKind::Npn, "npn", "8"));
+        assert_eq!(imp.schematic.instance_by_name("F1").unwrap().param("vctl"), "V1");
+        let nl = crate::netlist::netlist(&imp.schematic).body;
+        assert!(nl.contains("Q1 c b 0 npn 8") && nl.contains("E1 o 0 c 0 10") && nl.contains("F1 o 0 V1 2"), "{nl}");
         assert!(import("M1 d g s b weird w=1u l=1u\n", &Tech::generic()).unwrap_err().contains("NMOS or PMOS"));
         assert!(import("R1 a 0 1k\nR1 b 0 1k\n", &Tech::generic()).unwrap_err().contains("duplicate"));
     }

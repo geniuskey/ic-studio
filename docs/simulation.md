@@ -218,9 +218,21 @@ as `v(x1.mn:d)`. Relative `.include` paths work with ngspice too.
 
 A modified nodal analysis engine written in Rust. It supports:
 
-- elements `R C L V I D M` and subcircuit instances `X` (no behavioural sources),
+- elements `R C L V I D M`, bipolar transistors `Q` (Gummel-Poon: Early voltages, knee
+  currents, non-ideal base currents, junction and diffusion charges, series resistances,
+  temperature through `eg xti xtb`), linear controlled sources `E F G H`, and subcircuit
+  instances `X` (no behavioural `B` sources or `POLY` / `VALUE` forms: those decks go to
+  ngspice under **Auto**),
 - sources: `DC`, `AC mag [phase]`, `PULSE(v1 v2 td tr tf pw per)`,
-  `SIN(vo va freq td theta)`, `PWL(t v ...)`,
+  `SIN(vo va freq td theta phase)`, `PWL(t v ...)` with `r=` and `td=`,
+- `R` / `C` / `L` with `m` (and `tc1` / `tc2` for resistors), diodes and `Q` with `area` and
+  `m`, `.option scale`, `.ac dec | oct | lin`, `.tran tstep tstop [tstart [tmax]] [uic]`;
+  a MOS level other than 1, 14 or 54 is an error,
+- a sparse solver (faer LU with fill-reducing ordering, reused across Newton iterations)
+  for circuits above 120 unknowns, so post-layout RC networks of tens of thousands of nodes
+  simulate in about the time ngspice takes, and SPICE's junction limiting (`pnjlim`) with
+  junctions started at their critical voltage, which lands circuits with several operating
+  points (a bandgap) where SPICE does,
 - directives `.model`, `.op`, `.dc`, `.ac`, `.tran`, `.noise`, `.temp`, `.title`, `.end`;
   `.ic v(node)=value` (held for the transient's initial operating point, as in ngspice;
   with `.tran ... uic` the transient starts from it without one), `.nodeset` (a starting

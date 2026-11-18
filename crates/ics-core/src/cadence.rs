@@ -292,8 +292,9 @@ impl Expr<'_> {
 /// Nodes of a leaf element by its letter.
 fn node_count(letter: char) -> Option<usize> {
     match letter {
-        'M' => Some(4),
-        'R' | 'C' | 'L' | 'D' | 'V' | 'I' => Some(2),
+        'M' | 'E' | 'G' => Some(4),
+        'Q' => Some(3),
+        'R' | 'C' | 'L' | 'D' | 'V' | 'I' | 'F' | 'H' => Some(2),
         _ => None,
     }
 }
@@ -743,6 +744,12 @@ impl SymbolMap {
                 def("vsource", "vdc", &two, &[("dc", "vdc"), ("ac", "acm")]),
                 def("isource", "idc", &two, &[("dc", "idc"), ("ac", "acm")]),
                 def("diode", "diode", &[("a", "PLUS"), ("k", "MINUS")], &[("model", "model")]),
+                def("npn", "npn", &[("c", "C"), ("b", "B"), ("e", "E")], &[("model", "model"), ("area", "area")]),
+                def("pnp", "pnp", &[("c", "C"), ("b", "B"), ("e", "E")], &[("model", "model"), ("area", "area")]),
+                def("vcvs", "vcvs", &[("p", "PLUS"), ("n", "MINUS"), ("cp", "NC+"), ("cn", "NC-")], &[("gain", "egain")]),
+                def("vccs", "vccs", &[("p", "PLUS"), ("n", "MINUS"), ("cp", "NC+"), ("cn", "NC-")], &[("gm", "ggain")]),
+                def("cccs", "cccs", &two, &[("gain", "fgain"), ("vctl", "vref")]),
+                def("ccvs", "ccvs", &two, &[("r", "hgain"), ("vctl", "vref")]),
             ],
         }
     }
@@ -768,6 +775,12 @@ fn kind_name(k: DeviceKind) -> Option<&'static str> {
         DeviceKind::VSource => "vsource",
         DeviceKind::ISource => "isource",
         DeviceKind::Diode => "diode",
+        DeviceKind::Npn => "npn",
+        DeviceKind::Pnp => "pnp",
+        DeviceKind::Vcvs => "vcvs",
+        DeviceKind::Vccs => "vccs",
+        DeviceKind::Cccs => "cccs",
+        DeviceKind::Ccvs => "ccvs",
         DeviceKind::Ground | DeviceKind::Supply | DeviceKind::Cell => return None,
     })
 }
