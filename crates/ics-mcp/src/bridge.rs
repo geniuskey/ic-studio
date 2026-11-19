@@ -203,20 +203,32 @@ impl Client {
         let v: Value = serde_json::from_str(&text).ok()?;
         let port = u16::try_from(v["port"].as_u64()?).ok()?;
         let token = v["token"].as_str()?.to_string();
-        let stream = match TcpStream::connect_timeout(&SocketAddr::from(([127, 0, 0, 1], port)), CONNECT_TIMEOUT) {
-            Ok(s) => s,
-            Err(_) => {
-                if std::fs::read_to_string(&path).is_ok_and(|now| now == text) {
-                    let _ = std::fs::remove_file(&path);
-                }
-                return None;
+        let stale = || {
+            if std::fs::read_to_string(&path).is_ok_and(|now| now == text) {
+                let _ = std::fs::remove_file(&path);
             }
+        };
+        let Ok(stream) = TcpStream::connect_timeout(&SocketAddr::from(([127, 0, 0, 1], port)), CONNECT_TIMEOUT) else {
+            stale();
+            return None;
         };
         stream.set_nodelay(true).ok()?;
         stream.set_read_timeout(Some(PING_TIMEOUT)).ok()?;
         let mut c = Client { writer: stream.try_clone().ok()?, reader: BufReader::new(stream), token, pid: 0 };
-        let pong = c.exchange(json!({"token": c.token, "ping": true})).ok()?;
+        // Something else answering on the port (another program reusing it after the app died,
+        // or on Linux a self-connect to a free port) means the file is stale. A timeout may be a
+        // busy app and leaves it alone.
+        let pong = match c.exchange(json!({"token": c.token, "ping": true})) {
+            Ok(v) => v,
+            Err(e) => {
+                if e.kind() == io::ErrorKind::InvalidData {
+                    stale();
+                }
+                return None;
+            }
+        };
         if pong["pong"] != true {
+            stale();
             return None;
         }
         c.pid = u32::try_from(pong["pid"].as_u64()?).ok()?;
@@ -328,6 +340,20 @@ mod tests {
         std::fs::write(dir.join(LIVE_FILE), json!({"port": port, "token": "x", "pid": 1}).to_string()).unwrap();
         assert!(Client::discover().is_none());
         assert!(!dir.join(LIVE_FILE).exists(), "stale file is cleaned up");
+
+        // Another program on the advertised port: its answer is not our pong.
+        let foreign = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = foreign.local_addr().unwrap().port();
+        let echo = std::thread::spawn(move || {
+            let (mut s, _) = foreign.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(s.try_clone().unwrap()).read_line(&mut line).unwrap();
+            s.write_all(b"{\"hello\": 1}\n").unwrap();
+        });
+        std::fs::write(dir.join(LIVE_FILE), json!({"port": port, "token": "x", "pid": 1}).to_string()).unwrap();
+        assert!(Client::discover().is_none());
+        echo.join().unwrap();
+        assert!(!dir.join(LIVE_FILE).exists(), "a file pointing at a foreign program is cleaned up");
 
         let (first, _rx1) = Server::start(|| {}).unwrap();
         let (second, _rx2) = Server::start(|| {}).unwrap();
