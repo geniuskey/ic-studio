@@ -181,6 +181,10 @@ PCell Designer는 Virtuoso의 PCell Designer처럼, 그린 레이아웃을 코�
 contact fill입니다. stretch, repeat, condition은 일부 레이어에만 적용할 수 있습니다.
 **Earlier** / **Later**로 순서를 바꾸고 **Undo**로 되돌립니다.
 
+폴리곤과 path는 꼭짓점 단위로 늘어납니다. stretch 선을 비스듬히 가로지르는 변(45° chamfer나
+배선)은 각도를 유지합니다. 셀이 커지면 선 위치에 축 방향 띠가 끼워지고, 작아지면 그 띠가
+빠집니다. 폴리곤의 일부가 폭 0으로 눌리면 사각형과 마찬가지로 오류입니다.
+
 ### 그린 MOS에 대한 제안
 
 | 버튼 | 결과 |
@@ -191,7 +195,8 @@ contact fill입니다. stretch, repeat, condition은 일부 레이어에만 적�
 | **Length stretch (l)** | 첫 게이트를 지나는 세로 선. 새 파라미터 `l`로 구동. finger repeat의 pitch도 따라 바뀜 |
 
 각 제안은 기본값에서 원래 도면을 그대로 재현합니다. pitch를 읽을 수 있도록 동일한 finger를 두세
-개 그리십시오.
+개 그리십시오. 게이트, diffusion, metal plate는 직교 폴리곤(dogbone 게이트, L자 active)이어도
+되며 사각형들로 분해해 읽습니다. 네 꼭짓점 폴리곤으로 그린 cut도 cut으로 인식합니다.
 
 ### 검사
 

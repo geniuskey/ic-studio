@@ -187,6 +187,11 @@ later lines and regions), then the repeats, then the contact fills. Stretch, rep
 condition can be limited to some layers. **Earlier** / **Later** reorder the list, and
 **Undo** steps back.
 
+Polygons and paths stretch vertex by vertex. An edge that crosses a stretch line at an
+angle (a 45° chamfer or wire) keeps its angle: a band along the axis is inserted at the line
+when the cell grows, and removed when it shrinks. A polygon part squeezed to zero width is
+an error, as for a rectangle.
+
 ### Suggestions for a drawn MOS
 
 | Button | Result |
@@ -197,7 +202,9 @@ condition can be limited to some layers. **Earlier** / **Later** reorder the lis
 | **Length stretch (l)** | A vertical line through the first gate, driven by a new `l`. A finger repeat's pitch follows |
 
 At the defaults, each suggestion reproduces the drawing. Draw two or three identical
-fingers so the pitch can be read.
+fingers so the pitch can be read. Gates, diffusion and metal plates may be rectilinear
+polygons (a dogbone gate, an L-shaped active); they are read as their rectangles, and
+four-corner polygon cuts count as cuts.
 
 ### Checking
 

@@ -1178,14 +1178,18 @@ impl PCellDesigner {
                 };
                 let fit = Fit::new(resp.rect.shrink(28.0), grow(all, 0.06));
                 if let (Some(t), true) = (&self.tpl, self.show_source_on_preview) {
+                    let st = Stroke::new(1.0, pal.text_weak.gamma_multiply(0.7));
                     for s in ics_core::hier::flatten(&t.source, project, 16) {
-                        for r in s.geom.rects() {
-                            p.rect_stroke(
-                                fit.r(&r),
-                                0.0,
-                                Stroke::new(1.0, pal.text_weak.gamma_multiply(0.7)),
-                                StrokeKind::Middle,
-                            );
+                        match &s.geom {
+                            Geometry::Polygon { points } => {
+                                p.add(egui::Shape::closed_line(points.iter().map(|&(x, y)| fit.pt(x, y)).collect(), st));
+                            }
+                            Geometry::Path { points, width } => draw_path(&p, &fit, points, *width, None, st),
+                            g => {
+                                for r in g.rects() {
+                                    p.rect_stroke(fit.r(&r), 0.0, st, StrokeKind::Middle);
+                                }
+                            }
                         }
                     }
                 }
@@ -1831,6 +1835,9 @@ fn draw_layout(p: &egui::Painter, fit: &Fit, l: &Layout, src: &Project, pal: &Pa
                 let pts: Vec<Pos2> = points.iter().map(|&(x, y)| fit.pt(x, y)).collect();
                 p.add(egui::Shape::closed_line(pts, Stroke::new(1.2, c.gamma_multiply(alpha))));
             }
+            Geometry::Path { points, width } => {
+                draw_path(p, fit, points, *width, Some(c.gamma_multiply(0.28 * alpha)), Stroke::new(1.0, c.gamma_multiply(alpha)))
+            }
             g => {
                 for r in g.rects() {
                     let sr = fit.r(&r);
@@ -1839,6 +1846,30 @@ fn draw_layout(p: &egui::Painter, fit: &Fit, l: &Layout, src: &Project, pal: &Pa
                 }
             }
         }
+    }
+}
+
+/// A path segment by segment: axis-aligned ones as rectangles, any-angle ones as their
+/// outline (a quadrilateral `width` wide).
+fn draw_path(p: &egui::Painter, fit: &Fit, points: &[(i64, i64)], width: i64, fill: Option<Color32>, st: Stroke) {
+    let hw = width as f64 / 2.0;
+    for w in points.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        if a.0 == b.0 || a.1 == b.1 {
+            let h = width / 2;
+            let sr = fit.r(&IRect::new(a.0.min(b.0) - h, a.1.min(b.1) - h, a.0.max(b.0) + h, a.1.max(b.1) + h));
+            if let Some(f) = fill {
+                p.rect_filled(sr, 0.0, f);
+            }
+            p.rect_stroke(sr, 0.0, st, StrokeKind::Middle);
+            continue;
+        }
+        let (dx, dy) = ((b.0 - a.0) as f64, (b.1 - a.1) as f64);
+        let len = (dx * dx + dy * dy).sqrt();
+        let (nx, ny) = (-dy / len * hw, dx / len * hw);
+        let q = |x: i64, y: i64, s: f64| fit.pt((x as f64 + nx * s).round() as i64, (y as f64 + ny * s).round() as i64);
+        let quad = vec![q(a.0, a.1, 1.0), q(b.0, b.1, 1.0), q(b.0, b.1, -1.0), q(a.0, a.1, -1.0)];
+        p.add(egui::Shape::convex_polygon(quad, fill.unwrap_or(Color32::TRANSPARENT), st));
     }
 }
 

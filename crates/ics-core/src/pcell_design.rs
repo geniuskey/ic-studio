@@ -306,6 +306,7 @@ impl Item {
         if let Geometry::Label { text, .. } = &mut g {
             text.clear();
         }
+        canonical_points(&mut g);
         let inst = self.inst.as_ref().map(|i| (i.cell.to_string(), i.trans.rot, i.trans.mirror, i.array));
         format!("{:?}|{:?}|{:?}|{g:?}", self.layer, self.fill, inst)
     }
@@ -334,22 +335,169 @@ fn map_rect(r: &mut IRect, axis: Axis, f: &dyn Fn(i64) -> i64) {
     }
 }
 
-/// Stretch mapping of one coordinate.
-fn shift(c: i64, at: i64, side: Side, d: i64, g: i64) -> i64 {
-    let (hi, lo) = match side {
-        Side::High => (d, 0),
-        Side::Low => (0, d),
-        Side::Both => {
-            let h = snap(d / 2, g);
-            (h, d - h)
+/// One stretch along an axis: coordinates above `at` move by `hi`, those below by `-lo`, the
+/// line itself stays.
+#[derive(Debug, Clone, Copy)]
+struct Shift {
+    at: i64,
+    hi: i64,
+    lo: i64,
+}
+
+impl Shift {
+    fn new(at: i64, side: Side, d: i64, g: i64) -> Shift {
+        let (hi, lo) = match side {
+            Side::High => (d, 0),
+            Side::Low => (0, d),
+            Side::Both => {
+                let h = snap(d / 2, g);
+                (h, d - h)
+            }
+        };
+        Shift { at, hi, lo }
+    }
+
+    fn map(&self, c: i64) -> i64 {
+        if c > self.at {
+            c + self.hi
+        } else if c < self.at {
+            c - self.lo
+        } else {
+            c
+        }
+    }
+
+    /// Where the kept part of the low side ends (source coordinate) and where that lands. A
+    /// shrinking side loses the band next to the line.
+    fn low_end(&self) -> (i64, i64) {
+        let x = self.at + self.lo.min(0);
+        (x, x - self.lo)
+    }
+
+    fn high_end(&self) -> (i64, i64) {
+        let x = self.at - self.hi.min(0);
+        (x, x + self.hi)
+    }
+}
+
+/// (along `axis`, across it) of a point, and back.
+fn split(axis: Axis, p: (i64, i64)) -> (i64, i64) {
+    match axis {
+        Axis::X => p,
+        Axis::Y => (p.1, p.0),
+    }
+}
+
+fn join(axis: Axis, a: i64, o: i64) -> (i64, i64) {
+    split(axis, (a, o))
+}
+
+/// Stretch the vertices of a polygon ring (`closed`) or path. `map` moves a coordinate along
+/// the axis (`s.map`, possibly wrapped). An edge that is not parallel to the axis and crosses
+/// the line keeps its angle: it is cut where each side's kept part ends and the two pieces
+/// are joined along the axis, so a band is inserted (or removed) at the line as for Manhattan
+/// shapes. Repeated vertices are dropped. `None` when an edge of a polygon along the axis
+/// collapses to nothing (a part of the shape, or a notch, is squeezed out).
+fn stretch_points(pts: &[(i64, i64)], closed: bool, axis: Axis, s: &Shift, map: &dyn Fn(i64) -> i64) -> Option<Vec<(i64, i64)>> {
+    let n = pts.len();
+    let edges = if closed { n } else { n.saturating_sub(1) };
+    let side = |a: i64| (a - s.at).signum();
+    let mut out: Vec<(i64, i64)> = Vec::with_capacity(n + 4);
+    let push = |out: &mut Vec<(i64, i64)>, q: (i64, i64)| {
+        if out.last() != Some(&q) {
+            out.push(q);
         }
     };
-    if c > at {
-        c + hi
-    } else if c < at {
-        c - lo
-    } else {
-        c
+    let mut collapsed = false;
+    for k in 0..n {
+        let (a0, o0) = split(axis, pts[k]);
+        push(&mut out, join(axis, map(a0), o0));
+        if k >= edges {
+            continue;
+        }
+        let (a1, o1) = split(axis, pts[(k + 1) % n]);
+        if closed && o0 == o1 && a0 != a1 && map(a0) == map(a1) {
+            collapsed = true;
+        }
+        let (s0, s1) = (side(a0), side(a1));
+        if o0 == o1 || s0 == s1 {
+            continue;
+        }
+        for sd in [s0, s1] {
+            if sd == 0 {
+                continue;
+            }
+            let (x, img) = if sd < 0 { s.low_end() } else { s.high_end() };
+            let t = ((x - a0) as f64 / (a1 - a0) as f64).clamp(0.0, 1.0);
+            let o = o0 + ((o1 - o0) as f64 * t).round() as i64;
+            push(&mut out, join(axis, img, o));
+        }
+    }
+    if closed {
+        while out.len() > 1 && out.first() == out.last() {
+            out.pop();
+        }
+    }
+    (!collapsed).then_some(out)
+}
+
+/// Stretch one geometry (see [`stretch_points`]); `false` when a polygon collapses.
+fn stretch_geom(g: &mut Geometry, axis: Axis, s: &Shift, map: &dyn Fn(i64) -> i64) -> bool {
+    let (points, closed) = match g {
+        Geometry::Polygon { points } => (points, true),
+        Geometry::Path { points, .. } => (points, false),
+        _ => {
+            map_geom(g, axis, map);
+            return true;
+        }
+    };
+    match stretch_points(points, closed, axis, s, map) {
+        Some(p) => {
+            *points = p;
+            true
+        }
+        None => false,
+    }
+}
+
+/// Rectangles making up a shape: rectilinear polygons decomposed, any-angle ones and labels
+/// give none.
+fn rects_of(g: &Geometry) -> Vec<IRect> {
+    match g {
+        Geometry::Rect(r) => vec![*r],
+        Geometry::Label { .. } => vec![],
+        g => crate::region::Region::from_geometry(g).map(|r| r.rects().to_vec()).unwrap_or_else(|_| g.rects()),
+    }
+}
+
+/// The rectangle a shape is, also when drawn as a four-corner polygon.
+fn as_rect(g: &Geometry) -> Option<IRect> {
+    match g {
+        Geometry::Rect(r) => Some(*r),
+        Geometry::Polygon { points } => crate::gds::as_rect(points),
+        _ => None,
+    }
+}
+
+/// A polygon ring from its smallest vertex, counter-clockwise; a path in its smaller
+/// direction: the same figure gives the same points however it was drawn.
+fn canonical_points(g: &mut Geometry) {
+    match g {
+        Geometry::Polygon { points } if !points.is_empty() => {
+            let area2: i128 = (0..points.len())
+                .map(|k| {
+                    let (a, b) = (points[k], points[(k + 1) % points.len()]);
+                    a.0 as i128 * b.1 as i128 - b.0 as i128 * a.1 as i128
+                })
+                .sum();
+            if area2 < 0 {
+                points.reverse();
+            }
+            let m = (0..points.len()).min_by_key(|&k| points[k]).unwrap_or(0);
+            points.rotate_left(m);
+        }
+        Geometry::Path { points, .. } if points.iter().rev().lt(points.iter()) => points.reverse(),
+        _ => {}
     }
 }
 
@@ -482,7 +630,8 @@ impl Template {
             }
             let at = lines[k].expect("stretch line");
             let (axis, side) = (*axis, *side);
-            let f = move |c: i64| shift(c, at, side, d, g);
+            let sh = Shift::new(at, side, d, g);
+            let f = move |c: i64| sh.map(c);
             let crossed = std::cell::Cell::new(false);
             let checked = |c: i64| {
                 let n = f(c);
@@ -491,11 +640,18 @@ impl Template {
                 }
                 n
             };
+            let mut collapsed = None;
             for it in items.iter_mut().filter(|it| it.on(layers)) {
-                it.map(axis, &checked);
+                if !stretch_geom(&mut it.geom, axis, &sh, &checked) && collapsed.is_none() {
+                    collapsed = Some(it.layer);
+                }
             }
             if crossed.get() {
                 return Err(format!("{what} ({amount}): the value is too small, edges would pass the line"));
+            }
+            if let Some(l) = collapsed {
+                let name = l.and_then(|l| tech.layer(l)).map_or("?", |l| l.name.as_str());
+                return Err(format!("{what} ({amount}) collapses a {name} shape: the value is too small"));
             }
             for (j, o) in self.ops.iter().enumerate().skip(k + 1) {
                 if let (Op::Stretch { axis: a2, .. }, Some(l)) = (o, lines[j].as_mut())
@@ -540,9 +696,9 @@ impl Template {
             let (members, mut rest): (Vec<Item>, Vec<Item>) =
                 items.into_iter().partition(|it| it.on(layers) && inside(&region, &it.home));
             if ext != 0 {
-                let f = move |c: i64| if c > at { c + ext } else { c };
+                let sh = Shift { at, hi: ext, lo: 0 };
                 for it in &mut rest {
-                    it.map(axis, &f);
+                    stretch_geom(&mut it.geom, axis, &sh, &|c| sh.map(c));
                 }
             }
             for m in &members {
@@ -916,8 +1072,7 @@ impl Template {
             let idx: Vec<usize> = (0..self.source.shapes.len())
                 .filter(|&i| {
                     let s = &self.source.shapes[i];
-                    s.layer == cut
-                        && matches!(s.geom, Geometry::Rect(r) if r.width() == via.cut_size && r.height() == via.cut_size)
+                    s.layer == cut && as_rect(&s.geom).is_some_and(|r| r.width() == via.cut_size && r.height() == via.cut_size)
                 })
                 .collect();
             if idx.is_empty() {
@@ -971,7 +1126,7 @@ impl Template {
             .shapes
             .iter()
             .filter(|s| s.layer == top)
-            .flat_map(|s| s.rects())
+            .flat_map(|s| rects_of(&s.geom))
             .map(|r| IRect::new(r.x0 + enc, r.y0 + enc, r.x1 - enc, r.y1 - enc))
             .filter(|r| inside(r, &b))
             .min_by_key(|r| r.width() as i128 * r.height() as i128)
@@ -981,13 +1136,14 @@ impl Template {
     fn gates(&self, tech: &Tech) -> Vec<IRect> {
         let Some(poly) = tech.poly() else { return vec![] };
         let diff = tech.diffusion_layers();
-        let actives: Vec<IRect> = self.source.shapes.iter().filter(|s| diff.contains(&s.layer)).flat_map(|s| s.rects()).collect();
+        let actives: Vec<IRect> =
+            self.source.shapes.iter().filter(|s| diff.contains(&s.layer)).flat_map(|s| rects_of(&s.geom)).collect();
         let mut g: Vec<IRect> = self
             .source
             .shapes
             .iter()
             .filter(|s| s.layer == poly)
-            .flat_map(|s| s.rects())
+            .flat_map(|s| rects_of(&s.geom))
             .filter(|r| actives.iter().any(|a| r.x0 < a.x1 && a.x0 < r.x1 && r.y0 < a.y1 && a.y0 < r.y1))
             .collect();
         g.sort_by_key(|r| (r.x0, r.y0));
@@ -1165,7 +1321,7 @@ impl Template {
             .shapes
             .iter()
             .filter(|s| diff.contains(&s.layer))
-            .flat_map(|s| s.rects())
+            .flat_map(|s| rects_of(&s.geom))
             .max_by_key(|r| r.width() as i128 * r.height() as i128)
             .ok_or("No diffusion found")?;
         let dbu = tech.dbu_per_um;
@@ -1354,6 +1510,38 @@ const SKILL_ENGINE: &str = r#"    icsSnap = lambda((v) if(icsGrid <= 1 v icsGrid
     icsMove = lambda((vIt vDx vDy) list(car(vIt) nth(1 vIt)
       mapcar(lambda((vQ) list(car(vQ) + vDx cadr(vQ) + vDy)) nth(2 vIt)) nth(3 vIt) nth(4 vIt)))
     icsPt = lambda((pQ) list(car(pQ) / icsDbu cadr(pQ) / icsDbu))
+    icsAl = lambda((aQ aX) if(eq(aX 'x) car(aQ) cadr(aQ)))
+    icsOt = lambda((aQ aX) if(eq(aX 'x) cadr(aQ) car(aQ)))
+    icsMk = lambda((kA kO kX) if(eq(kX 'x) list(kA kO) list(kO kA)))
+    icsSg = lambda((gC) if(gC > icsAt then 'hi else if(gC < icsAt then 'lo else 'on)))
+    icsPush = lambda((uL uQ) if(and(uL equal(car(uL) uQ)) uL cons(uQ uL)))
+    ;; Stretch an item with icsSh (line icsAt, sides icsHi / icsLo). A polygon or path edge
+    ;; crossing the line at an angle keeps it: it is cut where each side's kept part ends and
+    ;; joined along the axis. icsGone is set when a polygon edge along the axis collapses.
+    icsSt = lambda((tIt tX) if(memq(car(tIt) '(poly path)) then
+      let((tC tQ tA tO tSa tSb tV tW tT tI tF)
+        tC = eq(car(tIt) 'poly)
+        tQ = nth(2 tIt)
+        when(tC tQ = append(tQ list(car(tQ))))
+        tA = car(tQ)
+        tO = nil
+        foreach(tB cdr(tQ)
+          tSa = funcall(icsAl tA tX)  tSb = funcall(icsAl tB tX)
+          tV = funcall(icsOt tA tX)  tW = funcall(icsOt tB tX)
+          tO = funcall(icsPush tO funcall(icsMk funcall(icsSh tSa) tV tX))
+          when(and(tC tV == tW tSa != tSb funcall(icsSh tSa) == funcall(icsSh tSb)) icsGone = t)
+          when(and(tV != tW !eq(funcall(icsSg tSa) funcall(icsSg tSb)))
+            foreach(tE list(funcall(icsSg tSa) funcall(icsSg tSb))
+              unless(eq(tE 'on)
+                tT = if(eq(tE 'lo) icsAt + min(icsLo 0) icsAt - min(icsHi 0))
+                tI = if(eq(tE 'lo) tT - icsLo tT + icsHi)
+                tF = max(0.0 min(1.0 float(tT - tSa) / float(tSb - tSa)))
+                tO = funcall(icsPush tO funcall(icsMk tI tV + round(float(tW - tV) * tF) tX)))))
+          tA = tB)
+        unless(tC tO = funcall(icsPush tO funcall(icsMk funcall(icsSh funcall(icsAl tA tX)) funcall(icsOt tA tX) tX)))
+        when(and(tC cdr(tO) equal(car(tO) car(last(tO)))) tO = cdr(tO))
+        list(car(tIt) nth(1 tIt) reverse(tO) nth(3 tIt) nth(4 tIt)))
+      else funcall(icsMap tIt tX icsSh)))
 "#;
 
 const SKILL_OUTPUT: &str = r#"    ;; Create the shapes; contact fills become the largest centred array of cuts.
@@ -1449,6 +1637,13 @@ impl Template {
             "icsReg",
             "icsMem",
             "icsRest",
+            "icsAl",
+            "icsOt",
+            "icsMk",
+            "icsSg",
+            "icsPush",
+            "icsSt",
+            "icsGone",
         ]
         .map(String::from)
         .to_vec();
@@ -1568,7 +1763,7 @@ impl Template {
             let _ = writeln!(s, "    icsD = funcall(icsUm {} - {})", skill_expr(&e), skill_num(d0));
             let _ = writeln!(
                 s,
-                "    unless(icsD == 0\n      icsHi = {hi}\n      icsLo = {lo}\n      icsAt = icsA{k}\n      icsCross = nil"
+                "    unless(icsD == 0\n      icsHi = {hi}\n      icsLo = {lo}\n      icsAt = icsA{k}\n      icsCross = nil\n      icsGone = nil"
             );
             s.push_str(
                 "      icsSh = lambda((sC) let((sN)\n        sN = if(sC > icsAt sC + icsHi if(sC < icsAt sC - icsLo sC))\n        \
@@ -1576,12 +1771,17 @@ impl Template {
             );
             let _ = writeln!(
                 s,
-                "      icsItems = mapcar(lambda((sIt) if(funcall(icsOn sIt {}) funcall(icsMap sIt '{ax} icsSh) sIt)) icsItems)",
+                "      icsItems = mapcar(lambda((sIt) if(funcall(icsOn sIt {}) funcall(icsSt sIt '{ax}) sIt)) icsItems)",
                 layers(ls)?
             );
             let _ = writeln!(
                 s,
                 "      when(icsCross error(\"%s: {what} ({}): the value is too small, edges would pass the line\" icsName))",
+                amount.replace('"', "'")
+            );
+            let _ = writeln!(
+                s,
+                "      when(icsGone error(\"%s: {what} ({}) collapses a shape: the value is too small\" icsName))",
                 amount.replace('"', "'")
             );
             for (j, o) in self.ops.iter().enumerate().skip(k + 1) {
@@ -1643,7 +1843,8 @@ impl Template {
             );
             let _ = writeln!(
                 s,
-                "    unless(icsExt == 0\n      icsRest = mapcar(lambda((rIt) funcall(icsMap rIt '{ax} lambda((eC) if(eC > icsAt eC + icsExt eC)))) icsRest))"
+                "    unless(icsExt == 0\n      icsHi = icsExt  icsLo = 0  icsSh = lambda((eC) if(eC > icsAt eC + icsExt eC))\n      \
+                 icsRest = mapcar(lambda((rIt) funcall(icsSt rIt '{ax})) icsRest))"
             );
             let _ =
                 writeln!(s, "    for(rI 1 icsN - 1 foreach(rIt icsMem icsRest = cons(funcall(icsMove rIt {dx} {dy}) icsRest)))");
@@ -2074,6 +2275,10 @@ mod tests {
             2,
             Op::Stretch { axis: Axis::Y, at: 1850, side: Side::Both, amount: "max(ext, 0.2) * 2".into(), layers: vec![m2] },
         );
+        // Any-angle shapes across the stretch lines and the finger repeat: a 45° diamond and
+        // a 45° path.
+        t.source.add(m2, Geometry::Polygon { points: vec![(1000, -1500), (3500, 1000), (1000, 3500), (-1500, 1000)] });
+        t.source.add(m2, Geometry::Path { points: vec![(-1000, -1000), (3000, 3000)], width: 200 });
         let (text, warnings) = t.to_skill(&tech, "pclib").unwrap();
         assert!(warnings.is_empty());
         let sets: Vec<Vec<(String, f64)>> = vec![
@@ -2121,6 +2326,99 @@ mod tests {
         q.tech = tech.clone();
         let e = crate::skill::run(&mut q, &bad, None).unwrap_err();
         assert!(e.to_string().contains("too small"), "{e}");
+    }
+
+    /// The drawing as polygons (as some imports give it) reads like the drawing as rectangles.
+    #[test]
+    fn suggestions_read_polygons() {
+        let tech = Tech::generic();
+        let drawn = PCell::mos(false, 1000, 180, 3).generate(&tech).unwrap();
+        let mut as_polys = drawn.clone();
+        for s in &mut as_polys.shapes {
+            if let Geometry::Rect(r) = s.geom {
+                s.geom = Geometry::Polygon { points: vec![(r.x1, r.y0), (r.x1, r.y1), (r.x0, r.y1), (r.x0, r.y0)] };
+            }
+        }
+        let suggest = |l: &Layout| {
+            let mut t = Template::from_layout("m", l);
+            assert!(t.suggest_contact_fills(&tech) >= 4);
+            t.suggest_fingers(&tech).unwrap();
+            t.suggest_width(&tech).unwrap();
+            t.suggest_length(&tech).unwrap();
+            t
+        };
+        let (a, b) = (suggest(&drawn), suggest(&as_polys));
+        assert_eq!(a.ops, b.ops);
+        assert_eq!(a.params, b.params);
+        let rects = |l: Layout| {
+            let mut l = l;
+            for s in &mut l.shapes {
+                if let Some(r) = as_rect(&s.geom) {
+                    s.geom = Geometry::Rect(r);
+                }
+            }
+            canonical(&l).into_iter().filter(|s| !s.contains("Label")).collect::<Vec<_>>()
+        };
+        for set in [vals(&[]), vals(&[("w", 2.0), ("nf", 5.0), ("l", 0.3)])] {
+            assert_eq!(rects(a.generate(&tech, &set).unwrap()), rects(b.generate(&tech, &set).unwrap()), "{set:?}");
+        }
+    }
+
+    #[test]
+    fn stretch_keeps_any_angle_edges() {
+        let tech = Tech::generic();
+        let m1 = tech.metal1().unwrap();
+        let one = |g: Geometry, side: Side, w: f64| {
+            let mut l = Layout::default();
+            l.add(m1, g);
+            let mut t = Template::from_layout("c", &l);
+            t.params.push(Param::new("w", ParamKind::Length, 1.0));
+            t.ops.push(Op::Stretch { axis: Axis::X, at: 1200, side, amount: "w".into(), layers: vec![] });
+            t.generate(&tech, &vals(&[("w", w)])).map(|l| l.shapes[0].geom.clone())
+        };
+        let chamfer = Geometry::Polygon { points: vec![(0, 0), (1000, 0), (1500, 500), (0, 500)] };
+        let pts = |g: Geometry| match g {
+            Geometry::Polygon { points } | Geometry::Path { points, .. } => points,
+            g => panic!("{g:?}"),
+        };
+        // Growing inserts a band along x at the line; the 45° edge keeps its angle.
+        assert_eq!(
+            pts(one(chamfer.clone(), Side::High, 1.5).unwrap()),
+            [(0, 0), (1000, 0), (1200, 200), (1700, 200), (2000, 500), (0, 500)]
+        );
+        assert_eq!(
+            pts(one(chamfer.clone(), Side::Both, 1.4).unwrap()),
+            [(-200, 0), (800, 0), (1000, 200), (1400, 200), (1700, 500), (-200, 500)]
+        );
+        // Shrinking removes the band (1200, 1400): the cut ends meet in a step across.
+        assert_eq!(
+            pts(one(chamfer.clone(), Side::High, 0.8).unwrap()),
+            [(0, 0), (1000, 0), (1200, 200), (1200, 400), (1300, 500), (0, 500)]
+        );
+        // A vertex on the line stays; its edge into the moving side moves with that side.
+        let tri = Geometry::Polygon { points: vec![(1200, 0), (1700, 500), (1200, 500)] };
+        assert_eq!(pts(one(tri, Side::High, 1.5).unwrap()), [(1200, 0), (1700, 0), (2200, 500), (1200, 500)]);
+        let path = Geometry::Path { points: vec![(700, 0), (1700, 1000)], width: 100 };
+        assert_eq!(pts(one(path, Side::High, 1.5).unwrap()), [(700, 0), (1200, 500), (1700, 500), (2200, 1000)]);
+        // An arm squeezed to nothing is an error, as for a rectangle.
+        let ell = Geometry::Polygon { points: vec![(0, 0), (1600, 0), (1600, 200), (1200, 200), (1200, 1000), (0, 1000)] };
+        let err = one(ell.clone(), Side::High, 0.6).unwrap_err();
+        assert!(err.contains("collapses a metal1 shape"), "{err}");
+        assert!(one(ell, Side::High, 0.7).is_ok());
+    }
+
+    #[test]
+    fn finger_keys_ignore_vertex_order() {
+        let it = |points: Vec<(i64, i64)>| Item {
+            layer: Some(1),
+            geom: Geometry::Polygon { points },
+            inst: None,
+            fill: None,
+            home: IRect::default(),
+        };
+        let a = it(vec![(0, 0), (100, 0), (100, 50), (0, 50)]);
+        let b = it(vec![(300, 50), (300, 0), (200, 0), (200, 50)]);
+        assert_eq!(a.key((200, 0)), b.key((0, 0)));
     }
 
     #[test]
