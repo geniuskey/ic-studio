@@ -137,8 +137,9 @@ ics extract demo aps4t --schematic --into aps4t_sch # 테스트벤치와 함께 
 ics sim demo aps4t_sch
 ```
 
-`--characterize`(MCP `extract`의 `characterize: true`, **Schematic from Layout**은 첫 픽셀에 대해
-자동 수행)는 각 픽셀을 기술 파일의 소자 모델로 단독 시뮬레이션합니다. FD와 모든 포토다이오드를
+`--characterize`(MCP `extract`의 `characterize: true`, 앱에서는 **Verify > Pixel Circuit…**.
+**Schematic from Layout**도 이 창을 엽니다. 픽셀과 포토다이오드 표를 백그라운드에서 계산하며, 온도·전원·
+컬럼 용량은 창에서 정합니다)는 각 픽셀을 기술 파일의 소자 모델로 단독 시뮬레이션합니다. FD와 모든 포토다이오드를
 리셋하고 RST와 TX를 끈 뒤, FD와 각 포토다이오드(공유 픽셀이면 모두)에서 전자 500개를 차례로 빼냅니다. C = Q / ΔV에는
 노드에 걸린 모든 접합, 오버랩, 게이트 용량과 레이아웃의 배선 용량이 들어갑니다.
 

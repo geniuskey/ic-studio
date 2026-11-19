@@ -27,6 +27,7 @@ use crate::layout_view::{EipContext, LayAction, LayCtx, LayRequest, LayTool, Lay
 use crate::net_view::{NetAction, NetBrowser};
 use crate::opc_view::OpcTool;
 use crate::pcell_designer::{PCellAction, PCellDesigner};
+use crate::pixel_circuit_view::PixelCircuitView;
 use crate::pixel_view::{PixelAction, PixelOptics};
 use crate::rule_designer::{DesignerAction, RuleDesigner};
 use crate::schematic_view::{SchAction, SchRequest, SchTool, SchematicEditor, device_palette};
@@ -186,6 +187,8 @@ pub enum Command {
     /// Draw a schematic of the active layout's extraction (image sensor pixels recognised, with
     /// a test bench): into the cell when it has none, else into a new `<cell>_from_layout`.
     SchematicFromLayout,
+    /// Open the Pixel Circuit window on the active layout and characterise its pixels.
+    PixelCircuit,
     RunLvs,
     /// IR drop / EM analysis of the active layout: of the named net, else the Verify panel's.
     IrDrop(Option<String>),
@@ -779,6 +782,7 @@ pub struct IcStudio {
     opc_layers: (Vec<String>, Vec<ics_core::LayerDef>),
     calc: Calculator,
     pixel: PixelOptics,
+    pixel_circuit: PixelCircuitView,
     sweep: SweepManager,
     monte_carlo: crate::mc_view::MonteCarlo,
     verification: crate::verify_view::Verification,
@@ -898,6 +902,7 @@ impl IcStudio {
             opc_layers: Default::default(),
             calc: Calculator::default(),
             pixel: PixelOptics::default(),
+            pixel_circuit: PixelCircuitView::default(),
             sweep: SweepManager::default(),
             monte_carlo: Default::default(),
             verification: Default::default(),
@@ -1608,7 +1613,8 @@ impl IcStudio {
             }
             Command::RunDrc => self.verify(ctx, Verify::Drc),
             Command::ExtractNets => self.verify(ctx, Verify::Extract),
-            Command::SchematicFromLayout => self.schematic_from_layout(),
+            Command::SchematicFromLayout => self.schematic_from_layout(ctx),
+            Command::PixelCircuit => self.pixel_circuit_start(ctx),
             Command::RunLvs => self.verify(ctx, Verify::Lvs),
             Command::IrDrop(net) => {
                 if let (Some(r), Some(n)) = (self.active.clone(), net) {
@@ -2944,7 +2950,16 @@ impl IcStudio {
         }
     }
 
-    fn schematic_from_layout(&mut self) {
+    /// Load the active layout into the Pixel Circuit window and characterise it in the background.
+    fn pixel_circuit_start(&mut self, ctx: &egui::Context) {
+        let (Some(r), Some(p)) = (self.active.as_ref(), self.project.as_ref()) else {
+            return self.warn("Open a layout cell to find its pixels".into());
+        };
+        self.pixel_circuit.load(p, r);
+        self.pixel_circuit.start(Some(ctx), p);
+    }
+
+    fn schematic_from_layout(&mut self, ctx: &egui::Context) {
         use ics_core::pixel_circuit::{Testbench, classify, schematic};
         let (Some(r), Some(p)) = (self.active.clone(), self.project.as_mut()) else { return };
         let Some(lay) = p.cell(&r).and_then(|c| c.layout.as_ref()) else {
@@ -2954,11 +2969,6 @@ impl IcStudio {
         let pc = classify(&x);
         let bench = Testbench::for_tech(&x, &p.tech);
         let (sch, sim) = schematic(&x, &pc, Some(&bench));
-        // The first pixel's conversion gain (built-in engine: milliseconds, on this thread).
-        let metrics = (!pc.pixels.is_empty()).then(|| {
-            let corner = p.cell(&r).map(|c| c.sim.corner.clone()).unwrap_or_default();
-            ics_sim::pixel::characterize(&x, &pc, 0, &p.tech, &bench, &corner, &ics_sim::SimOptions::default())
-        });
         // Into the cell itself when it has no schematic (ready for LVS), else a new cell.
         let target = if p.cell(&r).is_some_and(|c| c.schematic.is_none()) {
             r.clone()
@@ -2990,14 +3000,12 @@ impl IcStudio {
         for w in x.warnings.iter().chain(&pc.warnings) {
             self.warn(format!("{r}: {w}"));
         }
-        match metrics {
-            Some(Ok(m)) => {
-                for line in m.summary().lines() {
-                    self.info(format!("Pixel 1 {line}"));
-                }
-            }
-            Some(Err(e)) => self.warn(format!("Pixel 1 characterisation: {e}")),
-            None => {}
+        // The pixels' characterisation runs in the background in the Pixel Circuit window.
+        if pixels > 0
+            && let Some(p) = self.project.as_ref()
+        {
+            self.pixel_circuit.load(p, &r);
+            self.pixel_circuit.start(Some(ctx), p);
         }
         self.queue.push(Command::OpenCell(target, Some(Workspace::Schematic)));
     }
@@ -3710,6 +3718,9 @@ impl IcStudio {
                 }
                 if menu_item(ui, has_lay, "Schematic from Layout", NEED_LAY) {
                     q.push(Command::SchematicFromLayout);
+                }
+                if menu_item(ui, has_lay, "Pixel Circuit…", NEED_LAY) {
+                    q.push(Command::PixelCircuit);
                 }
                 if menu_item(ui, has_lay && has_sch, "Run LVS", "Open a cell with a schematic and a layout first") {
                     q.push(Command::RunLvs);
@@ -4988,6 +4999,7 @@ impl IcStudio {
             ("Run DRC".into(), "", Command::RunDrc),
             ("Extract nets".into(), "", Command::ExtractNets),
             ("Schematic from layout (pixels: PD / TG / RST / SF / SEL)".into(), "", Command::SchematicFromLayout),
+            ("Pixel circuit: conversion gain, full well, lag, noise, dark current".into(), "", Command::PixelCircuit),
             ("Run LVS".into(), "", Command::RunLvs),
             ("IR drop / EM analysis".into(), "", Command::IrDrop(None)),
             ("DRC rule designer".into(), "", Command::RuleDesigner),
@@ -6295,6 +6307,7 @@ impl IcStudio {
             || self.optimizer.is_running()
             || self.monte_carlo.is_running()
             || self.verification.is_running()
+            || self.pixel_circuit.is_running()
     }
 
     fn pcell_designer_window(&mut self, ctx: &egui::Context) {
@@ -6923,6 +6936,10 @@ impl IcStudio {
         &self.pixel
     }
 
+    pub fn pixel_circuit(&self) -> &PixelCircuitView {
+        &self.pixel_circuit
+    }
+
     pub fn pixel_optics_mut(&mut self) -> &mut PixelOptics {
         &mut self.pixel
     }
@@ -7229,6 +7246,11 @@ impl eframe::App for IcStudio {
         self.layer_display_window(&ctx);
         self.fill_window(&ctx);
         self.opc_window(&ctx);
+        if self.pixel_circuit.window(&ctx)
+            && let Some(p) = self.project.as_ref()
+        {
+            self.pixel_circuit.start(Some(&ctx), p);
+        }
         let active = self.active.clone();
         let sim = active.as_ref().and_then(|r| self.sims.get_mut(r));
         self.calc.window(&ctx, active.as_ref(), sim);

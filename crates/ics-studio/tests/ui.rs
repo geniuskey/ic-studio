@@ -359,6 +359,22 @@ fn schematic_from_pixel_layout() {
 }
 
 #[test]
+fn pixel_circuit_window() {
+    let args = LaunchArgs { project: None, demo: true, workspace: Some("layout".into()), cell: Some("aps2s".into()), run: false };
+    let mut h = app(args);
+    h.state_mut().command(Command::PixelCircuit);
+    h.run_steps(4);
+    settle(&mut h, "pixel_circuit");
+    let v = h.state().pixel_circuit();
+    assert!(v.open && v.error.is_none(), "{:?}", v.error);
+    assert_eq!(v.results.len(), 1);
+    let m = v.results[0].1.as_ref().expect("characterised");
+    assert_eq!(m.pds.len(), 2);
+    h.run_steps(2);
+    shot(&mut h, "pixel_circuit");
+}
+
+#[test]
 fn layout_pcells() {
     scenario("10_layout_pcells", true, Some("devices"), "layout", false);
 }
