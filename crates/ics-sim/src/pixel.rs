@@ -57,6 +57,10 @@ pub struct PixelMetrics {
     pub pd: Option<PhotodiodeMetrics>,
     /// Whether the photodiode was simulated as pinned.
     pub pinned: bool,
+    /// Dark current of the first photodiode (A) at `temp` (°C), and the temperature step that
+    /// doubles it, when the technology gives dark current densities.
+    pub dark: Option<(f64, f64)>,
+    pub temp: f64,
     /// The charge injection deck simulated.
     pub deck: String,
 }
@@ -71,6 +75,14 @@ impl PixelMetrics {
             self.cg_col_uv,
             self.sf_gain
         );
+        if let Some((i, doubling)) = self.dark {
+            s += &format!(
+                "Dark current: {:.2} aA = {:.1} e-/s at {} C (doubles every {doubling:.1} C)\n",
+                i * 1e18,
+                i / Q_E,
+                self.temp
+            );
+        }
         if let Some(p) = &self.pd {
             let transfer = match (p.transferred_e, p.lag_e) {
                 (Some(t), Some(l)) => format!("; transfer of {INJECT_ELECTRONS:.0} e-: {t:.1} e- out, lag {l:.1} e-"),
@@ -197,7 +209,22 @@ pub fn characterize(
         }
         None => None,
     };
-    Ok(PixelMetrics { v_fd_reset: fd0, c_fd, cg_fd_uv, cg_col_uv: cg_fd_uv * sf_gain, sf_gain, pd, pinned, deck })
+    let dark = first.and_then(|(d, _)| {
+        let doubling = b.photodiode.as_ref()?.dark_doubling(b.temp);
+        b.dark_current(&sub, d).map(|i| (i, doubling))
+    });
+    Ok(PixelMetrics {
+        v_fd_reset: fd0,
+        c_fd,
+        cg_fd_uv,
+        cg_col_uv: cg_fd_uv * sf_gain,
+        sf_gain,
+        pd,
+        pinned,
+        dark,
+        temp: b.temp,
+        deck,
+    })
 }
 
 #[cfg(test)]
@@ -248,6 +275,10 @@ mod tests {
         assert!(pd.v_reset <= 0.5 && pd.v_reset > 0.35, "{}", m.summary());
         assert!((pd.c - 6.4125e-15).abs() < 0.3e-15, "{}", m.summary());
         // Nearly complete transfer: only the spill-back at TX turn-off stays.
+        // Demo dark current: 3 aA/µm² at 60 °C, a tenth of it at 27 °C.
+        let (i, doubling) = m.dark.unwrap();
+        assert!(i > 2.5e-18 && i < 5e-18 && (doubling - 8.97).abs() < 0.05, "{}", m.summary());
+        assert!(m.deck.contains("IDK_D1 pd_q 0 DC "), "{}", m.deck);
         let (t, l) = (pd.transferred_e.unwrap(), pd.lag_e.unwrap());
         assert!(l < 0.1 * INJECT_ELECTRONS && (t + l - INJECT_ELECTRONS).abs() < 1e-9, "{}", m.summary());
         // Full well: from the pinning voltage down to where TX or the substrate junction blooms.

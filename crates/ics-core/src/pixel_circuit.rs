@@ -287,13 +287,24 @@ pub struct Testbench {
     pub wire_caps: Vec<NetCap>,
     pub stimulus: Stimulus,
     /// The technology's photodiode: a pinned one ([`PhotodiodeDef::pinning`]) is drawn as its
-    /// storage node (see [`schematic`]).
+    /// storage node (see [`schematic`]); with dark current densities each photodiode gets its
+    /// dark current at `temp` as a source `IDK_<name>`.
     pub photodiode: Option<PhotodiodeDef>,
+    /// Simulation temperature (°C).
+    pub temp: f64,
 }
 
 impl Default for Testbench {
     fn default() -> Self {
-        Testbench { vdd: 1.8, iph: 10e-9, icol: 2e-6, wire_caps: Vec::new(), stimulus: Stimulus::ResetTransfer, photodiode: None }
+        Testbench {
+            vdd: 1.8,
+            iph: 10e-9,
+            icol: 2e-6,
+            wire_caps: Vec::new(),
+            stimulus: Stimulus::ResetTransfer,
+            photodiode: None,
+            temp: 27.0,
+        }
     }
 }
 
@@ -310,6 +321,12 @@ impl Testbench {
     /// Pinning voltage when the photodiode is pinned.
     pub fn pinning(&self) -> Option<f64> {
         self.photodiode.as_ref().and_then(|d| d.pinning)
+    }
+
+    /// Dark current (A) of photodiode `d` of `x` at the bench temperature.
+    pub fn dark_current(&self, x: &Extraction, d: &Photodiode) -> Option<f64> {
+        let u = x.dbu_per_um.max(1) as f64;
+        self.photodiode.as_ref()?.dark_current(d.area as f64 / (u * u), d.perimeter as f64 / u, self.temp)
     }
 }
 
@@ -653,6 +670,19 @@ pub fn schematic(x: &Extraction, pc: &PixelCircuit, bench: Option<&Testbench>) -
                 }
             }
         }
+        // Dark current of every photodiode, from its charge node like the photocurrent.
+        let mut dark = BTreeSet::new();
+        for p in &pc.pixels {
+            for &(k, _) in &p.photodiodes {
+                let d = &x.photodiodes[k];
+                if let Some(i) = b.dark_current(x, d).filter(|_| dark.insert(k)) {
+                    let (q, well) = (charge_net(x, d, Some(b)), spice(dr.net_name(d.well())));
+                    let (pn, nn) = if d.n_type { (q, well) } else { (well, q) };
+                    extra.push(format!("* dark current of {} at {} C", d.name, b.temp));
+                    extra.push(format!("IDK_{} {pn} {nn} DC {}", d.name, val(i)));
+                }
+            }
+        }
         if let Stimulus::ChargeInjection { pd } = st
             && let Some(p) = pc.pixels.first()
         {
@@ -675,6 +705,7 @@ pub fn schematic(x: &Extraction, pc: &PixelCircuit, bench: Option<&Testbench>) -
             }
         }
         sim.extra = extra.join("\n");
+        sim.temp = b.temp;
         sim.set_enabled("op", false);
         sim.set_enabled("tran", true);
         let (step, stop) = match st {

@@ -876,6 +876,18 @@ pub struct PhotodiodeDef {
     pub cap_area: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cap_perimeter: Option<f64>,
+    /// Dark current density per area (aA/µm²) and perimeter (aA/µm) at `dark_temp`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dark_area: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dark_perimeter: Option<f64>,
+    /// Temperature (°C) of the dark current densities (default 60).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dark_temp: Option<f64>,
+    /// Activation energy (eV) of the dark current: about 0.6 for generation in the depletion
+    /// region (the default), the band gap 1.12 for diffusion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dark_activation: Option<f64>,
 }
 
 impl PhotodiodeDef {
@@ -883,6 +895,31 @@ impl PhotodiodeDef {
     /// (1 fF/µm² when `cap_area` is unset).
     pub fn storage_cap(&self, area: f64, perimeter: f64) -> f64 {
         (self.cap_area.unwrap_or(1.0) * area + self.cap_perimeter.unwrap_or(0.0) * perimeter) * 1e-15
+    }
+
+    /// Dark current (A) of a photodiode of `area` µm² and `perimeter` µm at `temp` °C:
+    /// the densities at `dark_temp` scaled by exp(Ea / k (1 / T_ref - 1 / T)). `None` without
+    /// dark current densities.
+    pub fn dark_current(&self, area: f64, perimeter: f64, temp: f64) -> Option<f64> {
+        if self.dark_area.is_none() && self.dark_perimeter.is_none() {
+            return None;
+        }
+        let at_ref = (self.dark_area.unwrap_or(0.0) * area + self.dark_perimeter.unwrap_or(0.0) * perimeter) * 1e-18;
+        Some(at_ref * self.dark_scale(temp))
+    }
+
+    /// Dark current at `temp` °C over that at `dark_temp`.
+    pub fn dark_scale(&self, temp: f64) -> f64 {
+        const K_EV: f64 = 8.617_333e-5;
+        let (t, t_ref) = (temp + 273.15, self.dark_temp.unwrap_or(60.0) + 273.15);
+        (self.dark_activation.unwrap_or(0.6) / K_EV * (1.0 / t_ref - 1.0 / t)).exp()
+    }
+
+    /// Temperature step (K) that doubles the dark current near `temp` °C.
+    pub fn dark_doubling(&self, temp: f64) -> f64 {
+        const K_EV: f64 = 8.617_333e-5;
+        let t = temp + 273.15;
+        K_EV * t * t * std::f64::consts::LN_2 / self.dark_activation.unwrap_or(0.6)
     }
 }
 
@@ -979,6 +1016,10 @@ impl CrossSection {
                 pinning: Some(0.5),
                 cap_area: Some(0.5),
                 cap_perimeter: None,
+                dark_area: Some(3.0),
+                dark_perimeter: None,
+                dark_temp: Some(60.0),
+                dark_activation: Some(0.6),
             }),
             pixel: Some(PixelOptics { color_filter: 0.9, planarisation: 0.4, microlens_height: 2.5, center_on_photodiode: true }),
             silicon: Some(SiliconDef { diffusion_length: 20.0, epi: 5.0 }),
@@ -1225,6 +1266,22 @@ impl Default for Tech {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn photodiode_dark_current() {
+        let pd = Tech::generic().cross_section.unwrap().photodiode.unwrap();
+        // 3 aA/µm² at 60 °C over 12.825 µm².
+        let i60 = pd.dark_current(12.825, 14.9, 60.0).unwrap();
+        assert!((i60 - 3.0 * 12.825e-18).abs() < 1e-24, "{i60}");
+        // Activation 0.6 eV: about 8 °C doubles it at room temperature, ten times less at 27 °C.
+        let d = pd.dark_doubling(27.0);
+        assert!((d - 8.97).abs() < 0.05, "{d}");
+        assert!((pd.dark_current(12.825, 0.0, 60.0 + pd.dark_doubling(60.0)).unwrap() / i60 - 2.0).abs() < 0.05);
+        let r = pd.dark_current(12.825, 0.0, 27.0).unwrap() / i60;
+        assert!(r > 0.08 && r < 0.12, "{r}");
+        let none = PhotodiodeDef { dark_area: None, ..pd };
+        assert_eq!(none.dark_current(1.0, 1.0, 27.0), None);
+    }
 
     #[test]
     fn cross_section_gives_a_pixel_stack() {

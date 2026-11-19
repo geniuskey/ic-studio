@@ -638,6 +638,9 @@ enum Cmd {
         /// Test bench photocurrent per photodiode (A).
         #[arg(long, default_value_t = 10e-9)]
         iph: f64,
+        /// Test bench temperature (°C): the simulations and the photodiode dark current.
+        #[arg(long, default_value_t = 27.0)]
+        temp: f64,
     },
     /// Compare a cell's layout with its schematic (non-zero exit on differences).
     Lvs { project: PathBuf, cell: String },
@@ -2647,7 +2650,20 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             p.save().map_err(|e| e.to_string())?;
         }
-        Cmd::Extract { project, cell, pixel, characterize, backend: b, schematic, into, overwrite, no_testbench, vdd, iph } => {
+        Cmd::Extract {
+            project,
+            cell,
+            pixel,
+            characterize,
+            backend: b,
+            schematic,
+            into,
+            overwrite,
+            no_testbench,
+            vdd,
+            iph,
+            temp,
+        } => {
             let mut p = Project::open(&project).map_err(|e| e.to_string())?;
             let r = resolve(&p, &cell)?;
             let lay = p.cell(&r).unwrap().layout.as_ref().ok_or("cell has no layout")?;
@@ -2673,8 +2689,12 @@ fn run(cli: Cli) -> Result<(), String> {
                 for w in &pc.warnings {
                     eprintln!("warning: {w}");
                 }
-                let tb =
-                    ics_core::pixel_circuit::Testbench { vdd, iph, ..ics_core::pixel_circuit::Testbench::for_tech(&x, &p.tech) };
+                let tb = ics_core::pixel_circuit::Testbench {
+                    vdd,
+                    iph,
+                    temp,
+                    ..ics_core::pixel_circuit::Testbench::for_tech(&x, &p.tech)
+                };
                 if pixel {
                     print!("{}", pc.report(&x, &tb.wire_caps));
                 }

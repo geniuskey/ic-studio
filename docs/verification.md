@@ -150,7 +150,8 @@ line:
 
 ```bash
 ics extract demo aps4t --pixel                      # roles, W / L, junctions, PD and FD geometry
-ics extract demo aps4t --pixel --characterize       # + C_FD, conversion gain, SF gain, C_PD
+ics extract demo aps4t --pixel --characterize       # + C_FD, conversion gain, SF gain, C_PD, ...
+ics extract demo aps4t --pixel --characterize --temp 60
 ics extract demo aps4t --schematic --into aps4t_sch # draw it, with the test bench
 ics sim demo aps4t_sch
 ```
@@ -163,6 +164,7 @@ capacitance on the node and its wire capacitance from the layout:
 
 ```
 pixel 1 FD: reset 0.946 V, C = 1.638 fF, CG = 97.8 uV/e- at FD, 81.6 uV/e- at the column (SF gain 0.834)
+  Dark current: 3.86 aA = 24.1 e-/s at 27 C (doubles every 9.0 C)
   PD (pinned): reset 0.443 V, C = 6.512 fF; transfer of 500 e-: 480.4 e- out, lag 19.6 e-; full well 32740 e- (saturates at -0.363 V)
 ```
 
@@ -183,6 +185,12 @@ The characterisation then also reports, for the first photodiode:
   it gets no transfer figures. The spill-back depends on how the channel charge splits at
   turn-off: the generic level-1 models (Meyer capacitances) do not conserve that charge, so
   take lag from a charge-conserving model (BSIM4 of a PDK).
+- **Dark current** (with the photodiode's `dark_area` / `dark_perimeter`): the densities at
+  `dark_temp` scaled to the bench temperature (`--temp`, 27 °C by default) by
+  exp(Ea / k (1 / T_ref − 1 / T)), in aA and electrons per second, with the temperature step
+  that doubles it (about 9 °C for 0.6 eV). The drawn test bench adds it as `IDK_D1` from the
+  charge node, at the bench temperature (a later change of the setup temperature does not
+  update it).
 - **Full well**: FD held in reset, the photodiode filled by light at three times the rate
   needed to empty it in 1.5 µs; FWC = C × (reset − saturated voltage). `not yet saturated`
   warns when it still moves at the end.

@@ -287,7 +287,7 @@ silicon = { diffusion_length = 20.0, epi = 5.0 }
 | 키 | 내용 |
 |---|---|
 | `levels` | `name`, `material`(유전체), `thickness`, 선택적으로 `layer`(레이아웃 레이어 또는 파생 레이어 식)와 `metal`(그 층 안의 금속 재료), `film`(코히어런트로 다루는 박막) |
-| `photodiode` | `layer`(수집 영역의 레이어나 식), 실리콘 표면 아래 `top`, `bottom` 깊이. pinned 포토다이오드 회로 시뮬레이션용으로 `pinning`(V)과 저장 용량 `cap_area`(fF/µm², 기본 1), `cap_perimeter`(fF/µm)([포토다이오드와 픽셀](verification.md#포토다이오드와-픽셀이미지-센서) 참고) |
+| `photodiode` | `layer`(수집 영역의 레이어나 식), 실리콘 표면 아래 `top`, `bottom` 깊이. pinned 포토다이오드 회로 시뮬레이션용으로 `pinning`(V)과 저장 용량 `cap_area`(fF/µm², 기본 1), `cap_perimeter`(fF/µm), 그리고 암전류: `dark_temp`(°C, 기본 60)에서의 `dark_area`(aA/µm²)와 `dark_perimeter`(aA/µm), 활성화 에너지 `dark_activation`(eV, 기본 0.6)([포토다이오드와 픽셀](verification.md#포토다이오드와-픽셀이미지-센서) 참고) |
 | `pixel` | 컬러 필터와 평탄화층 두께, 마이크로렌즈 높이, `center_on_photodiode` |
 | `silicon` | 캐리어 수집용 소수 캐리어 확산 길이와 에피층 두께 |
 

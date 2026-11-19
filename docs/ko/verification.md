@@ -131,7 +131,8 @@ Live DRC는 증분적이고 계층적이어서 큰 레이아웃에서도 빠릅�
 
 ```bash
 ics extract demo aps4t --pixel                      # 역할, W / L, 접합, PD와 FD 형상
-ics extract demo aps4t --pixel --characterize       # + C_FD, 변환 이득, SF 이득, C_PD
+ics extract demo aps4t --pixel --characterize       # + C_FD, 변환 이득, SF 이득, C_PD 등
+ics extract demo aps4t --pixel --characterize --temp 60
 ics extract demo aps4t --schematic --into aps4t_sch # 테스트벤치와 함께 회로도 생성
 ics sim demo aps4t_sch
 ```
@@ -143,6 +144,7 @@ ics sim demo aps4t_sch
 
 ```
 pixel 1 FD: reset 0.946 V, C = 1.638 fF, CG = 97.8 uV/e- at FD, 81.6 uV/e- at the column (SF gain 0.834)
+  Dark current: 3.86 aA = 24.1 e-/s at 27 C (doubles every 9.0 C)
   PD (pinned): reset 0.443 V, C = 6.512 fF; transfer of 500 e-: 480.4 e- out, lag 19.6 e-; full well 32740 e- (saturates at -0.363 V)
 ```
 
@@ -161,6 +163,10 @@ pinned로 모델링합니다. 전하는 저장 용량(`cap_area` × 면적 + `ca
   일반 접합은 전송 대신 FD와 전하를 나누므로 전송 수치가 없습니다. spill-back은 턴오프 때 채널 전하가
   나뉘는 방식에 달려 있습니다. 기본 level-1 모델(Meyer 용량)은 이 전하를 보존하지 않으므로, lag는 전하
   보존 모델(PDK의 BSIM4)로 보세요.
+- **암전류**(포토다이오드의 `dark_area` / `dark_perimeter`가 있을 때): `dark_temp`에서의 밀도를
+  exp(Ea / k (1 / T_ref − 1 / T))로 테스트벤치 온도(`--temp`, 기본 27 °C)에 맞춰 aA와 초당 전자 수로
+  보고하고, 두 배가 되는 온도 간격(0.6 eV에서 약 9 °C)도 함께 냅니다. 그려진 테스트벤치에는 전하
+  노드에서 나가는 `IDK_D1`로 테스트벤치 온도 값이 들어갑니다(나중에 설정 온도를 바꿔도 갱신되지 않음).
 - **Full well**: FD를 리셋에 묶어 두고, 1.5 µs 안에 비울 수 있는 속도의 세 배로 빛을 넣어 포토다이오드를
   채웁니다. FWC = C × (리셋 − 포화 전압). 끝에서도 계속 움직이면 `not yet saturated`로 알립니다.
 
