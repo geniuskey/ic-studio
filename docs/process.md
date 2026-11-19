@@ -109,6 +109,29 @@ channelling. Real junctions after an RTA come out deeper than the emulated ones.
 is vertical only (no bird's beak). Also missing are stress, topography effects of CMP, and
 3-D effects across the cut.
 
+### Pinned photodiode
+
+`--pinned-pd X` analyses the column at X (µm along the cut) as a pinned photodiode: the
+buried n region between the p+ pinning layer and the p region below, fully depleted. Solving
+Poisson's equation in the depletion approximation for edges where the charge balances and
+both p sides sit at 0 V gives the **pinning voltage** (the potential maximum) and the
+**storage capacitance** per area (the two depletion layers in parallel at full depletion).
+`--apply` writes both into the technology's photodiode (`pinning`, `cap_area`), which the
+pixel characterisation then simulates (see
+[Photodiodes and pixels](verification.md#photodiodes-and-pixels-image-sensors)).
+`process/generic180_ppd.toml` is the generic flow with such a photodiode under the demo
+pixels' wide diffusion (kept out of the p-well and the n+ implant):
+
+```bash
+ics xsection demo aps4t --flow process/generic180_ppd.toml --cut 0,1.5,5.6,1.5 --pinned-pd 2.8 --apply
+# pinning 1.126 V, storage capacitance 0.3754 fF/µm^2
+ics extract demo aps4t --pixel --characterize            # 1.8 V: FD resets below Vpin, lag
+ics extract demo aps4t --pixel --characterize --vdd 3.3  # complete transfer
+```
+
+A mask can be a sequence of definitions separated by `;`, the last one the mask:
+`pd = active wide 1; nplus not pd`.
+
 ## Process data
 
 ![Process Data: WAT parameters, the control chart of vtn with the shifted lot, and its distribution against the corners](screenshots/tool_process_data.png)

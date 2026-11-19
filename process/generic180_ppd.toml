@@ -1,0 +1,268 @@
+# Process flow of the generic 180 nm technology with a pinned photodiode, for the process
+# emulator (`ics xsection`, Tools > Process Emulation): `generic180.toml` with the photodiode
+# (the wide diffusion, `active wide 1`, as the demo pixels draw it) kept out of the p-well and
+# the n+ source / drain implant, and given a buried n implant under a shallow p+ pinning
+# implant. `ics xsection <project> aps4t --flow process/generic180_ppd.toml --cut 0,1.5,5.6,1.5
+# --pinned-pd 2.8` works out its pinning voltage and storage capacitance (`--apply` writes them
+# into the technology's photodiode). Masks are layout layers or derived-layer expressions of the
+# technology; `mask` acts where the layer is drawn, `keep` where it is not. Thicknesses in µm;
+# a few are exaggerated (gate oxide) so that they show at the grid resolution. Implants with a
+# species, dose (cm^-2) and energy (keV) add dopants; anneal and oxidize diffuse them (times in
+# minutes, temperatures in °C). Diffusion is intrinsic: transient enhanced diffusion after the
+# S/D implants is not modelled, so junctions come out a little shallow.
+name = "generic180 FEOL + pinned photodiode + 3 metals"
+substrate = "si"
+substrate_depth = 1.2
+resolution = 0.005
+substrate_doping = { species = "boron", concentration = 1e15 }
+
+# Shallow trench isolation
+[[step]]
+name = "STI etch"
+op = "etch"
+keep = "active"
+materials = ["si"]
+depth = 0.35
+
+[[step]]
+name = "STI fill"
+op = "deposit"
+material = "sio2"
+thickness = 0.45
+conformal = true
+
+[[step]]
+name = "STI CMP"
+op = "planarize"
+height = 0.0
+
+# Wells
+[[step]]
+name = "n-well"
+op = "implant"
+mask = "nwell"
+species = "phosphorus"
+dose = 2e13
+energy = 300
+
+[[step]]
+name = "p-well"
+op = "implant"
+keep = "pd = active wide 1; nwell or pd"
+species = "boron"
+dose = 1.5e13
+energy = 180
+
+[[step]]
+name = "well drive-in"
+op = "anneal"
+temperature = 1050
+time = 30
+
+# Gate
+[[step]]
+name = "gate oxide"
+op = "oxidize"
+temperature = 1000
+time = 15
+material = "gox"
+
+[[step]]
+name = "poly"
+op = "deposit"
+material = "poly"
+thickness = 0.18
+
+[[step]]
+name = "gate etch"
+op = "etch"
+keep = "poly"
+materials = ["poly", "gox"]
+
+[[step]]
+name = "spacer"
+op = "deposit"
+material = "si3n4"
+thickness = 0.06
+conformal = true
+
+[[step]]
+name = "spacer etch"
+op = "etch"
+materials = ["si3n4"]
+depth = 0.06
+
+# Source / drain and taps
+[[step]]
+name = "photodiode n implant"
+op = "implant"
+mask = "active wide 1"
+species = "phosphorus"
+dose = 5e11
+energy = 300
+
+[[step]]
+name = "pinning p+ implant"
+op = "implant"
+mask = "active wide 1"
+species = "boron"
+dose = 2e13
+energy = 10
+
+[[step]]
+name = "n+ implant"
+op = "implant"
+mask = "pd = active wide 1; nplus not pd"
+species = "arsenic"
+dose = 5e15
+energy = 40
+
+[[step]]
+name = "p+ implant"
+op = "implant"
+mask = "pplus"
+species = "bf2"
+dose = 3e15
+energy = 30
+
+[[step]]
+name = "S/D anneal (RTA)"
+op = "anneal"
+temperature = 1050
+time = 1
+
+# Contacts and metal 1
+[[step]]
+name = "PMD"
+op = "deposit"
+material = "sio2"
+thickness = 0.9
+conformal = true
+
+[[step]]
+name = "PMD CMP"
+op = "planarize"
+height = 0.75
+
+[[step]]
+name = "contact etch"
+op = "etch"
+mask = "contact"
+materials = ["sio2"]
+
+[[step]]
+name = "tungsten"
+op = "deposit"
+material = "w"
+thickness = 0.15
+conformal = true
+
+[[step]]
+name = "W CMP"
+op = "planarize"
+height = 0.75
+
+[[step]]
+name = "metal 1"
+op = "deposit"
+material = "al"
+thickness = 0.5
+
+[[step]]
+name = "metal 1 etch"
+op = "etch"
+keep = "metal1"
+materials = ["al"]
+
+# Via 1 and metal 2
+[[step]]
+name = "IMD 1"
+op = "deposit"
+material = "sio2"
+thickness = 1.0
+conformal = true
+
+[[step]]
+name = "IMD 1 CMP"
+op = "planarize"
+height = 1.75
+
+[[step]]
+name = "via 1 etch"
+op = "etch"
+mask = "via1"
+materials = ["sio2"]
+
+[[step]]
+name = "via 1 fill"
+op = "deposit"
+material = "w"
+thickness = 0.15
+conformal = true
+
+[[step]]
+name = "via 1 CMP"
+op = "planarize"
+height = 1.75
+
+[[step]]
+name = "metal 2"
+op = "deposit"
+material = "al"
+thickness = 0.5
+
+[[step]]
+name = "metal 2 etch"
+op = "etch"
+keep = "metal2"
+materials = ["al"]
+
+# Via 2 and metal 3
+[[step]]
+name = "IMD 2"
+op = "deposit"
+material = "sio2"
+thickness = 1.0
+conformal = true
+
+[[step]]
+name = "IMD 2 CMP"
+op = "planarize"
+height = 2.75
+
+[[step]]
+name = "via 2 etch"
+op = "etch"
+mask = "via2"
+materials = ["sio2"]
+
+[[step]]
+name = "via 2 fill"
+op = "deposit"
+material = "w"
+thickness = 0.15
+conformal = true
+
+[[step]]
+name = "via 2 CMP"
+op = "planarize"
+height = 2.75
+
+[[step]]
+name = "metal 3"
+op = "deposit"
+material = "al"
+thickness = 0.6
+
+[[step]]
+name = "metal 3 etch"
+op = "etch"
+keep = "metal3"
+materials = ["al"]
+
+[[step]]
+name = "passivation"
+op = "deposit"
+material = "si3n4"
+thickness = 0.5
+conformal = true

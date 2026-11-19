@@ -521,6 +521,14 @@ enum Cmd {
         /// Write the dopant depth profile at the first --at position (or the middle) as CSV.
         #[arg(long)]
         profile: Option<PathBuf>,
+        /// Analyse the column at this position (µm along the cut) as a pinned photodiode: the
+        /// pinning voltage and storage capacitance of its buried n region.
+        #[arg(long)]
+        pinned_pd: Option<f64>,
+        /// With --pinned-pd: write them into the technology's photodiode (`pinning`,
+        /// `cap_area`) and save the project.
+        #[arg(long, requires = "pinned_pd")]
+        apply: bool,
         #[arg(long)]
         json: bool,
     },
@@ -2191,9 +2199,9 @@ fn run(cli: Cli) -> Result<(), String> {
                 p.save().map_err(|e| e.to_string())?;
             }
         }
-        Cmd::Xsection { project, cell, flow, cut, steps, at, svg, profile, json } => {
+        Cmd::Xsection { project, cell, flow, cut, steps, at, svg, profile, pinned_pd, apply, json } => {
             use ics_core::process::{Cut, GENERIC180, ProcessFlow, default_cut, emulate_cell};
-            let p = Project::open(&project).map_err(|e| e.to_string())?;
+            let mut p = Project::open(&project).map_err(|e| e.to_string())?;
             let r = resolve(&p, &cell)?;
             let text = match &flow {
                 Some(f) => std::fs::read_to_string(f).map_err(|e| format!("{}: {e}", f.display()))?,
@@ -2286,6 +2294,35 @@ fn run(cli: Cli) -> Result<(), String> {
                 std::fs::write(path, s.svg(&fl, px_per_um, &format!("{r} {}", fl.name)))
                     .map_err(|e| format!("{}: {e}", path.display()))?;
                 eprintln!("wrote {}", path.display());
+            }
+            if let Some(x) = pinned_pd {
+                let pd = ics_core::pinned_pd::from_section(&s, x)?;
+                println!(
+                    "pinned photodiode at x = {x}: n region {:.3}..{:.3} µm ({:.3e} cm^-2), potential peak at {:.3} µm, \
+                     depleted {:.3}..{:.3} µm\n  pinning {:.3} V, storage capacitance {:.4} fF/µm^2  ->  {}",
+                    pd.n_top,
+                    pd.n_bottom,
+                    pd.n_dose,
+                    pd.peak,
+                    pd.depletion.0,
+                    pd.depletion.1,
+                    pd.vpin,
+                    pd.cap_area,
+                    pd.toml()
+                );
+                if apply {
+                    let def = p
+                        .tech
+                        .cross_section
+                        .as_mut()
+                        .and_then(|c| c.photodiode.as_mut())
+                        .ok_or("the technology has no cross-section photodiode to set")?;
+                    def.pinning = Some((pd.vpin * 1000.0).round() / 1000.0);
+                    def.cap_area = Some((pd.cap_area * 1e4).round() / 1e4);
+                    def.cap_perimeter = None;
+                    p.save().map_err(|e| e.to_string())?;
+                    println!("  written to the technology's photodiode");
+                }
             }
         }
         Cmd::ProcessData { data, spec, json } => {

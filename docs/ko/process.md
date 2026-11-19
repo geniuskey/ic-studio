@@ -70,6 +70,26 @@
 실제 RTA 후의 접합은 에뮬레이션보다 깊습니다. 산화는 수직으로만 일어납니다(bird's beak 없음). 응력, CMP의
 토포그래피 효과, 컷을 가로지르는 3차원 효과도 없습니다.
 
+### Pinned 포토다이오드
+
+`--pinned-pd X`는 X 위치(컷을 따라 µm)의 수직 단면을 pinned 포토다이오드로 분석합니다. p+ pinning
+층과 아래 p 영역 사이에 묻힌 n 영역이 완전 공핍된 상태입니다. 전하가 균형을 이루고 양쪽 p가 0 V에
+있도록 공핍 경계를 잡아 공핍 근사로 푸아송 방정식을 풀면, **pinning 전압**(전위 최대값)과 면적당
+**저장 용량**(완전 공핍에서 두 공핍층의 병렬)이 나옵니다. `--apply`는 둘을 기술 파일의 포토다이오드
+(`pinning`, `cap_area`)에 기록하고, 픽셀 특성 추출이 그 값으로 시뮬레이션합니다
+([포토다이오드와 픽셀](verification.md#포토다이오드와-픽셀이미지-센서) 참고).
+`process/generic180_ppd.toml`은 데모 픽셀의 넓은 확산 아래에 이런 포토다이오드를 둔 generic 흐름입니다
+(p-well과 n+ 임플란트에서 제외).
+
+```bash
+ics xsection demo aps4t --flow process/generic180_ppd.toml --cut 0,1.5,5.6,1.5 --pinned-pd 2.8 --apply
+# pinning 1.126 V, storage capacitance 0.3754 fF/µm^2
+ics extract demo aps4t --pixel --characterize            # 1.8 V: FD 리셋이 Vpin보다 낮아 lag 발생
+ics extract demo aps4t --pixel --characterize --vdd 3.3  # 완전 전송
+```
+
+마스크는 `;`로 구분한 정의의 나열일 수 있으며 마지막이 마스크입니다: `pd = active wide 1; nplus not pd`.
+
 ## 공정 데이터
 
 ![Process Data: WAT 파라미터, 이동한 로트가 보이는 vtn 관리도, 코너와 비교한 분포](../screenshots/tool_process_data.png)

@@ -1005,6 +1005,8 @@ pub fn default_cut(project: &Project, cell: &CellRef) -> Result<Cut, String> {
 
 /// The process flow of the generic 180 nm technology.
 pub const GENERIC180: &str = include_str!("../../../process/generic180.toml");
+/// `GENERIC180` with a pinned photodiode under the wide diffusion of the demo pixels.
+pub const GENERIC180_PPD: &str = include_str!("../../../process/generic180_ppd.toml");
 
 #[cfg(test)]
 mod tests {

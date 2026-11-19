@@ -573,13 +573,17 @@ pub fn deck_file_text(text: &str, path: &std::path::Path) -> Result<(String, Vec
 }
 
 /// The region of a layer name or derived-layer expression in the deck syntax (e.g.
-/// `active wide 1`), from the merged region of every technology layer.
+/// `active wide 1`), from the merged region of every technology layer. Steps go before it
+/// separated by `;` as named definitions: `pd = active wide 1; nplus not pd`.
 pub fn derived_region(expr: &str, tech: &Tech, layers: &[Region]) -> Result<Region, String> {
     if let Some(i) = tech.layer_index(expr.trim()) {
         return Ok(layers.get(i).cloned().unwrap_or_default());
     }
-    let deck = parse_deck(&format!("_derived_ = {expr}\n"), tech)
-        .map_err(|e| e.iter().map(|e| e.message.clone()).collect::<Vec<_>>().join("; "))?;
+    let mut parts: Vec<&str> = expr.split(';').map(str::trim).filter(|p| !p.is_empty()).collect();
+    let last = parts.pop().ok_or("empty layer expression")?;
+    let mut text: String = parts.iter().map(|p| format!("{p}\n")).collect();
+    text += &format!("_derived_ = {last}\n");
+    let deck = parse_deck(&text, tech).map_err(|e| e.iter().map(|e| e.message.clone()).collect::<Vec<_>>().join("; "))?;
     if deck.derived.is_empty() {
         return Err(format!("'{expr}' is not a layer expression"));
     }

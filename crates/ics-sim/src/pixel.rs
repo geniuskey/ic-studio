@@ -138,6 +138,13 @@ impl PixelMetrics {
                 p.v_saturated,
                 if p.saturated { "" } else { ", not yet saturated" }
             );
+            if self.pinned && p.v_reset > self.v_fd_reset - 0.2 {
+                s += &format!(
+                    "  warning: {} sits at {:.2} V, within 0.2 V of the FD reset level {:.2} V or above it: the transfer \
+                     cannot empty it (raise the supply or lower the pinning voltage)\n",
+                    p.name, p.v_reset, self.v_fd_reset
+                );
+            }
         }
         s
     }
@@ -440,5 +447,19 @@ mod tests {
         assert!(out.contains(".model nm2 nmos vto=0.5 capmod=1"), "{out}");
         assert!(out.contains(".model b4 nmos (level=54 toxe=3n)\n"), "{out}");
         assert!(out.contains(".model q npn (bf=100)\n") && out.contains("(level=1 capmod=0)"), "{out}");
+    }
+
+    #[test]
+    fn pinning_above_the_fd_reset_level_leaves_the_charge() {
+        // Pinned at 1.2 V with a 1.8 V supply (FD resets near 1 V): TX cannot empty it.
+        let (p, x, pc) = aps4t();
+        let mut bench = Testbench::for_tech(&x, &p.tech);
+        bench.photodiode.as_mut().unwrap().pinning = Some(1.2);
+        let m = characterize(&x, &pc, 0, &p.tech, &bench, "", &SimOptions::default()).unwrap();
+        assert!(m.pds[0].lag_e.unwrap() > 0.3 * INJECT_ELECTRONS, "{}", m.summary());
+        assert!(m.summary().contains("cannot empty it"), "{}", m.summary());
+        // A 3.3 V supply resets FD high enough again.
+        let m = characterize(&x, &pc, 0, &p.tech, &Testbench { vdd: 3.3, ..bench }, "", &SimOptions::default()).unwrap();
+        assert!(m.pds[0].lag_e.unwrap() < 0.05 * INJECT_ELECTRONS && !m.summary().contains("warning"), "{}", m.summary());
     }
 }
