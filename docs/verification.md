@@ -150,9 +150,24 @@ line:
 
 ```bash
 ics extract demo aps4t --pixel                      # roles, W / L, junctions, PD and FD geometry
+ics extract demo aps4t --pixel --characterize       # + C_FD, conversion gain, SF gain, C_PD
 ics extract demo aps4t --schematic --into aps4t_sch # draw it, with the test bench
 ics sim demo aps4t_sch
 ```
+
+`--characterize` (MCP `extract` with `characterize: true`; **Schematic from Layout** does it
+for the first pixel) simulates each pixel alone with the device models of the technology:
+FD and every photodiode are reset, RST and TX turn off, then 500 electrons are taken out of
+FD and out of the first photodiode. C = Q / ΔV includes every junction, overlap and gate
+capacitance on the node and its wire capacitance from the layout:
+
+```
+pixel 1 FD: reset 0.946 V, C = 1.638 fF, CG = 97.8 uV/e- at FD, 81.6 uV/e- at the column (SF gain 0.834)
+  PD: reset 1.126 V, C = 11.144 fF (69558 e-/V)
+```
+
+A transfer gate with its own threshold implant takes its PDK model when the technology lists
+that device with the implant as a marker layer (`[[device]]` `layers`), as any transistor does.
 
 ## Layout versus schematic (LVS)
 

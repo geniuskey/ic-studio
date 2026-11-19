@@ -19,6 +19,7 @@ pub mod linalg;
 pub mod montecarlo;
 pub mod ngspice;
 pub mod optimize;
+pub mod pixel;
 pub mod results;
 pub mod silicon;
 pub mod sweep;

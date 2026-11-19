@@ -612,6 +612,13 @@ enum Cmd {
         /// with W / L and junctions, the floating diffusion and the photodiode geometry.
         #[arg(long)]
         pixel: bool,
+        /// With --pixel: simulate each pixel (up to 16) with charge injection for its FD and
+        /// photodiode capacitance, conversion gain (µV/e-) and source follower gain.
+        #[arg(long, requires = "pixel")]
+        characterize: bool,
+        /// Simulator for --characterize (auto: ngspice when the PDK models need it).
+        #[arg(long, value_enum, default_value = "auto")]
+        backend: BackendArg,
         /// Draw a schematic of the extraction (pixels in the textbook arrangement) with a test
         /// bench and transient setup, into the cell (or `--into`), and save the project.
         #[arg(long)]
@@ -2640,7 +2647,7 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             p.save().map_err(|e| e.to_string())?;
         }
-        Cmd::Extract { project, cell, pixel, schematic, into, overwrite, no_testbench, vdd, iph } => {
+        Cmd::Extract { project, cell, pixel, characterize, backend: b, schematic, into, overwrite, no_testbench, vdd, iph } => {
             let mut p = Project::open(&project).map_err(|e| e.to_string())?;
             let r = resolve(&p, &cell)?;
             let lay = p.cell(&r).unwrap().layout.as_ref().ok_or("cell has no layout")?;
@@ -2669,6 +2676,17 @@ fn run(cli: Cli) -> Result<(), String> {
                 let caps = ics_core::pex::net_caps(&x, &p.tech);
                 if pixel {
                     print!("{}", pc.report(&x, &caps));
+                }
+                if characterize {
+                    let bench = ics_core::pixel_circuit::Testbench { vdd, wire_caps: caps.clone(), ..Default::default() };
+                    let opts = SimOptions { backend: backend(b), deck_dir: Some(project.clone()), ..Default::default() };
+                    let corner = p.cell(&r).map(|c| c.sim.corner.clone()).unwrap_or_default();
+                    for k in 0..pc.pixels.len().min(16) {
+                        match ics_sim::pixel::characterize(&x, &pc, k, &p.tech, &bench, &corner, &opts) {
+                            Ok(m) => print!("pixel {} {}", k + 1, m.summary().replace('\n', "\n  ").trim_end_matches(' ')),
+                            Err(e) => eprintln!("warning: pixel {}: {e}", k + 1),
+                        }
+                    }
                 }
                 if schematic {
                     let bench = ics_core::pixel_circuit::Testbench { vdd, iph, wire_caps: caps, ..Default::default() };

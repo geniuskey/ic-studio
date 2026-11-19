@@ -1048,7 +1048,7 @@ pub fn definitions() -> Vec<Value> {
         tool(
             "extract",
             "Extract connectivity and devices from a cell layout: nets (name, bbox µm), MOS devices (W/L µm, terminal nets), PDK resistors / capacitors (value in Ω / F, terminal nets), photodiodes (the technology's cross-section photodiode region: anode / cathode nets, area, perimeter) with the image sensor pixels around them (transfer gate TG, floating diffusion fd, RST, SF, SEL, supply and column nets, found by connectivity) and the extracted circuit as SPICE.",
-            json!({"cell": cell()}),
+            json!({"cell": cell(), "characterize": {"type": "boolean", "description": "Also simulate each pixel (up to 16) with charge injection: FD and photodiode capacitance (F), conversion gain at FD and the column (µV per electron) and source follower gain, under pixels[].metrics."}}),
             &["cell"],
         ),
         tool(
@@ -2675,6 +2675,23 @@ impl State {
         let x = extract(layout_of(p, &r)?, p, &p.tech);
         let mut out = extraction_json(&x, &p.tech, &r.to_string());
         out["cell"] = json!(r.to_string());
+        if a.opt_bool("characterize")?.unwrap_or(false) {
+            use ics_core::pixel_circuit::{Testbench, classify};
+            let pc = classify(&x);
+            let bench = Testbench { wire_caps: ics_core::pex::net_caps(&x, &p.tech), ..Testbench::default() };
+            let opts = ics_sim::SimOptions { backend: ics_core::Backend::Auto, deck_dir: p.root.clone(), ..Default::default() };
+            let corner = p.cell(&r).map(|c| c.sim.corner.clone()).unwrap_or_default();
+            for k in 0..pc.pixels.len().min(MAX_LISTED).min(16) {
+                out["pixels"][k]["metrics"] = match ics_sim::pixel::characterize(&x, &pc, k, &p.tech, &bench, &corner, &opts) {
+                    Ok(m) => json!({
+                        "fd_reset_v": sig(m.v_fd_reset), "c_fd_f": sig(m.c_fd), "cg_fd_uv_per_e": sig(m.cg_fd_uv),
+                        "cg_column_uv_per_e": sig(m.cg_col_uv), "sf_gain": sig(m.sf_gain),
+                        "pd_reset_v": m.v_pd_reset.map(sig), "c_pd_f": m.c_pd.map(sig),
+                    }),
+                    Err(e) => json!({"error": e}),
+                };
+            }
+        }
         self.keep(Verified::Extract(x));
         Ok(out)
     }

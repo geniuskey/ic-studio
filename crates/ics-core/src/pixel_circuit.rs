@@ -284,12 +284,62 @@ pub struct Testbench {
     /// photodiode nodes get theirs as SPICE lines of the setup (simulated, not drawn, so LVS
     /// still compares the devices alone).
     pub wire_caps: Vec<NetCap>,
+    pub stimulus: Stimulus,
 }
 
 impl Default for Testbench {
     fn default() -> Self {
-        Testbench { vdd: 1.8, iph: 10e-9, icol: 2e-6, wire_caps: Vec::new() }
+        Testbench { vdd: 1.8, iph: 10e-9, icol: 2e-6, wire_caps: Vec::new(), stimulus: Stimulus::ResetTransfer }
     }
+}
+
+/// What the test bench drives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Stimulus {
+    /// Reset photodiode and FD, integrate the photocurrent, release the reset (reset level on
+    /// the column), then transfer (signal level).
+    #[default]
+    ResetTransfer,
+    /// Characterisation in the dark: reset FD and every photodiode, turn RST and TX off, then
+    /// take [`INJECT_ELECTRONS`] out of the first pixel's FD (in [`FD_WINDOW`]) and of its
+    /// first photodiode (in [`PD_WINDOW`]). The voltage steps give the node capacitances,
+    /// the conversion gain and the follower gain.
+    ChargeInjection,
+}
+
+/// Electrons taken out of a node by the charge injection stimulus.
+pub const INJECT_ELECTRONS: f64 = 500.0;
+/// Times (s) before and after the FD injection (10 ns from 200 ns).
+pub const FD_WINDOW: (f64, f64) = (190e-9, 290e-9);
+/// Times (s) before and after the photodiode injection (10 ns from 400 ns).
+pub const PD_WINDOW: (f64, f64) = (390e-9, 490e-9);
+/// Elementary charge (C).
+pub const Q_E: f64 = 1.602_176_634e-19;
+
+/// The extraction cut down to pixel `k` of `pc`: its devices and photodiodes alone (nets
+/// unchanged), with the pixel circuit renumbered to match. For simulating one pixel of an array.
+pub fn pixel_only(x: &Extraction, pc: &PixelCircuit, k: usize) -> Option<(Extraction, PixelCircuit)> {
+    let p = pc.pixels.get(k)?;
+    let devs: Vec<usize> = p.roles().into_iter().map(|r| r.0).collect();
+    let dev_ix = |d: usize| devs.iter().position(|&e| e == d);
+    let mut sub = Extraction {
+        nets: x.nets.clone(),
+        devices: devs.iter().map(|&d| x.devices[d].clone()).collect(),
+        photodiodes: p.photodiodes.iter().map(|q| x.photodiodes[q.0].clone()).collect(),
+        layers: x.layers.clone(),
+        dbu_per_um: x.dbu_per_um,
+        ..Extraction::default()
+    };
+    sub.warnings.clone_from(&x.warnings);
+    let q = Pixel {
+        photodiodes: p.photodiodes.iter().enumerate().map(|(i, q)| (i, q.1.and_then(dev_ix))).collect(),
+        rst: p.rst.and_then(dev_ix),
+        sf: p.sf.and_then(dev_ix),
+        sel: p.sel.and_then(dev_ix),
+        other: p.other.iter().filter_map(|&d| dev_ix(d)).collect(),
+        ..p.clone()
+    };
+    Some((sub, PixelCircuit { pixels: vec![q], warnings: pc.warnings.clone() }))
 }
 
 /// A SPICE number with up to 6 significant digits and a scale suffix (`12.825p`, `0.42u`).
@@ -465,8 +515,12 @@ pub fn schematic(x: &Extraction, pc: &PixelCircuit, bench: Option<&Testbench>) -
         // on the column), then transfer (signal level). Only the first TX row transfers; the
         // other photodiodes of a shared pixel stay isolated.
         let v = val(b.vdd);
-        let rst_pulse = format!("PULSE({v} 0 300n 1n 1n 400n 800n)");
-        let tx_pulse = format!("PULSE({v} 0 50n 1n 1n 350n 800n)");
+        let inject = b.stimulus == Stimulus::ChargeInjection;
+        let (rst_pulse, tx_pulse) = if inject {
+            (format!("PULSE({v} 0 100n 1n 1n 1 2)"), format!("PULSE({v} 0 50n 1n 1n 1 2)"))
+        } else {
+            (format!("PULSE({v} 0 300n 1n 1n 400n 800n)"), format!("PULSE({v} 0 50n 1n 1n 350n 800n)"))
+        };
         let first_tx: Option<String> =
             pc.pixels.iter().find_map(|p| p.photodiodes.iter().find_map(|q| q.1)).map(|t| dr.net_name(x.devices[t].g));
         let mut sources: Vec<(String, Vec<(&'static str, String)>)> = Vec::new();
@@ -483,7 +537,7 @@ pub fn schematic(x: &Extraction, pc: &PixelCircuit, bench: Option<&Testbench>) -
             add(n, vec![("dc", v.clone()), ("tran", rst_pulse.clone())]);
         }
         for n in rows.get("tx").into_iter().flatten() {
-            if Some(n) == first_tx.as_ref() {
+            if inject || Some(n) == first_tx.as_ref() {
                 add(n, vec![("dc", v.clone()), ("tran", tx_pulse.clone())]);
             } else {
                 add(n, vec![("dc", "0".into())]);
@@ -513,13 +567,27 @@ pub fn schematic(x: &Extraction, pc: &PixelCircuit, bench: Option<&Testbench>) -
             }
         }
         if !extra.is_empty() {
-            sim.extra = format!("* wire capacitance from the layout\n{}", extra.join("\n"));
+            extra.insert(0, "* wire capacitance from the layout".into());
         }
+        if inject && let Some(p) = pc.pixels.first() {
+            // Electrons out of FD, then out of the first photodiode: 10 ns current pulses.
+            let amps = val(INJECT_ELECTRONS * Q_E / 10e-9);
+            extra.push(format!("* charge injection: {INJECT_ELECTRONS} electrons each"));
+            let mut targets = vec![("FD", p.fd, "200n")];
+            targets.extend(p.photodiodes.first().map(|q| ("PD", x.photodiodes[q.0].node(), "400n")));
+            for (tag, n, at) in targets {
+                extra.push(format!("IQ_{tag} {} 0 DC 0 PULSE(0 {amps} {at} 0.1n 0.1n 10n 1)", dr.net_name(n)));
+            }
+            for inst in dr.s.instances.iter_mut().filter(|i| i.name.starts_with("IPH_")) {
+                inst.params.insert("dc".into(), "0".into());
+            }
+        }
+        sim.extra = extra.join("\n");
         sim.set_enabled("op", false);
         sim.set_enabled("tran", true);
         if let Some(Analysis::Tran { tstep, tstop, .. }) = sim.get_mut("tran") {
-            *tstep = "1n".into();
-            *tstop = "600n".into();
+            *tstep = if inject { "0.5n" } else { "1n" }.into();
+            *tstop = if inject { "500n" } else { "600n" }.into();
         }
     }
     (dr.s, sim)

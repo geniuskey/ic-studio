@@ -2954,6 +2954,11 @@ impl IcStudio {
         let pc = classify(&x);
         let bench = Testbench { wire_caps: ics_core::pex::net_caps(&x, &p.tech), ..Testbench::default() };
         let (sch, sim) = schematic(&x, &pc, Some(&bench));
+        // The first pixel's conversion gain (built-in engine: milliseconds, on this thread).
+        let metrics = (!pc.pixels.is_empty()).then(|| {
+            let corner = p.cell(&r).map(|c| c.sim.corner.clone()).unwrap_or_default();
+            ics_sim::pixel::characterize(&x, &pc, 0, &p.tech, &bench, &corner, &ics_sim::SimOptions::default())
+        });
         // Into the cell itself when it has no schematic (ready for LVS), else a new cell.
         let target = if p.cell(&r).is_some_and(|c| c.schematic.is_none()) {
             r.clone()
@@ -2984,6 +2989,15 @@ impl IcStudio {
         ));
         for w in x.warnings.iter().chain(&pc.warnings) {
             self.warn(format!("{r}: {w}"));
+        }
+        match metrics {
+            Some(Ok(m)) => {
+                for line in m.summary().lines() {
+                    self.info(format!("Pixel 1 {line}"));
+                }
+            }
+            Some(Err(e)) => self.warn(format!("Pixel 1 characterisation: {e}")),
+            None => {}
         }
         self.queue.push(Command::OpenCell(target, Some(Workspace::Schematic)));
     }

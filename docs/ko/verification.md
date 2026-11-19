@@ -131,9 +131,23 @@ Live DRC는 증분적이고 계층적이어서 큰 레이아웃에서도 빠릅�
 
 ```bash
 ics extract demo aps4t --pixel                      # 역할, W / L, 접합, PD와 FD 형상
+ics extract demo aps4t --pixel --characterize       # + C_FD, 변환 이득, SF 이득, C_PD
 ics extract demo aps4t --schematic --into aps4t_sch # 테스트벤치와 함께 회로도 생성
 ics sim demo aps4t_sch
 ```
+
+`--characterize`(MCP `extract`의 `characterize: true`, **Schematic from Layout**은 첫 픽셀에 대해
+자동 수행)는 각 픽셀을 기술 파일의 소자 모델로 단독 시뮬레이션합니다. FD와 모든 포토다이오드를
+리셋하고 RST와 TX를 끈 뒤, FD와 첫 포토다이오드에서 전자 500개를 차례로 빼냅니다. C = Q / ΔV에는
+노드에 걸린 모든 접합, 오버랩, 게이트 용량과 레이아웃의 배선 용량이 들어갑니다.
+
+```
+pixel 1 FD: reset 0.946 V, C = 1.638 fF, CG = 97.8 uV/e- at FD, 81.6 uV/e- at the column (SF gain 0.834)
+  PD: reset 1.126 V, C = 11.144 fF (69558 e-/V)
+```
+
+자체 문턱 전압 임플란트가 있는 전송 게이트는, 기술 파일이 그 임플란트를 마커 레이어로 가진
+소자(`[[device]]`의 `layers`)를 정의하면 다른 트랜지스터와 마찬가지로 그 PDK 모델을 씁니다.
 
 ## 레이아웃 대 회로도 비교(LVS)
 
