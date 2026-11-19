@@ -178,6 +178,13 @@ color = "#f0aa50"
 fill = "hatch"
 
 [[layer]]
+name = "capm"
+gds = 89
+datatype = 44
+color = "#c87850"
+fill = "dots"
+
+[[layer]]
 name = "via3"
 gds = 70
 datatype = 44
@@ -195,6 +202,23 @@ color = "#64c8aa"
 fill = "backhatch"
 
 [[layer]]
+name = "via4"
+gds = 71
+datatype = 44
+color = "#c8c8c8"
+fill = "cross"
+
+[[layer]]
+name = "met5"
+gds = 72
+datatype = 20
+width = 1.6
+space = 1.6
+routing = true
+color = "#d2a0dc"
+fill = "hatch"
+
+[[layer]]
 name = "text"
 gds = 83
 datatype = 44
@@ -202,6 +226,13 @@ color = "#ffffffff"
 fill = "outline"
 
 # Net labels (datatype 5 of each conductor).
+[[layer]]
+name = "poly.label"
+gds = 66
+datatype = 5
+color = "#ffffffff"
+fill = "outline"
+
 [[layer]]
 name = "li1.label"
 gds = 67
@@ -238,6 +269,64 @@ color = "#ffffffff"
 fill = "outline"
 
 [[layer]]
+name = "met5.label"
+gds = 72
+datatype = 5
+color = "#ffffffff"
+fill = "outline"
+
+# Pin shapes and their labels (datatype 16), as Magic and KLayout write them: labels on
+# them name the net of their conductor too.
+[[layer]]
+name = "poly.pin"
+gds = 66
+datatype = 16
+color = "#ffffffff"
+fill = "outline"
+
+[[layer]]
+name = "li1.pin"
+gds = 67
+datatype = 16
+color = "#ffffffff"
+fill = "outline"
+
+[[layer]]
+name = "met1.pin"
+gds = 68
+datatype = 16
+color = "#ffffffff"
+fill = "outline"
+
+[[layer]]
+name = "met2.pin"
+gds = 69
+datatype = 16
+color = "#ffffffff"
+fill = "outline"
+
+[[layer]]
+name = "met3.pin"
+gds = 70
+datatype = 16
+color = "#ffffffff"
+fill = "outline"
+
+[[layer]]
+name = "met4.pin"
+gds = 71
+datatype = 16
+color = "#ffffffff"
+fill = "outline"
+
+[[layer]]
+name = "met5.pin"
+gds = 72
+datatype = 16
+color = "#ffffffff"
+fill = "outline"
+
+[[layer]]
 name = "prBndry"
 gds = 235
 datatype = 4
@@ -264,6 +353,42 @@ label = "met3.label"
 [[pin_label]]
 layer = "met4"
 label = "met4.label"
+
+[[pin_label]]
+layer = "met5"
+label = "met5.label"
+
+[[pin_label]]
+layer = "poly"
+label = "poly.label"
+
+[[pin_label]]
+layer = "poly"
+label = "poly.pin"
+
+[[pin_label]]
+layer = "li1"
+label = "li1.pin"
+
+[[pin_label]]
+layer = "met1"
+label = "met1.pin"
+
+[[pin_label]]
+layer = "met2"
+label = "met2.pin"
+
+[[pin_label]]
+layer = "met3"
+label = "met3.pin"
+
+[[pin_label]]
+layer = "met4"
+label = "met4.pin"
+
+[[pin_label]]
+layer = "met5"
+label = "met5.pin"
 
 [roles]
 diffusion = ["diff", "tap"]
@@ -355,6 +480,19 @@ enc_bottom = 0.085
 enc_top = 0.065
 resistance = 3.41
 
+# The MIM capacitor's top plate (capm over met3) is contacted by via3 up to met4; listed
+# before via3 so that a via3 cut over capm lands on it, not on the met3 bottom plate.
+[[via]]
+name = "via3_capm"
+bottom = "capm"
+cut = "via3"
+top = "met4"
+size = 0.2
+space = 0.2
+enc_bottom = 0.14
+enc_top = 0.065
+resistance = 3.41
+
 [[via]]
 name = "via3"
 bottom = "met3"
@@ -365,6 +503,24 @@ space = 0.2
 enc_bottom = 0.09
 enc_top = 0.065
 resistance = 3.41
+
+# MIM capacitor between met3 and capm (sky130_fd_pr__cap_mim_m3_1), about 2 fF/µm².
+[[capacitor]]
+name = "sky130_fd_pr__cap_mim_m3_1"
+bottom = "met3"
+top = "capm"
+area = 2.0
+
+[[via]]
+name = "via4"
+bottom = "met4"
+cut = "via4"
+top = "met5"
+size = 0.8
+space = 0.8
+enc_bottom = 0.19
+enc_top = 0.31
+resistance = 0.38
 
 # First match wins; the first device of each polarity is the default for generic
 # schematic models ("nmos" / "pmos").

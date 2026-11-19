@@ -221,6 +221,14 @@ transfer gate of a logic process leaves about 100 of 500 electrons behind. The t
 `sky130_models` and `sky130_builtin_matches_ngspice` run them with an installed PDK
 (`PDK_ROOT=... cargo test -p ics-sim -- --ignored sky130`).
 
+On a real layout drawn elsewhere, the TopmetalSe-DPS pixel of the SKY130 MPW-7 shuttle
+(15 µm charge-sensing pixel with an in-pixel amplifier, comparator and 8-bit DRAM), the
+extraction of its tape-out GDS matches the Magic netlist of the design in LVS: 41 transistors
+(standard and low-Vt), the MIM capacitor and every net. With the demo's heuristic
+photodiode expression switched on, it finds no photodiode in the pixel nor in the whole
+user project (2437 transistors): the strips of diffusion between the gates of series stacks
+are uncontacted and lie in wide diffusion, but are too narrow themselves.
+
 A transfer gate with its own threshold implant takes its PDK model when the technology lists
 that device with the implant as a marker layer (`[[device]]` `layers`), as any transistor does.
 

@@ -8,7 +8,8 @@
 //!   merge into one conductor, `diffusion NOT poly`, so gates split it into source / drain pieces.
 //! - Each edge-connected piece of a conducting layer is a node; via cuts join the bottom and
 //!   top pieces they overlap. A cut shared by several vias (contact on active, polycon on poly)
-//!   joins whichever bottom it lands on; contacts on a gate connect nothing.
+//!   joins whichever bottom it lands on, the bottom of the via defined first where they
+//!   overlap (a MIM top plate over its bottom plate metal); contacts on a gate connect nothing.
 //! - Well taps: `n+` diffusion inside nwell taps the well, `p+` diffusion outside it the global
 //!   substrate net "sub". Wells and substrate are soft connections: a tap gives its well the
 //!   net it is on but never joins two nets through the well. A well (or the substrate) tapped
@@ -41,7 +42,8 @@
 //!   photodiode per diffusion piece, an n+ region in its p-well (or the substrate) or a p+
 //!   region in its nwell. When the region is a derived expression (a heuristic such as
 //!   `active wide 1`) only uncontacted diffusion without a MOS capacitor plate counts, as a
-//!   pinned photodiode is; a layer of
+//!   pinned photodiode is, and only where the piece itself is wide (not the strip between the
+//!   gates of a series stack); a layer of
 //!   its own (a PD marker or implant) is taken as drawn, and conducts as diffusion even where
 //!   no active is drawn under it. It is reported, not part of the device netlist: its junction is
 //!   already the source / drain junction of the transfer gate on that piece. See
@@ -736,12 +738,23 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
     }
 
     let mut cuts: HashMap<usize, Region> = HashMap::new();
-    for &(b, c, t) in &vias {
+    for (k, &(b, c, t)) in vias.iter().enumerate() {
         let (Some(bp), Some(tp)) = (pi_of(Some(b)), pi_of(Some(t))) else { continue };
         let cut = cuts.entry(c).or_insert_with(|| region(Some(c)));
         let mut bottom = planes[bp].region.clone();
         if Some(b) == poly {
             bottom = bottom.boolean(&active_r, BoolOp::Not);
+        }
+        // A cut several vias share lands on the bottom of the one defined first where their
+        // bottoms overlap (a MIM top plate over its bottom plate metal).
+        for &(b2, c2, _) in &vias[..k] {
+            if c2 == c
+                && b2 != b
+                && Some(b2) != poly
+                && let Some(p2) = pi_of(Some(b2))
+            {
+                bottom = bottom.boolean(&planes[p2].region, BoolOp::Not);
+            }
         }
         let overlap = cut.boolean(&bottom, BoolOp::And).boolean(&planes[tp].region, BoolOp::And);
         for p in component_anchors(overlap) {
@@ -1167,8 +1180,15 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
                 let derived = tech.layer_index(pd.layer.trim()).is_none();
                 let plates: BTreeSet<usize> = gates.iter().filter(|g| g.sd.0 == g.sd.1).map(|g| g.sd.0).collect();
                 let heuristic_ok = |c: &usize| !contacted.contains(c) && !plates.contains(c);
+                // The heuristic's own region is wide, but it is evaluated on the drawn diffusion:
+                // the piece itself must be wide too (an 0.8 µm square fits), which a diffusion
+                // strip between the gates of a series stack (uncontacted too) is not.
+                let half = (tech.dbu_per_um * 2 / 5).max(1);
                 for (c, rs) in per_piece.into_iter().filter(|(c, _)| !derived || heuristic_ok(c)) {
                     let body = Region::from_rects(rs);
+                    if derived && body.sized(-half).is_empty() {
+                        continue;
+                    }
                     let (Some(bbox), Some(&r)) = (body.bbox(), body.rects().first()) else { continue };
                     let anchor = (r.x0, r.y0);
                     let n_type = pplus_p.comp_at(anchor, false).is_none();
@@ -1596,6 +1616,67 @@ mod tests {
         cs.photodiode.as_mut().unwrap().layer = "pdmark".into();
         tech.cross_section = Some(cs);
         tech
+    }
+
+    #[test]
+    fn mim_top_plate_takes_the_shared_cut() {
+        // A MIM capacitor: capm over metal2, contacted up to metal3 through via2 cuts, as the
+        // SKY130 MIM is (capm / via3). The capm via is listed first, so a cut over capm lands
+        // on it, not on the metal2 bottom plate under it.
+        use crate::tech::{CapDef, LayerDef};
+        let mut tech = Tech::generic();
+        let mut l = LayerDef::generated(40, 0, tech.layers.len());
+        l.name = "capm".into();
+        tech.layers.push(l);
+        let mut v = tech.via("via2").unwrap().clone();
+        v.name = "via2_capm".into();
+        v.bottom = "capm".into();
+        let k = tech.vias.iter().position(|v| v.name == "via2").unwrap();
+        tech.vias.insert(k, v);
+        tech.capacitors = vec![CapDef {
+            name: "mim".into(),
+            bottom: "metal2".into(),
+            top: "capm".into(),
+            layers: vec![],
+            exclude: vec![],
+            area: 2.0,
+            perimeter: 0.0,
+        }];
+        let li = |n: &str| tech.layer_index(n).unwrap();
+        let mut lay = Layout::default();
+        lay.add_rect(li("metal2"), 0, 0, 4000, 4000);
+        lay.add_rect(li("capm"), 500, 500, 2500, 2500);
+        lay.add_rect(li("via2"), 1400, 1400, 1660, 1660);
+        lay.add_rect(li("metal3"), 1000, 1000, 2000, 2000);
+        for (t, at) in [("BOT", (3500, 3500)), ("TOP", (1500, 1900))] {
+            lay.add(li("text"), Geometry::Label { text: t.into(), at, size: 100 });
+        }
+        let x = extract(&lay, &NoCells, &tech);
+        assert!(x.warnings.is_empty(), "{:?}", x.warnings);
+        assert_eq!(x.passives.len(), 1);
+        let c = &x.passives[0];
+        let names = (x.nets[c.a].name.as_str(), x.nets[c.b].name.as_str());
+        assert_eq!(names, ("BOT", "TOP"), "the plates are shorted or open");
+        assert!((c.value - 2.0 * 4.0 * 1e-15).abs() < 1e-18, "{}", c.value);
+    }
+
+    #[test]
+    fn series_stack_is_not_a_photodiode() {
+        // Two 7 µm wide transistors in series: the uncontacted diffusion between their gates
+        // lies in wide drawn diffusion, but is a 0.3 µm strip, not a photodiode.
+        let tech = Tech::generic();
+        let li = |n: &str| tech.layer_index(n).unwrap();
+        let mut lay = Layout::default();
+        lay.add_rect(li("nplus"), -200, -200, 2600, 7200);
+        lay.add_rect(li("active"), 0, 0, 2400, 7000);
+        lay.add_rect(li("poly"), 700, -300, 880, 7300);
+        lay.add_rect(li("poly"), 1180, -300, 1360, 7300);
+        for x in [200, 1900] {
+            lay.add_rect(li("contact"), x, 3000, x + 220, 3220);
+        }
+        let x = extract(&lay, &NoCells, &tech);
+        assert_eq!(x.devices.len(), 2);
+        assert!(x.photodiodes.is_empty(), "{:?}", x.photodiodes);
     }
 
     #[test]
