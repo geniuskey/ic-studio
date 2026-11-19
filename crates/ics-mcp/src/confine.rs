@@ -97,14 +97,18 @@ fn absolute(base: &Path, p: &Path) -> PathBuf {
 fn canonical(p: &Path) -> PathBuf {
     let mut existing = p.to_path_buf();
     let mut rest: Vec<std::ffi::OsString> = Vec::new();
+    // `file_name()` is None for a trailing `..`, which Unix cannot resolve below a missing
+    // folder: keep it in `rest` so it is folded instead of left in a path that only looks inside.
     while !existing.exists() {
-        match (existing.file_name(), existing.parent()) {
-            (Some(n), Some(parent)) => {
-                rest.push(n.to_os_string());
-                existing = parent.to_path_buf();
-            }
+        let last = match existing.components().next_back() {
+            Some(Component::Normal(n)) => n.to_os_string(),
+            Some(Component::ParentDir) => "..".into(),
+            Some(Component::CurDir) => ".".into(),
             _ => break,
-        }
+        };
+        let Some(parent) = existing.parent() else { break };
+        rest.push(last);
+        existing = parent.to_path_buf();
     }
     let mut out = existing.canonicalize().unwrap_or(existing);
     for n in rest.into_iter().rev() {
