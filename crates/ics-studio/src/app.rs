@@ -6940,6 +6940,10 @@ impl IcStudio {
         &self.pixel_circuit
     }
 
+    pub fn pixel_circuit_mut(&mut self) -> &mut PixelCircuitView {
+        &mut self.pixel_circuit
+    }
+
     pub fn pixel_optics_mut(&mut self) -> &mut PixelOptics {
         &mut self.pixel
     }

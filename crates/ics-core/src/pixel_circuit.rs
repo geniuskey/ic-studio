@@ -451,6 +451,13 @@ fn spice_num(v: f64, suffix: &str) -> String {
     format!("{}{suffix}", if s.is_empty() || s == "-" { "0" } else { s })
 }
 
+/// The grid points of the axis-parallel segment from `a` to `b`.
+fn raster(a: Pt, b: Pt) -> impl Iterator<Item = (i32, i32)> {
+    let n = (b.x - a.x).abs().max((b.y - a.y).abs());
+    let (dx, dy) = ((b.x - a.x).signum(), (b.y - a.y).signum());
+    (0..=n).map(move |k| (a.x + k * dx, a.y + k * dy))
+}
+
 /// Number for a source value (no suffix): `1.8`, `1e-08`.
 fn val(v: f64) -> String {
     if v != 0.0 && (v.abs() < 1e-3 || v.abs() >= 1e6) {
@@ -469,6 +476,8 @@ const GROUND_NETS: [&str; 5] = ["0", "gnd", "sub", "vss", "agnd"];
 struct Drawer<'a> {
     s: Schematic,
     x: &'a Extraction,
+    /// Labelled pins per net, for wiring nets inside a pixel.
+    pins: BTreeMap<String, Vec<Pt>>,
 }
 
 impl Drawer<'_> {
@@ -487,8 +496,56 @@ impl Drawer<'_> {
                 self.s.instance_mut(g).expect("added").name = name;
             } else {
                 self.s.add_label(net.clone(), p);
+                self.pins.entry(net.clone()).or_default().push(p);
             }
         }
+    }
+
+    /// Wire the pins of `net` where a route is clear: each pin (left to right) joins the
+    /// nearest pin already wired by an L of two segments that touches no other pin, label or
+    /// wire. Wired pins keep one label naming the net; a pin no route reaches keeps its label.
+    fn wire(&mut self, net: &str) {
+        let Some(mut pts) = self.pins.get(net).cloned() else { return };
+        if pts.len() < 2 {
+            return;
+        }
+        pts.sort_by_key(|p| (p.x, p.y));
+        let own: BTreeSet<(i32, i32)> = pts.iter().map(|p| (p.x, p.y)).collect();
+        let mut busy: BTreeSet<(i32, i32)> = BTreeSet::new();
+        for i in &self.s.instances {
+            busy.extend(i.pin_positions().into_iter().map(|(_, p)| (p.x, p.y)));
+            busy.insert((i.pos.x, i.pos.y));
+        }
+        busy.extend(self.s.labels.iter().map(|l| (l.pos.x, l.pos.y)));
+        for w in &self.s.wires {
+            busy.extend(raster(w.a, w.b));
+        }
+        busy.retain(|p| !own.contains(p));
+        let mut wired = vec![pts[0]];
+        let mut stranded = Vec::new();
+        for &b in &pts[1..] {
+            let mut from: Vec<Pt> = wired.clone();
+            from.sort_by_key(|a| (a.x - b.x).abs() + (a.y - b.y).abs());
+            let route = from.iter().find_map(|&a| {
+                [Pt::new(b.x, a.y), Pt::new(a.x, b.y)]
+                    .into_iter()
+                    .find(|&c| raster(a, c).chain(raster(c, b)).all(|q| !busy.contains(&q)))
+                    .map(|c| (a, c))
+            });
+            match route {
+                Some((a, c)) => {
+                    for (p, q) in [(a, c), (c, b)] {
+                        if p != q {
+                            self.s.add_wire(p, q);
+                        }
+                    }
+                    wired.push(b);
+                }
+                None => stranded.push(b),
+            }
+        }
+        let first = pts[0];
+        self.s.labels.retain(|l| l.name != net || l.pos == first || stranded.contains(&l.pos));
     }
 
     fn mos(&mut self, d: usize, at: (i32, i32), orient: Orient, role: Option<&str>) -> u64 {
@@ -543,7 +600,7 @@ const SHARED_PITCH: i32 = 8;
 /// below, and with `bench` a test bench and its simulation setup (reset and transfer pulses,
 /// transient analysis).
 pub fn schematic(x: &Extraction, pc: &PixelCircuit, bench: Option<&Testbench>) -> (Schematic, SimSetup) {
-    let mut dr = Drawer { s: Schematic::default(), x };
+    let mut dr = Drawer { s: Schematic::default(), x, pins: BTreeMap::new() };
     let mut placed: BTreeSet<usize> = BTreeSet::new();
     let mut rows: BTreeMap<&'static str, BTreeSet<String>> = BTreeMap::new();
     let mut max_y = 28;
@@ -602,6 +659,15 @@ pub fn schematic(x: &Extraction, pc: &PixelCircuit, bench: Option<&Testbench>) -
         }
         if let Some(c) = p.column {
             rows.entry("column").or_default().insert(dr.net_name(c));
+        }
+    }
+    // Wires for the nets inside each pixel: FD, the follower output, the photodiode nodes.
+    for p in &pc.pixels {
+        let mut nets = vec![dr.net_name(p.fd)];
+        nets.extend(p.sf_out.filter(|o| Some(*o) != p.column).map(|o| dr.net_name(o)));
+        nets.extend(p.photodiodes.iter().map(|q| charge_net(x, &x.photodiodes[q.0], bench)));
+        for n in nets {
+            dr.wire(&n);
         }
     }
     // Everything else in rows: MOS, passives, bipolar transistors.

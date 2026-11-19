@@ -353,6 +353,9 @@ fn schematic_from_pixel_layout() {
     for name in ["M1_TG", "M4_RST", "M3_SF", "M2_SEL", "IPH_D1", "VTX", "ICOL_COL"] {
         assert!(sch.instance_by_name(name).is_some(), "{name} missing");
     }
+    // The pixels were characterised in the background, in the Pixel Circuit window.
+    assert!(h.state().pixel_circuit().results.first().is_some_and(|r| r.1.is_ok()));
+    h.state_mut().pixel_circuit_mut().open = false;
     h.state_mut().command(Command::FitView);
     h.run_steps(4);
     shot(&mut h, "schematic_from_pixel_layout");
