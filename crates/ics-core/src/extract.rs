@@ -42,7 +42,8 @@
 //!   region in its nwell. When the region is a derived expression (a heuristic such as
 //!   `active wide 1`) only uncontacted diffusion without a MOS capacitor plate counts, as a
 //!   pinned photodiode is; a layer of
-//!   its own (a PD marker or implant) is taken as drawn. It is reported, not part of the device netlist: its junction is
+//!   its own (a PD marker or implant) is taken as drawn, and conducts as diffusion even where
+//!   no active is drawn under it. It is reported, not part of the device netlist: its junction is
 //!   already the source / drain junction of the transfer gate on that piece. See
 //!   [`crate::pixel_circuit`] for the pixel transistors around it.
 
@@ -662,6 +663,13 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
     conducting.sort_by_key(|&l| std::cmp::Reverse((level[l], l)));
 
     let active_r = Region::from_rects(diffusions.iter().flat_map(|&l| rects[l].iter().copied()));
+    // A photodiode drawn on a layer of its own (an implant without active under it) is
+    // diffusion too: its transfer gate then has the photodiode on one side.
+    let pd_layer = tech.cross_section.as_ref().and_then(|c| c.photodiode.as_ref()).and_then(|d| tech.layer_index(d.layer.trim()));
+    let active_r = match pd_layer {
+        Some(l) if !diffusions.contains(&l) => active_r.boolean(&region(Some(l)), BoolOp::Or),
+        _ => active_r,
+    };
     let poly_r = region(poly);
     let gate_r = active_r.boolean(&poly_r, BoolOp::And);
     let diff_r = active_r.boolean(&poly_r, BoolOp::Not);
@@ -1575,6 +1583,46 @@ mod tests {
         tech.cross_section.as_mut().unwrap().photodiode.as_mut().unwrap().layer = "active wide 1".into();
         let y = extract(&lay, &NoCells, &tech);
         assert!(y.photodiodes.is_empty(), "{:?} {:?}", y.photodiodes, y.devices);
+    }
+
+    /// The generic technology with a photodiode marker layer `pdmark` as its photodiode.
+    fn pd_tech() -> Tech {
+        use crate::tech::{CrossSection, LayerDef};
+        let mut tech = Tech::generic();
+        let mut l = LayerDef::generated(30, 0, tech.layers.len());
+        l.name = "pdmark".into();
+        tech.layers.push(l);
+        let mut cs = CrossSection::generic180();
+        cs.photodiode.as_mut().unwrap().layer = "pdmark".into();
+        tech.cross_section = Some(cs);
+        tech
+    }
+
+    #[test]
+    fn photodiode_drawn_without_active() {
+        // A photodiode drawn as its implant alone, a neck of active from it under the gate to a
+        // contacted floating diffusion.
+        let tech = pd_tech();
+        let li = |n: &str| tech.layer_index(n).unwrap();
+        for slanted in [false, true] {
+            let mut lay = Layout::default();
+            lay.add_rect(li("nplus"), -200, -200, 4000, 2200);
+            lay.add_rect(li("pdmark"), 0, 0, 2000, 2000);
+            lay.add_rect(li("active"), 2000, 800, 3600, 1200);
+            lay.add_rect(li("contact"), 3200, 890, 3420, 1110);
+            if slanted {
+                // A 45° transfer gate across the neck.
+                lay.add(li("poly"), Geometry::Polygon { points: vec![(2100, 500), (2350, 500), (2950, 1500), (2700, 1500)] });
+            } else {
+                lay.add_rect(li("poly"), 2300, 500, 2700, 1500);
+            }
+            let x = extract(&lay, &NoCells, &tech);
+            assert_eq!((x.devices.len(), x.photodiodes.len()), (1, 1), "slanted {slanted}: {:?}", x.warnings);
+            let (m, d) = (&x.devices[0], &x.photodiodes[0]);
+            assert!(m.s == d.node() || m.d == d.node(), "slanted {slanted}: the gate is not on the photodiode");
+            assert!(m.l > 200 && m.w > 300, "slanted {slanted}: w {} l {}", m.w, m.l);
+            assert_eq!(d.area, 2000 * 2000);
+        }
     }
 
     #[test]

@@ -127,7 +127,8 @@ pixel transistors, by connectivity alone:
 
 - **Photodiode**: the diffusion under the photodiode `layer`, one per diffusion piece: n+ in
   a p-well or the substrate (anode = well, cathode = the piece), or p+ in an nwell. A layer
-  of its own (a PD marker or implant, as image sensor PDKs have) is taken as drawn. A
+  of its own (a PD marker or implant, as image sensor PDKs have) is taken as drawn, and
+  conducts as diffusion even where no active is drawn under it. A
   derived expression such as the demo's `active wide 1` is a heuristic: then only
   uncontacted diffusion without a MOS capacitor plate counts, as a pinned photodiode is.
   The photodiode is listed with its area and perimeter (`* photodiode D1 sub pd area=...`
@@ -137,7 +138,9 @@ pixel transistors, by connectivity alone:
   gates on the photodiode (anti-blooming, overflow) are listed as `other`. Without a TG, a
   photodiode that drives a gate itself is a 3T pixel.
 - **SF** is gated by FD; **RST** runs from FD to one side of SF, the supply; **SEL** runs
-  from the follower output to the column line.
+  from the follower output to the column line. When RST reaches FD only through another
+  device (FD, a switch, a node, RST, the supply), that switch is the dual conversion gain
+  gate **DCG**; the test bench holds it off (high gain).
 
 **Verify > Schematic from Layout** draws the extraction as a schematic: each pixel in the
 textbook arrangement (devices named `M1_TG`, `M4_RST`, ... with W / L and `as ps ad pd`

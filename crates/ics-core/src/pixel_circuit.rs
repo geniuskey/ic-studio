@@ -12,6 +12,9 @@
 //!   which is the supply; the other side of SF is its output. Other devices on FD (a dual
 //!   conversion gain switch) are `other`.
 //! - **SEL** (row select): a MOS from the follower output to the column line.
+//! - **DCG** (dual conversion gain): when no device runs from FD to the supply side of SF
+//!   directly but one does through another device, that one is RST and the device between it
+//!   and FD the DCG switch.
 //!
 //! [`schematic`] draws the extraction: each pixel in the textbook arrangement (TG, RST, SF and
 //! SEL with net labels on their pins, the photodiode as its photocurrent), the other devices in
@@ -37,6 +40,8 @@ pub struct Pixel {
     /// The floating diffusion (sense node) net.
     pub fd: usize,
     pub rst: Option<usize>,
+    /// Dual conversion gain switch between FD and the reset transistor.
+    pub dcg: Option<usize>,
     pub sf: Option<usize>,
     pub sel: Option<usize>,
     /// The supply (reset and follower drain), the follower output and the column line.
@@ -48,10 +53,11 @@ pub struct Pixel {
 }
 
 impl Pixel {
-    /// Every device of the pixel with its role ("TG", "RST", "SF", "SEL", "other").
+    /// Every device of the pixel with its role ("TG", "RST", "DCG", "SF", "SEL", "other").
     pub fn roles(&self) -> Vec<(usize, &'static str)> {
         let mut v: Vec<(usize, &'static str)> = self.photodiodes.iter().filter_map(|p| p.1).map(|d| (d, "TG")).collect();
         v.extend(self.rst.map(|d| (d, "RST")));
+        v.extend(self.dcg.map(|d| (d, "DCG")));
         v.extend(self.sf.map(|d| (d, "SF")));
         v.extend(self.sel.map(|d| (d, "SEL")));
         v.extend(self.other.iter().map(|&d| (d, "other")));
@@ -227,12 +233,24 @@ pub fn classify(x: &Extraction) -> PixelCircuit {
             .filter(|d| !taken.contains(d) && x.devices[*d].g != fd)
             .filter_map(|d| other_side(x, d, fd).map(|o| (d, o)))
             .collect();
-        let rst = on_fd
-            .iter()
-            .find(|(_, o)| sides.is_some_and(|(a, b)| *o == a || *o == b))
-            .or_else(|| on_fd.iter().find(|(_, o)| looks_like_supply(&x.nets[*o].name)))
-            .or(on_fd.first())
-            .copied();
+        let on_sf = |o: usize| sides.is_some_and(|(a, b)| o == a || o == b);
+        let direct = on_fd.iter().find(|(_, o)| on_sf(*o)).copied();
+        // Dual conversion gain: FD - DCG - node - RST - supply.
+        let chain = || {
+            on_fd.iter().find_map(|&(c, node)| {
+                (0..x.devices.len())
+                    .filter(|e| *e != c && !taken.contains(e) && x.devices[*e].g != node)
+                    .find_map(|e| other_side(x, e, node).filter(|o| on_sf(*o)).map(|o| (c, e, o)))
+            })
+        };
+        let (rst, dcg) = match (direct, direct.is_none().then(chain).flatten()) {
+            (Some(r), _) => (Some(r), None),
+            (None, Some((c, e, o))) => (Some((e, o)), Some(c)),
+            (None, None) => {
+                let r = on_fd.iter().find(|(_, o)| looks_like_supply(&x.nets[*o].name)).or(on_fd.first()).copied();
+                (r, None)
+            }
+        };
         let supply = match (rst, sides) {
             (Some((_, o)), Some((a, b))) if o == a || o == b => Some(o),
             (_, Some((a, b))) if looks_like_supply(&x.nets[b].name) && !looks_like_supply(&x.nets[a].name) => Some(b),
@@ -242,15 +260,17 @@ pub fn classify(x: &Extraction) -> PixelCircuit {
         };
         let sf_out = sides.map(|(a, b)| if Some(a) == supply { b } else { a });
         p.rst = rst.map(|r| r.0);
+        p.dcg = dcg;
         p.sf = sf;
         p.supply = supply;
         p.sf_out = sf_out;
         for &(d, _) in &on_fd {
-            if Some(d) != p.rst {
+            if Some(d) != p.rst && Some(d) != p.dcg {
                 p.other.push(d);
             }
         }
         taken.extend(p.rst);
+        taken.extend(p.dcg);
         taken.extend(p.other.iter().copied());
         if let Some(out_net) = sf_out {
             let sel = (0..x.devices.len())
@@ -403,6 +423,7 @@ pub fn pixel_only(x: &Extraction, pc: &PixelCircuit, k: usize) -> Option<(Extrac
     let q = Pixel {
         photodiodes: p.photodiodes.iter().enumerate().map(|(i, q)| (i, q.1.and_then(dev_ix))).collect(),
         rst: p.rst.and_then(dev_ix),
+        dcg: p.dcg.and_then(dev_ix),
         sf: p.sf.and_then(dev_ix),
         sel: p.sel.and_then(dev_ix),
         other: p.other.iter().filter_map(|&d| dev_ix(d)).collect(),
@@ -555,11 +576,14 @@ pub fn schematic(x: &Extraction, pc: &PixelCircuit, bench: Option<&Testbench>) -
             }
         };
         put(p.rst, (16, 4), "RST", Some("rst"));
+        put(p.dcg, (34, 4), "DCG", Some("dcg"));
         put(p.sf, (24, 12), "SF", None);
         put(p.sel, (24, 20), "SEL", Some("sel"));
+        let first_other = if p.dcg.is_some() { 1 } else { 0 };
         for (i, &d) in p.other.iter().enumerate() {
-            put(Some(d), (34, 4 + 8 * i as i32), "other", None);
-            max_y = max_y.max(12 + 8 * i as i32);
+            let row = (first_other + i) as i32;
+            put(Some(d), (34, 4 + 8 * row), "other", None);
+            max_y = max_y.max(12 + 8 * row);
         }
         if let Some(s) = p.supply {
             rows.entry("supply").or_default().insert(dr.net_name(s));
@@ -640,6 +664,10 @@ pub fn schematic(x: &Extraction, pc: &PixelCircuit, bench: Option<&Testbench>) -
         }
         for n in rows.get("sel").into_iter().flatten() {
             add(n, vec![("dc", v.clone())]);
+        }
+        // Dual conversion gain switch off: the high gain.
+        for n in rows.get("dcg").into_iter().flatten() {
+            add(n, vec![("dc", "0".into())]);
         }
         for (i, (net, kv)) in sources.iter().enumerate() {
             let name = format!("V{}", net.to_ascii_uppercase());
@@ -915,5 +943,61 @@ mod tests {
         let pc = classify(&x3);
         let p = &pc.pixels[0];
         assert_eq!((p.photodiodes.clone(), p.fd, p.rst, p.sf, p.sel), (vec![(0, None)], id("pd1"), Some(0), Some(1), Some(2)));
+    }
+
+    #[test]
+    fn dual_conversion_gain_pixel() {
+        use crate::extract::{DevKind, Device, Net, Photodiode};
+        let names = ["pd", "fd", "fdx", "vdd", "x", "col", "tx", "dcg", "rst", "sel", "sub"];
+        let nets: Vec<Net> =
+            names.iter().map(|n| Net { name: (*n).into(), labelled: true, shapes: vec![], bbox: None }).collect();
+        let id = |n: &str| names.iter().position(|m| *m == n).unwrap();
+        let mos = |name: &str, d: &str, g: &str, s: &str| Device {
+            kind: DevKind::Nmos,
+            model: "nmos".into(),
+            name: name.into(),
+            w: 400,
+            l: 200,
+            d: id(d),
+            g: id(g),
+            s: id(s),
+            b: id("sub"),
+            gate: Default::default(),
+            jd: Default::default(),
+            js: Default::default(),
+            od: None,
+        };
+        // FD - DCG - fdx - RST - vdd: the device on FD is the switch, not the reset.
+        let x = Extraction {
+            nets,
+            devices: vec![
+                mos("M1", "fd", "tx", "pd"),
+                mos("M2", "fdx", "dcg", "fd"),
+                mos("M3", "vdd", "rst", "fdx"),
+                mos("M4", "vdd", "fd", "x"),
+                mos("M5", "x", "sel", "col"),
+            ],
+            photodiodes: vec![Photodiode {
+                name: "D1".into(),
+                n_type: true,
+                anode: id("sub"),
+                cathode: id("pd"),
+                area: 1,
+                perimeter: 1,
+                body: Default::default(),
+            }],
+            dbu_per_um: 1000,
+            ..Default::default()
+        };
+        let pc = classify(&x);
+        assert!(pc.warnings.is_empty(), "{:?}", pc.warnings);
+        let p = &pc.pixels[0];
+        assert_eq!((p.rst, p.dcg, p.sf, p.sel, p.supply), (Some(2), Some(1), Some(3), Some(4), Some(id("vdd"))));
+        assert!(p.other.is_empty());
+        assert_eq!(pc.role(1), Some("DCG"));
+        let (sch, _) = schematic(&x, &pc, Some(&Testbench::default()));
+        let nl = crate::netlist::netlist(&sch);
+        assert!(nl.warnings.is_empty(), "{:?}", nl.warnings);
+        assert!(nl.body.contains("M2_DCG fdx dcg fd 0") && nl.body.contains("VDCG dcg 0 DC 0"), "{}", nl.body);
     }
 }
