@@ -189,8 +189,10 @@ condition can be limited to some layers. **Earlier** / **Later** reorder the lis
 
 Polygons and paths stretch vertex by vertex. An edge that crosses a stretch line at an
 angle (a 45° chamfer or wire) keeps its angle: a band along the axis is inserted at the line
-when the cell grows, and removed when it shrinks. A polygon part squeezed to zero width is
-an error, as for a rectangle.
+when the cell grows, and removed when it shrinks. A cut point on an edge at another angle
+than 45° is rounded to the grid (**Issues** notes it). A polygon part squeezed to zero width
+is an error, as for a rectangle. A path that a stretch line runs along inside its width is
+generated as its outline polygon, so it widens like a rectangle; other paths stay paths.
 
 ### Suggestions for a drawn MOS
 

@@ -342,6 +342,8 @@ struct Shift {
     at: i64,
     hi: i64,
     lo: i64,
+    /// Manufacturing grid, for cut points on edges at other angles than 45°.
+    grid: i64,
 }
 
 impl Shift {
@@ -354,7 +356,7 @@ impl Shift {
                 (h, d - h)
             }
         };
-        Shift { at, hi, lo }
+        Shift { at, hi, lo, grid: g }
     }
 
     fn map(&self, c: i64) -> i64 {
@@ -429,7 +431,10 @@ fn stretch_points(pts: &[(i64, i64)], closed: bool, axis: Axis, s: &Shift, map: 
             }
             let (x, img) = if sd < 0 { s.low_end() } else { s.high_end() };
             let t = ((x - a0) as f64 / (a1 - a0) as f64).clamp(0.0, 1.0);
-            let o = o0 + ((o1 - o0) as f64 * t).round() as i64;
+            let mut o = o0 + ((o1 - o0) as f64 * t).round() as i64;
+            if (o1 - o0).abs() != (a1 - a0).abs() {
+                o = snap(o, s.grid);
+            }
             push(&mut out, join(axis, img, o));
         }
     }
@@ -565,15 +570,58 @@ impl Template {
     }
 
     fn items(&self) -> Vec<Item> {
-        let mut out: Vec<Item> = self
-            .source
-            .shapes
-            .iter()
-            .map(|s| Item { layer: Some(s.layer), geom: s.geom.clone(), inst: None, fill: None, home: s.bbox() })
+        let shapes: Vec<(usize, Geometry)> = self.source.shapes.iter().map(|s| (s.layer, s.geom.clone())).collect();
+        self.items_of(shapes)
+    }
+
+    fn items_of(&self, shapes: Vec<(usize, Geometry)>) -> Vec<Item> {
+        let mut out: Vec<Item> = shapes
+            .into_iter()
+            .map(|(layer, geom)| {
+                let home = geom.bbox();
+                Item { layer: Some(layer), geom, inst: None, fill: None, home }
+            })
             .collect();
         for i in &self.source.instances {
             let r = IRect::new(i.trans.x, i.trans.y, i.trans.x, i.trans.y);
             out.push(Item { layer: None, geom: Geometry::Rect(r), inst: Some(i.clone()), fill: None, home: r });
+        }
+        out
+    }
+
+    /// Stretch lines (and repeat stretch positions) in source coordinates, with their layers.
+    fn stretch_lines(&self, grid: i64) -> Vec<(Axis, i64, &[usize])> {
+        self.ops
+            .iter()
+            .filter_map(|o| match o {
+                Op::Stretch { axis, at, layers, .. } => Some((*axis, *at, layers.as_slice())),
+                Op::Repeat { axis, region, at, layers, .. } => {
+                    Some((*axis, at.unwrap_or_else(|| snap((axis.lo(region) + axis.hi(region)) / 2, grid)), layers.as_slice()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The source shapes generation starts from. A path that a stretch line runs along inside
+    /// its width (a vertex within half the width of the line) cannot widen on one side, so it
+    /// becomes its outline polygon and grows like a rectangle would.
+    fn generation_shapes(&self, grid: i64) -> Vec<(usize, Geometry)> {
+        let lines = self.stretch_lines(grid);
+        let mut out = vec![];
+        for s in &self.source.shapes {
+            if let Geometry::Path { points, width } = &s.geom {
+                let h = width.abs() / 2;
+                let cut = lines.iter().any(|(axis, at, ls)| {
+                    (ls.is_empty() || ls.contains(&s.layer)) && points.iter().any(|&p| (split(*axis, p).0 - at).abs() < h)
+                });
+                let outline = crate::polybool::PolySet::from_geometry(&s.geom);
+                if cut && outline.polygons().iter().all(|p| p.holes.is_empty()) {
+                    out.extend(outline.polygons().iter().map(|p| (s.layer, Geometry::Polygon { points: p.outer.clone() })));
+                    continue;
+                }
+            }
+            out.push((s.layer, s.geom.clone()));
         }
         out
     }
@@ -591,7 +639,7 @@ impl Template {
             cache[text].eval(vals).map_err(|e| format!("{what} '{text}': {e}"))
         };
         let g = tech.grid;
-        let mut items = self.items();
+        let mut items = self.items_of(self.generation_shapes(g));
         // Contact fills become rectangles that stretch and repeat like any shape.
         for op in &self.ops {
             if let Op::ContactFill { rect, via } = op {
@@ -696,7 +744,7 @@ impl Template {
             let (members, mut rest): (Vec<Item>, Vec<Item>) =
                 items.into_iter().partition(|it| it.on(layers) && inside(&region, &it.home));
             if ext != 0 {
-                let sh = Shift { at, hi: ext, lo: 0 };
+                let sh = Shift { at, hi: ext, lo: 0, grid: g };
                 for it in &mut rest {
                     stretch_geom(&mut it.geom, axis, &sh, &|c| sh.map(c));
                 }
@@ -970,6 +1018,25 @@ impl Template {
                             Level::Warning,
                             Target::Op(k),
                             format!("The line cuts through {} cuts, which would stretch: make them a contact fill", lname(l)),
+                        );
+                    }
+                    let skew = self.source.shapes.iter().filter(|s| layers.is_empty() || layers.contains(&s.layer)).any(|s| {
+                        let (pts, closed) = match &s.geom {
+                            Geometry::Polygon { points } => (points, true),
+                            Geometry::Path { points, .. } => (points, false),
+                            _ => return false,
+                        };
+                        let n = pts.len();
+                        (0..if closed { n } else { n.saturating_sub(1) }).any(|i| {
+                            let ((a0, o0), (a1, o1)) = (split(*axis, pts[i]), split(*axis, pts[(i + 1) % n]));
+                            (a0 - at).signum() * (a1 - at).signum() < 0 && o0 != o1 && (o1 - o0).abs() != (a1 - a0).abs()
+                        })
+                    });
+                    if skew {
+                        push(
+                            Level::Info,
+                            Target::Op(k),
+                            "The line crosses an edge at an angle other than 45°: its cut point is rounded to the grid".into(),
                         );
                     }
                 }
@@ -1528,6 +1595,7 @@ const SKILL_ENGINE: &str = r#"    icsSnap = lambda((v) if(icsGrid <= 1 v icsGrid
         foreach(tB cdr(tQ)
           tSa = funcall(icsAl tA tX)  tSb = funcall(icsAl tB tX)
           tV = funcall(icsOt tA tX)  tW = funcall(icsOt tB tX)
+          icsCut = if(abs(tW - tV) == abs(tSb - tSa) lambda((cV) cV) icsSnap)
           tO = funcall(icsPush tO funcall(icsMk funcall(icsSh tSa) tV tX))
           when(and(tC tV == tW tSa != tSb funcall(icsSh tSa) == funcall(icsSh tSb)) icsGone = t)
           when(and(tV != tW !eq(funcall(icsSg tSa) funcall(icsSg tSb)))
@@ -1536,7 +1604,7 @@ const SKILL_ENGINE: &str = r#"    icsSnap = lambda((v) if(icsGrid <= 1 v icsGrid
                 tT = if(eq(tE 'lo) icsAt + min(icsLo 0) icsAt - min(icsHi 0))
                 tI = if(eq(tE 'lo) tT - icsLo tT + icsHi)
                 tF = max(0.0 min(1.0 float(tT - tSa) / float(tSb - tSa)))
-                tO = funcall(icsPush tO funcall(icsMk tI tV + round(float(tW - tV) * tF) tX)))))
+                tO = funcall(icsPush tO funcall(icsMk tI funcall(icsCut tV + round(float(tW - tV) * tF)) tX)))))
           tA = tB)
         unless(tC tO = funcall(icsPush tO funcall(icsMk funcall(icsSh funcall(icsAl tA tX)) funcall(icsOt tA tX) tX)))
         when(and(tC cdr(tO) equal(car(tO) car(last(tO)))) tO = cdr(tO))
@@ -1644,6 +1712,7 @@ impl Template {
             "icsPush",
             "icsSt",
             "icsGone",
+            "icsCut",
         ]
         .map(String::from)
         .to_vec();
@@ -1668,9 +1737,9 @@ impl Template {
         let pts = |p: &[(i64, i64)]| {
             p.iter().map(|(x, y)| format!("list({} {})", skill_int(*x), skill_int(*y))).collect::<Vec<_>>().join(" ")
         };
-        for sh in &self.source.shapes {
-            let l = skill_str(&lname(sh.layer)?);
-            let line = match &sh.geom {
+        for (layer, geom) in self.generation_shapes(tech.grid) {
+            let l = skill_str(&lname(layer)?);
+            let line = match &geom {
                 Geometry::Rect(r) => format!("list('rect {l} list({}) nil nil)", pts(&[(r.x0, r.y0), (r.x1, r.y1)])),
                 Geometry::Polygon { points } => format!("list('poly {l} list({}) nil nil)", pts(points)),
                 Geometry::Path { points, width } => format!("list('path {l} list({}) {width} nil)", pts(points)),
@@ -2279,6 +2348,11 @@ mod tests {
         // a 45° path.
         t.source.add(m2, Geometry::Polygon { points: vec![(1000, -1500), (3500, 1000), (1000, 3500), (-1500, 1000)] });
         t.source.add(m2, Geometry::Path { points: vec![(-1000, -1000), (3000, 3000)], width: 200 });
+        // A path the width line runs inside (it becomes a polygon) and edges at other angles.
+        let wy = t.ops.iter().find(|o| matches!(o, Op::Stretch { axis: Axis::Y, side: Side::High, .. }));
+        let Some(Op::Stretch { at: wy, .. }) = wy else { panic!("no w line") };
+        t.source.add(m2, Geometry::Path { points: vec![(-800, wy + 20), (2500, wy + 20)], width: 200 });
+        t.source.add(m2, Geometry::Polygon { points: vec![(-1000, -1000), (3000, -800), (-1000, 3000)] });
         let (text, warnings) = t.to_skill(&tech, "pclib").unwrap();
         assert!(warnings.is_empty());
         let sets: Vec<Vec<(String, f64)>> = vec![
@@ -2405,6 +2479,40 @@ mod tests {
         let err = one(ell.clone(), Side::High, 0.6).unwrap_err();
         assert!(err.contains("collapses a metal1 shape"), "{err}");
         assert!(one(ell, Side::High, 0.7).is_ok());
+    }
+
+    #[test]
+    fn paths_cut_along_their_width_grow_like_rects() {
+        let tech = Tech::generic();
+        let m1 = tech.metal1().unwrap();
+        let mut l = Layout::default();
+        l.add(m1, Geometry::Path { points: vec![(0, 100), (1000, 100)], width: 200 });
+        // A vertical wire the line crosses lengthwise stays a path.
+        l.add(m1, Geometry::Path { points: vec![(3000, 0), (3000, 1000)], width: 200 });
+        let mut t = Template::from_layout("p", &l);
+        t.params.push(Param::new("w", ParamKind::Length, 1.0));
+        t.ops.push(Op::Stretch { axis: Axis::Y, at: 150, side: Side::High, amount: "w".into(), layers: vec![] });
+        let lay = t.generate(&tech, &vals(&[("w", 1.5)])).unwrap();
+        assert!(matches!(lay.shapes[0].geom, Geometry::Polygon { .. }));
+        assert_eq!(as_rect(&lay.shapes[0].geom), Some(IRect::new(-100, 0, 1100, 700)));
+        assert_eq!(lay.shapes[1].geom, Geometry::Path { points: vec![(3000, 0), (3000, 1500)], width: 200 });
+    }
+
+    #[test]
+    fn cuts_on_other_angles_snap_to_the_grid() {
+        let tech = Tech::generic();
+        assert!(tech.grid > 1);
+        let m1 = tech.metal1().unwrap();
+        let mut l = Layout::default();
+        l.add(m1, Geometry::Polygon { points: vec![(0, 0), (1000, 0), (1300, 1000), (0, 1000)] });
+        let mut t = Template::from_layout("s", &l);
+        t.params.push(Param::new("w", ParamKind::Length, 1.0));
+        t.ops.push(Op::Stretch { axis: Axis::X, at: 1100, side: Side::High, amount: "w".into(), layers: vec![] });
+        let lay = t.generate(&tech, &vals(&[("w", 1.5)])).unwrap();
+        let Geometry::Polygon { points } = &lay.shapes[0].geom else { panic!() };
+        assert!(points.iter().all(|p| p.0 % tech.grid == 0 && p.1 % tech.grid == 0), "{points:?}");
+        assert!(points.contains(&(1100, snap(333, tech.grid))) && points.contains(&(1600, snap(333, tech.grid))), "{points:?}");
+        assert!(t.lint(&tech).iter().any(|f| f.level == Level::Info && f.message.contains("other than 45°")));
     }
 
     #[test]
