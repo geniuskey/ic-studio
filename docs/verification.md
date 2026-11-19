@@ -169,7 +169,7 @@ capacitance on the node and its wire capacitance from the layout:
 
 ```
 pixel 1 FD: reset 0.946 V, C = 1.638 fF, CG = 97.8 uV/e- at FD, 81.6 uV/e- at the column (SF gain 0.834)
-  Noise: kTC at FD 16.3 e- rms (removed by CDS); readout 57.1 uV rms = 0.70 e- rms per sample (0.99 e- with CDS) with 1 pF on the column, 1 kHz to 1 GHz
+  Noise: kTC at FD 16.3 e- rms (removed by CDS); readout 57.1 uV rms = 0.70 e- rms per sample from 1 kHz, CDS 80.8 uV = 0.99 e- (2 us apart), 1 pF on the column
   Dark current: 3.87 aA = 24.1 e-/s at 27 C (doubles every 9.0 C)
   PD (pinned): reset 0.443 V, C = 6.512 fF; transfer of 500 e-: 480.4 e- out, lag 19.6 e-; full well 32740 e- (saturates at -0.363 V)
 ```
@@ -194,10 +194,12 @@ The characterisation then also reports, for each photodiode:
 - **Noise**: the reset (kTC) noise of FD, sqrt(k T C_FD) / q, which correlated double
   sampling removes in a 4T pixel (a pinned photodiode resets without it); and the readout
   noise from a noise analysis at the reset levels (RST and TX off, SEL on, FD and the
-  photodiode held by a noiseless 1 nS transconductance), integrated at the column from 1 kHz
-  to 1 GHz with the column line capacitance (`--ccol`, 1 pF by default) setting the
-  bandwidth, in µV and in electrons through the column conversion gain, per sample and with
-  CDS (√2). Flicker noise appears when the models have it (`kf`).
+  photodiode held by a noiseless 1 nS transconductance), at the column with the column line
+  capacitance (`--ccol`, 1 pF by default) setting the bandwidth, in µV and in electrons
+  through the column conversion gain: one sample, integrated from 1 kHz to 1 GHz, and the
+  correlated double sample, two samples `--cds-dt` apart (2 µs by default), integrated from
+  1 Hz with |H(f)|² = 4 sin²(π f Δt). For white noise that is √2 times one sample; flicker
+  noise (when the models have `kf`) it cancels at low frequencies.
 - **Dark current** (with the photodiode's `dark_area` / `dark_perimeter`): the densities at
   `dark_temp` scaled to the bench temperature (`--temp`, 27 °C by default) by
   exp(Ea / k (1 / T_ref − 1 / T)), in aA and electrons per second, with the temperature step

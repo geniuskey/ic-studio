@@ -1048,7 +1048,7 @@ pub fn definitions() -> Vec<Value> {
         tool(
             "extract",
             "Extract connectivity and devices from a cell layout: nets (name, bbox µm), MOS devices (W/L µm, terminal nets), PDK resistors / capacitors (value in Ω / F, terminal nets), photodiodes (the technology's cross-section photodiode region: anode / cathode nets, area, perimeter) with the image sensor pixels around them (transfer gate TG, floating diffusion fd, RST, SF, SEL, supply and column nets, found by connectivity) and the extracted circuit as SPICE.",
-            json!({"cell": cell(), "characterize": {"type": "boolean", "description": "Also simulate each pixel (up to 16): FD and photodiode capacitance (F), conversion gain at FD and the column (µV per electron), source follower gain, for a pinned photodiode the transfer and lag of 500 electrons, the full well, the dark current at temp and the noise (FD kTC, readout noise at the column in µV and electrons), under pixels[].metrics."}, "temp": {"type": "number", "description": "Temperature for characterize, °C (default 27)."}, "ccol": {"type": "number", "description": "Column line capacitance for the readout noise of characterize, F (default 1e-12)."}}),
+            json!({"cell": cell(), "characterize": {"type": "boolean", "description": "Also simulate each pixel (up to 16): FD and photodiode capacitance (F), conversion gain at FD and the column (µV per electron), source follower gain, for a pinned photodiode the transfer and lag of 500 electrons, the full well, the dark current at temp and the noise (FD kTC, readout noise at the column in µV and electrons), under pixels[].metrics."}, "temp": {"type": "number", "description": "Temperature for characterize, °C (default 27)."}, "ccol": {"type": "number", "description": "Column line capacitance for the readout noise of characterize, F (default 1e-12)."}, "cds_dt": {"type": "number", "description": "Time between the reset and the signal sample of correlated double sampling, s (default 2e-6)."}}),
             &["cell"],
         ),
         tool(
@@ -2682,6 +2682,7 @@ impl State {
             let bench = Testbench {
                 temp: a.opt_num("temp")?.unwrap_or(defaults.temp),
                 ccol: a.opt_num("ccol")?.unwrap_or(defaults.ccol),
+                cds_dt: a.opt_num("cds_dt")?.unwrap_or(defaults.cds_dt),
                 ..defaults
             };
             let opts = ics_sim::SimOptions { backend: ics_core::Backend::Auto, deck_dir: p.root.clone(), ..Default::default() };
@@ -2694,7 +2695,8 @@ impl State {
                         "pinned": m.pinned, "temp_c": m.temp,
                         "noise": json!({
                             "ktc_fd_e": sig(m.noise.ktc_e), "readout_uv": sig(m.noise.readout_uv), "readout_e": sig(m.noise.readout_e),
-                            "readout_cds_e": sig(m.noise.readout_e * std::f64::consts::SQRT_2), "ccol_f": sig(m.noise.ccol),
+                            "readout_cds_uv": sig(m.noise.readout_cds_uv), "readout_cds_e": sig(m.noise.readout_cds_e),
+                            "cds_dt_s": sig(m.noise.cds_dt), "ccol_f": sig(m.noise.ccol),
                             "band_hz": [ics_core::pixel_circuit::NOISE_BAND.0, ics_core::pixel_circuit::NOISE_BAND.1],
                         }),
                         "photodiodes": m.pds.iter().map(|d| json!({

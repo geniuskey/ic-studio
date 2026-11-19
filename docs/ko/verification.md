@@ -146,7 +146,7 @@ ics sim demo aps4t_sch
 
 ```
 pixel 1 FD: reset 0.946 V, C = 1.638 fF, CG = 97.8 uV/e- at FD, 81.6 uV/e- at the column (SF gain 0.834)
-  Noise: kTC at FD 16.3 e- rms (removed by CDS); readout 57.1 uV rms = 0.70 e- rms per sample (0.99 e- with CDS) with 1 pF on the column, 1 kHz to 1 GHz
+  Noise: kTC at FD 16.3 e- rms (removed by CDS); readout 57.1 uV rms = 0.70 e- rms per sample from 1 kHz, CDS 80.8 uV = 0.99 e- (2 us apart), 1 pF on the column
   Dark current: 3.87 aA = 24.1 e-/s at 27 C (doubles every 9.0 C)
   PD (pinned): reset 0.443 V, C = 6.512 fF; transfer of 500 e-: 480.4 e- out, lag 19.6 e-; full well 32740 e- (saturates at -0.363 V)
 ```
@@ -169,9 +169,10 @@ pinned로 모델링합니다. 전하는 저장 용량(`cap_area` × 면적 + `ca
 - **노이즈**: FD의 리셋(kTC) 노이즈 sqrt(k T C_FD) / q. 4T 픽셀에서는 CDS(상관 이중 샘플링)가 이를
   제거합니다(pinned 포토다이오드는 이 노이즈 없이 리셋됨). 그리고 리셋 레벨에서의 노이즈 해석으로 구한
   읽기 노이즈입니다. RST와 TX는 끄고 SEL은 켜며, FD와 포토다이오드는 노이즈 없는 1 nS 트랜스컨덕턴스로
-  붙잡아 둡니다. 컬럼에서 1 kHz부터 1 GHz까지 적분하고, 대역폭은 컬럼 라인 용량(`--ccol`, 기본 1 pF)이
-  정합니다. 결과는 µV와, 컬럼 변환 이득으로 환산한 전자 수로 샘플당 값과 CDS(√2) 값을 냅니다. 모델에
-  플리커 노이즈(`kf`)가 있으면 그것도 포함됩니다.
+  붙잡아 둡니다. 대역폭은 컬럼 라인 용량(`--ccol`, 기본 1 pF)이 정하고, 결과는 µV와 컬럼 변환 이득으로
+  환산한 전자 수로 냅니다. 한 샘플 값은 1 kHz부터 1 GHz까지 적분하고, CDS 값은 `--cds-dt`(기본 2 µs)
+  간격의 두 샘플 차이로 1 Hz부터 |H(f)|² = 4 sin²(π f Δt)를 곱해 적분합니다. 백색 노이즈라면 한 샘플의
+  √2배이고, 플리커 노이즈(모델에 `kf`가 있을 때)는 저주파에서 상쇄됩니다.
 - **암전류**(포토다이오드의 `dark_area` / `dark_perimeter`가 있을 때): `dark_temp`에서의 밀도를
   exp(Ea / k (1 / T_ref − 1 / T))로 테스트벤치 온도(`--temp`, 기본 27 °C)에 맞춰 aA와 초당 전자 수로
   보고하고, 두 배가 되는 온도 간격(0.6 eV에서 약 9 °C)도 함께 냅니다. 그려진 테스트벤치에는 전하

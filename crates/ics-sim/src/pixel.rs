@@ -17,8 +17,8 @@
 use ics_core::Tech;
 use ics_core::extract::Extraction;
 use ics_core::pixel_circuit::{
-    FD_WINDOW, FULL_WELL_AT, INJECT_ELECTRONS, NOISE_BAND, PD_WINDOW, PixelCircuit, Q_E, Stimulus, TRANSFER_WINDOW, Testbench,
-    charge_net, pixel_only, schematic,
+    FD_WINDOW, FULL_WELL_AT, INJECT_ELECTRONS, PD_WINDOW, PixelCircuit, Q_E, SAMPLE_NOISE_FROM, Stimulus, TRANSFER_WINDOW,
+    Testbench, charge_net, pixel_only, schematic,
 };
 
 use crate::{SimOptions, simulate};
@@ -55,12 +55,17 @@ pub struct NoiseMetrics {
     /// Reset (kTC) noise of FD, electrons rms: sqrt(k T C_FD) / q. Correlated double sampling
     /// removes it in a 4T pixel; a pinned photodiode resets without it.
     pub ktc_e: f64,
-    /// Readout noise at the column over [`NOISE_BAND`] with [`Testbench::ccol`] on the column
-    /// line (µV rms) and referred to FD charge by the column conversion gain (e⁻ rms), one
-    /// sample; correlated double sampling of uncorrelated noise multiplies it by √2.
+    /// Readout noise at the column with [`Testbench::ccol`] on the column line (µV rms) and
+    /// referred to FD charge by the column conversion gain (e⁻ rms): one sample (from
+    /// [`SAMPLE_NOISE_FROM`]), and the difference of two samples [`Testbench::cds_dt`] apart
+    /// (correlated double sampling, |H(f)|² = 4 sin²(π f Δt) over the whole band): √2 times
+    /// one sample for white noise, less for flicker noise, which it cancels.
     pub readout_uv: f64,
     pub readout_e: f64,
+    pub readout_cds_uv: f64,
+    pub readout_cds_e: f64,
     pub ccol: f64,
+    pub cds_dt: f64,
 }
 
 /// Characterisation of one pixel.
@@ -97,14 +102,15 @@ impl PixelMetrics {
         );
         let n = &self.noise;
         s += &format!(
-            "Noise: kTC at FD {:.1} e- rms (removed by CDS); readout {:.1} uV rms = {:.2} e- rms per sample ({:.2} e- with CDS) with {} pF on the column, {} to {}\n",
+            "Noise: kTC at FD {:.1} e- rms (removed by CDS); readout {:.1} uV rms = {:.2} e- rms per sample from {}, CDS {:.1} uV = {:.2} e- ({} us apart), {} pF on the column\n",
             n.ktc_e,
             n.readout_uv,
             n.readout_e,
-            n.readout_e * std::f64::consts::SQRT_2,
+            hz(SAMPLE_NOISE_FROM),
+            n.readout_cds_uv,
+            n.readout_cds_e,
+            n.cds_dt * 1e6,
             n.ccol * 1e12,
-            hz(NOISE_BAND.0),
-            hz(NOISE_BAND.1)
         );
         for p in &self.pds {
             if let Some((i, doubling)) = p.dark {
@@ -274,15 +280,26 @@ pub fn characterize(
     let ns = res.dataset("noise").ok_or("the simulation gave no noise result")?;
     let f = &ns.scale_vector().ok_or("no frequency vector")?.re;
     let sd = &ns.get("onoise_spectrum").ok_or("no output noise spectrum")?.re;
-    let power: f64 = f.windows(2).zip(sd.windows(2)).map(|(f, s)| (f[1] - f[0]) * (s[0] * s[0] + s[1] * s[1]) / 2.0).sum();
-    let readout_uv = power.sqrt() * 1e6;
+    // Per segment the mean of S² times the integral of |H|² over it (`h(f0, f1)`), exact for
+    // a filter oscillating faster than the frequency points.
+    let integrate = |h: &dyn Fn(f64, f64) -> f64| -> f64 {
+        f.windows(2).zip(sd.windows(2)).map(|(f, s)| h(f[0], f[1]) * (s[0] * s[0] + s[1] * s[1]) / 2.0).sum()
+    };
+    let readout_uv = integrate(&|a, z| (z.min(f64::MAX) - a.max(SAMPLE_NOISE_FROM)).max(0.0)).sqrt() * 1e6;
+    // ∫ 4 sin²(π f Δt) df = 2 Δf - (sin 2π f1 Δt - sin 2π f0 Δt) / (π Δt).
+    let w = 2.0 * std::f64::consts::PI * b.cds_dt;
+    let cds = |a: f64, z: f64| 2.0 * (z - a) - ((w * z).sin() - (w * a).sin()) / (std::f64::consts::PI * b.cds_dt);
+    let readout_cds_uv = integrate(&cds).sqrt() * 1e6;
     let cg_col_uv = cg_fd_uv * sf_gain;
     const K_B: f64 = 1.380_649e-23;
     let noise = NoiseMetrics {
         ktc_e: (K_B * (b.temp + 273.15) * c_fd).sqrt() / Q_E,
         readout_uv,
         readout_e: readout_uv / cg_col_uv.abs().max(1e-12),
+        readout_cds_uv,
+        readout_cds_e: readout_cds_uv / cg_col_uv.abs().max(1e-12),
         ccol: b.ccol,
+        cds_dt: b.cds_dt,
     };
     Ok(PixelMetrics { v_fd_reset: fd0, c_fd, cg_fd_uv, cg_col_uv, sf_gain, pds, pinned, temp: b.temp, noise, deck })
 }
@@ -345,6 +362,9 @@ mod tests {
         assert!((n.ktc_e - 16.1).abs() < 0.5, "{}", m.summary());
         assert!(n.readout_uv > 20.0 && n.readout_uv < 150.0, "{}", m.summary());
         assert!((n.readout_e - n.readout_uv / m.cg_col_uv).abs() < 1e-9);
+        // White noise (no flicker in the generic models): CDS doubles the power.
+        let r = n.readout_cds_uv / n.readout_uv;
+        assert!((r - std::f64::consts::SQRT_2).abs() < 0.05, "{r}: {}", m.summary());
         // Demo dark current: 3 aA/µm² at 60 °C, a tenth of it at 27 °C.
         let (i, doubling) = pd.dark.unwrap();
         assert!(i > 2.5e-18 && i < 5e-18 && (doubling - 8.97).abs() < 0.05, "{}", m.summary());

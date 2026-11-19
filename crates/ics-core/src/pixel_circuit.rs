@@ -314,6 +314,8 @@ pub struct Testbench {
     pub temp: f64,
     /// Column line capacitance (F) of the noise bench: it sets the readout bandwidth.
     pub ccol: f64,
+    /// Time (s) between the reset and the signal sample of correlated double sampling.
+    pub cds_dt: f64,
 }
 
 impl Default for Testbench {
@@ -327,6 +329,7 @@ impl Default for Testbench {
             photodiode: None,
             temp: 27.0,
             ccol: 1e-12,
+            cds_dt: 2e-6,
         }
     }
 }
@@ -389,8 +392,11 @@ pub enum Stimulus {
     NoiseBias { fd: f64, charge: f64 },
 }
 
-/// Frequency band (Hz) of the readout noise analysis.
-pub const NOISE_BAND: (f64, f64) = (1e3, 1e9);
+/// Frequency band (Hz) of the readout noise analysis. One sample's noise is integrated from
+/// [`SAMPLE_NOISE_FROM`]; correlated double sampling filters the whole band itself.
+pub const NOISE_BAND: (f64, f64) = (1.0, 1e9);
+/// Lower end (Hz) of one sample's noise, the reciprocal of a frame-scale time.
+pub const SAMPLE_NOISE_FROM: f64 = 1e3;
 
 /// Electrons taken out of a node by the charge injection stimulus.
 pub const INJECT_ELECTRONS: f64 = 500.0;

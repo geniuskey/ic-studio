@@ -24,6 +24,8 @@ pub struct PixelCircuitView {
     pub temp: f64,
     pub vdd: f64,
     pub ccol_pf: f64,
+    /// Correlated double sampling interval (µs).
+    pub cds_us: f64,
     /// The cell analysed, its extraction and pixels.
     pub cell: Option<CellRef>,
     extraction: Option<(Extraction, PixelCircuit, String)>,
@@ -39,6 +41,7 @@ impl Default for PixelCircuitView {
             temp: 27.0,
             vdd: 1.8,
             ccol_pf: 1.0,
+            cds_us: 2.0,
             cell: None,
             extraction: None,
             results: Vec::new(),
@@ -75,7 +78,13 @@ impl PixelCircuitView {
             return;
         }
         let (x, pc, tech) = (x.clone(), pc.clone(), project.tech.clone());
-        let bench = Testbench { temp: self.temp, vdd: self.vdd, ccol: self.ccol_pf * 1e-12, ..Testbench::for_tech(&x, &tech) };
+        let bench = Testbench {
+            temp: self.temp,
+            vdd: self.vdd,
+            ccol: self.ccol_pf * 1e-12,
+            cds_dt: self.cds_us * 1e-6,
+            ..Testbench::for_tech(&x, &tech)
+        };
         let corner = self.cell.as_ref().and_then(|r| project.cell(r)).map(|c| c.sim.corner.clone()).unwrap_or_default();
         let opts = ics_sim::SimOptions { backend: ics_core::Backend::Auto, deck_dir: project.root.clone(), ..Default::default() };
         let (tx, rx) = std::sync::mpsc::channel();
@@ -161,13 +170,15 @@ impl PixelCircuitView {
         );
         ui.separator();
         theme::section(ui, "Bench");
-        egui::Grid::new("pixc_bench").num_columns(6).spacing([10.0, 4.0]).show(ui, |ui| {
+        egui::Grid::new("pixc_bench").num_columns(8).spacing([10.0, 4.0]).show(ui, |ui| {
             let l = ui.label("Temperature (C)");
             ui.add(egui::DragValue::new(&mut self.temp).range(-55.0..=150.0).speed(1.0)).labelled_by(l.id);
             let l = ui.label("Supply (V)");
             ui.add(egui::DragValue::new(&mut self.vdd).range(0.5..=5.0).speed(0.05)).labelled_by(l.id);
             let l = ui.label("Column C (pF)");
             ui.add(egui::DragValue::new(&mut self.ccol_pf).range(0.01..=100.0).speed(0.1)).labelled_by(l.id);
+            let l = ui.label("CDS interval (µs)");
+            ui.add(egui::DragValue::new(&mut self.cds_us).range(0.01..=1000.0).speed(0.1)).labelled_by(l.id);
             ui.end_row();
         });
         ui.horizontal(|ui| {
@@ -206,7 +217,7 @@ impl PixelCircuitView {
                             ui.label(format!("{:.1}", m.cg_fd_uv));
                             ui.label(format!("{:.1}", m.cg_col_uv));
                             ui.label(format!("{:.3}", m.sf_gain));
-                            ui.label(format!("{:.2}", m.noise.readout_e * std::f64::consts::SQRT_2));
+                            ui.label(format!("{:.2}", m.noise.readout_cds_e));
                         }
                         Err(e) => {
                             ui.label(RichText::new(e).color(pal.danger));

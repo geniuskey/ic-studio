@@ -644,6 +644,9 @@ enum Cmd {
         /// Column line capacitance (F) of the readout noise analysis of --characterize.
         #[arg(long, default_value_t = 1e-12)]
         ccol: f64,
+        /// Time (s) between the reset and the signal sample of correlated double sampling.
+        #[arg(long, default_value_t = 2e-6)]
+        cds_dt: f64,
     },
     /// Compare a cell's layout with its schematic (non-zero exit on differences).
     Lvs { project: PathBuf, cell: String },
@@ -2667,6 +2670,7 @@ fn run(cli: Cli) -> Result<(), String> {
             iph,
             temp,
             ccol,
+            cds_dt,
         } => {
             let mut p = Project::open(&project).map_err(|e| e.to_string())?;
             let r = resolve(&p, &cell)?;
@@ -2698,6 +2702,7 @@ fn run(cli: Cli) -> Result<(), String> {
                     iph,
                     temp,
                     ccol,
+                    cds_dt,
                     ..ics_core::pixel_circuit::Testbench::for_tech(&x, &p.tech)
                 };
                 if pixel {
