@@ -267,7 +267,7 @@ A modified nodal analysis engine written in Rust. It supports:
   - errors and warnings name the file and line they come from,
 - diode model: `is n cjo vj m fc tt rs bv ibv kf af eg xti tnom`,
 - MOS level 1: `vto kp u0 lambda gamma phi tox ld cgso cgdo cgbo cj cjsw mj mjsw pb fc is
-  js rd rs rsh kf af tnom`, with instance parameters `w l m ad as pd ps nrd nrs`,
+  js rd rs rsh kf af tnom capmod`, with instance parameters `w l m ad as pd ps nrd nrs`,
 - MOS BSIM4 (`level=14` or `level=54`), the model of most foundry PDKs: the drain current
   follows BSIM4 4.8 as in ngspice and matches it to the solver tolerance (threshold voltage
   with short-channel, DIBL, narrow-width, body, pocket-implant and DITS terms, poly
@@ -293,7 +293,11 @@ The level-1 models follow SPICE level 1 and the SPICE diode:
 - **Capacitances depend on bias.** MOS gate capacitance follows the Meyer model per region
   (accumulation, depletion, triode, saturation) when `tox` is given; junction and diode
   depletion capacitances follow `cj`, `mj`, `pb`, `fc` and the sidewall terms. Transient
-  analysis integrates charge, so it is conserved.
+  analysis integrates charge, so it is conserved. Meyer capacitances themselves do not
+  conserve the channel charge when a gate switches (charge injection of a switch, a
+  transfer gate): `capmod=1` (built-in engine only) replaces them with terminal charges,
+  the long-channel inversion charge split between drain and source by Ward-Dutton (40 / 60
+  in saturation) and the gate charge their negative sum.
 - **Parasitic resistances**: MOS `rd` / `rs` (or `rsh` with `nrd` / `nrs`) and diode `rs`
   add internal nodes; MOS bulk junctions are modelled as diodes.
 - **Temperature**: MOS `kp`, `phi`, `vto` and the bulk junctions, and diode `is` (with `eg`,

@@ -250,7 +250,7 @@ Rust로 작성한 수정 절점 해석(MNA) 엔진입니다. 다음을 지원합
   - 오류와 경고에는 원본 파일과 줄 번호가 표시됩니다.
 - 다이오드 모델: `is n cjo vj m fc tt rs bv ibv kf af eg xti tnom`,
 - MOS level 1: `vto kp u0 lambda gamma phi tox ld cgso cgdo cgbo cj cjsw mj mjsw pb fc is
-  js rd rs rsh kf af tnom`, 인스턴스 파라미터 `w l m ad as pd ps nrd nrs`.
+  js rd rs rsh kf af tnom capmod`, 인스턴스 파라미터 `w l m ad as pd ps nrd nrs`.
 - MOS BSIM4(`level=14` 또는 `level=54`, 대부분의 파운드리 PDK가 쓰는 모델): 드레인 전류는 ngspice의
   BSIM4 4.8을 따르며 솔버 허용오차 이내로 일치합니다(단채널, DIBL, 협폭, 바디, 포켓 임플란트, DITS
   항을 포함한 문턱전압, poly depletion, 이동도 모델 0~2, 속도 포화와 오버슈트, source-end 속도 제한,
@@ -272,7 +272,10 @@ level 1 모델은 SPICE level 1과 SPICE 다이오드를 따릅니다.
 - **커패시턴스는 바이어스에 따라 변합니다.** `tox`가 주어지면 MOS 게이트 커패시턴스는 영역별
   (accumulation, depletion, triode, saturation) Meyer 모델을 따르고, 접합 및 다이오드 공핍
   커패시턴스는 `cj`, `mj`, `pb`, `fc`와 측벽 항을 따릅니다. 과도 해석은 전하를 적분하므로
-  전하가 보존됩니다.
+  전하가 보존됩니다. 다만 Meyer 용량 자체는 게이트가 스위칭할 때(스위치의 전하 주입, 전송 게이트)
+  채널 전하를 보존하지 않습니다. `capmod=1`(내장 엔진 전용)은 이를 단자 전하로 바꿉니다. 장채널
+  반전 전하를 Ward-Dutton으로 드레인과 소스에 나누고(포화에서 40 / 60), 게이트 전하는 그 합의
+  음수입니다.
 - **기생 저항**: MOS `rd` / `rs`(또는 `nrd` / `nrs`와 함께 쓰는 `rsh`)와 다이오드 `rs`는
   내부 노드를 추가합니다. MOS 벌크 접합은 다이오드로 모델링됩니다.
 - **온도**: MOS `kp`, `phi`, `vto`와 벌크 접합, 다이오드 `is`(`eg`, `xti` 사용), `vj`,

@@ -146,10 +146,10 @@ ics sim demo aps4t_sch
 노드에 걸린 모든 접합, 오버랩, 게이트 용량과 레이아웃의 배선 용량이 들어갑니다.
 
 ```
-pixel 1 FD: reset 0.946 V, C = 1.638 fF, CG = 97.8 uV/e- at FD, 81.6 uV/e- at the column (SF gain 0.834)
-  Noise: kTC at FD 16.3 e- rms (removed by CDS); readout 57.1 uV rms = 0.70 e- rms per sample from 1 kHz, CDS 80.8 uV = 0.99 e- (2 us apart), 1 pF on the column
-  Dark current: 3.87 aA = 24.1 e-/s at 27 C (doubles every 9.0 C)
-  PD (pinned): reset 0.443 V, C = 6.512 fF; transfer of 500 e-: 480.4 e- out, lag 19.6 e-; full well 32740 e- (saturates at -0.363 V)
+pixel 1 FD: reset 0.991 V, C = 1.496 fF, CG = 107.1 uV/e- at FD, 89.6 uV/e- at the column (SF gain 0.836)
+  Noise: kTC at FD 15.5 e- rms (removed by CDS); readout 58.5 uV rms = 0.65 e- rms per sample from 1 kHz, CDS 82.8 uV = 0.92 e- (2 us apart), 1 pF on the column
+  D1 dark current: 3.87 aA = 24.1 e-/s at 27 C (doubles every 9.0 C)
+  D1 (pd, pinned): reset 0.478 V, C = 6.511 fF; transfer of 500 e-: 494.3 e- out, lag 5.7 e-; full well 34177 e- (saturates at -0.363 V)
 ```
 
 **Pinned 포토다이오드.** 기술 파일의 포토다이오드에 `pinning`을 지정하면 회로도와 시뮬레이션에서
@@ -164,9 +164,10 @@ pinned로 모델링합니다. 전하는 저장 용량(`cap_area` × 면적 + `ca
 
 - **전송과 lag**: TX가 전자 500개를 전송합니다. 그 전하가 없는 실행(같은 TX 피드스루와 채널 전하)과
   비교해 포토다이오드에 남은 전하가 lag이며, 남겨졌거나 TX가 꺼질 때 되돌아온(spill-back) 것입니다.
-  일반 접합은 전송 대신 FD와 전하를 나누므로 전송 수치가 없습니다. spill-back은 턴오프 때 채널 전하가
-  나뉘는 방식에 달려 있습니다. 기본 level-1 모델(Meyer 용량)은 이 전하를 보존하지 않으므로, lag는 전하
-  보존 모델(PDK의 BSIM4)로 보세요.
+  일반 접합은 전송 대신 FD와 전하를 나누므로 대부분, 약 C_PD / (C_PD + C_FD)를 남깁니다. spill-back은
+  턴오프 때 채널 전하가 나뉘는 방식에 달려 있는데 Meyer 용량은 이 전하를 보존하지 않습니다. 그래서 특성
+  추출은 덱의 level-1 모델을 `capmod=1`(전하 보존 게이트 전하, [시뮬레이션](simulation.md) 참고)로
+  실행합니다. PDK의 BSIM4 모델은 원래 전하 기반입니다.
 - **노이즈**: FD의 리셋(kTC) 노이즈 sqrt(k T C_FD) / q. 4T 픽셀에서는 CDS(상관 이중 샘플링)가 이를
   제거합니다(pinned 포토다이오드는 이 노이즈 없이 리셋됨). 그리고 리셋 레벨에서의 노이즈 해석으로 구한
   읽기 노이즈입니다. RST와 TX는 끄고 SEL은 켜며, FD와 포토다이오드는 노이즈 없는 1 nS 트랜스컨덕턴스로

@@ -213,6 +213,10 @@ pub struct MosModel {
     pub af: f64,
     /// Temperature the parameters were measured at (°C).
     pub tnom: f64,
+    /// Intrinsic gate capacitance of level 1: 0 the Meyer capacitances (as SPICE), 1 charge
+    /// conserving terminal charges (Ward-Dutton partition), which keep the channel charge
+    /// when a gate switches (charge injection, charge transfer).
+    pub capmod: u8,
     /// BSIM4 card (`level=14` / `54`): the drain current comes from it; the level-1 fields
     /// above only describe junctions, overlap and Meyer capacitances.
     pub bsim4: Option<Bsim4Dev>,
@@ -688,7 +692,7 @@ impl Circuit {
 /// MOS model parameters the built-in engine evaluates.
 const MOS_PARAMS: &[&str] = &[
     "level", "vto", "kp", "u0", "lambda", "gamma", "phi", "tox", "ld", "cgso", "cgdo", "cgbo", "cj", "cjsw", "mj", "mjsw", "pb",
-    "fc", "is", "js", "rd", "rs", "rsh", "kf", "af", "tnom", "lmin", "lmax", "wmin", "wmax",
+    "fc", "is", "js", "rd", "rs", "rsh", "kf", "af", "tnom", "lmin", "lmax", "wmin", "wmax", "capmod",
 ];
 /// Diode model parameters the built-in engine evaluates.
 const DIODE_PARAMS: &[&str] =
@@ -1049,6 +1053,7 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
                 kf: g("kf", 0.0),
                 af: g("af", 1.0),
                 tnom: g("tnom", 27.0),
+                capmod: 0,
                 bsim4: Some(Bsim4Dev { card: Arc::new(card), nf: 1.0, shift: bsim4::Shift::default(), inst: None }),
             };
             mos_models.insert(name, m);
@@ -1172,6 +1177,7 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
                     kf: g("kf", 0.0),
                     af: g("af", 1.0),
                     tnom: g("tnom", 27.0),
+                    capmod: (g("capmod", 0.0) >= 0.5) as u8,
                     bsim4: None,
                 };
                 mos_models.insert(name, m);

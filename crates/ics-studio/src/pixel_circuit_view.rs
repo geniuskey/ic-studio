@@ -251,8 +251,8 @@ impl PixelCircuitView {
             if let Some(Ok(m)) = self.results.first().map(|r| &r.1) {
                 ui.label(
                     RichText::new(format!(
-                        "kTC at FD {:.1} e- rms (removed by CDS); readout noise over {} pF of column. Lag with level-1 models \
-                         (Meyer capacitances) is approximate: they do not conserve the channel charge.",
+                        "kTC at FD {:.1} e- rms (removed by CDS); readout noise over {} pF of column. Level-1 models run with \
+                         charge-conserving gate charges (capmod=1), so the channel charge of a transfer is kept.",
                         m.noise.ktc_e, self.ccol_pf
                     ))
                     .small()

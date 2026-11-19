@@ -327,9 +327,61 @@ fn mos_eval(m: &MosModel, w: f64, l: f64, mult: f64, vd: f64, vg: f64, vs: f64, 
     MosEval { id: sign * i, j, region, vth: sign * vth, gm, gds }
 }
 
-/// Terminal charges (d, g, s, b) of a BSIM4 MOS at terminal voltages `v` (d, g, s, b), times
-/// the multiplier `mult`, and their derivatives with respect to `v`; None for other models.
-fn mos_charges(model: &MosModel, mult: f64, v: [f64; 4]) -> Option<([f64; 4], [[f64; 4]; 4])> {
+/// Intrinsic terminal charges (d, g, s, b) of a level-1 MOS with `capmod=1`: the long-channel
+/// inversion charge split by Ward-Dutton (40 / 60 in saturation, half each at Vds = 0), the
+/// gate-bulk charge below threshold integrated from the Meyer gate-bulk capacitance, and the
+/// gate charge their negative sum, so that charge is conserved. The overdrive at each end goes
+/// through a softplus of 50 mV, smoothing the onset of inversion.
+fn level1_charges(m: &MosModel, w: f64, l: f64, mult: f64, v: [f64; 4]) -> [f64; 4] {
+    let cox = m.cox() * w * m.leff(l) * mult;
+    if cox == 0.0 {
+        return [0.0; 4];
+    }
+    let f = frame(m, v[0], v[1], v[2], v[3]);
+    const ETA: f64 = 0.05;
+    let softplus = |x: f64| if x > 20.0 * ETA { x } else { ETA * (x / ETA).exp().ln_1p() };
+    let u = f.vgs - f.vth;
+    let (a, b) = (softplus(u), softplus(u - f.vds));
+    let sum = (a + b).max(1e-30);
+    let qi = -2.0 / 3.0 * cox * (a * a + a * b + b * b) / sum;
+    let qd = -2.0 / 15.0 * cox * (2.0 * a.powi(3) + 4.0 * a * a * b + 6.0 * a * b * b + 3.0 * b.powi(3)) / (sum * sum);
+    let qs = qi - qd;
+    let phi = m.phi.max(1e-3);
+    let qgb = if u <= -phi {
+        cox * (u + phi) - cox * phi / 4.0
+    } else if u <= -phi / 2.0 {
+        -cox * (u + phi / 2.0).powi(2) / phi
+    } else {
+        0.0
+    };
+    let (qg, qb) = (qgb - qi, -qgb);
+    let (qd, qs) = if f.swapped { (qs, qd) } else { (qd, qs) };
+    let sign = if m.pmos { -1.0 } else { 1.0 };
+    [qd, qg, qs, qb].map(|q| sign * q)
+}
+
+/// Terminal charges (d, g, s, b) of a charge-based MOS (BSIM4, or level 1 with `capmod=1`) at
+/// terminal voltages `v` (d, g, s, b), times the multiplier `mult`, and their derivatives with
+/// respect to `v`; None for other models.
+fn mos_charges(model: &MosModel, w: f64, l: f64, mult: f64, v: [f64; 4]) -> Option<([f64; 4], [[f64; 4]; 4])> {
+    if model.bsim4.is_none() {
+        if model.capmod != 1 || model.cox() == 0.0 {
+            return None;
+        }
+        let q = level1_charges(model, w, l, mult, v);
+        let mut c = [[0.0; 4]; 4];
+        const H: f64 = 1e-6;
+        for j in 0..4 {
+            let (mut up, mut dn) = (v, v);
+            up[j] += H;
+            dn[j] -= H;
+            let (qu, qd) = (level1_charges(model, w, l, mult, up), level1_charges(model, w, l, mult, dn));
+            for t in 0..4 {
+                c[t][j] = (qu[t] - qd[t]) / (2.0 * H);
+            }
+        }
+        return Some((q, c));
+    }
     let inst = model.bsim4.as_ref()?.inst.as_deref()?;
     let sign = if model.pmos { -1.0 } else { 1.0 };
     let q = inst.charges(sign * (v[0] - v[2]), sign * (v[1] - v[2]), sign * (v[3] - v[2]));
@@ -582,7 +634,10 @@ impl Engine {
                             caps.push(Cap { a: *g, b: t, kind: CapKind::Linear(c * m) });
                         }
                     }
-                    if model.cox() > 0.0 {
+                    if model.cox() > 0.0 && model.capmod == 1 {
+                        // Charge-conserving intrinsic charges; junctions and overlaps stay caps.
+                        qdevs.push((i, [*d, *g, *s, *b]));
+                    } else if model.cox() > 0.0 {
                         for (part, t) in [*s, *d, *b].into_iter().enumerate() {
                             caps.push(Cap { a: *g, b: t, kind: CapKind::Meyer { elem: i, part } });
                         }
@@ -1129,7 +1184,7 @@ impl Engine {
     fn qdev_qc(&self, k: usize, x: &[f64]) -> ([f64; 4], [[f64; 4]; 4]) {
         let (ei, nodes) = self.qdevs[k];
         match &self.c.elements[ei] {
-            Element::M { model, m, .. } => mos_charges(model, *m, nodes.map(|n| self.v(x, n))).unwrap_or_default(),
+            Element::M { model, w, l, m, .. } => mos_charges(model, *w, *l, *m, nodes.map(|n| self.v(x, n))).unwrap_or_default(),
             _ => Default::default(),
         }
     }
@@ -1281,9 +1336,15 @@ impl Engine {
                 Element::M { name, d, g, s, b, model, w, l, m, .. } => {
                     let v = |n| self.v(x, n);
                     let ev = mos_eval(model, *w, *l, *m, v(*d), v(*g), v(*s), v(*b));
-                    let [cgs, cgd, cgb] = match mos_charges(model, *m, [v(*d), v(*g), v(*s), v(*b)]) {
-                        // Gate capacitances: -dQg/dV of the other terminals (overlaps included).
-                        Some((_, c)) => [-c[1][2], -c[1][0], -c[1][3]],
+                    let [cgs, cgd, cgb] = match mos_charges(model, *w, *l, *m, [v(*d), v(*g), v(*s), v(*b)]) {
+                        // Gate capacitances: -dQg/dV of the other terminals (overlaps included
+                        // for BSIM4; added for level 1).
+                        Some((_, c)) if model.bsim4.is_some() => [-c[1][2], -c[1][0], -c[1][3]],
+                        Some((_, c)) => [
+                            -c[1][2] + model.cgso * w * m,
+                            -c[1][0] + model.cgdo * w * m,
+                            -c[1][3] + model.cgbo * model.leff(*l) * m,
+                        ],
                         None => {
                             let [cgs, cgd, cgb] = meyer(model, *w, *l, *m, v(*d), v(*g), v(*s), v(*b));
                             [cgs + model.cgso * w * m, cgd + model.cgdo * w * m, cgb + model.cgbo * model.leff(*l) * m]
@@ -2328,6 +2389,30 @@ mod tests {
         let v = &ds.get("v1").unwrap().re;
         assert_eq!(v.len(), 49);
         assert!((v[48] - 1.2).abs() < 1e-12, "{}", v[48]);
+    }
+
+    #[test]
+    fn level1_charge_model_conserves_the_channel_charge() {
+        // A gate pulse over a MOS whose drain and source float on 10 fF: once the gate is back
+        // at 0 V the channel is empty, so its electrons are back on the drain and the source.
+        // Meyer capacitances lose that charge; the charge model (capmod=1) keeps it.
+        let deck = |capmod: u8| {
+            format!(
+                "* t\nVG g 0 PULSE(0 1.8 10n 1n 1n 20n 1)\nVB b 0 0.5\nRD d b 1e9\nRS s b 1e9\nCD d 0 10f\nCS s 0 10f\n\
+                 M1 d g s 0 nm w=1u l=1u\n.model nm nmos (level=1 vto=0.45 kp=100u tox=4n capmod={capmod})\n.end"
+            )
+        };
+        // Drain voltage before the pulse and 30 ns after it.
+        let drift = |capmod: u8| {
+            let ds = engine(&deck(capmod)).run_tran(0.1e-9, 60e-9).unwrap();
+            let v = &ds.get("v(d)").unwrap().re;
+            v[v.len() - 1] - v[0]
+        };
+        // 1 GOhm leaks 0.25 nA for 20 ns while the drain is high: 0.5 mV.
+        let kept = drift(1);
+        assert!(kept.abs() < 1e-3, "capmod=1 drifts {kept}");
+        let meyer = drift(0);
+        assert!(meyer > 0.03, "Meyer was expected to make charge: {meyer}");
     }
 
     #[test]

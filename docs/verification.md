@@ -170,10 +170,10 @@ FD and out of each photodiode in turn (every one of a shared pixel). C = Q / ΔV
 capacitance on the node and its wire capacitance from the layout:
 
 ```
-pixel 1 FD: reset 0.946 V, C = 1.638 fF, CG = 97.8 uV/e- at FD, 81.6 uV/e- at the column (SF gain 0.834)
-  Noise: kTC at FD 16.3 e- rms (removed by CDS); readout 57.1 uV rms = 0.70 e- rms per sample from 1 kHz, CDS 80.8 uV = 0.99 e- (2 us apart), 1 pF on the column
-  Dark current: 3.87 aA = 24.1 e-/s at 27 C (doubles every 9.0 C)
-  PD (pinned): reset 0.443 V, C = 6.512 fF; transfer of 500 e-: 480.4 e- out, lag 19.6 e-; full well 32740 e- (saturates at -0.363 V)
+pixel 1 FD: reset 0.991 V, C = 1.496 fF, CG = 107.1 uV/e- at FD, 89.6 uV/e- at the column (SF gain 0.836)
+  Noise: kTC at FD 15.5 e- rms (removed by CDS); readout 58.5 uV rms = 0.65 e- rms per sample from 1 kHz, CDS 82.8 uV = 0.92 e- (2 us apart), 1 pF on the column
+  D1 dark current: 3.87 aA = 24.1 e-/s at 27 C (doubles every 9.0 C)
+  D1 (pd, pinned): reset 0.478 V, C = 6.511 fF; transfer of 500 e-: 494.3 e- out, lag 5.7 e-; full well 34177 e- (saturates at -0.363 V)
 ```
 
 **Pinned photodiodes.** With `pinning` set on the technology's photodiode, the drawing and
@@ -189,10 +189,11 @@ The characterisation then also reports, for each photodiode:
 
 - **Transfer and lag**: TX transfers the 500 electrons; against a run without them (same TX
   feedthrough and channel charge) the photodiode's remaining charge is the lag, left behind
-  or spilled back when TX turns off. A plain junction shares its charge with FD instead, so
-  it gets no transfer figures. The spill-back depends on how the channel charge splits at
-  turn-off: the generic level-1 models (Meyer capacitances) do not conserve that charge, so
-  take lag from a charge-conserving model (BSIM4 of a PDK).
+  or spilled back when TX turns off. A plain junction shares its charge with FD instead and
+  keeps most of it, about C_PD / (C_PD + C_FD). The spill-back depends on how the channel
+  charge splits at turn-off, which Meyer capacitances do not conserve: the characterisation
+  runs level-1 models of the deck with `capmod=1` (charge-conserving gate charges, see
+  [Simulation](simulation.md)); PDK BSIM4 models are charge based already.
 - **Noise**: the reset (kTC) noise of FD, sqrt(k T C_FD) / q, which correlated double
   sampling removes in a 4T pixel (a pinned photodiode resets without it); and the readout
   noise from a noise analysis at the reset levels (RST and TX off, SEL on, FD and the

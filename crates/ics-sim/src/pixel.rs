@@ -36,7 +36,8 @@ pub struct PhotodiodeMetrics {
     /// Of [`INJECT_ELECTRONS`] in the photodiode: those that left it for FD, and those it still
     /// holds after the transfer (lag: left behind, or spilled back when TX turns off), both
     /// against a run without them.
-    /// Pinned photodiodes with a TG only: a plain junction shares its charge with FD.
+    /// With a TG only (a 3T pixel's photodiode is FD). A plain junction shares its charge with
+    /// FD, so it keeps much of it.
     pub transferred_e: Option<f64>,
     pub lag_e: Option<f64>,
     /// Full well capacity (electrons) and the saturated voltage; `saturated` is false when the
@@ -148,6 +149,37 @@ fn hz(f: f64) -> String {
     format!("{v} {p}Hz")
 }
 
+/// `deck` with every level-1 MOS model card of its own given `capmod=1`, the charge-conserving
+/// gate charges: Meyer capacitances do not conserve the channel charge a transfer gate moves.
+/// Model libraries the deck loads (PDK BSIM models are charge based) are left alone.
+pub fn charge_conserving(deck: &str) -> String {
+    let mut out = String::with_capacity(deck.len() + 64);
+    for line in deck.lines() {
+        let lower = line.to_ascii_lowercase();
+        let mut t = lower.split_whitespace();
+        let is_mos = t.next() == Some(".model") && t.nth(1).is_some_and(|ty| ty.starts_with("nmos") || ty.starts_with("pmos"));
+        let level1 =
+            !lower.contains("level=") || lower.contains("level=1 ") || lower.contains("level=1)") || lower.ends_with("level=1");
+        if is_mos && level1 && !lower.contains("capmod") {
+            match line.rfind(')') {
+                Some(i) => {
+                    out += &line[..i];
+                    out += " capmod=1";
+                    out += &line[i..];
+                }
+                None => {
+                    out += line;
+                    out += " capmod=1";
+                }
+            }
+        } else {
+            out += line;
+        }
+        out.push('\n');
+    }
+    out
+}
+
 /// Value of `v` at time `t` (linear interpolation).
 fn at(time: &[f64], v: &[f64], t: f64) -> Option<f64> {
     let i = time.partition_point(|&x| x < t);
@@ -203,7 +235,7 @@ pub fn characterize(
         let b = Testbench { stimulus: st, iph, ..bench.clone() };
         let (sch, setup) = schematic(&sub, &one, Some(&b));
         let nl = ics_core::netlist::netlist_for(&sch, tech, corner);
-        (nl.deck(&format!("pixel {} {st:?}", k + 1), &setup), b)
+        (charge_conserving(&nl.deck(&format!("pixel {} {st:?}", k + 1), &setup)), b)
     };
     let (deck, b) = deck_for(Stimulus::ChargeInjection { pd: Some(0) }, 0.0);
     let run = Run::new(&deck, opts)?;
@@ -236,8 +268,7 @@ pub fn characterize(
         }
         let c = q / (a - c_after).abs();
         let (transferred_e, lag_e) = match tg {
-            // A plain junction shares its charge with FD rather than transferring it.
-            Some(_) if !(pinned && d.n_type) => (None, None),
+            // A plain junction shares its charge with FD: what stays is its lag.
             Some(_) => {
                 // What the photodiode holds after the transfer beyond the dark run is lag
                 // (left behind or spilled back); the rest left it for FD.
@@ -337,7 +368,11 @@ mod tests {
         // The photodiode (12.8 µm² of junction) is much larger than FD.
         let pd = &m.pds[0];
         assert!(pd.c > 3.0 * m.c_fd, "{}", m.summary());
-        assert_eq!((pd.transferred_e, pd.lag_e), (None, None));
+        // Charge sharing: the photodiode keeps C_PD / (C_PD + C_FD) of it.
+        let share = INJECT_ELECTRONS * pd.c / (pd.c + m.c_fd);
+        let lag = pd.lag_e.unwrap();
+        assert!((lag - share).abs() < 0.1 * share, "lag {lag} vs {share}: {}", m.summary());
+        assert!((pd.transferred_e.unwrap() + lag - INJECT_ELECTRONS).abs() < 1e-9);
         assert!(pd.saturated && pd.full_well_e > 10_000.0, "{}", m.summary());
         assert!(m.deck.contains("IQ_FD fd 0 DC 0 PULSE("), "{}", m.deck);
     }
@@ -355,11 +390,13 @@ mod tests {
         // 0.5 fF/µm² x 12.825 µm² (and a little of the TG source side).
         assert!(pd.v_reset <= 0.5 && pd.v_reset > 0.35, "{}", m.summary());
         assert!((pd.c - 6.4125e-15).abs() < 0.3e-15, "{}", m.summary());
-        // Nearly complete transfer: only the spill-back at TX turn-off stays.
-        // kTC of 1.6 fF: 16 e-. Follower thermal noise on 1 pF: about sqrt(2/3 kT / C), some
+        // Nearly complete transfer: only the spill-back at TX turn-off stays (a few electrons with
+        // the charge-conserving gate charges).
+        // kTC of 1.5 fF: 15 e-. Follower thermal noise on 1 pF: about sqrt(2/3 kT / C), some
         // 50 µV, below one electron at 80 µV/e-.
         let n = &m.noise;
-        assert!((n.ktc_e - 16.1).abs() < 0.5, "{}", m.summary());
+        let ktc = (1.380_649e-23 * 300.15 * m.c_fd).sqrt() / Q_E;
+        assert!((n.ktc_e - ktc).abs() < 1e-9 && n.ktc_e > 10.0 && n.ktc_e < 25.0, "{}", m.summary());
         assert!(n.readout_uv > 20.0 && n.readout_uv < 150.0, "{}", m.summary());
         assert!((n.readout_e - n.readout_uv / m.cg_col_uv).abs() < 1e-9);
         // White noise (no flicker in the generic models): CDS doubles the power.
@@ -370,7 +407,8 @@ mod tests {
         assert!(i > 2.5e-18 && i < 5e-18 && (doubling - 8.97).abs() < 0.05, "{}", m.summary());
         assert!(m.deck.contains("IDK_D1 pd_q 0 DC "), "{}", m.deck);
         let (t, l) = (pd.transferred_e.unwrap(), pd.lag_e.unwrap());
-        assert!(l < 0.1 * INJECT_ELECTRONS && (t + l - INJECT_ELECTRONS).abs() < 1e-9, "{}", m.summary());
+        assert!(l < 0.03 * INJECT_ELECTRONS && (t + l - INJECT_ELECTRONS).abs() < 1e-9, "{}", m.summary());
+        assert!(m.deck.contains("capmod=1"), "{}", m.deck);
         // Full well: from the pinning voltage down to where TX or the substrate junction blooms.
         assert!(pd.saturated, "{}", m.summary());
         assert!(pd.full_well_e > 10_000.0 && pd.full_well_e < 100_000.0, "{}", m.summary());
@@ -391,5 +429,16 @@ mod tests {
         let (_, x4, pc4) = aps4t();
         let m4 = characterize(&x4, &pc4, 0, &p.tech, &Testbench::for_tech(&x4, &p.tech), "", &SimOptions::default()).unwrap();
         assert!(m.c_fd > 1.2 * m4.c_fd, "{} vs {}", m.summary(), m4.summary());
+    }
+
+    #[test]
+    fn level1_cards_get_the_charge_model() {
+        let deck = "* t\n.model nmos nmos (level=1 vto=0.45)\n.model nm2 nmos vto=0.5\n.model b4 nmos (level=54 toxe=3n)\n\
+                    .model q npn (bf=100)\n.model nm3 nmos (level=1 capmod=0)\n";
+        let out = charge_conserving(deck);
+        assert!(out.contains(".model nmos nmos (level=1 vto=0.45 capmod=1)"), "{out}");
+        assert!(out.contains(".model nm2 nmos vto=0.5 capmod=1"), "{out}");
+        assert!(out.contains(".model b4 nmos (level=54 toxe=3n)\n"), "{out}");
+        assert!(out.contains(".model q npn (bf=100)\n") && out.contains("(level=1 capmod=0)"), "{out}");
     }
 }
