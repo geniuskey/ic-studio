@@ -3356,7 +3356,10 @@ fn virtuoso_cds_lib_import_asks_for_the_library() {
 fn extensions_run_in_the_app() {
     use egui_kittest::kittest::Queryable;
     use std::path::Path;
-    let Some(py) = ["python3", "python"].into_iter().find(|p| std::process::Command::new(p).arg("-V").output().is_ok()) else {
+    let Some(py) = ["python3", "python"]
+        .into_iter()
+        .find(|p| std::process::Command::new(p).arg("-V").output().is_ok_and(|o| o.status.success()))
+    else {
         eprintln!("no Python: skipped");
         return;
     };

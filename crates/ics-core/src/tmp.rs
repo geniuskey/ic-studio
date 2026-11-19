@@ -20,6 +20,7 @@ pub fn private_dir(prefix: &str) -> io::Result<PathBuf> {
         h.write_u64(N.fetch_add(1, Ordering::Relaxed));
         h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos()));
         let d = std::env::temp_dir().join(format!("{prefix}-{}-{:016x}", std::process::id(), h.finish()));
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut b = std::fs::DirBuilder::new();
         #[cfg(unix)]
         {

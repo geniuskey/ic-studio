@@ -10,33 +10,50 @@ env:
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # cfg(windows) code is only linted on Windows.
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
       - name: Install system libraries
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev
       - run: cargo fmt --all --check
+        if: runner.os == 'Linux'
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
   python:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: python
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - name: Lint the Python extension
+        if: runner.os == 'Linux'
         working-directory: python
         run: |
           cargo fmt --check
           cargo clippy --all-targets -- -D warnings
       - name: Build and test the Python API
+        shell: bash
         run: |
           python -m pip install ./python pytest numpy
           python -m pytest python/tests -q
@@ -50,6 +67,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - name: Install system libraries (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -58,12 +76,36 @@ jobs:
             mesa-vulkan-drivers ngspice fonts-noto-cjk
           # fonts-noto-cjk: Korean UI text (the copilot test) needs a CJK font, as Windows and
           # macOS have; the UI tests fail on any character no font can draw.
+      # The Windows build of ngspice, where ics_sim::ngspice::default_exe() looks for it.
+      - name: Install ngspice (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $url = "https://downloads.sourceforge.net/project/ngspice/ng-spice-rework/$env:NGSPICE/ngspice-${env:NGSPICE}_64.7z"
+          $archive = Join-Path $env:RUNNER_TEMP 'ngspice.7z'
+          curl.exe -fsSL --retry 3 -o $archive $url
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          7z x -y '-oC:\' $archive | Out-Null
+          if (-not (Test-Path 'C:\Spice64\bin\ngspice_con.exe')) { exit 1 }
+        env:
+          NGSPICE: "47"
+      - name: Check the Windows installer parses
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD\scripts\install.ps1", [ref]$null, [ref]$errors)
+          if ($errors) { $errors; exit 1 }
       - name: Build all crates
         run: cargo build --workspace --all-targets
       - name: Core, simulator and CLI tests
-        run: cargo test -p ics-core -p ics-sim -p ics-optics -p ics-cli
-      - name: Headless UI tests (software Vulkan)
-        if: runner.os == 'Linux'
+        run: cargo test -p ics-core -p ics-sim -p ics-optics -p ics-cli -p ics-mcp
+      - name: Desktop app unit tests
+        run: cargo test -p ics-studio --lib --bins
+      # Linux: lavapipe (software Vulkan). Windows: WARP (software DX12). Both are CPU
+      # adapters, which egui_kittest prefers.
+      - name: Headless UI tests
+        if: runner.os != 'macOS'
         run: cargo test -p ics-studio --test ui -- --test-threads=1
       - name: Release build of the desktop app
         run: cargo build --release -p ics-studio -p ics-cli

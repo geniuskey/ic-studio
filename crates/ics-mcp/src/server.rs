@@ -184,7 +184,9 @@ mod tests {
 
     #[test]
     fn extension_tools_are_listed_and_call_back() {
-        let Some(py) = ["python3", "python"].into_iter().find(|p| std::process::Command::new(p).arg("-V").output().is_ok())
+        let Some(py) = ["python3", "python"]
+            .into_iter()
+            .find(|p| std::process::Command::new(p).arg("-V").output().is_ok_and(|o| o.status.success()))
         else {
             return;
         };

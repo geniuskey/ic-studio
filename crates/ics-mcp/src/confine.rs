@@ -59,7 +59,9 @@ impl Roots {
         for (k, v) in out.iter_mut() {
             let Value::String(s) = v else { continue };
             let p = Path::new(s.as_str());
-            let relative_to_project = PROJECT_RELATIVE.contains(&k.as_str()) && p.is_relative();
+            // On Windows `\x` and `C:x` are "relative" yet leave the base when joined.
+            let relative_to_project = PROJECT_RELATIVE.contains(&k.as_str())
+                && p.components().all(|c| matches!(c, Component::Normal(_) | Component::CurDir | Component::ParentDir));
             if !PATH_ARGS.contains(&k.as_str()) && !PROJECT_RELATIVE.contains(&k.as_str()) {
                 continue;
             }
@@ -145,6 +147,8 @@ mod tests {
         assert!(r.check(&args(json!({"data": "meas/iv.csv"})), None).is_ok());
         assert!(r.check(&args(json!({"data": "../iv.csv"})), None).is_err());
         assert!(r.check(&args(json!({"data": "/etc/passwd"})), None).is_err());
+        #[cfg(windows)]
+        assert!(r.check(&args(json!({"data": "C:x.csv"})), None).is_err());
         #[cfg(unix)]
         {
             // A link inside a root that points out of it is outside.
