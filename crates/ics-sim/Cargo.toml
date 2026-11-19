@@ -1,11 +1,11 @@
 [package]
 name = "ics-sim"
-version = "0.2.10"
+version = "0.2.11"
 edition = "2024"
 license.workspace = true
 
 [dependencies]
-ics-core = { version = "0.2.10", path = "../ics-core" }
+ics-core = { version = "0.2.11", path = "../ics-core" }
 num-complex = "0.4.6"
 # Sparse LU of large MNA systems.
 faer = "0.24.4"
