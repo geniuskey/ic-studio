@@ -216,7 +216,7 @@ pinned로 모델링합니다. 전하는 저장 용량(`cap_area` × 면적 + `ca
 - 넷 이름은 대소문자를 구분하지 않고 비교하며, `0`, `gnd`, `vss`는 같은 것으로 취급합니다.
 
 데모 셀 `cmos_inverter`에는 의도적으로 LVS 지적 사항(PMOS 폭과 부하 커패시터)이 있습니다.
-`nand2`, `nor2`, `ring_osc5`, `current_mirror`, `ota5t`, `sram6t`, `aps4t`, `full_adder`,
+`nand2`, `nor2`, `ring_osc5`, `current_mirror`, `ota5t`, `sram6t`, `aps4t`, `aps2s`, `full_adder`,
 `ota2s`는 깨끗합니다.
 
 ## IR 강하와 일렉트로마이그레이션

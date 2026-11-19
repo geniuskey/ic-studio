@@ -26,7 +26,7 @@ cargo run --release -- --demo
 | `getting_started` | `cmos_inverter`, `rc_lowpass`, `diode_clipper`, `devices` |
 | `analog` | `current_mirror`, `ota5t`, `ota2s` |
 | `digital` | `nand2`, `nor2`, `ring_osc5`, `full_adder` |
-| `memory_and_pixels` | `sram6t`, `sram_array`, `dram1t1c`, `dram_array`, `nand_string`, `nand_array`, `aps4t`, `pixel_array` |
+| `memory_and_pixels` | `sram6t`, `sram_array`, `dram1t1c`, `dram_array`, `nand_string`, `nand_array`, `aps4t`, `pixel_array`, `aps2s` |
 | `hierarchy` | `inv_chain`, `inv_array`, `inv_tiles` |
 
 각 주제에는 레이아웃이 배치하는 셀도 들어 있습니다. 예를 들어 `hierarchy`에는 `cmos_inverter`가,
@@ -158,13 +158,14 @@ common-centroid 순서로 배치한 뒤 배선합니다. 개루프 이득은 약
 | `nand_array` | `nand_string`의 비트 라인 8개 × 스트링 4개 |
 | `aps4t` | DRC와 LVS를 통과한 4T 이미지 센서 픽셀: 과도 해석으로 리셋, 적분, 전송 |
 | `pixel_array` | `aps4t`의 8 × 8 어레이 |
+| `aps2s` | DRC와 LVS를 통과한 2-공유 4T 픽셀(5.6 × 11.2 µm): 두 포토다이오드가 TX1 / TX2로 하나의 플로팅 디퓨전에 전송하고 RST / SF / SEL을 공유. 과도 해석으로 픽셀 1을 읽고, 리셋한 뒤 픽셀 2를 읽음 |
 | `inv_chain` | 배치된 `cmos_inverter` 인스턴스 4개 |
 | `inv_array` | 인버터 16 × 8 어레이 |
 | `inv_tiles` | `inv_array`의 8 × 8 어레이: 인버터 8,192개, 2단계 계층 |
 | `devices` | 모든 PCell의 인스턴스 각 1개 |
 
 회로도와 레이아웃이 모두 있는 셀(`full_adder`, `ota2s`, `nand2`, `nor2`, `ring_osc5`,
-`current_mirror`, `ota5t`, `sram6t`, `dram1t1c`, `nand_string`, `aps4t`)은 전체 플로를 실행할 수 있습니다. 시뮬레이션, 레이아웃
+`current_mirror`, `ota5t`, `sram6t`, `dram1t1c`, `nand_string`, `aps4t`, `aps2s`)은 전체 플로를 실행할 수 있습니다. 시뮬레이션, 레이아웃
 열기, DRC와 LVS 실행, 기생 성분을 포함한 재시뮬레이션입니다.
 
 ## 데모 스크립트

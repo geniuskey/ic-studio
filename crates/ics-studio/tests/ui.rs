@@ -329,7 +329,7 @@ fn demo_nand_array() {
 
 #[test]
 fn demo_cells_layout() {
-    for cell in ["dram1t1c", "nand_string"] {
+    for cell in ["dram1t1c", "nand_string", "aps2s"] {
         scenario(&format!("demo_{cell}_layout"), true, Some(cell), "layout", false);
     }
 }

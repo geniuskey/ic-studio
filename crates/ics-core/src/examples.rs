@@ -1528,6 +1528,131 @@ pub fn aps4t(p: &mut Project) -> Cell {
     )
 }
 
+/// Height (dbu) of the 2-shared pixel pair: two 5.6 µm pixels.
+const PIX2: i64 = 2 * PIX;
+
+/// Labels at the pins of instance `id`: net names, or a ground symbol for "0".
+fn pin_labels(s: &mut Schematic, id: u64, pins: &[(&str, &str)]) {
+    for (pin, net) in pins {
+        let at = pin_at(s, id, pin);
+        if *net == "0" {
+            s.add_instance(DeviceKind::Ground, at, Orient::default());
+        } else {
+            s.add_label(*net, at);
+        }
+    }
+}
+
+/// 2-shared 4T pixel (1 x 2, 5.6 x 11.2 µm): two photodiodes, one above the other, transfer
+/// through TX1 and TX2 onto one floating diffusion `fd` read by a shared RST / SF / SEL. A
+/// vertical neck of diffusion joins the two photodiodes through the shared strip; the gates
+/// cross it next to each photodiode, and the neck between them is FD with the strip's end.
+/// The devices and the photodiodes are those of `aps4t`; the readout strip sits in the middle,
+/// and TX1 / TX2 get rows of their own. The bench reads pixel 1, resets FD, then reads pixel 2.
+pub fn aps2s(p: &mut Project) -> Cell {
+    let o = Orient::default();
+    let mut s = Schematic::default();
+    let (a, pe) = (PIX_PD.width() * PIX_PD.height(), 2 * (PIX_PD.width() + PIX_PD.height()));
+    let (pd_as, pd_ps) = (format!("{}p", a as f64 / 1e6), format!("{}u", pe as f64 / 1e3));
+    for (k, y) in [(1, 12), (2, 22)] {
+        let tx = s.add_instance(DeviceKind::Nmos, Pt::new(8, y), R90);
+        set(&mut s, tx, &[("w", "420n"), ("l", "400n"), ("as", &pd_as), ("ps", &pd_ps)]);
+        let (pd, txn) = (format!("pd{k}"), format!("tx{k}"));
+        pin_labels(&mut s, tx, &[("d", "fd"), ("g", &txn), ("s", &pd), ("b", "0")]);
+        let iph = s.add_instance(DeviceKind::ISource, Pt::new(1, y + 6), o);
+        set(&mut s, iph, &[("dc", if k == 1 { "2n" } else { "0.5n" })]);
+        pin_labels(&mut s, iph, &[("p", &pd), ("n", "0")]);
+    }
+    // The floating diffusion with its metal on the reset drain: a few fF.
+    let rst = mos(&mut s, DeviceKind::Nmos, (16, 4), false, "420n", "180n", None);
+    set(&mut s, rst, &[("ad", "3p"), ("pd", "8u")]);
+    pin_labels(&mut s, rst, &[("d", "fd"), ("g", "rst"), ("s", "vdd")]);
+    let sf = mos(&mut s, DeviceKind::Nmos, (24, 12), false, "420n", "350n", None);
+    pin_labels(&mut s, sf, &[("d", "vdd"), ("g", "fd"), ("s", "x")]);
+    let sel = mos(&mut s, DeviceKind::Nmos, (24, 20), false, "420n", "180n", None);
+    pin_labels(&mut s, sel, &[("d", "x"), ("g", "sel"), ("s", "col")]);
+    let icol = s.add_instance(DeviceKind::ISource, Pt::new(32, 26), o);
+    set(&mut s, icol, &[("dc", "2u")]);
+    pin_labels(&mut s, icol, &[("p", "col"), ("n", "0")]);
+    // Reset both photodiodes and FD; release the reset (reset level 1), transfer pixel 1
+    // (signal 1); reset FD again (reset level 2), transfer pixel 2 (signal 2).
+    source(&mut s, (-40, 8), "vdd", &[("dc", "1.8")]);
+    source(&mut s, (-32, 8), "rst", &[("dc", "1.8"), ("tran", "PWL(0 1.8 300n 1.8 301n 0 600n 0 601n 1.8 700n 1.8 701n 0)")]);
+    source(&mut s, (-24, 8), "tx1", &[("dc", "1.8"), ("tran", "PWL(0 1.8 50n 1.8 51n 0 400n 0 401n 1.8 450n 1.8 451n 0)")]);
+    source(&mut s, (-16, 8), "tx2", &[("dc", "1.8"), ("tran", "PWL(0 1.8 50n 1.8 51n 0 800n 0 801n 1.8 850n 1.8 851n 0)")]);
+    source(&mut s, (-8, 8), "sel", &[("dc", "1.8")]);
+    let mut sim = sim(&["tran"]);
+    set_tran(&mut sim, "1n", "1000n");
+
+    let mut r = Router::new(&p.tech);
+    let l = |name: &str| p.tech.layer_index(name).expect("generic layer");
+    let (active, poly, m1, m2, m3) = (l("active"), l("poly"), l("metal1"), l("metal2"), l("metal3"));
+    let (nplus, boundary) = (l("nplus"), l("boundary"));
+    // The strip in the middle; each photodiode 1.6 µm from it, as far as the gates need.
+    let y = PIX;
+    let pd1 = IRect { x0: PIX_PD.x0, y0: y - 1600 - PIX_PD.height(), x1: PIX_PD.x1, y1: y - 1600 };
+    let pd2 = IRect { x0: PIX_PD.x0, y0: y + 1600, x1: PIX_PD.x1, y1: y + 1600 + PIX_PD.height() };
+    let rows = [("tx1", y - 1270), ("sel", y + 620), ("rst", y + 1240), ("tx2", y + 1870)];
+    for (layer, (x0, y0, x1, y1)) in [
+        (active, (290, y - 210, 2810, y + 210)),  // transistor strip
+        (active, (2390, pd1.y1, 2810, pd2.y0)),   // neck: TX1, FD, TX2
+        (poly, (770, y - 430, 950, y + 580)),     // SEL
+        (poly, (1190, y - 600, 1540, y + 430)),   // SF, gate contact below the strip
+        (poly, (2080, y - 430, 2260, y + 600)),   // RST
+        (poly, (2170, y - 1470, 3200, y - 1070)), // TX1, L 0.4 µm
+        (poly, (2170, y + 1070, 3200, y + 1470)), // TX2
+        (m1, (0, 0, 300, PIX2)),                  // column line
+        (m1, (150, y - 170, 500, y + 170)),
+        (m1, (2430, y - 770, 2770, y)), // floating diffusion to the SF gate
+        (m1, (1230, y - 770, 2770, y - 430)),
+        (m1, (570, y + 580, 910, y + 620)),
+        (m1, (2000, y + 600, 2340, y + 1240)),
+        (m1, (3030, y + 1270, 3370, y + 1870)), // TX2 up to its row
+        (m3, (0, y - 150, PIX, y + 150)),       // supply, shielding the transistors
+        (nplus, (0, 0, PIX, PIX2)),
+        (boundary, (0, 0, PIX, PIX2)),
+    ] {
+        r.lay.add_rect(layer, x0, y0, x1, y1);
+    }
+    r.lay.add(active, Geometry::Rect(pd1));
+    r.lay.add(active, Geometry::Rect(pd2));
+    for (name, at) in [
+        ("contact", (500, y)),
+        ("contact", (1810, y)),
+        ("contact", (2600, y)),
+        ("polycon", (740, y + 580)),
+        ("polycon", (1400, y - 600)),
+        ("polycon", (2170, y + 600)),
+        ("polycon", (3200, y - 1270)),
+        ("polycon", (3200, y + 1270)),
+        ("via1", (1810, y)),
+        ("via2", (1810, y)),
+        ("via1", (740, y + 620)),
+        ("via1", (2170, y + 1240)),
+        ("via1", (3200, y - 1270)),
+        ("via1", (3200, y + 1870)),
+    ] {
+        r.via(name, at);
+    }
+    for (net, ry) in rows {
+        r.lay.add_rect(m2, 0, ry - 150, PIX, ry + 150);
+        r.label(net, (3800, ry));
+    }
+    let mid = |pd: IRect| (pd.y0 + pd.y1) / 2;
+    for (net, at) in
+        [("vdd", (3800, y)), ("col", (150, 1000)), ("fd", (2600, y - 600)), ("pd1", (2800, mid(pd1))), ("pd2", (2800, mid(pd2)))]
+    {
+        r.label(net, at);
+    }
+    full_flow_cell(
+        "aps2s",
+        "2-shared 4T pixel, 5.6 x 11.2 µm: two photodiodes with TX1 / TX2 onto one floating diffusion, shared RST / SF / SEL (DRC / LVS clean)",
+        s,
+        r.finish(),
+        sim,
+    )
+}
+
 /// 8 x 8 image sensor array of `aps4t`: labelled TX / reset / select rows and column lines, and
 /// a supply strap joining the supply rows.
 pub fn pixel_array(tech: &Tech, lib: &str) -> Cell {
@@ -1642,7 +1767,7 @@ pub fn demo_project() -> Project {
     for c in [cmos_inverter(), rc_lowpass(), diode_clipper(), inv(), buffer_tb(), bandgap()].into_iter().chain(hier) {
         p.add_cell("work", c).expect("unique");
     }
-    for make in [nand2, nor2, ring_osc5, current_mirror, ota5t, sram6t, dram1t1c, nand_string, aps4t, full_adder, ota2s] {
+    for make in [nand2, nor2, ring_osc5, current_mirror, ota5t, sram6t, dram1t1c, nand_string, aps4t, aps2s, full_adder, ota2s] {
         let c = make(&mut p);
         p.add_cell("work", c).expect("unique");
     }
@@ -1699,8 +1824,8 @@ pub const TOPICS: [Topic; 5] = [
         name: "memory_and_pixels",
         title: "Memory and pixels",
         summary: "SRAM, DRAM, flash, pixels",
-        description: "6T SRAM, planar 1T1C DRAM, NAND flash string and 4T pixel, each with an array (AREF) of word / bit or row / column lines",
-        cells: &["sram6t", "sram_array", "dram1t1c", "dram_array", "nand_string", "nand_array", "aps4t", "pixel_array"],
+        description: "6T SRAM, planar 1T1C DRAM, NAND flash string and 4T pixel, each with an array (AREF) of word / bit or row / column lines, and a 2-shared 4T pixel",
+        cells: &["sram6t", "sram_array", "dram1t1c", "dram_array", "nand_string", "nand_array", "aps4t", "pixel_array", "aps2s"],
     },
     Topic {
         name: "hierarchy",
@@ -1934,6 +2059,11 @@ mod flow_tests {
     #[test]
     fn aps4t_full_flow() {
         full_flow("aps4t");
+    }
+
+    #[test]
+    fn aps2s_full_flow() {
+        full_flow("aps2s");
     }
 
     #[test]

@@ -27,7 +27,7 @@ unless `--force`) and `ics examples` lists them.
 | `getting_started` | `cmos_inverter`, `rc_lowpass`, `diode_clipper`, `devices` |
 | `analog` | `current_mirror`, `ota5t`, `ota2s` |
 | `digital` | `nand2`, `nor2`, `ring_osc5`, `full_adder` |
-| `memory_and_pixels` | `sram6t`, `sram_array`, `dram1t1c`, `dram_array`, `nand_string`, `nand_array`, `aps4t`, `pixel_array` |
+| `memory_and_pixels` | `sram6t`, `sram_array`, `dram1t1c`, `dram_array`, `nand_string`, `nand_array`, `aps4t`, `pixel_array`, `aps2s` |
 | `hierarchy` | `inv_chain`, `inv_array`, `inv_tiles` |
 
 Each topic also contains the cells its layouts place, e.g. `cmos_inverter` in `hierarchy`
@@ -165,13 +165,14 @@ rendering keeps pan and zoom smooth.
 | `nand_array` | 8 bit lines × 4 strings of `nand_string` |
 | `aps4t` | 4T image sensor pixel, DRC and LVS clean: transient reset, integration and transfer |
 | `pixel_array` | 8 × 8 array of `aps4t` |
+| `aps2s` | 2-shared 4T pixel (5.6 × 11.2 µm), DRC and LVS clean: two photodiodes with TX1 / TX2 onto one floating diffusion and a shared RST / SF / SEL; the transient reads pixel 1, resets, then reads pixel 2 |
 | `inv_chain` | Four placed `cmos_inverter` instances |
 | `inv_array` | 16 × 8 array of inverters |
 | `inv_tiles` | 8 × 8 array of `inv_array`: 8,192 inverters, two levels of hierarchy |
 | `devices` | One instance of every PCell |
 
 Every cell with both a schematic and a layout (`full_adder`, `ota2s`, `nand2`, `nor2`,
-`ring_osc5`, `current_mirror`, `ota5t`, `sram6t`, `dram1t1c`, `nand_string`, `aps4t`) runs the whole flow:
+`ring_osc5`, `current_mirror`, `ota5t`, `sram6t`, `dram1t1c`, `nand_string`, `aps4t`, `aps2s`) runs the whole flow:
 simulate, open the layout, run DRC and LVS, and simulate again with parasitics.
 
 ## Demo scripts
