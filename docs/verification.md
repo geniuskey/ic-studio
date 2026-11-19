@@ -159,7 +159,7 @@ ics sim demo aps4t_sch
 `--characterize` (MCP `extract` with `characterize: true`; **Schematic from Layout** does it
 for the first pixel) simulates each pixel alone with the device models of the technology:
 FD and every photodiode are reset, RST and TX turn off, then 500 electrons are taken out of
-FD and out of the first photodiode. C = Q / ΔV includes every junction, overlap and gate
+FD and out of each photodiode in turn (every one of a shared pixel). C = Q / ΔV includes every junction, overlap and gate
 capacitance on the node and its wire capacitance from the layout:
 
 ```
@@ -178,7 +178,7 @@ and FD do, so it resets to the pinning voltage without kTC noise and transfers c
 the TG keeps only the junction of the diffusion outside the photodiode region. Blooming
 (over TX, or forward bias into the substrate) comes from the device models.
 
-The characterisation then also reports, for the first photodiode:
+The characterisation then also reports, for each photodiode:
 
 - **Transfer and lag**: TX transfers the 500 electrons; against a run without them (same TX
   feedthrough and channel charge) the photodiode's remaining charge is the lag, left behind

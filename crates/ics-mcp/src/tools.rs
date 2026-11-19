@@ -2692,17 +2692,18 @@ impl State {
                         "fd_reset_v": sig(m.v_fd_reset), "c_fd_f": sig(m.c_fd), "cg_fd_uv_per_e": sig(m.cg_fd_uv),
                         "cg_column_uv_per_e": sig(m.cg_col_uv), "sf_gain": sig(m.sf_gain),
                         "pinned": m.pinned, "temp_c": m.temp,
-                        "dark_current_a": m.dark.map(|d| sig(d.0)), "dark_e_per_s": m.dark.map(|d| sig(d.0 / ics_core::pixel_circuit::Q_E)),
-                        "dark_doubling_c": m.dark.map(|d| sig(d.1)),
                         "noise": json!({
                             "ktc_fd_e": sig(m.noise.ktc_e), "readout_uv": sig(m.noise.readout_uv), "readout_e": sig(m.noise.readout_e),
                             "readout_cds_e": sig(m.noise.readout_e * std::f64::consts::SQRT_2), "ccol_f": sig(m.noise.ccol),
                             "band_hz": [ics_core::pixel_circuit::NOISE_BAND.0, ics_core::pixel_circuit::NOISE_BAND.1],
                         }),
-                        "photodiode": m.pd.as_ref().map(|d| json!({
+                        "photodiodes": m.pds.iter().map(|d| json!({
+                            "name": d.name, "node": d.node,
                             "reset_v": sig(d.v_reset), "c_f": sig(d.c), "transferred_e": d.transferred_e.map(sig), "lag_e": d.lag_e.map(sig),
                             "full_well_e": sig(d.full_well_e), "saturated_v": sig(d.v_saturated), "saturated": d.saturated,
-                        })),
+                            "dark_current_a": d.dark.map(|v| sig(v.0)), "dark_e_per_s": d.dark.map(|v| sig(v.0 / ics_core::pixel_circuit::Q_E)),
+                            "dark_doubling_c": d.dark.map(|v| sig(v.1)),
+                        })).collect::<Vec<_>>(),
                     }),
                     Err(e) => json!({"error": e}),
                 };

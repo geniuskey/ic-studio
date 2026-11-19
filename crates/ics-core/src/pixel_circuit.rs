@@ -352,18 +352,18 @@ pub enum Stimulus {
     ResetTransfer,
     /// Characterisation in the dark: reset FD and every photodiode, turn RST and TX off, then
     /// take [`INJECT_ELECTRONS`] out of the first pixel's FD (in [`FD_WINDOW`]) and of its
-    /// first photodiode (in [`PD_WINDOW`]). The voltage steps give the node capacitances,
-    /// the conversion gain and the follower gain.
-    /// Then transfers: TX on from 450 ns to 550 ns ([`TRANSFER_WINDOW`]); the charge arriving
-    /// on FD and the charge left in the photodiode (lag) follow, against a run without the
-    /// photodiode injection (`pd: false`) that has the same TX feedthrough and channel charge.
-    ChargeInjection { pd: bool },
+    /// photodiode number `pd` (in [`PD_WINDOW`]). The voltage steps give the node
+    /// capacitances, the conversion gain and the follower gain.
+    /// Then every TX transfers, on from 450 ns to 550 ns ([`TRANSFER_WINDOW`]); the charge left
+    /// in the photodiode (lag) follows against a run without the photodiode injection
+    /// (`pd: None`), which has the same TX feedthrough and channel charge.
+    ChargeInjection { pd: Option<usize> },
     /// Full well: FD held in reset, the photodiode reset and then filled by the photocurrent
     /// ([`Testbench::iph`]) until it saturates (blooming over TX or into the substrate);
     /// sample at [`FULL_WELL_AT`].
     FullWell,
     /// Readout noise: RST and TX off, SEL on, the first pixel's FD and photodiode charge nodes
-    /// held at these voltages through a noiseless 1 nS transconductance (a resistor would add
+    /// (every photodiode at `charge`) held at these voltages through a noiseless 1 nS transconductance (a resistor would add
     /// its own noise), the column line loaded by [`Testbench::ccol`]; a noise analysis of the
     /// column voltage over [`NOISE_BAND`] (input source `VFDB`).
     NoiseBias { fd: f64, charge: f64 },
@@ -702,13 +702,13 @@ pub fn schematic(x: &Extraction, pc: &PixelCircuit, bench: Option<&Testbench>) -
         if let Stimulus::ChargeInjection { pd } = st
             && let Some(p) = pc.pixels.first()
         {
-            // Electrons out of FD, then out of the first photodiode: 10 ns current pulses.
+            // Electrons out of FD, then out of photodiode `pd`: 10 ns current pulses.
             let amps = val(INJECT_ELECTRONS * Q_E / 10e-9);
             extra.push(format!("* charge injection: {INJECT_ELECTRONS} electrons each"));
             let mut targets = vec![("FD", dr.net_name(p.fd), "200n")];
-            if pd {
-                targets.extend(p.photodiodes.first().map(|q| ("PD", charge_net(x, &x.photodiodes[q.0], Some(b)), "400n")));
-            }
+            targets.extend(
+                pd.and_then(|j| p.photodiodes.get(j)).map(|q| ("PD", charge_net(x, &x.photodiodes[q.0], Some(b)), "400n")),
+            );
             for (tag, n, at) in targets {
                 extra.push(format!("IQ_{tag} {n} 0 DC 0 PULSE(0 {amps} {at} 0.1n 0.1n 10n 1)"));
             }
@@ -722,9 +722,11 @@ pub fn schematic(x: &Extraction, pc: &PixelCircuit, bench: Option<&Testbench>) -
         }
         let noise_out = match st {
             Stimulus::NoiseBias { fd, charge } => pc.pixels.first().and_then(|p| {
-                extra.push("* readout noise bias: noiseless 1 nS holds FD and the photodiode".into());
-                let mut held = vec![("FD", dr.net_name(p.fd), fd)];
-                held.extend(p.photodiodes.first().map(|q| ("PD", charge_net(x, &x.photodiodes[q.0], Some(b)), charge)));
+                extra.push("* readout noise bias: noiseless 1 nS holds FD and the photodiodes".into());
+                let mut held = vec![("FD".to_string(), dr.net_name(p.fd), fd)];
+                for (j, q) in p.photodiodes.iter().enumerate() {
+                    held.push((format!("PD{}", j + 1), charge_net(x, &x.photodiodes[q.0], Some(b)), charge));
+                }
                 for (tag, n, volts) in held {
                     extra.push(format!("V{tag}B {n}_b 0 DC {}", val(volts)));
                     extra.push(format!("G{tag}B {n} 0 {n} {n}_b 1e-9"));
