@@ -279,7 +279,7 @@ levels = [                                # 실리콘 표면부터 위로
   { name = "metal 2", material = "sio2", thickness = 0.5, layer = "metal2", metal = "al" },
   { name = "passivation", material = "si3n4", thickness = 0.5 },
 ]
-photodiode = { layer = "active not interact poly", top = 0.1, bottom = 3.0 }
+photodiode = { layer = "active not interact poly", top = 0.1, bottom = 3.0, pinning = 0.5, cap_area = 0.5 }
 pixel = { color_filter = 0.9, planarisation = 0.4, microlens_height = 2.5, center_on_photodiode = true }
 silicon = { diffusion_length = 20.0, epi = 5.0 }
 ```
@@ -287,7 +287,7 @@ silicon = { diffusion_length = 20.0, epi = 5.0 }
 | 키 | 내용 |
 |---|---|
 | `levels` | `name`, `material`(유전체), `thickness`, 선택적으로 `layer`(레이아웃 레이어 또는 파생 레이어 식)와 `metal`(그 층 안의 금속 재료), `film`(코히어런트로 다루는 박막) |
-| `photodiode` | `layer`(수집 영역의 레이어나 식), 실리콘 표면 아래 `top`, `bottom` 깊이 |
+| `photodiode` | `layer`(수집 영역의 레이어나 식), 실리콘 표면 아래 `top`, `bottom` 깊이. pinned 포토다이오드 회로 시뮬레이션용으로 `pinning`(V)과 저장 용량 `cap_area`(fF/µm², 기본 1), `cap_perimeter`(fF/µm)([포토다이오드와 픽셀](verification.md#포토다이오드와-픽셀이미지-센서) 참고) |
 | `pixel` | 컬러 필터와 평탄화층 두께, 마이크로렌즈 높이, `center_on_photodiode` |
 | `silicon` | 캐리어 수집용 소수 캐리어 확산 길이와 에피층 두께 |
 

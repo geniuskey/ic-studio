@@ -867,6 +867,23 @@ pub struct PhotodiodeDef {
     /// Collection depth range below the silicon surface.
     pub top: f64,
     pub bottom: f64,
+    /// Pinning voltage (V) of a pinned photodiode: fully depleted there, so it holds no charge
+    /// above it, resets without kTC noise and transfers completely. Unset: a plain junction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinning: Option<f64>,
+    /// Storage capacitance of a pinned photodiode per area (fF/µm²) and perimeter (fF/µm).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cap_area: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cap_perimeter: Option<f64>,
+}
+
+impl PhotodiodeDef {
+    /// Storage capacitance (F) of a pinned photodiode of `area` µm² and `perimeter` µm
+    /// (1 fF/µm² when `cap_area` is unset).
+    pub fn storage_cap(&self, area: f64, perimeter: f64) -> f64 {
+        (self.cap_area.unwrap_or(1.0) * area + self.cap_perimeter.unwrap_or(0.0) * perimeter) * 1e-15
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -955,7 +972,14 @@ impl CrossSection {
                 lv("metal 3", "sio2", 0.6, Some(("metal3", "al")), false),
                 lv("passivation", "si3n4", 0.5, None, false),
             ],
-            photodiode: Some(PhotodiodeDef { layer: "active wide 1".into(), top: 0.1, bottom: 3.0 }),
+            photodiode: Some(PhotodiodeDef {
+                layer: "active wide 1".into(),
+                top: 0.1,
+                bottom: 3.0,
+                pinning: Some(0.5),
+                cap_area: Some(0.5),
+                cap_perimeter: None,
+            }),
             pixel: Some(PixelOptics { color_filter: 0.9, planarisation: 0.4, microlens_height: 2.5, center_on_photodiode: true }),
             silicon: Some(SiliconDef { diffusion_length: 20.0, epi: 5.0 }),
         }

@@ -296,7 +296,7 @@ levels = [                                # from the silicon surface up
   { name = "metal 2", material = "sio2", thickness = 0.5, layer = "metal2", metal = "al" },
   { name = "passivation", material = "si3n4", thickness = 0.5 },
 ]
-photodiode = { layer = "active not interact poly", top = 0.1, bottom = 3.0 }
+photodiode = { layer = "active not interact poly", top = 0.1, bottom = 3.0, pinning = 0.5, cap_area = 0.5 }
 pixel = { color_filter = 0.9, planarisation = 0.4, microlens_height = 2.5, center_on_photodiode = true }
 silicon = { diffusion_length = 20.0, epi = 5.0 }
 ```
@@ -304,7 +304,7 @@ silicon = { diffusion_length = 20.0, epi = 5.0 }
 | Key | Content |
 |---|---|
 | `levels` | `name`, `material` (the dielectric), `thickness`, optional `layer` (layout layer or derived-layer expression) and `metal` (its material within the level), `film` (a thin film treated coherently) |
-| `photodiode` | `layer` (layer or expression of the collecting area), `top` and `bottom` depth below the silicon surface |
+| `photodiode` | `layer` (layer or expression of the collecting area), `top` and `bottom` depth below the silicon surface; for circuit simulation of a pinned photodiode `pinning` (V) and its storage capacitance `cap_area` (fF/µm², default 1) and `cap_perimeter` (fF/µm) (see [Photodiodes and pixels](verification.md#photodiodes-and-pixels-image-sensors)) |
 | `pixel` | Colour filter and planarisation thickness, microlens height, `center_on_photodiode` |
 | `silicon` | Minority carrier diffusion length and epitaxial layer thickness, for carrier collection |
 

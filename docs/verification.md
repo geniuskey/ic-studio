@@ -163,8 +163,29 @@ capacitance on the node and its wire capacitance from the layout:
 
 ```
 pixel 1 FD: reset 0.946 V, C = 1.638 fF, CG = 97.8 uV/e- at FD, 81.6 uV/e- at the column (SF gain 0.834)
-  PD: reset 1.126 V, C = 11.144 fF (69558 e-/V)
+  PD (pinned): reset 0.443 V, C = 6.512 fF; transfer of 500 e-: 480.4 e- out, lag 19.6 e-; full well 32740 e- (saturates at -0.363 V)
 ```
+
+**Pinned photodiodes.** With `pinning` set on the technology's photodiode, the drawing and
+the simulations model it as pinned: its charge sits on a storage node `<pd>_q` with the
+storage capacitance (`cap_area` × area + `cap_perimeter` × perimeter, `CPD_D1`), joined to the
+photodiode node by a conductance that never charges it above the pinning voltage
+(`BPIN_D1 pd pd_q I=1m*(min(V(pd),0.5)-V(pd_q))`). Emptied, it holds no charge whatever TX
+and FD do, so it resets to the pinning voltage without kTC noise and transfers completely;
+the TG keeps only the junction of the diffusion outside the photodiode region. Blooming
+(over TX, or forward bias into the substrate) comes from the device models.
+
+The characterisation then also reports, for the first photodiode:
+
+- **Transfer and lag**: TX transfers the 500 electrons; against a run without them (same TX
+  feedthrough and channel charge) the photodiode's remaining charge is the lag, left behind
+  or spilled back when TX turns off. A plain junction shares its charge with FD instead, so
+  it gets no transfer figures. The spill-back depends on how the channel charge splits at
+  turn-off: the generic level-1 models (Meyer capacitances) do not conserve that charge, so
+  take lag from a charge-conserving model (BSIM4 of a PDK).
+- **Full well**: FD held in reset, the photodiode filled by light at three times the rate
+  needed to empty it in 1.5 µs; FWC = C × (reset − saturated voltage). `not yet saturated`
+  warns when it still moves at the end.
 
 A transfer gate with its own threshold implant takes its PDK model when the technology lists
 that device with the implant as a marker layer (`[[device]]` `layers`), as any transistor does.

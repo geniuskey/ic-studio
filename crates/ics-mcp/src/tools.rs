@@ -2678,7 +2678,7 @@ impl State {
         if a.opt_bool("characterize")?.unwrap_or(false) {
             use ics_core::pixel_circuit::{Testbench, classify};
             let pc = classify(&x);
-            let bench = Testbench { wire_caps: ics_core::pex::net_caps(&x, &p.tech), ..Testbench::default() };
+            let bench = Testbench::for_tech(&x, &p.tech);
             let opts = ics_sim::SimOptions { backend: ics_core::Backend::Auto, deck_dir: p.root.clone(), ..Default::default() };
             let corner = p.cell(&r).map(|c| c.sim.corner.clone()).unwrap_or_default();
             for k in 0..pc.pixels.len().min(MAX_LISTED).min(16) {
@@ -2686,7 +2686,11 @@ impl State {
                     Ok(m) => json!({
                         "fd_reset_v": sig(m.v_fd_reset), "c_fd_f": sig(m.c_fd), "cg_fd_uv_per_e": sig(m.cg_fd_uv),
                         "cg_column_uv_per_e": sig(m.cg_col_uv), "sf_gain": sig(m.sf_gain),
-                        "pd_reset_v": m.v_pd_reset.map(sig), "c_pd_f": m.c_pd.map(sig),
+                        "pinned": m.pinned,
+                        "photodiode": m.pd.as_ref().map(|d| json!({
+                            "reset_v": sig(d.v_reset), "c_f": sig(d.c), "transferred_e": d.transferred_e.map(sig), "lag_e": d.lag_e.map(sig),
+                            "full_well_e": sig(d.full_well_e), "saturated_v": sig(d.v_saturated), "saturated": d.saturated,
+                        })),
                     }),
                     Err(e) => json!({"error": e}),
                 };
@@ -2701,11 +2705,10 @@ impl State {
         let (p, r) = self.cell_arg(a)?;
         let x = extract(layout_of(p, &r)?, p, &p.tech);
         let pc = classify(&x);
-        let defaults = Testbench::default();
+        let defaults = Testbench::for_tech(&x, &p.tech);
         let bench = Testbench {
             vdd: a.opt_num("vdd")?.unwrap_or(defaults.vdd),
             iph: a.opt_num("iph")?.unwrap_or(defaults.iph),
-            wire_caps: ics_core::pex::net_caps(&x, &p.tech),
             ..defaults
         };
         let with_bench = a.opt_bool("testbench")?.unwrap_or(true);

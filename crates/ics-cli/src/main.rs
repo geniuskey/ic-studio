@@ -2673,12 +2673,13 @@ fn run(cli: Cli) -> Result<(), String> {
                 for w in &pc.warnings {
                     eprintln!("warning: {w}");
                 }
-                let caps = ics_core::pex::net_caps(&x, &p.tech);
+                let tb =
+                    ics_core::pixel_circuit::Testbench { vdd, iph, ..ics_core::pixel_circuit::Testbench::for_tech(&x, &p.tech) };
                 if pixel {
-                    print!("{}", pc.report(&x, &caps));
+                    print!("{}", pc.report(&x, &tb.wire_caps));
                 }
                 if characterize {
-                    let bench = ics_core::pixel_circuit::Testbench { vdd, wire_caps: caps.clone(), ..Default::default() };
+                    let bench = tb.clone();
                     let opts = SimOptions { backend: backend(b), deck_dir: Some(project.clone()), ..Default::default() };
                     let corner = p.cell(&r).map(|c| c.sim.corner.clone()).unwrap_or_default();
                     for k in 0..pc.pixels.len().min(16) {
@@ -2689,7 +2690,7 @@ fn run(cli: Cli) -> Result<(), String> {
                     }
                 }
                 if schematic {
-                    let bench = ics_core::pixel_circuit::Testbench { vdd, iph, wire_caps: caps, ..Default::default() };
+                    let bench = tb;
                     let (sch, sim) = ics_core::pixel_circuit::schematic(&x, &pc, (!no_testbench).then_some(&bench));
                     let target = match into.as_deref() {
                         None => r.clone(),

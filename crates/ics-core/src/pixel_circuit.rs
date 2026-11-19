@@ -21,11 +21,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::extract::{Extraction, Junction, PassiveKind};
+use crate::extract::{Extraction, Junction, PassiveKind, Photodiode};
 use crate::geom::{Orient, Pt};
 use crate::pex::NetCap;
 use crate::schematic::{DeviceKind, Schematic};
 use crate::sim_setup::{Analysis, SimSetup};
+use crate::tech::PhotodiodeDef;
 
 /// One pixel's transistors (device indices into [`Extraction::devices`]) and nets.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -285,12 +286,41 @@ pub struct Testbench {
     /// still compares the devices alone).
     pub wire_caps: Vec<NetCap>,
     pub stimulus: Stimulus,
+    /// The technology's photodiode: a pinned one ([`PhotodiodeDef::pinning`]) is drawn as its
+    /// storage node (see [`schematic`]).
+    pub photodiode: Option<PhotodiodeDef>,
 }
 
 impl Default for Testbench {
     fn default() -> Self {
-        Testbench { vdd: 1.8, iph: 10e-9, icol: 2e-6, wire_caps: Vec::new(), stimulus: Stimulus::ResetTransfer }
+        Testbench { vdd: 1.8, iph: 10e-9, icol: 2e-6, wire_caps: Vec::new(), stimulus: Stimulus::ResetTransfer, photodiode: None }
     }
+}
+
+impl Testbench {
+    /// The default bench with the wire capacitance of `x` and the photodiode of `tech`.
+    pub fn for_tech(x: &Extraction, tech: &crate::Tech) -> Testbench {
+        Testbench {
+            wire_caps: crate::pex::net_caps(x, tech),
+            photodiode: tech.cross_section.as_ref().and_then(|c| c.photodiode.clone()),
+            ..Testbench::default()
+        }
+    }
+
+    /// Pinning voltage when the photodiode is pinned.
+    pub fn pinning(&self) -> Option<f64> {
+        self.photodiode.as_ref().and_then(|d| d.pinning)
+    }
+}
+
+/// Conductance (S) of the pinned photodiode's charge path (see [`schematic`]).
+const PIN_G: f64 = 1e-3;
+
+/// Net holding the photo charge of photodiode `d` in a drawing with `bench`: the storage node
+/// `<node>_q` of a pinned (n-type) photodiode, else the photodiode node.
+pub fn charge_net(x: &Extraction, d: &Photodiode, bench: Option<&Testbench>) -> String {
+    let node = x.nets.get(d.node()).map_or("?".to_string(), |n| n.name.split_whitespace().collect::<Vec<_>>().join("_"));
+    if d.n_type && bench.and_then(Testbench::pinning).is_some() { format!("{node}_q") } else { node }
 }
 
 /// What the test bench drives.
@@ -304,7 +334,14 @@ pub enum Stimulus {
     /// take [`INJECT_ELECTRONS`] out of the first pixel's FD (in [`FD_WINDOW`]) and of its
     /// first photodiode (in [`PD_WINDOW`]). The voltage steps give the node capacitances,
     /// the conversion gain and the follower gain.
-    ChargeInjection,
+    /// Then transfers: TX on from 450 ns to 550 ns ([`TRANSFER_WINDOW`]); the charge arriving
+    /// on FD and the charge left in the photodiode (lag) follow, against a run without the
+    /// photodiode injection (`pd: false`) that has the same TX feedthrough and channel charge.
+    ChargeInjection { pd: bool },
+    /// Full well: FD held in reset, the photodiode reset and then filled by the photocurrent
+    /// ([`Testbench::iph`]) until it saturates (blooming over TX or into the substrate);
+    /// sample at [`FULL_WELL_AT`].
+    FullWell,
 }
 
 /// Electrons taken out of a node by the charge injection stimulus.
@@ -312,7 +349,11 @@ pub const INJECT_ELECTRONS: f64 = 500.0;
 /// Times (s) before and after the FD injection (10 ns from 200 ns).
 pub const FD_WINDOW: (f64, f64) = (190e-9, 290e-9);
 /// Times (s) before and after the photodiode injection (10 ns from 400 ns).
-pub const PD_WINDOW: (f64, f64) = (390e-9, 490e-9);
+pub const PD_WINDOW: (f64, f64) = (390e-9, 440e-9);
+/// Times (s) before and after the transfer (TX on 450 ns to 550 ns).
+pub const TRANSFER_WINDOW: (f64, f64) = (440e-9, 590e-9);
+/// Times (s) at which a full-well run is sampled (the second confirms saturation).
+pub const FULL_WELL_AT: (f64, f64) = (1.8e-6, 1.95e-6);
 /// Elementary charge (C).
 pub const Q_E: f64 = 1.602_176_634e-19;
 
@@ -450,13 +491,26 @@ pub fn schematic(x: &Extraction, pc: &PixelCircuit, bench: Option<&Testbench>) -
         for (j, &(pd, tg)) in p.photodiodes.iter().enumerate() {
             let oy = j as i32 * SHARED_PITCH;
             let d = &x.photodiodes[pd];
+            let pinned = d.n_type && bench.and_then(Testbench::pinning).is_some();
             if let Some(t) = tg {
-                dr.mos(t, (ox + 8, 12 + oy), R90, Some("TG"));
+                let id = dr.mos(t, (ox + 8, 12 + oy), R90, Some("TG"));
                 placed.insert(t);
                 rows.entry("tx").or_default().insert(dr.net_name(x.devices[t].g));
+                if pinned {
+                    // The storage capacitance is the photodiode's own: the TG junction keeps
+                    // only the diffusion outside the photodiode region.
+                    let m = &x.devices[t];
+                    let u = x.dbu_per_um.max(1) as f64;
+                    let (ka, kp, j) = if m.s == d.node() { ("as", "ps", m.js) } else { ("ad", "pd", m.jd) };
+                    let area = (j.area - d.area as f64).max(0.0) / (u * u);
+                    let perim = (j.perimeter - d.perimeter as f64).max(0.0) / u;
+                    let inst = dr.s.instance_mut(id).expect("TG");
+                    inst.params.insert(ka.into(), spice_num(area, "p"));
+                    inst.params.insert(kp.into(), spice_num(perim, "u"));
+                }
             }
-            // The photodiode as its photocurrent from the collecting node into its well.
-            let (node, well) = (dr.net_name(d.node()), dr.net_name(d.well()));
+            // The photodiode as its photocurrent from the charge node into its well.
+            let (node, well) = (charge_net(x, d, bench), dr.net_name(d.well()));
             let (pn, nn) = if d.n_type { (node, well) } else { (well, node) };
             let iph = bench.map_or("0".to_string(), |b| val(b.iph));
             dr.two_pin(DeviceKind::ISource, &format!("IPH_{}", d.name), (ox + 1, 18 + oy), pn, nn, &[("dc", iph)]);
@@ -515,11 +569,16 @@ pub fn schematic(x: &Extraction, pc: &PixelCircuit, bench: Option<&Testbench>) -
         // on the column), then transfer (signal level). Only the first TX row transfers; the
         // other photodiodes of a shared pixel stay isolated.
         let v = val(b.vdd);
-        let inject = b.stimulus == Stimulus::ChargeInjection;
-        let (rst_pulse, tx_pulse) = if inject {
-            (format!("PULSE({v} 0 100n 1n 1n 1 2)"), format!("PULSE({v} 0 50n 1n 1n 1 2)"))
-        } else {
-            (format!("PULSE({v} 0 300n 1n 1n 400n 800n)"), format!("PULSE({v} 0 50n 1n 1n 350n 800n)"))
+        let st = b.stimulus;
+        let (rst_pulse, tx_pulse) = match st {
+            Stimulus::ResetTransfer => {
+                (format!("PULSE({v} 0 300n 1n 1n 400n 800n)"), format!("PULSE({v} 0 50n 1n 1n 350n 800n)"))
+            }
+            // Reset off for good at 100 ns; TX off at 50 ns and on again 450 to 550 ns.
+            Stimulus::ChargeInjection { .. } => {
+                (format!("PULSE({v} 0 100n 1n 1n 1 2)"), format!("PULSE({v} 0 50n 1n 1n 399n 500n)"))
+            }
+            Stimulus::FullWell => (String::new(), format!("PULSE({v} 0 50n 1n 1n 1 2)")),
         };
         let first_tx: Option<String> =
             pc.pixels.iter().find_map(|p| p.photodiodes.iter().find_map(|q| q.1)).map(|t| dr.net_name(x.devices[t].g));
@@ -530,15 +589,18 @@ pub fn schematic(x: &Extraction, pc: &PixelCircuit, bench: Option<&Testbench>) -
                 sources.push((net.clone(), kv));
             }
         };
+        let pulsed = |p: &String| -> Vec<(&'static str, String)> {
+            if p.is_empty() { vec![("dc", v.clone())] } else { vec![("dc", v.clone()), ("tran", p.clone())] }
+        };
         for n in rows.get("supply").into_iter().flatten() {
             add(n, vec![("dc", v.clone())]);
         }
         for n in rows.get("rst").into_iter().flatten() {
-            add(n, vec![("dc", v.clone()), ("tran", rst_pulse.clone())]);
+            add(n, pulsed(&rst_pulse));
         }
         for n in rows.get("tx").into_iter().flatten() {
-            if inject || Some(n) == first_tx.as_ref() {
-                add(n, vec![("dc", v.clone()), ("tran", tx_pulse.clone())]);
+            if st != Stimulus::ResetTransfer || Some(n) == first_tx.as_ref() {
+                add(n, pulsed(&tx_pulse));
             } else {
                 add(n, vec![("dc", "0".into())]);
             }
@@ -554,6 +616,7 @@ pub fn schematic(x: &Extraction, pc: &PixelCircuit, bench: Option<&Testbench>) -
             let name = format!("ICOL_{}", net.to_ascii_uppercase());
             dr.two_pin(DeviceKind::ISource, &name, (-10 * (i as i32 + 1), 18), net.clone(), "0".into(), &[("dc", val(b.icol))]);
         }
+        let spice = |n: String| if GROUND_NETS.iter().any(|g| n.eq_ignore_ascii_case(g)) { "0".to_string() } else { n };
         let mut extra = Vec::new();
         let mut nodes = BTreeSet::new();
         for p in &pc.pixels {
@@ -569,25 +632,59 @@ pub fn schematic(x: &Extraction, pc: &PixelCircuit, bench: Option<&Testbench>) -
         if !extra.is_empty() {
             extra.insert(0, "* wire capacitance from the layout".into());
         }
-        if inject && let Some(p) = pc.pixels.first() {
+        if let (Some(def), Some(vpin)) = (&b.photodiode, b.pinning()) {
+            // A pinned photodiode: its charge sits on the storage node <pd>_q (the storage
+            // capacitance), which follows the photodiode node through a conductance but never
+            // rises above the pinning voltage: emptied, it holds no charge whatever TX and FD
+            // do. Electrons left on the photodiode side when TX turns off flow back into it.
+            let u = x.dbu_per_um.max(1) as f64;
+            let mut done = BTreeSet::new();
+            for p in &pc.pixels {
+                for &(k, _) in &p.photodiodes {
+                    let d = &x.photodiodes[k];
+                    if !d.n_type || !done.insert(k) {
+                        continue;
+                    }
+                    let (node, q) = (dr.net_name(d.node()), charge_net(x, d, Some(b)));
+                    let c = def.storage_cap(d.area as f64 / (u * u), d.perimeter as f64 / u);
+                    extra.push(format!("* pinned photodiode {}: pinning {vpin} V, storage node {q}", d.name));
+                    extra.push(format!("CPD_{} {q} {} {}", d.name, spice(dr.net_name(d.well())), val(c)));
+                    extra.push(format!("BPIN_{} {node} {q} I={}*(min(V({node}),{vpin})-V({q}))", d.name, val(PIN_G)));
+                }
+            }
+        }
+        if let Stimulus::ChargeInjection { pd } = st
+            && let Some(p) = pc.pixels.first()
+        {
             // Electrons out of FD, then out of the first photodiode: 10 ns current pulses.
             let amps = val(INJECT_ELECTRONS * Q_E / 10e-9);
             extra.push(format!("* charge injection: {INJECT_ELECTRONS} electrons each"));
-            let mut targets = vec![("FD", p.fd, "200n")];
-            targets.extend(p.photodiodes.first().map(|q| ("PD", x.photodiodes[q.0].node(), "400n")));
-            for (tag, n, at) in targets {
-                extra.push(format!("IQ_{tag} {} 0 DC 0 PULSE(0 {amps} {at} 0.1n 0.1n 10n 1)", dr.net_name(n)));
+            let mut targets = vec![("FD", dr.net_name(p.fd), "200n")];
+            if pd {
+                targets.extend(p.photodiodes.first().map(|q| ("PD", charge_net(x, &x.photodiodes[q.0], Some(b)), "400n")));
             }
+            for (tag, n, at) in targets {
+                extra.push(format!("IQ_{tag} {n} 0 DC 0 PULSE(0 {amps} {at} 0.1n 0.1n 10n 1)"));
+            }
+        }
+        if st != Stimulus::ResetTransfer {
+            // Dark, except the full-well run's photocurrent.
+            let dc = if st == Stimulus::FullWell { val(b.iph) } else { "0".into() };
             for inst in dr.s.instances.iter_mut().filter(|i| i.name.starts_with("IPH_")) {
-                inst.params.insert("dc".into(), "0".into());
+                inst.params.insert("dc".into(), dc.clone());
             }
         }
         sim.extra = extra.join("\n");
         sim.set_enabled("op", false);
         sim.set_enabled("tran", true);
+        let (step, stop) = match st {
+            Stimulus::ResetTransfer => ("1n", "600n"),
+            Stimulus::ChargeInjection { .. } => ("0.5n", "600n"),
+            Stimulus::FullWell => ("2n", "2u"),
+        };
         if let Some(Analysis::Tran { tstep, tstop, .. }) = sim.get_mut("tran") {
-            *tstep = if inject { "0.5n" } else { "1n" }.into();
-            *tstop = if inject { "500n" } else { "600n" }.into();
+            *tstep = step.into();
+            *tstop = stop.into();
         }
     }
     (dr.s, sim)

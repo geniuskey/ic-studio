@@ -2952,7 +2952,7 @@ impl IcStudio {
         };
         let x = ics_core::extract::extract(lay, p, &p.tech);
         let pc = classify(&x);
-        let bench = Testbench { wire_caps: ics_core::pex::net_caps(&x, &p.tech), ..Testbench::default() };
+        let bench = Testbench::for_tech(&x, &p.tech);
         let (sch, sim) = schematic(&x, &pc, Some(&bench));
         // The first pixel's conversion gain (built-in engine: milliseconds, on this thread).
         let metrics = (!pc.pixels.is_empty()).then(|| {
