@@ -134,7 +134,7 @@ impl PixelCircuit {
             }
             let (a, pe) = fd_junction(x, p);
             s += &format!("  FD junction (diffusion on {}): area={a:.4} um2 perimeter={pe:.4} um\n", net(p.fd));
-            let nodes = std::iter::once(p.fd).chain(p.photodiodes.iter().map(|q| x.photodiodes[q.0].node()));
+            let nodes = std::iter::once(p.fd).chain(p.photodiodes.iter().map(|q| x.photodiodes[q.0].node())).chain(p.column);
             for n in nodes.collect::<BTreeSet<_>>() {
                 if let Some(c) = wire_cap(x, caps, n) {
                     s += &format!("  wire capacitance of {}: {:.3} fF\n", net(n), c * 1e15);
@@ -411,11 +411,17 @@ pub const FULL_WELL_AT: (f64, f64) = (1.8e-6, 1.95e-6);
 /// Elementary charge (C).
 pub const Q_E: f64 = 1.602_176_634e-19;
 
-/// The extraction cut down to pixel `k` of `pc`: its devices and photodiodes alone (nets
-/// unchanged), with the pixel circuit renumbered to match. For simulating one pixel of an array.
+/// The extraction cut down to pixel `k` of `pc`: its devices and photodiodes, and the other
+/// devices on its column line (the select transistors of the other pixels of an array, their
+/// gates left off), with nets unchanged and the pixel circuit renumbered to match. For
+/// simulating one pixel of an array with its column load.
 pub fn pixel_only(x: &Extraction, pc: &PixelCircuit, k: usize) -> Option<(Extraction, PixelCircuit)> {
     let p = pc.pixels.get(k)?;
-    let devs: Vec<usize> = p.roles().into_iter().map(|r| r.0).collect();
+    let mut devs: Vec<usize> = p.roles().into_iter().map(|r| r.0).collect();
+    if let Some(col) = p.column.filter(|c| Some(*c) != p.sf_out) {
+        let on_col = (0..x.devices.len()).filter(|d| !devs.contains(d) && other_side(x, *d, col).is_some());
+        devs.extend(on_col.collect::<Vec<_>>());
+    }
     let dev_ix = |d: usize| devs.iter().position(|&e| e == d);
     let mut sub = Extraction {
         nets: x.nets.clone(),
@@ -688,6 +694,7 @@ pub fn schematic(x: &Extraction, pc: &PixelCircuit, bench: Option<&Testbench>) -
         let mut nodes = BTreeSet::new();
         for p in &pc.pixels {
             nodes.insert(p.fd);
+            nodes.extend(p.column);
             nodes.extend(p.photodiodes.iter().map(|q| x.photodiodes[q.0].node()));
         }
         for n in nodes {
@@ -1005,5 +1012,23 @@ mod tests {
         let nl = crate::netlist::netlist(&sch);
         assert!(nl.warnings.is_empty(), "{:?}", nl.warnings);
         assert!(nl.body.contains("M2_DCG fdx dcg fd 0") && nl.body.contains("VDCG dcg 0 DC 0"), "{}", nl.body);
+    }
+
+    #[test]
+    fn one_pixel_of_an_array_keeps_its_column_load() {
+        let p = crate::examples::demo_project();
+        let lay = p.cell(&CellRef::new("work", "pixel_array")).unwrap().layout.as_ref().unwrap();
+        let x = crate::extract::extract(lay, &p, &p.tech);
+        let pc = classify(&x);
+        assert_eq!(pc.pixels.len(), 64);
+        let (sub, one) = pixel_only(&x, &pc, 0).unwrap();
+        // The pixel's four transistors and the select transistors of the column's other 7 rows.
+        assert_eq!(sub.devices.len(), 4 + 7);
+        let col = one.pixels[0].column.unwrap();
+        assert_eq!(sub.devices.iter().filter(|m| m.s == col || m.d == col).count(), 8);
+        let tb = Testbench::for_tech(&sub, &p.tech);
+        let (_, sim) = schematic(&sub, &one, Some(&tb));
+        let name = &x.nets[col].name;
+        assert!(sim.extra.contains(&format!("CW_{} {name} 0 ", name.to_ascii_uppercase())), "{}", sim.extra);
     }
 }

@@ -162,7 +162,9 @@ ics sim demo aps4t_sch
 `--characterize` (MCP `extract` with `characterize: true`; in the app **Verify > Pixel
 Circuit…**, which **Schematic from Layout** also opens: tables of the pixels and the
 photodiodes, worked out in the background with the temperature, supply and column
-capacitance set there) simulates each pixel alone with the device models of the technology:
+capacitance set there) simulates each pixel alone with the device models of the technology (one pixel of an array
+keeps its column load: the column line's wire capacitance and the other rows' select
+transistors, off):
 FD and every photodiode are reset, RST and TX turn off, then 500 electrons are taken out of
 FD and out of each photodiode in turn (every one of a shared pixel). C = Q / ΔV includes every junction, overlap and gate
 capacitance on the node and its wire capacitance from the layout:
