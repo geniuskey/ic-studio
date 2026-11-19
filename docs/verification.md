@@ -119,6 +119,41 @@ Highlighting a net (click it in **Nets**, or **Mark Net**) shows its electrical 
 other nets, the worst resistance of its wiring from the first device terminal to the others
 (solved on the extracted RC network), and R x C as a rough delay bound.
 
+### Photodiodes and pixels (image sensors)
+
+With a photodiode in the technology's cross section (`photodiode` of the
+[pixel cross section](technology.md#pixel-cross-section)), extraction also finds the photodiodes, and from them the
+pixel transistors, by connectivity alone:
+
+- **Photodiode**: the diffusion under the photodiode `layer`, one per diffusion piece: n+ in
+  a p-well or the substrate (anode = well, cathode = the piece), or p+ in an nwell. A layer
+  of its own (a PD marker or implant, as image sensor PDKs have) is taken as drawn. A
+  derived expression such as the demo's `active wide 1` is a heuristic: then only
+  uncontacted diffusion without a MOS capacitor plate counts, as a pinned photodiode is.
+  The photodiode is listed with its area and perimeter (`* photodiode D1 sub pd area=...`
+  in the SPICE); its junction is already the source junction of the transfer gate.
+- **TG**: a transistor with its source or drain on the photodiode; the other side is the
+  floating diffusion **FD**. Photodiodes whose TGs share one FD are one shared pixel. Other
+  gates on the photodiode (anti-blooming, overflow) are listed as `other`. Without a TG, a
+  photodiode that drives a gate itself is a 3T pixel.
+- **SF** is gated by FD; **RST** runs from FD to one side of SF, the supply; **SEL** runs
+  from the follower output to the column line.
+
+**Verify > Schematic from Layout** draws the extraction as a schematic: each pixel in the
+textbook arrangement (devices named `M1_TG`, `M4_RST`, ... with W / L and `as ps ad pd`
+from the layout, each photodiode as its photocurrent source `IPH_D1`), other devices in rows,
+net labels on every pin, and a test bench: the supply, reset and transfer pulses, row
+select, a column current load, the FD wire capacitance as a setup line and a transient
+analysis, so the cell simulates at once. It goes into the cell when it has no schematic yet
+(then LVS compares the two) and into a new `<cell>_from_layout` otherwise. From the command
+line:
+
+```bash
+ics extract demo aps4t --pixel                      # roles, W / L, junctions, PD and FD geometry
+ics extract demo aps4t --schematic --into aps4t_sch # draw it, with the test bench
+ics sim demo aps4t_sch
+```
+
 ## Layout versus schematic (LVS)
 
 ![The layout and schematic netlists side by side, devices matched one by one](images/lvs-compare.svg)

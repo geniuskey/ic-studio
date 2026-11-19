@@ -36,6 +36,15 @@
 //!   (without corner correction).
 //! - Capacitors ([`Tech::capacitors`]): each marked overlap of the two plate layers, between
 //!   the bottom and top plate nets.
+//! - Photodiodes ([`CrossSection::photodiode`](crate::tech::CrossSection::photodiode)): the
+//!   diffusion under the photodiode region (a layer or derived-layer expression) is one
+//!   photodiode per diffusion piece, an n+ region in its p-well (or the substrate) or a p+
+//!   region in its nwell. When the region is a derived expression (a heuristic such as
+//!   `active wide 1`) only uncontacted diffusion without a MOS capacitor plate counts, as a
+//!   pinned photodiode is; a layer of
+//!   its own (a PD marker or implant) is taken as drawn. It is reported, not part of the device netlist: its junction is
+//!   already the source / drain junction of the transfer gate on that piece. See
+//!   [`crate::pixel_circuit`] for the pixel transistors around it.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -202,6 +211,35 @@ pub struct Bjt {
     pub emitter: IRect,
 }
 
+/// An extracted photodiode: the photodiode region on one diffusion piece.
+#[derive(Debug, Clone)]
+pub struct Photodiode {
+    /// "D1", "D2", ... in a deterministic (position based) order.
+    pub name: String,
+    /// An n+ region in a p-well or the substrate (else p+ in an nwell).
+    pub n_type: bool,
+    /// Anode and cathode nets.
+    pub anode: usize,
+    pub cathode: usize,
+    /// Area (dbu²) and perimeter (dbu) of the photodiode region on the diffusion.
+    pub area: i64,
+    pub perimeter: i64,
+    /// Extent of the photodiode region.
+    pub body: IRect,
+}
+
+impl Photodiode {
+    /// The net collecting the photo charge: the diffusion piece (cathode of an n-type diode).
+    pub fn node(&self) -> usize {
+        if self.n_type { self.cathode } else { self.anode }
+    }
+
+    /// The well or substrate net it sits in.
+    pub fn well(&self) -> usize {
+        if self.n_type { self.anode } else { self.cathode }
+    }
+}
+
 /// A well (or the substrate) tapped from more than one net. Taps do not join nets through
 /// it; it is taken as the net with the most taps.
 #[derive(Debug, Clone)]
@@ -220,6 +258,8 @@ pub struct Extraction {
     pub passives: Vec<Passive>,
     /// Bipolar transistors.
     pub bjts: Vec<Bjt>,
+    /// Photodiodes (reported apart from the device netlist).
+    pub photodiodes: Vec<Photodiode>,
     /// Wells and substrate tapped from several nets.
     pub soft_conflicts: Vec<SoftConflict>,
     pub warnings: Vec<String>,
@@ -266,6 +306,18 @@ impl Extraction {
             let area = format!("{:.6}", q.area);
             let area = area.trim_end_matches('0').trim_end_matches('.');
             s += &format!("{} {} {} {} {} area={area}\n", q.name, net(q.c), net(q.b), net(q.e), q.model);
+        }
+        // Comments: the junction is the transfer gate's source / drain junction already.
+        let (u, u2) = (dbu_per_um.max(1) as f64, (dbu_per_um.max(1) as f64).powi(2));
+        for d in &self.photodiodes {
+            s += &format!(
+                "* photodiode {} {} {} area={}p pj={}u\n",
+                d.name,
+                net(d.anode),
+                net(d.cathode),
+                d.area as f64 / u2,
+                d.perimeter as f64 / u
+            );
         }
         s
     }
@@ -690,6 +742,14 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
             }
         }
     }
+    // Diffusion pieces with a contact (photodiode recognition by a derived expression skips them).
+    let mut contacted: BTreeSet<usize> = BTreeSet::new();
+    if let Some(dp) = diff_pi {
+        for &c in &diff_cuts {
+            let on = cuts.entry(c).or_insert_with(|| region(Some(c))).boolean(&planes[dp].region, BoolOp::And);
+            contacted.extend(component_anchors(on).into_iter().filter_map(|p| planes[dp].comp_at(p, false)));
+        }
+    }
     for c in diff_cuts {
         let on_gate = cuts.entry(c).or_insert_with(|| region(Some(c))).boolean(&gate_r, BoolOp::And);
         if !on_gate.is_empty() {
@@ -1066,6 +1126,77 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
         }
     }
 
+    // Photodiodes: the photodiode region on each diffusion piece.
+    struct PdProto {
+        n_type: bool,
+        piece: usize,
+        well: usize,
+        area: i64,
+        perimeter: i64,
+        bbox: IRect,
+    }
+    let mut pd_protos: Vec<PdProto> = Vec::new();
+    let pd_def = tech.cross_section.as_ref().and_then(|c| c.photodiode.as_ref());
+    if let (Some(dp), Some(pd)) = (diff_pi, pd_def) {
+        let layers: Vec<Region> = (0..n_layers).map(|l| region(Some(l))).collect();
+        match crate::drc::derived_region(&pd.layer, tech, &layers) {
+            Err(e) => warnings.push(format!("photodiode layer '{}': {e}", pd.layer)),
+            Ok(pd_r) => {
+                let on = pd_r.boolean(&planes[dp].region, BoolOp::And);
+                if on.is_empty() && !pd_r.is_empty() {
+                    warnings.push(format!("photodiode layer '{}' is not on diffusion; no photodiode extracted", pd.layer));
+                }
+                let mut per_piece: BTreeMap<usize, Vec<IRect>> = BTreeMap::new();
+                for part in on.parts() {
+                    let Some(r) = part.rects().first() else { continue };
+                    if let Some(c) = planes[dp].comp_at((r.x0, r.y0), false) {
+                        per_piece.entry(c).or_default().extend_from_slice(part.rects());
+                    }
+                }
+                // A derived expression is a heuristic (`active wide 1`): only floating diffusion,
+                // as a pinned photodiode is, without a MOS capacitor plate on it (a planar DRAM
+                // storage node) counts. A layer of its own is taken as drawn.
+                let derived = tech.layer_index(pd.layer.trim()).is_none();
+                let plates: BTreeSet<usize> = gates.iter().filter(|g| g.sd.0 == g.sd.1).map(|g| g.sd.0).collect();
+                let heuristic_ok = |c: &usize| !contacted.contains(c) && !plates.contains(c);
+                for (c, rs) in per_piece.into_iter().filter(|(c, _)| !derived || heuristic_ok(c)) {
+                    let body = Region::from_rects(rs);
+                    let (Some(bbox), Some(&r)) = (body.bbox(), body.rects().first()) else { continue };
+                    let anchor = (r.x0, r.y0);
+                    let n_type = pplus_p.comp_at(anchor, false).is_none();
+                    let well = if n_type {
+                        match planes[pw_pi].comp_at(anchor, false) {
+                            Some(w) => offset[pw_pi] + w,
+                            None => {
+                                sub_used = true;
+                                sub
+                            }
+                        }
+                    } else {
+                        match planes[nwell_pi].comp_at(anchor, false) {
+                            Some(w) => offset[nwell_pi] + w,
+                            None => {
+                                warnings.push(format!(
+                                    "p-type photodiode at ({}, {}) is not inside an nwell; skipped",
+                                    bbox.x0, bbox.y0
+                                ));
+                                continue;
+                            }
+                        }
+                    };
+                    pd_protos.push(PdProto {
+                        n_type,
+                        piece: offset[dp] + c,
+                        well,
+                        area: body.area() as i64,
+                        perimeter: body.perimeter(),
+                        bbox,
+                    });
+                }
+            }
+        }
+    }
+
     // Soft connections: each well (and the substrate) takes the net of its taps, the one with
     // the most taps when they are on several nets.
     let mut by_well: BTreeMap<usize, BTreeMap<usize, usize>> = BTreeMap::new();
@@ -1275,6 +1406,24 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
         })
         .collect();
 
+    pd_protos.sort_by_key(|d| (d.bbox.y0, d.bbox.x0));
+    let photodiodes = pd_protos
+        .into_iter()
+        .enumerate()
+        .map(|(i, d)| {
+            let (piece, well) = (net(d.piece), net(d.well));
+            Photodiode {
+                name: format!("D{}", i + 1),
+                n_type: d.n_type,
+                anode: if d.n_type { well } else { piece },
+                cathode: if d.n_type { piece } else { well },
+                area: d.area,
+                perimeter: d.perimeter,
+                body: d.bbox,
+            }
+        })
+        .collect();
+
     let mut layers = conducting;
     if has_nwell && let Some(nw) = nwell {
         layers.push(nw);
@@ -1282,7 +1431,7 @@ pub fn extract(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Extraction 
     if has_dnwell && let Some(dn) = dnwell {
         layers.push(dn);
     }
-    Extraction { nets, devices, passives, bjts, soft_conflicts, warnings, layers, dbu_per_um: tech.dbu_per_um }
+    Extraction { nets, devices, passives, bjts, photodiodes, soft_conflicts, warnings, layers, dbu_per_um: tech.dbu_per_um }
 }
 
 /// The generic technology with a marked poly resistor (7.5 Ω/sq) and a marked metal1 / metal2
@@ -1396,6 +1545,36 @@ mod tests {
 
     fn names(x: &Extraction, d: &Device) -> [String; 4] {
         [d.d, d.g, d.s, d.b].map(|i| x.nets[i].name.clone())
+    }
+
+    #[test]
+    fn photodiode_marker_layer() {
+        use crate::tech::{CrossSection, LayerDef};
+        let mut tech = Tech::generic();
+        let mut l = LayerDef::generated(30, 0, tech.layers.len());
+        l.name = "pdmark".into();
+        tech.layers.push(l);
+        let li = |n: &str| tech.layer_index(n).unwrap();
+        let mut lay = Layout::default();
+        lay.add_rect(li("nplus"), -200, -200, 4200, 1200);
+        lay.add_rect(li("active"), 0, 0, 4000, 1000);
+        lay.add_rect(li("poly"), 2900, -300, 3080, 1300);
+        // Contacted (a 3T photodiode): a drawn marker counts, the derived heuristic does not.
+        lay.add_rect(li("contact"), 200, 390, 420, 610);
+        lay.add_rect(li("contact"), 3500, 390, 3720, 610);
+        lay.add_rect(li("pdmark"), 0, 0, 2500, 1000);
+        let mut cs = CrossSection::generic180();
+        cs.photodiode.as_mut().unwrap().layer = "pdmark".into();
+        tech.cross_section = Some(cs);
+        let x = extract(&lay, &NoCells, &tech);
+        assert_eq!(x.photodiodes.len(), 1, "{:?}", x.warnings);
+        let d = &x.photodiodes[0];
+        assert!(d.n_type);
+        assert_eq!((d.area, d.perimeter, d.body), (2500 * 1000, 7000, IRect::new(0, 0, 2500, 1000)));
+        assert_eq!((x.nets[d.anode].name.as_str(), d.cathode), ("sub", x.devices[0].s));
+        tech.cross_section.as_mut().unwrap().photodiode.as_mut().unwrap().layer = "active wide 1".into();
+        let y = extract(&lay, &NoCells, &tech);
+        assert!(y.photodiodes.is_empty(), "{:?} {:?}", y.photodiodes, y.devices);
     }
 
     #[test]

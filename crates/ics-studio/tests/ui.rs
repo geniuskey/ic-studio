@@ -340,6 +340,25 @@ fn demo_pixel_array() {
 }
 
 #[test]
+fn schematic_from_pixel_layout() {
+    // aps4t has a hand-drawn schematic, so the drawing goes to a new cell next to it.
+    let args = LaunchArgs { project: None, demo: true, workspace: Some("layout".into()), cell: Some("aps4t".into()), run: false };
+    let mut h = app(args);
+    h.state_mut().command(Command::SchematicFromLayout);
+    h.run_steps(6);
+    settle(&mut h, "schematic_from_layout");
+    let target = CellRef::new("work", "aps4t_from_layout");
+    assert_eq!(h.state().active_ref(), Some(&target));
+    let sch = h.state().project().and_then(|p| p.cell(&target)).and_then(|c| c.schematic.as_ref()).expect("schematic");
+    for name in ["M1_TG", "M4_RST", "M3_SF", "M2_SEL", "IPH_D1", "VTX", "ICOL_COL"] {
+        assert!(sch.instance_by_name(name).is_some(), "{name} missing");
+    }
+    h.state_mut().command(Command::FitView);
+    h.run_steps(4);
+    shot(&mut h, "schematic_from_pixel_layout");
+}
+
+#[test]
 fn layout_pcells() {
     scenario("10_layout_pcells", true, Some("devices"), "layout", false);
 }

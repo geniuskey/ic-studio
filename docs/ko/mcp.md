@@ -94,7 +94,8 @@ npx skills add geniuskey/ic-studio
 | `optimize` | 스펙을 만족하도록 소자 파라미터 사이징(선택적으로 레이아웃 이후). `apply`는 최적 값을 씀 |
 | `place_like` | 예제 기반 레이아웃: 같은 회로 토폴로지를 가진 완성된 셀처럼 배치, 선택적으로 배선 |
 | `diff_layout` | 셀의 레이아웃을 레이어별로 git 리비전(기본 `HEAD`) 또는 저장된 파일과 XOR |
-| `extract` | 추출된 넷과 소자, 그리고 SPICE |
+| `extract` | 추출된 넷과 소자, 포토다이오드와 그 주변 픽셀(TG / FD / RST / SF / SEL), 그리고 SPICE |
+| `schematic_from_layout` | 레이아웃 추출 결과로 그린 회로도(픽셀은 교과서 배치), 선택적으로 테스트벤치 포함 |
 | `run_lvs` | 레이아웃과 회로도 비교 |
 | `run_signoff` | 테크놀로지의 외부 KLayout / Calibre / netgen 런셋 실행 |
 | `post_layout_parasitics` | 추출된 기생 성분과 가장 큰 넷 커패시턴스 및 커플링 커패시턴스 |

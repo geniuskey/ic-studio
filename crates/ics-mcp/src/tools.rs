@@ -448,6 +448,35 @@ fn extraction_json(x: &Extraction, tech: &Tech, title: &str) -> Value {
         .take(MAX_LISTED)
         .map(|q| json!({"name": q.name, "model": q.model, "area": sig(q.area), "c": net(q.c), "b": net(q.b), "e": net(q.e)}))
         .collect();
+    let photodiodes: Vec<Value> = x
+        .photodiodes
+        .iter()
+        .take(MAX_LISTED)
+        .map(|d| {
+            let u = tech.dbu_per_um.max(1) as f64;
+            json!({
+                "name": d.name, "type": if d.n_type { "n" } else { "p" }, "anode": net(d.anode), "cathode": net(d.cathode),
+                "area_um2": sig(d.area as f64 / (u * u)), "perimeter_um": sig(d.perimeter as f64 / u), "bbox_um": rect_um(tech, d.body),
+            })
+        })
+        .collect();
+    let pc = ics_core::pixel_circuit::classify(x);
+    let dev = |d: Option<usize>| d.map(|d| x.devices[d].name.clone());
+    let pixels: Vec<Value> = pc
+        .pixels
+        .iter()
+        .take(MAX_LISTED)
+        .map(|p| {
+            let (fa, fp) = ics_core::pixel_circuit::fd_junction(x, p);
+            json!({
+                "photodiodes": p.photodiodes.iter().map(|&(d, tg)| json!({"photodiode": x.photodiodes[d].name, "tg": dev(tg)})).collect::<Vec<_>>(),
+                "fd": net(p.fd), "rst": dev(p.rst), "sf": dev(p.sf), "sel": dev(p.sel),
+                "supply": p.supply.map(net), "sf_out": p.sf_out.map(net), "column": p.column.map(net),
+                "other": p.other.iter().map(|&d| x.devices[d].name.clone()).collect::<Vec<_>>(),
+                "fd_junction_area_um2": sig(fa), "fd_junction_perimeter_um": sig(fp),
+            })
+        })
+        .collect();
     let soft: Vec<Value> = x
         .soft_conflicts
         .iter()
@@ -460,8 +489,10 @@ fn extraction_json(x: &Extraction, tech: &Tech, title: &str) -> Value {
         "devices": devices,
         "passives": passives,
         "bjts": bjts,
+        "photodiodes": photodiodes,
+        "pixels": pixels,
         "soft_conflicts": soft,
-        "warnings": x.warnings,
+        "warnings": x.warnings.iter().chain(&pc.warnings).collect::<Vec<_>>(),
         "spice": x.spice(title, tech.dbu_per_um),
     })
 }
@@ -1016,8 +1047,21 @@ pub fn definitions() -> Vec<Value> {
         ),
         tool(
             "extract",
-            "Extract connectivity and devices from a cell layout: nets (name, bbox µm), MOS devices (W/L µm, terminal nets), PDK resistors / capacitors (value in Ω / F, terminal nets) and the extracted circuit as SPICE.",
+            "Extract connectivity and devices from a cell layout: nets (name, bbox µm), MOS devices (W/L µm, terminal nets), PDK resistors / capacitors (value in Ω / F, terminal nets), photodiodes (the technology's cross-section photodiode region: anode / cathode nets, area, perimeter) with the image sensor pixels around them (transfer gate TG, floating diffusion fd, RST, SF, SEL, supply and column nets, found by connectivity) and the extracted circuit as SPICE.",
             json!({"cell": cell()}),
+            &["cell"],
+        ),
+        tool(
+            "schematic_from_layout",
+            &format!("Draw a schematic of a cell's layout extraction: image sensor pixels in the textbook arrangement (TG, RST, SF, SEL with W / L and as / ps / ad / pd from the layout, each photodiode as its photocurrent source), other devices in rows, net labels on every pin. With testbench (default true) adds supply, reset / transfer pulses, row select, a column current load, the FD / photodiode wire capacitance as setup lines and a transient analysis, so the cell simulates at once. Writes to 'into' (created when missing) or the cell itself. Returns the pixel report (roles, W / L, junctions, photodiode geometry). {NOT_SAVED}"),
+            json!({
+                "cell": cell(),
+                "into": {"type": "string", "description": "Cell to write the schematic to (default: the cell itself)."},
+                "testbench": {"type": "boolean", "description": "Add test bench sources and a transient setup (default true)."},
+                "vdd": {"type": "number", "description": "Supply and gate high level, V (default 1.8)."},
+                "iph": {"type": "number", "description": "Photocurrent per photodiode, A (default 1e-8)."},
+                "overwrite": {"type": "boolean", "description": "Replace an existing schematic."}
+            }),
             &["cell"],
         ),
         tool(
@@ -1268,6 +1312,7 @@ impl State {
             "predict_yield" => self.predict_yield(a),
             "verify" => self.verify(a),
             "extract" => self.extract(a),
+            "schematic_from_layout" => self.schematic_from_layout(a),
             "run_lvs" => self.run_lvs(a),
             "run_signoff" => self.run_signoff(a),
             "post_layout_parasitics" => self.post_layout_parasitics(a),
@@ -2632,6 +2677,42 @@ impl State {
         out["cell"] = json!(r.to_string());
         self.keep(Verified::Extract(x));
         Ok(out)
+    }
+
+    fn schematic_from_layout(&mut self, a: &Args) -> Result<Value, String> {
+        use ics_core::pixel_circuit::{Testbench, classify, schematic};
+        let (p, r) = self.cell_arg(a)?;
+        let x = extract(layout_of(p, &r)?, p, &p.tech);
+        let pc = classify(&x);
+        let defaults = Testbench::default();
+        let bench = Testbench {
+            vdd: a.opt_num("vdd")?.unwrap_or(defaults.vdd),
+            iph: a.opt_num("iph")?.unwrap_or(defaults.iph),
+            wire_caps: ics_core::pex::net_caps(&x, &p.tech),
+            ..defaults
+        };
+        let with_bench = a.opt_bool("testbench")?.unwrap_or(true);
+        let (sch, sim) = schematic(&x, &pc, with_bench.then_some(&bench));
+        let target = a.opt_str("into")?.map(str::to_string).unwrap_or_else(|| r.to_string());
+        if let Some(t) = find(self.project()?, &target)
+            && self.project()?.cell(&t).is_some_and(|c| c.schematic.is_some())
+            && !a.opt_bool("overwrite")?.unwrap_or(false)
+        {
+            return Err(format!("'{t}' already has a schematic; pass overwrite: true (or 'into' another cell)"));
+        }
+        let report = pc.report(&x, &bench.wire_caps);
+        let devices = sch.instances.len();
+        let warnings: Vec<String> = x.warnings.iter().chain(&pc.warnings).cloned().collect();
+        let (t, created) = self.target_cell(&target)?;
+        let c = self.project_mut()?.cell_mut(&t).expect("resolved");
+        c.schematic = Some(sch);
+        if with_bench {
+            c.sim = sim;
+        }
+        self.dirty = true;
+        Ok(
+            json!({"cell": t.to_string(), "created": created, "pixels": pc.pixels.len(), "instances": devices, "report": report, "warnings": warnings}),
+        )
     }
 
     fn run_lvs(&mut self, a: &Args) -> Result<Value, String> {

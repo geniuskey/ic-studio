@@ -572,6 +572,27 @@ pub fn deck_file_text(text: &str, path: &std::path::Path) -> Result<(String, Vec
     Ok(crate::svrf::inline_includes(text, path.parent().unwrap_or(std::path::Path::new("."))))
 }
 
+/// The region of a layer name or derived-layer expression in the deck syntax (e.g.
+/// `active wide 1`), from the merged region of every technology layer.
+pub fn derived_region(expr: &str, tech: &Tech, layers: &[Region]) -> Result<Region, String> {
+    if let Some(i) = tech.layer_index(expr.trim()) {
+        return Ok(layers.get(i).cloned().unwrap_or_default());
+    }
+    let deck = parse_deck(&format!("_derived_ = {expr}\n"), tech)
+        .map_err(|e| e.iter().map(|e| e.message.clone()).collect::<Vec<_>>().join("; "))?;
+    if deck.derived.is_empty() {
+        return Err(format!("'{expr}' is not a layer expression"));
+    }
+    // Nested expressions come as several derived layers, each indexed after the tech layers.
+    let mut all: Vec<Region> = layers.to_vec();
+    all.resize(tech.layers.len(), Region::default());
+    for d in &deck.derived {
+        let r = d.expr.evaluate(&all);
+        all.push(r);
+    }
+    Ok(all.pop().unwrap_or_default())
+}
+
 /// Parse a deck. All errors are reported, not just the first.
 pub fn parse_deck(text: &str, tech: &Tech) -> Result<Deck, Vec<DeckError>> {
     let mut deck = Deck::default();

@@ -48,15 +48,7 @@ impl<'a> PixelLayout<'a> {
     /// The region of a layer name or derived-layer expression, clipped to the frame.
     pub fn region(&self, expr: &str) -> Result<Region, String> {
         let tech = &self.project.tech;
-        let r = match tech.layer_index(expr.trim()) {
-            Some(i) => self.layers[i].clone(),
-            None => {
-                let deck = drc::parse_deck(&format!("_pixel_ = {expr}\n"), tech)
-                    .map_err(|e| e.iter().map(|e| e.message.clone()).collect::<Vec<_>>().join("; "))?;
-                let d = deck.derived.last().ok_or_else(|| format!("'{expr}' is not a layer expression"))?;
-                d.expr.evaluate(&self.layers)
-            }
-        };
+        let r = drc::derived_region(expr, tech, &self.layers)?;
         if self.frame.x1 > self.frame.x0 { Ok(r.boolean(&Region::from_rects([self.frame]), BoolOp::And)) } else { Ok(r) }
     }
 

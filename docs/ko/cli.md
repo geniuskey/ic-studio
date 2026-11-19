@@ -39,7 +39,7 @@
 | `ics import-tech <PROJECT> <FILE> [--lyt FILE] [--drf FILE] [--layermap FILE]` | KLayout `.lyp` 또는 Virtuoso `.tf`(`display.drf`, 레이어 맵 포함)로 테크놀로지 교체 |
 | `ics load-pdk <PROJECT> <PDK>` | 테크놀로지를 PDK 파일로 교체(테크놀로지 참고) |
 | `ics drc <PROJECT> <CELL> [--deck FILE] [--fix]` | DRC 실행(덱은 SVRF도 가능). 위반이 있으면 1로 종료 |
-| `ics extract <PROJECT> <CELL>` | 추출된 넷리스트를 SPICE로 출력 |
+| `ics extract <PROJECT> <CELL>` | 추출된 넷리스트를 SPICE로 출력. `--pixel`은 이미지 센서 픽셀(PD, TG, FD, RST, SF, SEL)을 나열하고, `--schematic`은 테스트벤치와 함께 회로도를 그림 |
 | `ics lvs <PROJECT> <CELL>` | 레이아웃과 회로도 비교. 차이가 있으면 1로 종료 |
 | `ics pixel --project P --cell CELL [--emit-stack]` | 테크놀로지의 단면으로 만든 스택으로 셀의 픽셀 광학 계산([픽셀 광학](pixel-optics.md#pdk-단면에서-가져오기) 참고). `--emit-stack`은 스택만 출력하고 끝냄 |
 | `ics pixel <STACK> [--project P] [--method ray\|rcwa [--harmonics N]] [--cra DEG] [--lux L --cct K --ir-cut NM] [--set PROJECT CELL INST --color C] [--json]` | 이미지센서 픽셀 광학: QE, 크로스토크, 광전류([픽셀 광학](pixel-optics.md) 참고) |

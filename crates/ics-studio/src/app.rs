@@ -183,6 +183,9 @@ pub enum Command {
     ExportLibraryOasis,
     RunDrc,
     ExtractNets,
+    /// Draw a schematic of the active layout's extraction (image sensor pixels recognised, with
+    /// a test bench): into the cell when it has none, else into a new `<cell>_from_layout`.
+    SchematicFromLayout,
     RunLvs,
     /// IR drop / EM analysis of the active layout: of the named net, else the Verify panel's.
     IrDrop(Option<String>),
@@ -1605,6 +1608,7 @@ impl IcStudio {
             }
             Command::RunDrc => self.verify(ctx, Verify::Drc),
             Command::ExtractNets => self.verify(ctx, Verify::Extract),
+            Command::SchematicFromLayout => self.schematic_from_layout(),
             Command::RunLvs => self.verify(ctx, Verify::Lvs),
             Command::IrDrop(net) => {
                 if let (Some(r), Some(n)) = (self.active.clone(), net) {
@@ -2940,6 +2944,50 @@ impl IcStudio {
         }
     }
 
+    fn schematic_from_layout(&mut self) {
+        use ics_core::pixel_circuit::{Testbench, classify, schematic};
+        let (Some(r), Some(p)) = (self.active.clone(), self.project.as_mut()) else { return };
+        let Some(lay) = p.cell(&r).and_then(|c| c.layout.as_ref()) else {
+            return self.warn(format!("{r} has no layout"));
+        };
+        let x = ics_core::extract::extract(lay, p, &p.tech);
+        let pc = classify(&x);
+        let bench = Testbench { wire_caps: ics_core::pex::net_caps(&x, &p.tech), ..Testbench::default() };
+        let (sch, sim) = schematic(&x, &pc, Some(&bench));
+        // Into the cell itself when it has no schematic (ready for LVS), else a new cell.
+        let target = if p.cell(&r).is_some_and(|c| c.schematic.is_none()) {
+            r.clone()
+        } else {
+            let base = format!("{}_from_layout", r.cell);
+            let mut name = base.clone();
+            let mut k = 1;
+            while p.cell(&CellRef::new(&r.lib, &name)).is_some() {
+                name = format!("{base}_{k}");
+                k += 1;
+            }
+            match p.add_cell(&r.lib, ics_core::Cell::new(&name)) {
+                Ok(t) => t,
+                Err(e) => return self.error(e),
+            }
+        };
+        let c = p.cell_mut(&target).expect("target cell");
+        self.sch_eds.entry(target.clone()).or_default().history.push(c.schematic.as_ref().unwrap_or(&Default::default()));
+        c.schematic = Some(sch);
+        c.sim = sim;
+        self.hier.clear();
+        self.mark_dirty();
+        let pixels = pc.pixels.len();
+        self.ok(format!(
+            "Schematic from the layout of {r}: {} transistor(s), {} photodiode(s), {pixels} pixel(s) -> {target}",
+            x.devices.len(),
+            x.photodiodes.len()
+        ));
+        for w in x.warnings.iter().chain(&pc.warnings) {
+            self.warn(format!("{r}: {w}"));
+        }
+        self.queue.push(Command::OpenCell(target, Some(Workspace::Schematic)));
+    }
+
     fn import_cdl(&mut self, path: Option<PathBuf>) {
         let Some(path) = path.or_else(|| {
             rfd::FileDialog::new().add_filter("CDL / SPICE netlist", &["cdl", "cir", "sp", "spi", "net"]).pick_file()
@@ -3645,6 +3693,9 @@ impl IcStudio {
                 }
                 if menu_item(ui, has_lay, "Extract Nets", NEED_LAY) {
                     q.push(Command::ExtractNets);
+                }
+                if menu_item(ui, has_lay, "Schematic from Layout", NEED_LAY) {
+                    q.push(Command::SchematicFromLayout);
                 }
                 if menu_item(ui, has_lay && has_sch, "Run LVS", "Open a cell with a schematic and a layout first") {
                     q.push(Command::RunLvs);
@@ -4922,6 +4973,7 @@ impl IcStudio {
             ("New cell…".into(), "⌘N", Command::NewCellDialog),
             ("Run DRC".into(), "", Command::RunDrc),
             ("Extract nets".into(), "", Command::ExtractNets),
+            ("Schematic from layout (pixels: PD / TG / RST / SF / SEL)".into(), "", Command::SchematicFromLayout),
             ("Run LVS".into(), "", Command::RunLvs),
             ("IR drop / EM analysis".into(), "", Command::IrDrop(None)),
             ("DRC rule designer".into(), "", Command::RuleDesigner),

@@ -35,6 +35,7 @@ pub mod pcell;
 pub mod pcell_design;
 pub mod pdk;
 pub mod pex;
+pub mod pixel_circuit;
 pub mod pixel_layout;
 pub mod polybool;
 pub mod predict;

@@ -304,6 +304,7 @@ mod tests {
             "place_like",
             "diff_layout",
             "extract",
+            "schematic_from_layout",
             "run_lvs",
             "run_signoff",
             "post_layout_parasitics",

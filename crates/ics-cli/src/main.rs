@@ -604,7 +604,34 @@ enum Cmd {
         route: bool,
     },
     /// Extract nets, transistors, resistors and capacitors from a cell layout and print them as SPICE.
-    Extract { project: PathBuf, cell: String },
+    /// Photodiodes (the technology's cross-section photodiode region) are listed as comments.
+    Extract {
+        project: PathBuf,
+        cell: String,
+        /// Also print the image sensor pixels found around the photodiodes: TG, RST, SF, SEL
+        /// with W / L and junctions, the floating diffusion and the photodiode geometry.
+        #[arg(long)]
+        pixel: bool,
+        /// Draw a schematic of the extraction (pixels in the textbook arrangement) with a test
+        /// bench and transient setup, into the cell (or `--into`), and save the project.
+        #[arg(long)]
+        schematic: bool,
+        /// Cell to write the schematic to (`lib/cell` or `cell`; created when missing).
+        #[arg(long, requires = "schematic")]
+        into: Option<String>,
+        /// Replace an existing schematic.
+        #[arg(long, requires = "schematic")]
+        overwrite: bool,
+        /// Draw the devices only, without test bench sources and analyses.
+        #[arg(long, requires = "schematic")]
+        no_testbench: bool,
+        /// Test bench supply and gate high level (V).
+        #[arg(long, default_value_t = 1.8)]
+        vdd: f64,
+        /// Test bench photocurrent per photodiode (A).
+        #[arg(long, default_value_t = 10e-9)]
+        iph: f64,
+    },
     /// Compare a cell's layout with its schematic (non-zero exit on differences).
     Lvs { project: PathBuf, cell: String },
     /// IR drop and electromigration of one net of a cell layout (non-zero exit on EM
@@ -2613,8 +2640,8 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             p.save().map_err(|e| e.to_string())?;
         }
-        Cmd::Extract { project, cell } => {
-            let p = Project::open(&project).map_err(|e| e.to_string())?;
+        Cmd::Extract { project, cell, pixel, schematic, into, overwrite, no_testbench, vdd, iph } => {
+            let mut p = Project::open(&project).map_err(|e| e.to_string())?;
             let r = resolve(&p, &cell)?;
             let lay = p.cell(&r).unwrap().layout.as_ref().ok_or("cell has no layout")?;
             let x = ics_core::extract::extract(lay, &p, &p.tech);
@@ -2634,6 +2661,45 @@ fn run(cli: Cli) -> Result<(), String> {
                 x.passives.len(),
                 x.bjts.len()
             );
+            if pixel || schematic {
+                let pc = ics_core::pixel_circuit::classify(&x);
+                for w in &pc.warnings {
+                    eprintln!("warning: {w}");
+                }
+                let caps = ics_core::pex::net_caps(&x, &p.tech);
+                if pixel {
+                    print!("{}", pc.report(&x, &caps));
+                }
+                if schematic {
+                    let bench = ics_core::pixel_circuit::Testbench { vdd, iph, wire_caps: caps, ..Default::default() };
+                    let (sch, sim) = ics_core::pixel_circuit::schematic(&x, &pc, (!no_testbench).then_some(&bench));
+                    let target = match into.as_deref() {
+                        None => r.clone(),
+                        Some(name) => match resolve(&p, name) {
+                            Ok(t) => t,
+                            Err(_) => {
+                                let (lib, n) = name.split_once('/').unwrap_or((r.lib.as_str(), name));
+                                if p.library_mut(lib).is_none() {
+                                    p.add_library(lib)?;
+                                }
+                                p.add_cell(lib, ics_core::Cell::new(n))?
+                            }
+                        },
+                    };
+                    let c = p.cell_mut(&target).unwrap();
+                    if c.schematic.is_some() && !overwrite {
+                        return Err(format!(
+                            "{target} already has a schematic; pass --overwrite to replace it (or --into another cell)"
+                        ));
+                    }
+                    c.schematic = Some(sch);
+                    if !no_testbench {
+                        c.sim = sim;
+                    }
+                    p.save().map_err(|e| e.to_string())?;
+                    println!("* schematic written to {target}");
+                }
+            }
         }
         Cmd::Lvs { project, cell } => {
             let p = Project::open(&project).map_err(|e| e.to_string())?;

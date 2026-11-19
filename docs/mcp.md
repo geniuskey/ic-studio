@@ -97,7 +97,8 @@ The server has 59 tools:
 | `optimize` | Size device parameters to meet specs (optionally after layout); `apply` writes the best values |
 | `place_like` | Layout by example: place a cell like a finished cell with the same circuit topology, optionally route |
 | `diff_layout` | XOR a cell's layout per layer against a git revision (default `HEAD`) or the saved files |
-| `extract` | Extracted nets and devices, plus SPICE |
+| `extract` | Extracted nets and devices, photodiodes and the pixels around them (TG / FD / RST / SF / SEL), plus SPICE |
+| `schematic_from_layout` | Schematic drawn from the layout extraction (pixels in the textbook arrangement), optionally with a test bench |
 | `run_lvs` | Compare layout and schematic |
 | `run_signoff` | Run an external KLayout / Calibre / netgen runset of the technology |
 | `post_layout_parasitics` | Extracted parasitics and the largest net and coupling capacitances |
