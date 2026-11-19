@@ -292,6 +292,8 @@ pub struct Testbench {
     pub photodiode: Option<PhotodiodeDef>,
     /// Simulation temperature (°C).
     pub temp: f64,
+    /// Column line capacitance (F) of the noise bench: it sets the readout bandwidth.
+    pub ccol: f64,
 }
 
 impl Default for Testbench {
@@ -304,6 +306,7 @@ impl Default for Testbench {
             stimulus: Stimulus::ResetTransfer,
             photodiode: None,
             temp: 27.0,
+            ccol: 1e-12,
         }
     }
 }
@@ -341,7 +344,7 @@ pub fn charge_net(x: &Extraction, d: &Photodiode, bench: Option<&Testbench>) -> 
 }
 
 /// What the test bench drives.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Stimulus {
     /// Reset photodiode and FD, integrate the photocurrent, release the reset (reset level on
     /// the column), then transfer (signal level).
@@ -359,7 +362,15 @@ pub enum Stimulus {
     /// ([`Testbench::iph`]) until it saturates (blooming over TX or into the substrate);
     /// sample at [`FULL_WELL_AT`].
     FullWell,
+    /// Readout noise: RST and TX off, SEL on, the first pixel's FD and photodiode charge nodes
+    /// held at these voltages through a noiseless 1 nS transconductance (a resistor would add
+    /// its own noise), the column line loaded by [`Testbench::ccol`]; a noise analysis of the
+    /// column voltage over [`NOISE_BAND`] (input source `VFDB`).
+    NoiseBias { fd: f64, charge: f64 },
 }
+
+/// Frequency band (Hz) of the readout noise analysis.
+pub const NOISE_BAND: (f64, f64) = (1e3, 1e9);
 
 /// Electrons taken out of a node by the charge injection stimulus.
 pub const INJECT_ELECTRONS: f64 = 500.0;
@@ -596,6 +607,7 @@ pub fn schematic(x: &Extraction, pc: &PixelCircuit, bench: Option<&Testbench>) -
                 (format!("PULSE({v} 0 100n 1n 1n 1 2)"), format!("PULSE({v} 0 50n 1n 1n 399n 500n)"))
             }
             Stimulus::FullWell => (String::new(), format!("PULSE({v} 0 50n 1n 1n 1 2)")),
+            Stimulus::NoiseBias { .. } => ("off".to_string(), "off".to_string()),
         };
         let first_tx: Option<String> =
             pc.pixels.iter().find_map(|p| p.photodiodes.iter().find_map(|q| q.1)).map(|t| dr.net_name(x.devices[t].g));
@@ -607,7 +619,11 @@ pub fn schematic(x: &Extraction, pc: &PixelCircuit, bench: Option<&Testbench>) -
             }
         };
         let pulsed = |p: &String| -> Vec<(&'static str, String)> {
-            if p.is_empty() { vec![("dc", v.clone())] } else { vec![("dc", v.clone()), ("tran", p.clone())] }
+            match p.as_str() {
+                "" => vec![("dc", v.clone())],
+                "off" => vec![("dc", "0".into())],
+                _ => vec![("dc", v.clone()), ("tran", p.clone())],
+            }
         };
         for n in rows.get("supply").into_iter().flatten() {
             add(n, vec![("dc", v.clone())]);
@@ -704,18 +720,45 @@ pub fn schematic(x: &Extraction, pc: &PixelCircuit, bench: Option<&Testbench>) -
                 inst.params.insert("dc".into(), dc.clone());
             }
         }
+        let noise_out = match st {
+            Stimulus::NoiseBias { fd, charge } => pc.pixels.first().and_then(|p| {
+                extra.push("* readout noise bias: noiseless 1 nS holds FD and the photodiode".into());
+                let mut held = vec![("FD", dr.net_name(p.fd), fd)];
+                held.extend(p.photodiodes.first().map(|q| ("PD", charge_net(x, &x.photodiodes[q.0], Some(b)), charge)));
+                for (tag, n, volts) in held {
+                    extra.push(format!("V{tag}B {n}_b 0 DC {}", val(volts)));
+                    extra.push(format!("G{tag}B {n} 0 {n} {n}_b 1e-9"));
+                }
+                let col = dr.net_name(p.column.or(p.sf_out)?);
+                extra.push(format!("CCOL {col} 0 {}", val(b.ccol)));
+                Some(col)
+            }),
+            _ => None,
+        };
         sim.extra = extra.join("\n");
         sim.temp = b.temp;
         sim.set_enabled("op", false);
-        sim.set_enabled("tran", true);
-        let (step, stop) = match st {
-            Stimulus::ResetTransfer => ("1n", "600n"),
-            Stimulus::ChargeInjection { .. } => ("0.5n", "600n"),
-            Stimulus::FullWell => ("2n", "2u"),
-        };
-        if let Some(Analysis::Tran { tstep, tstop, .. }) = sim.get_mut("tran") {
-            *tstep = step.into();
-            *tstop = stop.into();
+        if let Some(col) = noise_out {
+            sim.set_enabled("tran", false);
+            sim.set_enabled("noise", true);
+            if let Some(Analysis::Noise { output, source, points_per_decade, fstart, fstop }) = sim.get_mut("noise") {
+                *output = col;
+                *source = "VFDB".into();
+                *points_per_decade = 20;
+                *fstart = val(NOISE_BAND.0);
+                *fstop = val(NOISE_BAND.1);
+            }
+        } else {
+            sim.set_enabled("tran", true);
+            let (step, stop) = match st {
+                Stimulus::ResetTransfer | Stimulus::NoiseBias { .. } => ("1n", "600n"),
+                Stimulus::ChargeInjection { .. } => ("0.5n", "600n"),
+                Stimulus::FullWell => ("2n", "2u"),
+            };
+            if let Some(Analysis::Tran { tstep, tstop, .. }) = sim.get_mut("tran") {
+                *tstep = step.into();
+                *tstop = stop.into();
+            }
         }
     }
     (dr.s, sim)

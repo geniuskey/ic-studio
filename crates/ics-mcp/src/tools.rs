@@ -1048,7 +1048,7 @@ pub fn definitions() -> Vec<Value> {
         tool(
             "extract",
             "Extract connectivity and devices from a cell layout: nets (name, bbox µm), MOS devices (W/L µm, terminal nets), PDK resistors / capacitors (value in Ω / F, terminal nets), photodiodes (the technology's cross-section photodiode region: anode / cathode nets, area, perimeter) with the image sensor pixels around them (transfer gate TG, floating diffusion fd, RST, SF, SEL, supply and column nets, found by connectivity) and the extracted circuit as SPICE.",
-            json!({"cell": cell(), "characterize": {"type": "boolean", "description": "Also simulate each pixel (up to 16): FD and photodiode capacitance (F), conversion gain at FD and the column (µV per electron), source follower gain, for a pinned photodiode the transfer and lag of 500 electrons, the full well, and the dark current at temp, under pixels[].metrics."}, "temp": {"type": "number", "description": "Temperature for characterize, °C (default 27)."}}),
+            json!({"cell": cell(), "characterize": {"type": "boolean", "description": "Also simulate each pixel (up to 16): FD and photodiode capacitance (F), conversion gain at FD and the column (µV per electron), source follower gain, for a pinned photodiode the transfer and lag of 500 electrons, the full well, the dark current at temp and the noise (FD kTC, readout noise at the column in µV and electrons), under pixels[].metrics."}, "temp": {"type": "number", "description": "Temperature for characterize, °C (default 27)."}, "ccol": {"type": "number", "description": "Column line capacitance for the readout noise of characterize, F (default 1e-12)."}}),
             &["cell"],
         ),
         tool(
@@ -2678,7 +2678,12 @@ impl State {
         if a.opt_bool("characterize")?.unwrap_or(false) {
             use ics_core::pixel_circuit::{Testbench, classify};
             let pc = classify(&x);
-            let bench = Testbench { temp: a.opt_num("temp")?.unwrap_or(27.0), ..Testbench::for_tech(&x, &p.tech) };
+            let defaults = Testbench::for_tech(&x, &p.tech);
+            let bench = Testbench {
+                temp: a.opt_num("temp")?.unwrap_or(defaults.temp),
+                ccol: a.opt_num("ccol")?.unwrap_or(defaults.ccol),
+                ..defaults
+            };
             let opts = ics_sim::SimOptions { backend: ics_core::Backend::Auto, deck_dir: p.root.clone(), ..Default::default() };
             let corner = p.cell(&r).map(|c| c.sim.corner.clone()).unwrap_or_default();
             for k in 0..pc.pixels.len().min(MAX_LISTED).min(16) {
@@ -2689,6 +2694,11 @@ impl State {
                         "pinned": m.pinned, "temp_c": m.temp,
                         "dark_current_a": m.dark.map(|d| sig(d.0)), "dark_e_per_s": m.dark.map(|d| sig(d.0 / ics_core::pixel_circuit::Q_E)),
                         "dark_doubling_c": m.dark.map(|d| sig(d.1)),
+                        "noise": json!({
+                            "ktc_fd_e": sig(m.noise.ktc_e), "readout_uv": sig(m.noise.readout_uv), "readout_e": sig(m.noise.readout_e),
+                            "readout_cds_e": sig(m.noise.readout_e * std::f64::consts::SQRT_2), "ccol_f": sig(m.noise.ccol),
+                            "band_hz": [ics_core::pixel_circuit::NOISE_BAND.0, ics_core::pixel_circuit::NOISE_BAND.1],
+                        }),
                         "photodiode": m.pd.as_ref().map(|d| json!({
                             "reset_v": sig(d.v_reset), "c_f": sig(d.c), "transferred_e": d.transferred_e.map(sig), "lag_e": d.lag_e.map(sig),
                             "full_well_e": sig(d.full_well_e), "saturated_v": sig(d.v_saturated), "saturated": d.saturated,

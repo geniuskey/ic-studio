@@ -11,13 +11,14 @@
 //! feedthrough and channel charge): what the photodiode still holds beyond it is lag, the rest
 //! went to FD. (FD's own step is not used: the TX channel charge it gets back at turn-off
 //! depends on its voltage.) A second run ([`Stimulus::FullWell`]) fills the photodiode with
-//! light until it saturates.
+//! light until it saturates, and a noise analysis ([`Stimulus::NoiseBias`]) gives the readout
+//! noise at the column.
 
 use ics_core::Tech;
 use ics_core::extract::Extraction;
 use ics_core::pixel_circuit::{
-    FD_WINDOW, FULL_WELL_AT, INJECT_ELECTRONS, PD_WINDOW, PixelCircuit, Q_E, Stimulus, TRANSFER_WINDOW, Testbench, charge_net,
-    pixel_only, schematic,
+    FD_WINDOW, FULL_WELL_AT, INJECT_ELECTRONS, NOISE_BAND, PD_WINDOW, PixelCircuit, Q_E, Stimulus, TRANSFER_WINDOW, Testbench,
+    charge_net, pixel_only, schematic,
 };
 
 use crate::{SimOptions, simulate};
@@ -42,6 +43,20 @@ pub struct PhotodiodeMetrics {
     pub saturated: bool,
 }
 
+/// Noise of a pixel's readout.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NoiseMetrics {
+    /// Reset (kTC) noise of FD, electrons rms: sqrt(k T C_FD) / q. Correlated double sampling
+    /// removes it in a 4T pixel; a pinned photodiode resets without it.
+    pub ktc_e: f64,
+    /// Readout noise at the column over [`NOISE_BAND`] with [`Testbench::ccol`] on the column
+    /// line (µV rms) and referred to FD charge by the column conversion gain (e⁻ rms), one
+    /// sample; correlated double sampling of uncorrelated noise multiplies it by √2.
+    pub readout_uv: f64,
+    pub readout_e: f64,
+    pub ccol: f64,
+}
+
 /// Characterisation of one pixel.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PixelMetrics {
@@ -61,6 +76,7 @@ pub struct PixelMetrics {
     /// doubles it, when the technology gives dark current densities.
     pub dark: Option<(f64, f64)>,
     pub temp: f64,
+    pub noise: NoiseMetrics,
     /// The charge injection deck simulated.
     pub deck: String,
 }
@@ -74,6 +90,17 @@ impl PixelMetrics {
             self.cg_fd_uv,
             self.cg_col_uv,
             self.sf_gain
+        );
+        let n = &self.noise;
+        s += &format!(
+            "Noise: kTC at FD {:.1} e- rms (removed by CDS); readout {:.1} uV rms = {:.2} e- rms per sample ({:.2} e- with CDS) with {} pF on the column, {} to {}\n",
+            n.ktc_e,
+            n.readout_uv,
+            n.readout_e,
+            n.readout_e * std::f64::consts::SQRT_2,
+            n.ccol * 1e12,
+            hz(NOISE_BAND.0),
+            hz(NOISE_BAND.1)
         );
         if let Some((i, doubling)) = self.dark {
             s += &format!(
@@ -100,6 +127,12 @@ impl PixelMetrics {
         }
         s
     }
+}
+
+/// A frequency with an SI prefix: `1 kHz`, `1 GHz`.
+fn hz(f: f64) -> String {
+    let (v, p) = [(1e9, "G"), (1e6, "M"), (1e3, "k")].into_iter().find(|(s, _)| f >= *s).map_or((f, ""), |(s, p)| (f / s, p));
+    format!("{v} {p}Hz")
 }
 
 /// Value of `v` at time `t` (linear interpolation).
@@ -209,22 +242,28 @@ pub fn characterize(
         }
         None => None,
     };
+    // Readout noise at the reset levels.
+    let charge_v = pd.as_ref().map_or(0.0, |d| d.v_reset);
+    let (nd, _) = deck_for(Stimulus::NoiseBias { fd: fd0, charge: charge_v }, 0.0);
+    let res = simulate(&nd, &[], opts).map_err(|e| e.to_string())?;
+    let ns = res.dataset("noise").ok_or("the simulation gave no noise result")?;
+    let f = &ns.scale_vector().ok_or("no frequency vector")?.re;
+    let sd = &ns.get("onoise_spectrum").ok_or("no output noise spectrum")?.re;
+    let power: f64 = f.windows(2).zip(sd.windows(2)).map(|(f, s)| (f[1] - f[0]) * (s[0] * s[0] + s[1] * s[1]) / 2.0).sum();
+    let readout_uv = power.sqrt() * 1e6;
+    let cg_col_uv = cg_fd_uv * sf_gain;
+    const K_B: f64 = 1.380_649e-23;
+    let noise = NoiseMetrics {
+        ktc_e: (K_B * (b.temp + 273.15) * c_fd).sqrt() / Q_E,
+        readout_uv,
+        readout_e: readout_uv / cg_col_uv.abs().max(1e-12),
+        ccol: b.ccol,
+    };
     let dark = first.and_then(|(d, _)| {
         let doubling = b.photodiode.as_ref()?.dark_doubling(b.temp);
         b.dark_current(&sub, d).map(|i| (i, doubling))
     });
-    Ok(PixelMetrics {
-        v_fd_reset: fd0,
-        c_fd,
-        cg_fd_uv,
-        cg_col_uv: cg_fd_uv * sf_gain,
-        sf_gain,
-        pd,
-        pinned,
-        dark,
-        temp: b.temp,
-        deck,
-    })
+    Ok(PixelMetrics { v_fd_reset: fd0, c_fd, cg_fd_uv, cg_col_uv, sf_gain, pd, pinned, dark, temp: b.temp, noise, deck })
 }
 
 #[cfg(test)]
@@ -275,6 +314,12 @@ mod tests {
         assert!(pd.v_reset <= 0.5 && pd.v_reset > 0.35, "{}", m.summary());
         assert!((pd.c - 6.4125e-15).abs() < 0.3e-15, "{}", m.summary());
         // Nearly complete transfer: only the spill-back at TX turn-off stays.
+        // kTC of 1.6 fF: 16 e-. Follower thermal noise on 1 pF: about sqrt(2/3 kT / C), some
+        // 50 µV, below one electron at 80 µV/e-.
+        let n = &m.noise;
+        assert!((n.ktc_e - 16.1).abs() < 0.5, "{}", m.summary());
+        assert!(n.readout_uv > 20.0 && n.readout_uv < 150.0, "{}", m.summary());
+        assert!((n.readout_e - n.readout_uv / m.cg_col_uv).abs() < 1e-9);
         // Demo dark current: 3 aA/µm² at 60 °C, a tenth of it at 27 °C.
         let (i, doubling) = m.dark.unwrap();
         assert!(i > 2.5e-18 && i < 5e-18 && (doubling - 8.97).abs() < 0.05, "{}", m.summary());
