@@ -835,7 +835,9 @@ pub fn schematic(x: &Extraction, pc: &PixelCircuit, bench: Option<&Testbench>) -
                     held.push((format!("PD{}", j + 1), charge_net(x, &x.photodiodes[q.0], Some(b)), charge));
                 }
                 for (tag, n, volts) in held {
-                    extra.push(format!("V{tag}B {n}_b 0 DC {}", val(volts)));
+                    // An AC value: ngspice refuses a noise input source without one.
+                    let ac = if tag == "FD" { " AC 1" } else { "" };
+                    extra.push(format!("V{tag}B {n}_b 0 DC {}{ac}", val(volts)));
                     extra.push(format!("G{tag}B {n} 0 {n} {n}_b 1e-9"));
                 }
                 let col = dr.net_name(p.column.or(p.sf_out)?);

@@ -45,7 +45,9 @@ fn lex(s: &str) -> Result<Vec<Tok>, ExprError> {
     let mut i = 0;
     while i < b.len() {
         let c = b[i];
-        if c.is_ascii_whitespace() {
+        // Double quotes around an expression (`{"-a/2-b"}`, as the SKY130 models write some)
+        // are dropped, as ngspice does.
+        if c.is_ascii_whitespace() || c == b'"' {
             i += 1;
         } else if c.is_ascii_digit() || (c == b'.' && b.get(i + 1).is_some_and(u8::is_ascii_digit)) {
             let start = i;
@@ -338,6 +340,12 @@ pub fn fmt_num(v: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quoted_expressions() {
+        let p = Params::default();
+        assert_eq!(eval("\"-4/2-1\"", &p).unwrap(), -3.0);
+    }
 
     fn ev(s: &str) -> f64 {
         let p: Params = [("wn".to_string(), 2e-6), ("vdd".to_string(), 1.8)].into();

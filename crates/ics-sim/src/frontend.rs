@@ -116,6 +116,8 @@ struct Ctx {
     warnings: Vec<String>,
     /// Evaluated model cards (`type params`) already emitted, by content.
     model_cards: HashMap<String, String>,
+    /// `.option scale`: instance lengths are in these units (bins hold metres).
+    scale: f64,
 }
 
 fn err_at(o: &Origin, msg: impl std::fmt::Display) -> SimError {
@@ -521,6 +523,9 @@ struct Scope<'a> {
     /// Node of the parent for each port.
     ports: HashMap<String, String>,
     params: Params,
+    /// Parameters the instance sets: a `.param` of the subcircuit body does not change them
+    /// (as ngspice; the SKY130 devices declare their defaults so).
+    overridden: Vec<String>,
     /// Visible model cards by name (bins under their base name).
     models: HashMap<String, Vec<ModelRef>>,
     parent: Option<&'a Scope<'a>>,
@@ -557,7 +562,7 @@ fn expand_body(body: &[Line], scope: &mut Scope, ctx: &mut Ctx, depth: usize) ->
     let mut assign = vec![];
     for l in body {
         if cmd(&l.text) == ".param" {
-            assign.extend(param_assignments(l)?);
+            assign.extend(param_assignments(l)?.into_iter().filter(|a| !scope.overridden.contains(&a.0)));
         }
     }
     eval_assignments(&assign, &mut scope.params)?;
@@ -696,7 +701,7 @@ fn expand_element(l: &Line, scope: &mut Scope, ctx: &mut Ctx, depth: usize) -> R
         let name = toks[k].to_ascii_lowercase();
         if let Some(refs) = scope.model(&name) {
             let p = kv(&toks[k + 1..]);
-            toks[k] = pick_model(refs, &p, &name).map_err(|m| err_at(&l.origin, format!("{}: {m}", toks[0])))?;
+            toks[k] = pick_model(refs, &p, &name, ctx.scale).map_err(|m| err_at(&l.origin, format!("{}: {m}", toks[0])))?;
         }
     }
     toks[0] = scope.element_name(&toks[0]);
@@ -704,14 +709,34 @@ fn expand_element(l: &Line, scope: &mut Scope, ctx: &mut Ctx, depth: usize) -> R
     Ok(())
 }
 
-/// The model card for an instance with parameters `p`: the plain card, or the bin that holds
-/// its `l` and `w`.
-fn pick_model(refs: &[ModelRef], p: &HashMap<String, f64>, name: &str) -> Result<String, String> {
+/// The `.option scale` value of `lines` (the last one), if any.
+fn option_scale(lines: &[Line]) -> Option<f64> {
+    let mut out = None;
+    for l in lines {
+        let c = cmd(&l.text);
+        if c == ".option" || c == ".options" || c == ".opt" {
+            let toks = split_tokens(&tight_equals(&l.text));
+            for t in &toks[1..] {
+                if let Some((k, v)) = t.split_once('=')
+                    && k.eq_ignore_ascii_case("scale")
+                    && let Some(v) = parse_spice(v).filter(|v| *v > 0.0)
+                {
+                    out = Some(v);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The model card for an instance with parameters `p` (lengths in units of `scale` metres):
+/// the plain card, or the bin that holds its `l` and `w`.
+fn pick_model(refs: &[ModelRef], p: &HashMap<String, f64>, name: &str, scale: f64) -> Result<String, String> {
     if let Some(m) = refs.iter().find(|m| m.bin.is_none()) {
         return Ok(m.emit.clone());
     }
-    let l = p.get("l").copied().unwrap_or(1e-6);
-    let w = p.get("w").copied().unwrap_or(1e-6) / p.get("nf").copied().unwrap_or(1.0).max(1.0);
+    let l = p.get("l").map_or(1e-6, |l| l * scale);
+    let w = p.get("w").map_or(1e-6, |w| w * scale) / p.get("nf").copied().unwrap_or(1.0).max(1.0);
     // Bin limits are inclusive below and exclusive above, with a small tolerance for rounding.
     let inside = |v: f64, lo: f64, hi: f64| v >= lo * (1.0 - 1e-9) && v < hi * (1.0 - 1e-9);
     refs.iter()
@@ -758,7 +783,13 @@ fn expand_instance(
         };
         let v = eval(expr_text(v), &scope.params).map_err(|e| err_at(&l.origin, format!("{inst}: {k}: {e}")))?;
         let k = k.to_ascii_lowercase();
-        if !sub.defaults.iter().any(|(d, _)| *d == k) {
+        let in_body = || {
+            sub.body
+                .iter()
+                .filter(|b| cmd(&b.text) == ".param")
+                .any(|b| param_assignments(b).is_ok_and(|a| a.iter().any(|(n, _, _)| n.eq_ignore_ascii_case(&k))))
+        };
+        if !sub.defaults.iter().any(|(d, _)| *d == k) && !in_body() {
             ctx.warnings.push(format!("{}: subcircuit '{sub_name}' has no parameter '{k}'", l.origin.describe()));
         }
         overrides.insert(k, v);
@@ -777,7 +808,8 @@ fn expand_instance(
 
     let iname = inst.to_ascii_lowercase();
     let prefix = if scope.prefix.is_empty() { iname } else { format!("{}.{iname}", scope.prefix) };
-    let mut child = Scope { prefix, ports, params, models: HashMap::new(), parent: Some(scope) };
+    let overridden = overrides.keys().cloned().collect();
+    let mut child = Scope { prefix, ports, params, overridden, models: HashMap::new(), parent: Some(scope) };
     expand_body(&sub.body, &mut child, ctx, depth + 1)
 }
 
@@ -811,10 +843,18 @@ pub fn expand(deck: &str, dir: Option<&Path>) -> Result<Expanded, SimError> {
     let mut warnings = vec![];
     let lines = logical_any(deck, None, &mut warnings);
     load(lines, dir, 0, &mut loaded, &mut warnings)?;
-    let mut ctx = Ctx { warnings, ..Ctx::default() };
+    let mut ctx = Ctx { warnings, scale: 1.0, ..Ctx::default() };
     let top = collect(loaded, &mut ctx)?;
-    let mut scope =
-        Scope { prefix: String::new(), ports: HashMap::new(), params: Params::new(), models: HashMap::new(), parent: None };
+    // `.option scale` anywhere (a model library sets it after the instances that need it).
+    ctx.scale = option_scale(&top).unwrap_or(1.0);
+    let mut scope = Scope {
+        prefix: String::new(),
+        ports: HashMap::new(),
+        params: Params::new(),
+        overridden: Vec::new(),
+        models: HashMap::new(),
+        parent: None,
+    };
     expand_body(&top, &mut scope, &mut ctx, 0)?;
 
     let title_text = title.trim_start_matches('*').trim();
@@ -841,6 +881,29 @@ mod tests {
 
     fn lines(e: &Expanded) -> Vec<&str> {
         e.deck.lines().skip(1).collect()
+    }
+
+    #[test]
+    fn bins_take_the_option_scale() {
+        // Lengths in µm with `.option scale=1u` (as the SKY130 libraries set, after the
+        // instances): the bin of 0.4 µm is chosen.
+        let deck = "* t\nM1 d g 0 0 nm w=1 l=0.4\nV1 d 0 1\nV2 g 0 1\n\
+                    .model nm.0 nmos (level=1 lmin=1e-7 lmax=1e-6 wmin=1e-7 wmax=1e-5 vto=0.4)\n\
+                    .model nm.1 nmos (level=1 lmin=1e-6 lmax=1e-5 wmin=1e-7 wmax=1e-5 vto=0.6)\n.option scale=1u\n.end\n";
+        let ex = expand(deck, None).unwrap();
+        assert!(ex.deck.contains("vto=0.4"), "{}", ex.deck);
+    }
+
+    #[test]
+    fn instance_parameters_win_over_a_subcircuit_param() {
+        // The SKY130 devices declare their defaults with `.param` in the body; the instance's
+        // values still apply (as in ngspice), without a warning.
+        let deck =
+            "* t\n.subckt dev a b\n.param r = 1k\nR1 a b {r}\n.ends\nX1 n1 0 dev r=2k\nX2 n2 0 dev\nV1 n1 0 1\nV2 n2 0 1\n.end\n";
+        let ex = expand(deck, None).unwrap();
+        assert!(ex.deck.to_ascii_lowercase().contains("r.x1.r1 n1 0 2000"), "{}", ex.deck);
+        assert!(ex.deck.to_ascii_lowercase().contains("r.x2.r1 n2 0 1000"), "{}", ex.deck);
+        assert!(ex.warnings.is_empty(), "{:?}", ex.warnings);
     }
 
     #[test]

@@ -213,6 +213,14 @@ The characterisation then also reports, for each photodiode:
   needed to empty it in 1.5 µs; FWC = C × (reset − saturated voltage). `not yet saturated`
   warns when it still moves at the end.
 
+With a PDK the same characterisation runs on the foundry models. On the demo pixel's devices
+with the SkyWater SKY130 models (BSIM4), the built-in engine and ngspice agree within 1-3 %
+on every figure (FD capacitance, gains, noise, lag, full well); the models add flicker
+noise (some 5 electrons rms with CDS for the 0.42 x 0.35 µm follower) and the 1.8 V
+transfer gate of a logic process leaves about 100 of 500 electrons behind. The tests
+`sky130_models` and `sky130_builtin_matches_ngspice` run them with an installed PDK
+(`PDK_ROOT=... cargo test -p ics-sim -- --ignored sky130`).
+
 A transfer gate with its own threshold implant takes its PDK model when the technology lists
 that device with the implant as a marker layer (`[[device]]` `layers`), as any transistor does.
 

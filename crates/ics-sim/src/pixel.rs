@@ -317,7 +317,13 @@ pub fn characterize(
     let res = simulate(&nd, &[], opts).map_err(|e| e.to_string())?;
     let ns = res.dataset("noise").ok_or("the simulation gave no noise result")?;
     let f = &ns.scale_vector().ok_or("no frequency vector")?.re;
-    let sd = &ns.get("onoise_spectrum").ok_or("no output noise spectrum")?.re;
+    let sd = &ns
+        .get("onoise_spectrum")
+        .ok_or_else(|| {
+            let names: Vec<&str> = ns.vectors.iter().map(|v| v.name.as_str()).collect();
+            format!("no output noise spectrum (the {} result has {})", res.backend, names.join(", "))
+        })?
+        .re;
     // Per segment the mean of S² times the integral of |H|² over it (`h(f0, f1)`), exact for
     // a filter oscillating faster than the frequency points.
     let integrate = |h: &dyn Fn(f64, f64) -> f64| -> f64 {
@@ -461,5 +467,51 @@ mod tests {
         // A 3.3 V supply resets FD high enough again.
         let m = characterize(&x, &pc, 0, &p.tech, &Testbench { vdd: 3.3, ..bench }, "", &SimOptions::default()).unwrap();
         assert!(m.pds[0].lag_e.unwrap() < 0.05 * INJECT_ELECTRONS && !m.summary().contains("warning"), "{}", m.summary());
+    }
+
+    /// The demo pixel's devices with the SkyWater SKY130 models (BSIM4, through ngspice or the
+    /// built-in engine): needs an installed PDK (`PDK_ROOT=... cargo test -- --ignored sky130`).
+    #[test]
+    #[ignore]
+    fn sky130_models() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../pdks/sky130A.toml");
+        let pdk = ics_core::pdk::load(&root).expect("sky130A.toml");
+        let (p, x, pc) = aps4t();
+        // The generic layout's photodiode and wire capacitance, the PDK's models.
+        let bench = Testbench::for_tech(&x, &p.tech);
+        let opts = SimOptions { backend: ics_core::Backend::Auto, ..Default::default() };
+        let m = characterize(&x, &pc, 0, &pdk.tech, &bench, "tt", &opts).unwrap();
+        eprintln!("{}", m.summary());
+        assert!(m.deck.contains("sky130_fd_pr__nfet_01v8"), "{}", m.deck);
+        assert!(m.c_fd > 0.3e-15 && m.c_fd < 10e-15, "{}", m.summary());
+        assert!(m.sf_gain > 0.5 && m.sf_gain < 1.0, "{}", m.summary());
+        // The layout sets the capacitances: as with the level-1 models, within a few per cent.
+        assert!((m.c_fd - 1.5e-15).abs() < 0.15e-15, "{}", m.summary());
+        // The SKY130 models have flicker noise: several electrons, far above the white noise.
+        assert!(m.noise.readout_cds_e > 1.0, "{}", m.summary());
+        // A 1.8 V transfer gate of a logic process (no boosted or tuned TX) leaves some charge,
+        // the full well is that of the storage capacitance.
+        let pd = &m.pds[0];
+        assert!(pd.lag_e.unwrap() < 0.5 * INJECT_ELECTRONS && pd.saturated && pd.full_well_e > 20_000.0, "{}", m.summary());
+    }
+
+    /// The built-in BSIM4 against ngspice on the same SKY130 pixel decks.
+    #[test]
+    #[ignore]
+    fn sky130_builtin_matches_ngspice() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../pdks/sky130A.toml");
+        let pdk = ics_core::pdk::load(&root).expect("sky130A.toml");
+        let (p, x, pc) = aps4t();
+        let bench = Testbench::for_tech(&x, &p.tech);
+        let run = |backend| {
+            let opts = SimOptions { backend, ..Default::default() };
+            characterize(&x, &pc, 0, &pdk.tech, &bench, "tt", &opts).unwrap()
+        };
+        let (b, n) = (run(ics_core::Backend::Builtin), run(ics_core::Backend::Ngspice));
+        eprintln!("built-in:\n{}ngspice:\n{}", b.summary(), n.summary());
+        let close = |a: f64, c: f64, tol: f64| (a - c).abs() <= tol * c.abs().max(1e-30);
+        assert!(close(b.c_fd, n.c_fd, 0.03) && close(b.sf_gain, n.sf_gain, 0.02), "{} vs {}", b.summary(), n.summary());
+        assert!(close(b.v_fd_reset, n.v_fd_reset, 0.02), "{} vs {}", b.summary(), n.summary());
+        assert!(close(b.pds[0].full_well_e, n.pds[0].full_well_e, 0.05), "{} vs {}", b.summary(), n.summary());
     }
 }

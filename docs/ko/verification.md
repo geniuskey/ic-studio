@@ -182,6 +182,12 @@ pinned로 모델링합니다. 전하는 저장 용량(`cap_area` × 면적 + `ca
 - **Full well**: FD를 리셋에 묶어 두고, 1.5 µs 안에 비울 수 있는 속도의 세 배로 빛을 넣어 포토다이오드를
   채웁니다. FWC = C × (리셋 − 포화 전압). 끝에서도 계속 움직이면 `not yet saturated`로 알립니다.
 
+PDK가 있으면 같은 특성 추출이 파운드리 모델로 실행됩니다. 데모 픽셀 소자를 SkyWater SKY130 모델(BSIM4)로
+돌리면 내장 엔진과 ngspice가 모든 수치(FD 용량, 이득, 노이즈, lag, full well)에서 1~3% 이내로 일치합니다.
+모델에 플리커 노이즈가 있어 0.42 x 0.35 µm 팔로워의 CDS 노이즈는 약 5 e⁻ rms이고, 로직 공정의 1.8 V 전송
+게이트는 전자 500개 중 약 100개를 남깁니다. 테스트 `sky130_models`와 `sky130_builtin_matches_ngspice`가
+설치된 PDK로 이를 실행합니다(`PDK_ROOT=... cargo test -p ics-sim -- --ignored sky130`).
+
 자체 문턱 전압 임플란트가 있는 전송 게이트는, 기술 파일이 그 임플란트를 마커 레이어로 가진
 소자(`[[device]]`의 `layers`)를 정의하면 다른 트랜지스터와 마찬가지로 그 PDK 모델을 씁니다.
 
