@@ -134,7 +134,8 @@ mod tests {
 
     #[test]
     fn paths_must_stay_inside_the_roots() {
-        let dir = ics_core::tmp::private_dir("ics-confine").unwrap();
+        // Canonical, so a symlinked temp folder (macOS /var) cannot hide a `..` escape.
+        let dir = ics_core::tmp::private_dir("ics-confine").unwrap().canonicalize().unwrap();
         let root = dir.join("work");
         std::fs::create_dir_all(&root).unwrap();
         let r = Roots::new(root.clone(), vec![root.clone()]);
