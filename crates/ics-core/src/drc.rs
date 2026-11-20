@@ -450,6 +450,13 @@ pub struct Deck {
 }
 
 impl Deck {
+    /// The technology layers (of `n`) some rule reads, directly or through a derived layer.
+    /// Shapes on the others are never checked.
+    pub fn checked_layers(&self, n: usize) -> std::collections::BTreeSet<usize> {
+        let used = used_layers(self, n, 0..self.rules.len());
+        (0..n.min(used.len())).filter(|&l| used[l]).collect()
+    }
+
     /// The farthest a check looks from a piece of geometry (dbu): the largest rule distance,
     /// minimum area side and derived-layer sizing. Live DRC reads this far around an edit.
     pub fn reach(&self, tech: &Tech) -> i64 {
@@ -2426,6 +2433,18 @@ mod tests {
         assert!(errs[1].message.contains("bad number"));
         assert!(errs[2].message.contains("unknown rule kind"));
         assert!(errs[3].to_string().starts_with("line 4:"));
+    }
+
+    /// Layers read by a rule, directly or through a derived layer, are checked; others not.
+    #[test]
+    fn checked_layers_follow_rules_and_derived_layers() {
+        let t = tech();
+        let (m1, m2, poly) = (t.layer_index("metal1").unwrap(), t.layer_index("metal2").unwrap(), t.poly().unwrap());
+        let deck = parse_deck("gate = poly and active\nwidth gate 0.18\nwidth metal1 0.23\n", &t).unwrap();
+        let c = deck.checked_layers(t.layers.len());
+        assert!(c.contains(&m1) && c.contains(&poly) && c.contains(&t.diffusion().unwrap()), "{c:?}");
+        assert!(!c.contains(&m2));
+        assert!(parse_deck("", &t).unwrap().checked_layers(t.layers.len()).is_empty());
     }
 
     #[test]

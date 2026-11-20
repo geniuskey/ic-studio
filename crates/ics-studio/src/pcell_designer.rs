@@ -7,11 +7,13 @@
 //! explains mistakes. Saving stores the master cell; it is then placed from the layout
 //! editor's instance tool like the built-in PCells.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::mpsc::{Receiver, channel};
 
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
 use ics_core::drc;
 use ics_core::layout::Geometry;
+use ics_core::layout_diff::{self, LayoutDiff};
 use ics_core::pcell::PCell;
 use ics_core::pcell_design::{Axis, CornerRun, Finding, Level, Op, Param, ParamKind, Side, Target, Template, Values};
 use ics_core::{CellRef, IRect, Layout, Project, Tech};
@@ -22,7 +24,9 @@ use crate::theme::{self, Palette};
 /// What the designer asks the app to do.
 pub enum PCellAction {
     /// Store the template as master cell `lib/<name>` and refresh its placed variants.
-    Publish { lib: String, def: Template },
+    Publish { lib: String, def: Box<Template> },
+    /// Set the technology's device layer roles: the gate layer and the diffusion layers.
+    SetRoles { poly: String, diffusion: Vec<String> },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -79,6 +83,58 @@ pub struct PCellDesigner {
     job: Option<CornerJob>,
     status: Option<(bool, String)>,
     show_source_on_preview: bool,
+    /// Layer filter of the pictures.
+    layers: LayerView,
+    /// Shapes per layer in the drawing and in the preview, for the layer panel.
+    layer_counts: Vec<LayerCount>,
+    /// The drawing as loaded (a reopened master: its layout at the defaults when loaded),
+    /// which generation at the defaults must reproduce.
+    reference: Option<Layout>,
+    /// Generation at the defaults against `reference`, per layer.
+    repro: Option<LayoutDiff>,
+    /// Outline the differences on the drawing.
+    show_diff: bool,
+    /// Technology layers the DRC deck checks, keyed by a hash of the deck and the layer count
+    /// (`Err`: the deck does not parse).
+    deck_cover: Option<(u64, Result<BTreeSet<usize>, String>)>,
+    /// An action raised inside a panel, returned from the next `ui`.
+    pending: Option<PCellAction>,
+}
+
+/// Which layers the pictures draw: a drawing imported with dozens of layers is checked one
+/// layer at a time.
+#[derive(Default)]
+struct LayerView {
+    hidden: BTreeSet<usize>,
+    /// Layer looked at alone; the others are dimmed (or hidden).
+    solo: Option<usize>,
+    /// Keep the other layers as a faint outline while one is soloed.
+    hide_others: bool,
+}
+
+impl LayerView {
+    /// Drawing opacity of `layer`; `None` skips it.
+    fn alpha(&self, layer: usize) -> Option<f32> {
+        match self.solo {
+            Some(s) if s == layer => Some(1.0),
+            Some(_) if self.hide_others => None,
+            Some(_) => Some(0.12),
+            None if self.hidden.contains(&layer) => None,
+            None => Some(1.0),
+        }
+    }
+
+    fn filtered(&self) -> bool {
+        self.solo.is_some() || !self.hidden.is_empty()
+    }
+}
+
+/// Shapes on one layer in the (flattened) drawing and in the generated preview.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct LayerCount {
+    pub layer: usize,
+    pub source: usize,
+    pub generated: usize,
 }
 
 impl Default for PCellDesigner {
@@ -105,6 +161,13 @@ impl Default for PCellDesigner {
             job: None,
             status: None,
             show_source_on_preview: false,
+            layers: LayerView::default(),
+            layer_counts: vec![],
+            reference: None,
+            repro: None,
+            show_diff: true,
+            deck_cover: None,
+            pending: None,
         }
     }
 }
@@ -161,6 +224,10 @@ impl PCellDesigner {
             }
         };
         self.baseline = matches!(c.pcell, Some(PCell::Template { .. })).then(|| tpl.clone());
+        self.reference = match &c.layout {
+            Some(l) if c.pcell.is_none() => Some(l.clone()),
+            _ => tpl.generate(&project.tech, &[]).ok(),
+        };
         self.preview = tpl.defaults();
         self.tpl = Some(tpl);
         self.source = Some(r.clone());
@@ -169,6 +236,7 @@ impl PCellDesigner {
         self.sel = Sel::None;
         self.pick = None;
         self.corners = None;
+        self.layers = LayerView::default();
         self.status = Some((true, format!("Loaded {r}")));
         self.touch();
     }
@@ -199,11 +267,69 @@ impl PCellDesigner {
         }
     }
 
-    fn refresh(&mut self, tech: &Tech) {
+    fn refresh(&mut self, project: &Project) {
+        let tech = &project.tech;
+        if self.tpl.is_none() {
+            return;
+        }
+        if update_deck_cover(&mut self.deck_cover, tech) {
+            self.lint_gen = 0;
+        }
         let Some(t) = &self.tpl else { return };
         if self.lint_gen != self.gen_ {
             self.findings = t.lint(tech);
             self.lint_gen = self.gen_;
+            self.repro = match (&self.reference, t.generate(tech, &[])) {
+                (Some(r), Ok(g)) => Some(layout_diff::diff(r, project, &g, project)),
+                _ => None,
+            };
+            if let Some((_, Ok(checked))) = &self.deck_cover {
+                let open: Vec<String> = drawn_layers(t, tech)
+                    .into_iter()
+                    .filter(|l| !checked.contains(l))
+                    .map(|l| tech.layer(l).map_or_else(|| format!("layer #{l}"), |d| d.name.clone()))
+                    .collect();
+                if !open.is_empty() {
+                    self.findings.push(Finding {
+                        level: Level::Warning,
+                        target: Target::Template,
+                        message: format!(
+                            "No DRC rule of the technology's deck reads {} of the drawing's layers ({}): a clean corner \
+                             check says nothing about them",
+                            open.len(),
+                            open.join(", ")
+                        ),
+                    });
+                }
+            }
+            if let Some(d) = &self.repro {
+                let um2 = |a: i128| a as f64 / (tech.dbu_per_um.max(1) as f64).powi(2);
+                for l in &d.layers {
+                    let name = tech.layer(l.layer).map_or_else(|| format!("layer #{}", l.layer), |d| d.name.clone());
+                    self.findings.push(Finding {
+                        level: Level::Warning,
+                        target: Target::Template,
+                        message: format!(
+                            "At the defaults, {name} differs from the drawing: {} µm² extra, {} µm² missing",
+                            num(um2(l.added.area())),
+                            num(um2(l.removed.area()))
+                        ),
+                    });
+                }
+                if !d.placed.is_empty() || !d.unplaced.is_empty() || !d.moved.is_empty() {
+                    self.findings.push(Finding {
+                        level: Level::Warning,
+                        target: Target::Template,
+                        message: format!(
+                            "At the defaults, placed cells differ from the drawing: {} new, {} gone, {} moved",
+                            d.placed.len(),
+                            d.unplaced.len(),
+                            d.moved.len()
+                        ),
+                    });
+                }
+                self.findings.sort_by_key(|f| f.level);
+            }
             // Drop preview values of removed parameters, add new ones at their default.
             let defaults = t.defaults();
             self.preview.retain(|k, _| defaults.contains_key(k));
@@ -216,7 +342,52 @@ impl PCellDesigner {
             let given: Vec<(String, f64)> = self.preview.iter().map(|(k, v)| (k.clone(), *v)).collect();
             self.preview_out = t.generate(tech, &given);
             self.preview_key = Some(key);
+            self.layer_counts = count_layers(&drawing(t, tech), self.preview_out.as_ref().ok(), project);
         }
+    }
+
+    /// Shapes per layer of the drawing and the preview, in layer order.
+    pub fn layer_counts(&self) -> &[LayerCount] {
+        &self.layer_counts
+    }
+
+    /// Whether the technology's DRC deck checks `layer` (`None`: unknown).
+    fn drc_checks(&self, layer: usize) -> Option<bool> {
+        match &self.deck_cover {
+            Some((_, Ok(c))) => Some(c.contains(&layer)),
+            _ => None,
+        }
+    }
+
+    /// Layers where generation at the defaults differs from the drawing as loaded (`None`
+    /// before a comparison could be made).
+    pub fn differing_layers(&self) -> Option<Vec<usize>> {
+        self.repro.as_ref().map(|d| d.layers.iter().map(|l| l.layer).collect())
+    }
+
+    /// The current lint and check findings, as the Issues tab lists them.
+    pub fn findings(&self) -> &[Finding] {
+        &self.findings
+    }
+
+    /// The layer shown alone, if any.
+    pub fn solo_layer(&self) -> Option<usize> {
+        self.layers.solo
+    }
+
+    /// Look at the next (`step` 1) or previous (-1) layer of the drawing alone.
+    fn step_layer(&mut self, step: isize) {
+        let list: Vec<usize> = self.layer_counts.iter().map(|c| c.layer).collect();
+        if list.is_empty() {
+            return;
+        }
+        let n = list.len() as isize;
+        let at = match self.layers.solo.and_then(|s| list.iter().position(|&l| l == s)) {
+            Some(i) => (i as isize + step).rem_euclid(n),
+            None if step >= 0 => 0,
+            None => n - 1,
+        };
+        self.layers.solo = Some(list[at as usize]);
     }
 
     fn poll(&mut self) {
@@ -273,8 +444,8 @@ impl PCellDesigner {
         if self.job.is_some() {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
         }
-        self.refresh(tech);
-        let mut action = None;
+        self.refresh(project);
+        let mut action = self.pending.take();
         egui::Panel::top("pd_toolbar")
             .frame(egui::Frame::new().fill(pal.bg_sidebar).inner_margin(egui::Margin::symmetric(10, 6)))
             .show(ui, |ui| action = self.toolbar(ui, project, active, &pal));
@@ -291,8 +462,29 @@ impl PCellDesigner {
                 .size_range(240.0..=460.0)
                 .frame(egui::Frame::new().fill(pal.bg_sidebar).inner_margin(8)),
             ui,
-            |ui| self.side_list(ui, tech, &pal),
+            |ui| self.side_list(ui, project, &pal),
         );
+        if self.tab == Tab::Design {
+            theme::aside(
+                egui::Panel::right("pd_layers")
+                    .resizable(true)
+                    .default_size(260.0)
+                    .size_range(180.0..=420.0)
+                    .frame(egui::Frame::new().fill(pal.bg_sidebar).inner_margin(8)),
+                ui,
+                |ui| self.layer_panel(ui, tech, &pal),
+            );
+            // [ and ] step through the layers while no text field has the keyboard.
+            if ui.memory(|m| m.focused().is_none()) {
+                let (prev, next) = ui.input(|i| (i.key_pressed(egui::Key::OpenBracket), i.key_pressed(egui::Key::CloseBracket)));
+                if prev {
+                    self.step_layer(-1);
+                }
+                if next {
+                    self.step_layer(1);
+                }
+            }
+        }
         egui::CentralPanel::default().frame(egui::Frame::new().fill(pal.bg_panel).inner_margin(12)).show(ui, |ui| {
             ui.horizontal(|ui| {
                 let issues = self.findings.iter().filter(|f| f.level != Level::Info).count();
@@ -408,7 +600,7 @@ impl PCellDesigner {
                     .on_disabled_hover_text("Fix the errors on the Issues tab first")
                     .clicked()
                 {
-                    action = Some(PCellAction::Publish { lib: self.lib.clone(), def: t.clone() });
+                    action = Some(PCellAction::Publish { lib: self.lib.clone(), def: Box::new(t.clone()) });
                     self.baseline = Some(t.clone());
                 }
                 let lb = ui.label("in");
@@ -438,7 +630,8 @@ impl PCellDesigner {
     // -----------------------------------------------------------------------------------------
     // Left list: name, parameters, operations, suggestions
 
-    fn side_list(&mut self, ui: &mut egui::Ui, tech: &Tech, pal: &Palette) {
+    fn side_list(&mut self, ui: &mut egui::Ui, project: &Project, pal: &Palette) {
+        let tech = &project.tech;
         egui::ScrollArea::vertical().id_salt("pd_side").auto_shrink([false, false]).show(ui, |ui| {
             let Some(t) = self.tpl.as_mut() else { return };
             theme::section(ui, "PCell");
@@ -602,6 +795,18 @@ impl PCellDesigner {
             ui.label(RichText::new("Read the drawing and add the usual parameters of a device.").small().color(pal.text_weak));
             let mut sug: Option<(&str, Result<String, String>)> = None;
             let before = t.clone();
+            if !t.source.instances.is_empty()
+                && ui
+                    .button("Flatten instances")
+                    .on_hover_text(
+                        "Turn the placed cells of the drawing (via cells, say) into shapes, so stretches can pick their \
+                         layers and their cuts can become contact fills. Run it before Contacts to fills.",
+                    )
+                    .clicked()
+            {
+                let n = t.flatten_instances(project);
+                sug = Some(("flatten", Ok(format!("{n} instance(s) flattened"))));
+            }
             if ui
                 .button("Contacts to fills")
                 .on_hover_text("Replace every cluster of via cuts by a contact fill, so stretching re-arrays the cuts")
@@ -625,6 +830,44 @@ impl PCellDesigner {
             }
             if ui.button("Length stretch (l)").on_hover_text("A vertical line through the first gate, driven by l").clicked() {
                 sug = Some(("length", t.suggest_length(tech)));
+            }
+            // The gate and diffusion layers the MOS suggestions look for (technology roles).
+            ui.label(RichText::new("Device layers (technology roles)").small().color(pal.text_weak));
+            let present: Vec<usize> = self.layer_counts.iter().map(|c| c.layer).collect();
+            let lname = |l: usize| tech.layer(l).map_or_else(|| format!("layer #{l}"), |d| d.name.clone());
+            let (poly, diff) = (tech.roles.poly.clone(), tech.roles.diffusion.first().cloned().unwrap_or_default());
+            let mut roles: Option<(String, String)> = None;
+            ui.horizontal_wrapped(|ui| {
+                for (label, cur, id, gate) in [("Gate", &poly, "pd_role_poly", true), ("Diffusion", &diff, "pd_role_diff", false)]
+                {
+                    let lb = ui.label(RichText::new(label).small());
+                    let missing = tech.layer_index(cur).is_none_or(|l| !present.contains(&l));
+                    let text = if cur.is_empty() { "(none)".to_string() } else { cur.clone() };
+                    egui::ComboBox::from_id_salt(id)
+                        .selected_text(if missing { RichText::new(text).color(pal.warning) } else { RichText::new(text) })
+                        .show_ui(ui, |ui| {
+                            for &l in &present {
+                                let n = lname(l);
+                                if ui.selectable_label(n == *cur, n.as_str()).clicked() && n != *cur {
+                                    roles = Some(if gate { (n, diff.clone()) } else { (poly.clone(), n) });
+                                }
+                            }
+                        })
+                        .response
+                        .labelled_by(lb.id)
+                        .on_hover_text(if gate {
+                            "The technology's gate (poly) role: gates are its shapes over diffusion. Changing it changes the \
+                             technology (extraction reads it too)."
+                        } else {
+                            "The technology's first diffusion role. Changing it changes the technology (extraction reads it too)."
+                        });
+                }
+            });
+            if let Some((p, d)) = roles {
+                let mut diffusion = tech.roles.diffusion.clone();
+                diffusion.retain(|x| *x != d);
+                diffusion.insert(0, d);
+                self.pending = Some(PCellAction::SetRoles { poly: p, diffusion });
             }
             if let Some((_, r)) = sug {
                 match r {
@@ -650,6 +893,193 @@ impl PCellDesigner {
     }
 
     // -----------------------------------------------------------------------------------------
+    // Layer panel
+
+    /// The layers of the drawing: visibility, one layer alone, and shape counts of the drawing
+    /// against the preview, so an imported cell is checked layer by layer.
+    fn layer_panel(&mut self, ui: &mut egui::Ui, tech: &Tech, pal: &Palette) {
+        if self.tpl.is_none() {
+            return;
+        }
+        theme::section(ui, "Layers");
+        let counts = self.layer_counts.clone();
+        let mut step = 0;
+        let lv = &mut self.layers;
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Prev").on_hover_text("Show the previous layer alone ( [ )").clicked() {
+                step = -1;
+            }
+            if ui.button("Next").on_hover_text("Show the next layer alone ( ] )").clicked() {
+                step = 1;
+            }
+            if ui.button("All").on_hover_text("Show every layer").clicked() {
+                lv.solo = None;
+                lv.hidden.clear();
+            }
+            if ui.button("None").on_hover_text("Hide every layer; then tick the ones to look at").clicked() {
+                lv.solo = None;
+                lv.hidden = counts.iter().map(|c| c.layer).collect();
+            }
+        });
+        if step != 0 {
+            self.step_layer(step);
+        }
+        let drawn = self.tpl.as_ref().map(|t| drawn_layers(t, tech)).unwrap_or_default();
+        let unchecked: BTreeSet<usize> = drawn.into_iter().filter(|&l| self.drc_checks(l) == Some(false)).collect();
+        let Some(t) = &self.tpl else { return };
+        let lv = &mut self.layers;
+        ui.checkbox(&mut lv.hide_others, "Hide the others")
+            .on_hover_text("With one layer alone, leave the other layers out instead of dimming them");
+        // Reproduction: generation at the defaults against the drawing as loaded.
+        let differ: BTreeMap<usize, (i128, i128)> = self
+            .repro
+            .as_ref()
+            .map(|d| d.layers.iter().map(|l| (l.layer, (l.added.area(), l.removed.area()))).collect())
+            .unwrap_or_default();
+        match &self.repro {
+            None => {
+                ui.label(RichText::new("Cannot compare with the drawing (generation fails)").small().color(pal.danger));
+            }
+            Some(_) if differ.is_empty() => {
+                ui.label(RichText::new("The defaults reproduce the drawing on every layer").small().color(pal.ok)).on_hover_text(
+                    "Generated at the default values, the cell is the drawing as loaded, layer by layer (XOR is empty)",
+                );
+            }
+            Some(_) => {
+                ui.label(
+                    RichText::new(format!("{} layer(s) differ from the drawing at the defaults", differ.len()))
+                        .small()
+                        .color(pal.danger),
+                )
+                .on_hover_text("Generated at the default values, these layers are not the drawing as loaded. See Issues.");
+                ui.checkbox(&mut self.show_diff, "Mark the differences")
+                    .on_hover_text("Outline on the drawing what generation adds (solid) and leaves out (dashed)");
+            }
+        }
+        let shown = counts.iter().filter(|c| lv.alpha(c.layer).is_some_and(|a| a >= 1.0)).count();
+        let lost = counts.iter().filter(|c| (c.source == 0) != (c.generated == 0)).count();
+        let mut note = format!("{} layer(s), {shown} shown; shapes: drawing / preview", counts.len());
+        if lost > 0 {
+            note.push_str(&format!(". {lost} layer(s) appear or vanish in the preview"));
+        }
+        if !t.fixed.is_empty() {
+            note.push_str(&format!(". {} fixed", t.fixed.len()));
+        }
+        ui.label(RichText::new(note).small().color(pal.text_weak));
+        if !unchecked.is_empty() {
+            ui.label(
+                RichText::new(format!("{} layer(s) no DRC rule checks (name in italics)", unchecked.len()))
+                    .small()
+                    .color(pal.warning),
+            )
+            .on_hover_text(
+                "The technology's DRC deck reads none of these layers, so the corner check cannot catch errors on them. \
+                     Check them by eye, layer by layer, or add rules in the Rule Designer.",
+            );
+        }
+        if let Some(s) = lv.solo {
+            let name = tech.layer(s).map_or_else(|| format!("layer {s}"), |d| d.name.clone());
+            ui.label(RichText::new(format!("Alone: {name}")).strong().color(pal.accent));
+        }
+        ui.add_space(4.0);
+        let um2 = |a: i128| num(a as f64 / (tech.dbu_per_um.max(1) as f64).powi(2));
+        let mut toggle_fixed = None;
+        egui::ScrollArea::vertical().id_salt("pd_layer_list").auto_shrink([false, false]).show(ui, |ui| {
+            for c in &counts {
+                let d = tech.layer(c.layer);
+                let name = d.map_or_else(|| format!("layer {}", c.layer), |d| d.name.clone());
+                let col = d.map_or(pal.text_weak, |d| layer_color(d, pal.dark));
+                let diff = differ.get(&c.layer);
+                let fixed = t.fixed.contains(&c.layer);
+                ui.horizontal(|ui| {
+                    let (r, p) = ui.allocate_painter(Vec2::new(12.0, 12.0), Sense::hover());
+                    p.rect_filled(r.rect, 2.0, col.gamma_multiply(0.5));
+                    p.rect_stroke(r.rect, 2.0, Stroke::new(1.0, col), StrokeKind::Inside);
+                    // Reproduction mark: green when the defaults give the drawing, red when not.
+                    let (r, p) = ui.allocate_painter(Vec2::new(8.0, 12.0), Sense::hover());
+                    let mark = match (&self.repro, diff) {
+                        (None, _) => pal.text_weak.gamma_multiply(0.4),
+                        (Some(_), None) => pal.ok,
+                        (Some(_), Some(_)) => pal.danger,
+                    };
+                    p.circle_filled(r.rect.center(), 3.5, mark);
+                    let mut on = !lv.hidden.contains(&c.layer);
+                    let no_drc = unchecked.contains(&c.layer);
+                    let label = if no_drc { RichText::new(name.as_str()).italics() } else { RichText::new(name.as_str()) };
+                    let resp = ui.checkbox(&mut on, label);
+                    if resp.changed() {
+                        if on {
+                            lv.hidden.remove(&c.layer);
+                        } else {
+                            lv.hidden.insert(c.layer);
+                        }
+                    }
+                    let mut tip = match d {
+                        Some(d) => format!("GDS {}/{}", d.gds_layer, d.gds_datatype),
+                        None => "Not a layer of the technology".into(),
+                    };
+                    tip.push_str(&format!("\n{} shape(s) drawn, {} in the preview", c.source, c.generated));
+                    match diff {
+                        Some((add, rem)) => tip.push_str(&format!(
+                            "\nAt the defaults: {} µm² extra, {} µm² missing against the drawing",
+                            um2(*add),
+                            um2(*rem)
+                        )),
+                        None if self.repro.is_some() => tip.push_str("\nAt the defaults: same as the drawing"),
+                        None => {}
+                    }
+                    let ops = ops_on_layer(t, c.layer, tech);
+                    if !ops.is_empty() {
+                        tip.push_str(&format!("\nOperations: {}", ops.join(", ")));
+                    }
+                    if fixed {
+                        tip.push_str("\nFixed: operations on all layers leave it alone");
+                    }
+                    if no_drc {
+                        tip.push_str("\nNo rule of the DRC deck reads this layer");
+                    }
+                    resp.on_hover_text(tip);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let alone = lv.solo == Some(c.layer);
+                        if ui.selectable_label(alone, "Only").on_hover_text(format!("Show {name} alone")).clicked() {
+                            lv.solo = if alone { None } else { Some(c.layer) };
+                        }
+                        if ui
+                            .selectable_label(fixed, "Fix")
+                            .on_hover_text(format!(
+                                "Fixed: stretches, repeats and conditions on all layers leave {name} as drawn (markers, IDs, \
+                                 a boundary drawn once). An operation that lists {name} still acts on it."
+                            ))
+                            .clicked()
+                        {
+                            toggle_fixed = Some(c.layer);
+                        }
+                        let text = format!("{} / {}", c.source, c.generated);
+                        let tc = if (c.source == 0) != (c.generated == 0) { pal.danger } else { pal.text_weak };
+                        ui.label(RichText::new(text).small().monospace().color(tc))
+                            .on_hover_text("Shapes on the layer in the drawing / in the cell generated at the preview values");
+                    });
+                });
+            }
+        });
+        if let Some(l) = toggle_fixed {
+            self.set_fixed(l, !self.tpl.as_ref().is_some_and(|t| t.fixed.contains(&l)));
+        }
+    }
+
+    /// Mark layer `l` fixed (left alone by operations on all layers) or not.
+    pub fn set_fixed(&mut self, l: usize, on: bool) {
+        self.checkpoint();
+        let Some(t) = self.tpl.as_mut() else { return };
+        t.fixed.retain(|&x| x != l);
+        if on {
+            t.fixed.push(l);
+            t.fixed.sort_unstable();
+        }
+        self.touch();
+    }
+
+    // -----------------------------------------------------------------------------------------
     // Design tab
 
     fn design(&mut self, ui: &mut egui::Ui, project: &Project, pal: &Palette) {
@@ -669,7 +1099,7 @@ impl PCellDesigner {
         ui.add_space(6.0);
         let w = ui.available_width();
         let h = (ui.available_height() - 10.0).clamp(320.0, 620.0);
-        let side = w >= 600.0;
+        let side = w >= 500.0;
         let cw = if side { (w - 12.0) / 2.0 } else { w };
         let draw = |ui: &mut egui::Ui, me: &mut Self| {
             me.source_canvas(ui, Vec2::new(cw, h), project, pal);
@@ -929,13 +1359,7 @@ impl PCellDesigner {
     fn source_canvas(&mut self, ui: &mut egui::Ui, size: Vec2, project: &Project, pal: &Palette) {
         let tech = &project.tech;
         let Some(t) = &self.tpl else { return };
-        let mut lay = t.source.clone();
-        // Show the cuts the contact fills make in the drawing.
-        let mut fills_only = t.clone();
-        fills_only.ops.retain(|o| matches!(o, Op::ContactFill { .. }));
-        if let Ok(g) = fills_only.generate(tech, &[]) {
-            lay = g;
-        }
+        let lay = drawing(t, tech);
         let bb = bbox_all(&lay, project).unwrap_or(IRect::new(0, 0, 1000, 1000));
         let sel_op = match self.sel {
             Sel::Op(k) => Some(k),
@@ -945,7 +1369,28 @@ impl PCellDesigner {
         p.rect_filled(resp.rect, 6.0, pal.bg_canvas);
         p.rect_stroke(resp.rect, 6.0, Stroke::new(1.0, pal.border), StrokeKind::Inside);
         let fit = Fit::new(resp.rect.shrink(28.0), grow(bb, 0.06));
-        draw_layout(&p, &fit, &lay, project, pal, 1.0);
+        draw_layout(&p, &fit, &lay, project, pal, 1.0, &self.layers);
+        // Where generation at the defaults is not the drawing: extra (solid), missing (dashed).
+        if let Some(d) = self.repro.as_ref().filter(|_| self.show_diff) {
+            for l in d.layers.iter().filter(|l| self.layers.alpha(l.layer).is_some()) {
+                for (region, extra) in [(&l.added, true), (&l.removed, false)] {
+                    for ring in region.to_polygons() {
+                        let mut pts: Vec<Pos2> = ring.iter().map(|&(x, y)| fit.pt(x, y)).collect();
+                        let r = Rect::from_points(&pts);
+                        if r.width().max(r.height()) < 6.0 {
+                            // Too small to see: ring it.
+                            p.circle_stroke(r.center(), 7.0, Stroke::new(1.5, pal.danger));
+                        }
+                        if extra {
+                            p.add(egui::Shape::closed_line(pts, Stroke::new(2.0, pal.danger)));
+                        } else {
+                            pts.push(pts[0]);
+                            p.extend(egui::Shape::dashed_line(&pts, Stroke::new(2.0, pal.danger), 5.0, 3.0));
+                        }
+                    }
+                }
+            }
+        }
         let accent = pal.accent;
         for (k, op) in t.ops.iter().enumerate() {
             let on = sel_op == Some(k);
@@ -1027,7 +1472,7 @@ impl PCellDesigner {
         p.text(
             resp.rect.left_top() + Vec2::new(8.0, 6.0),
             Align2::LEFT_TOP,
-            "Drawing and operations",
+            format!("Drawing and operations{}", self.filter_note(tech)),
             FontId::proportional(12.0),
             pal.text_weak,
         );
@@ -1052,7 +1497,7 @@ impl PCellDesigner {
             }
             return;
         };
-        let edges = edge_coords(&lay);
+        let edges = edge_coords(&lay, &self.layers);
         let snap_to = |axis: Axis, v: i64, fit: &Fit| -> i64 {
             let tol = (6.0 / fit.s) as i64;
             let list = match axis {
@@ -1141,6 +1586,15 @@ impl PCellDesigner {
         }
     }
 
+    /// Caption suffix naming the layer filter of the pictures.
+    fn filter_note(&self, tech: &Tech) -> String {
+        match self.layers.solo {
+            Some(s) => format!("  ·  {} alone", tech.layer(s).map_or("?", |d| d.name.as_str())),
+            None if self.layers.filtered() => format!("  ·  {} layer(s) hidden", self.layers.hidden.len()),
+            None => String::new(),
+        }
+    }
+
     /// Select the operation drawn nearest to a click.
     fn select_at(&mut self, fit: &Fit, pos: Pos2) {
         let Some(t) = &self.tpl else { return };
@@ -1179,7 +1633,10 @@ impl PCellDesigner {
                 let fit = Fit::new(resp.rect.shrink(28.0), grow(all, 0.06));
                 if let (Some(t), true) = (&self.tpl, self.show_source_on_preview) {
                     let st = Stroke::new(1.0, pal.text_weak.gamma_multiply(0.7));
-                    for s in ics_core::hier::flatten(&t.source, project, 16) {
+                    for s in ics_core::hier::flatten(&t.source, project, 16)
+                        .into_iter()
+                        .filter(|s| self.layers.alpha(s.layer).is_some())
+                    {
                         match &s.geom {
                             Geometry::Polygon { points } => {
                                 p.add(egui::Shape::closed_line(points.iter().map(|&(x, y)| fit.pt(x, y)).collect(), st));
@@ -1193,7 +1650,7 @@ impl PCellDesigner {
                         }
                     }
                 }
-                draw_layout(&p, &fit, lay, project, pal, 1.0);
+                draw_layout(&p, &fit, lay, project, pal, 1.0, &self.layers);
                 let r = fit.r(&bb);
                 draw_dim(
                     &p,
@@ -1213,7 +1670,7 @@ impl PCellDesigner {
                 p.text(
                     resp.rect.left_top() + Vec2::new(8.0, 6.0),
                     Align2::LEFT_TOP,
-                    format!("Generated: {name}"),
+                    format!("Generated: {name}{}", self.filter_note(tech)),
                     FontId::proportional(12.0),
                     pal.text_weak,
                 );
@@ -1238,6 +1695,32 @@ impl PCellDesigner {
             )
             .color(pal.text),
         );
+        if let Some(t) = &self.tpl {
+            match &self.deck_cover {
+                Some((_, Ok(checked))) => {
+                    let open: Vec<&str> = drawn_layers(t, tech)
+                        .into_iter()
+                        .filter(|l| !checked.contains(l))
+                        .map(|l| tech.layer(l).map_or("?", |d| d.name.as_str()))
+                        .collect();
+                    if !open.is_empty() {
+                        ui.label(
+                            RichText::new(format!(
+                                "No rule of the deck reads {} of the drawing's layers, so a clean result says nothing about \
+                                 them: {}",
+                                open.len(),
+                                open.join(", ")
+                            ))
+                            .color(pal.warning),
+                        );
+                    }
+                }
+                Some((_, Err(e))) => {
+                    ui.label(RichText::new(format!("The technology's DRC deck does not parse: {e}")).color(pal.danger));
+                }
+                None => {}
+            }
+        }
         ui.horizontal(|ui| {
             let busy = self.job.is_some();
             if ui.add_enabled(!busy, egui::Button::new(if busy { "Checking…" } else { "Run corner check" })).clicked() {
@@ -1304,7 +1787,7 @@ impl PCellDesigner {
         p.rect_filled(resp.rect, 6.0, pal.bg_canvas);
         let Some(bb) = bbox_all(&c.layout, project) else { return };
         let fit = Fit::new(resp.rect.shrink(20.0), grow(bb, 0.06));
-        draw_layout(&p, &fit, &c.layout, project, pal, 0.8);
+        draw_layout(&p, &fit, &c.layout, project, pal, 0.8, &LayerView::default());
         for v in &c.violations {
             let r = fit.r(&v.marker).expand(2.0);
             p.rect_stroke(r, 0.0, Stroke::new(2.0, pal.danger), StrokeKind::Outside);
@@ -1810,9 +2293,9 @@ fn bbox_all(l: &Layout, src: &Project) -> Option<IRect> {
 }
 
 /// Shape edges (x and y) for snapping picks.
-fn edge_coords(l: &Layout) -> (Vec<i64>, Vec<i64>) {
+fn edge_coords(l: &Layout, lv: &LayerView) -> (Vec<i64>, Vec<i64>) {
     let (mut xs, mut ys) = (vec![], vec![]);
-    for s in &l.shapes {
+    for s in l.shapes.iter().filter(|s| lv.alpha(s.layer).is_some_and(|a| a >= 1.0)) {
         let b = s.bbox();
         xs.extend([b.x0, b.x1, (b.x0 + b.x1) / 2]);
         ys.extend([b.y0, b.y1, (b.y0 + b.y1) / 2]);
@@ -1820,12 +2303,88 @@ fn edge_coords(l: &Layout) -> (Vec<i64>, Vec<i64>) {
     (xs, ys)
 }
 
-fn draw_layout(p: &egui::Painter, fit: &Fit, l: &Layout, src: &Project, pal: &Palette, alpha: f32) {
+/// Re-read which layers the technology's DRC deck checks when the deck changed.
+/// Returns whether it changed.
+fn update_deck_cover(cover: &mut Option<(u64, Result<BTreeSet<usize>, String>)>, tech: &Tech) -> bool {
+    use std::hash::{Hash, Hasher};
+    let text = tech.deck_text();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (&text, tech.layers.len()).hash(&mut h);
+    let key = h.finish();
+    if cover.as_ref().is_some_and(|(k, _)| *k == key) {
+        return false;
+    }
+    let found = match drc::parse_any(&text, tech) {
+        Ok(d) => Ok(d.deck.checked_layers(tech.layers.len())),
+        Err(e) => Err(e.first().map_or_else(String::new, |e| e.to_string())),
+    };
+    *cover = Some((key, found));
+    true
+}
+
+/// Layers with drawn geometry (not only labels) in the drawing, and the cut layers of its
+/// contact fills: the ones DRC should check.
+fn drawn_layers(t: &Template, tech: &Tech) -> BTreeSet<usize> {
+    let mut out: BTreeSet<usize> =
+        t.source.shapes.iter().filter(|s| !matches!(s.geom, Geometry::Label { .. })).map(|s| s.layer).collect();
+    for op in &t.ops {
+        if let Op::ContactFill { via, .. } = op
+            && let Some(cut) = tech.via(via).and_then(|v| tech.layer_index(&v.cut))
+        {
+            out.insert(cut);
+        }
+    }
+    out
+}
+
+/// The drawing as the left picture shows it: the source with the cuts its contact fills make.
+fn drawing(t: &Template, tech: &Tech) -> Layout {
+    let mut fills_only = t.clone();
+    fills_only.ops.retain(|o| matches!(o, Op::ContactFill { .. }));
+    fills_only.generate(tech, &[]).unwrap_or_else(|_| t.source.clone())
+}
+
+/// Shapes per layer of the flattened drawing and preview, in layer order.
+fn count_layers(source: &Layout, generated: Option<&Layout>, project: &Project) -> Vec<LayerCount> {
+    let mut m: BTreeMap<usize, (usize, usize)> = BTreeMap::new();
+    for s in ics_core::hier::flatten(source, project, 16) {
+        m.entry(s.layer).or_default().0 += 1;
+    }
+    for s in generated.map(|g| ics_core::hier::flatten(g, project, 16)).unwrap_or_default() {
+        m.entry(s.layer).or_default().1 += 1;
+    }
+    m.into_iter().map(|(layer, (source, generated))| LayerCount { layer, source, generated }).collect()
+}
+
+/// The operations (numbered as on the picture) that act on `layer`.
+fn ops_on_layer(t: &Template, layer: usize, tech: &Tech) -> Vec<String> {
+    let mut out = vec![];
+    for (k, op) in t.ops.iter().enumerate() {
+        let on = match op {
+            Op::Stretch { layers, .. } | Op::Repeat { layers, .. } | Op::Condition { layers, .. } => {
+                layers.is_empty() || layers.contains(&layer)
+            }
+            Op::ContactFill { via, .. } => tech
+                .vias
+                .iter()
+                .find(|v| &v.name == via)
+                .is_some_and(|v| [&v.bottom, &v.cut, &v.top].iter().any(|n| tech.layer_index(n) == Some(layer))),
+        };
+        if on {
+            out.push(format!("{} {}", k + 1, op.title().to_lowercase()));
+        }
+    }
+    out
+}
+
+fn draw_layout(p: &egui::Painter, fit: &Fit, l: &Layout, src: &Project, pal: &Palette, alpha: f32, lv: &LayerView) {
     let tech = &src.tech;
     let mut flat = ics_core::hier::flatten(l, src, 16);
+    flat.retain(|s| lv.alpha(s.layer).is_some());
     // Big shapes (wells, implants) first so small ones stay visible.
     flat.sort_by_key(|s| std::cmp::Reverse(s.geom.bbox().width() as i128 * s.geom.bbox().height() as i128));
     for s in &flat {
+        let alpha = alpha * lv.alpha(s.layer).unwrap_or(1.0);
         let c = tech.layer(s.layer).map_or(pal.text_weak, |d| layer_color(d, pal.dark));
         match &s.geom {
             Geometry::Label { text, at, .. } => {

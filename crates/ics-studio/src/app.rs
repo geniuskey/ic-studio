@@ -198,6 +198,8 @@ pub enum Command {
     PCellDesigner,
     /// Start a PCell Designer design from the active layout cell.
     PCellFromActive,
+    /// Set the technology's device layer roles: the gate (poly) layer and the diffusion layers.
+    SetDeviceRoles(String, Vec<String>),
     /// Draw new MOS devices with a body pin (`true`) or without one, the arrow on the source.
     MosSymbol(bool),
     /// Set the project's body net of new 3-terminal PMOS (`true`) or NMOS devices; empty is the
@@ -1648,6 +1650,22 @@ impl IcStudio {
                 let how = if body { "with a body pin (4-terminal)" } else { "with the arrow on the source (3-terminal)" };
                 self.info(format!("New MOS devices are drawn {how}"));
             }
+            Command::SetDeviceRoles(poly, diffusion) => match self.project.as_mut() {
+                Some(p) => {
+                    let unknown: Vec<&String> =
+                        std::iter::once(&poly).chain(&diffusion).filter(|n| p.tech.layer_index(n).is_none()).collect();
+                    if !unknown.is_empty() {
+                        let list: Vec<&str> = unknown.iter().map(|s| s.as_str()).collect();
+                        self.warn(format!("Not layers of the technology: {}", list.join(", ")));
+                    } else if p.tech.roles.poly != poly || p.tech.roles.diffusion != diffusion {
+                        p.tech.roles.poly = poly.clone();
+                        p.tech.roles.diffusion = diffusion.clone();
+                        self.mark_dirty();
+                        self.ok(format!("Device layers: gate {poly}, diffusion {}", diffusion.join(", ")));
+                    }
+                }
+                None => self.warn("Open a project first".into()),
+            },
             Command::DefaultBulk(pmos, net) => match self.project.as_mut() {
                 Some(p) => {
                     let net = Some(net.trim().to_string()).filter(|n| !n.is_empty());
@@ -2810,6 +2828,16 @@ impl IcStudio {
             }
         };
         let skipped = imp.skipped_unknown_layers;
+        let pairs = |m: &std::collections::BTreeMap<(u16, u16), usize>| {
+            let mut v: Vec<String> = m.iter().take(12).map(|((l, d), n)| format!("{l}/{d} ({n})")).collect();
+            if m.len() > 12 {
+                v.push(format!("and {} more", m.len() - 12));
+            }
+            v.join(", ")
+        };
+        let skipped_pairs = pairs(&imp.skipped_pairs);
+        let fallbacks = (!imp.datatype_fallbacks.is_empty())
+            .then(|| (imp.datatype_fallbacks.values().sum::<usize>(), pairs(&imp.datatype_fallbacks)));
         let added = imp.new_layers.len();
         let warnings = imp.warnings.clone();
         let n = imp.cells.len();
@@ -2834,7 +2862,16 @@ impl IcStudio {
                     self.warn(format!("{label}: {w}"));
                 }
                 if skipped > 0 {
-                    self.warn(format!("{skipped} shape(s) on layers not in the technology were skipped"));
+                    self.warn(format!(
+                        "{skipped} shape(s) on layers not in the technology were skipped: {skipped_pairs}. Add the \
+                         layers to the technology or import with unknown layers added"
+                    ));
+                }
+                if let Some((n, list)) = fallbacks {
+                    self.warn(format!(
+                        "{n} shape(s) on datatypes the technology lacks were read onto datatype 0 of their layer: {list}. \
+                         Pin, label or blockage datatypes then sit on the drawing layer"
+                    ));
                 }
                 if added > 0 {
                     self.warn(format!("{added} layer(s) not in the technology were added to it"));
@@ -6312,9 +6349,13 @@ impl IcStudio {
 
     fn pcell_designer_window(&mut self, ctx: &egui::Context) {
         let active = self.active_layout();
-        let Some(PCellAction::Publish { lib, def }) = self.pcell_designer.window(ctx, self.project.as_ref(), active.as_ref())
-        else {
-            return;
+        let (lib, def) = match self.pcell_designer.window(ctx, self.project.as_ref(), active.as_ref()) {
+            Some(PCellAction::Publish { lib, def }) => (lib, *def),
+            Some(PCellAction::SetRoles { poly, diffusion }) => {
+                self.command(Command::SetDeviceRoles(poly, diffusion));
+                return;
+            }
+            None => return,
         };
         let Some(p) = self.project.as_mut() else { return };
         match p.publish_template(&lib, def) {

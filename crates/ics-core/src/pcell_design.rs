@@ -18,7 +18,7 @@
 //! parameter extremes, and the `suggest_*` helpers read a drawn device to propose contact
 //! fills, a finger repeat (reducing the drawing to one unit) and W / L stretch lines.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
@@ -244,6 +244,10 @@ pub struct Template {
     pub params: Vec<Param>,
     #[serde(default)]
     pub ops: Vec<Op>,
+    /// Layers that operations on all layers leave alone (markers, IDs, boundaries drawn
+    /// once). An operation that names its layers still acts on them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fixed: Vec<usize>,
 }
 
 fn fmt_um(v: i64, dbu: i64) -> String {
@@ -287,8 +291,12 @@ impl Item {
         self.geom.bbox()
     }
 
-    fn on(&self, layers: &[usize]) -> bool {
-        layers.is_empty() || self.layer.is_some_and(|l| layers.contains(&l))
+    /// Whether an operation on `layers` (empty = all but the `fixed` ones) acts on the item.
+    fn on(&self, layers: &[usize], fixed: &[usize]) -> bool {
+        match self.layer {
+            Some(l) => acts_on(layers, fixed, l),
+            None => layers.is_empty(),
+        }
     }
 
     fn map(&mut self, axis: Axis, f: &dyn Fn(i64) -> i64) {
@@ -310,6 +318,27 @@ impl Item {
         let inst = self.inst.as_ref().map(|i| (i.cell.to_string(), i.trans.rot, i.trans.mirror, i.array));
         format!("{:?}|{:?}|{:?}|{g:?}", self.layer, self.fill, inst)
     }
+}
+
+/// The diffusion role layers, quoted, for messages.
+fn diffusion_names(tech: &Tech) -> String {
+    let d = &tech.roles.diffusion;
+    if d.is_empty() { "(none set)".into() } else { d.iter().map(|n| format!("'{n}'")).collect::<Vec<_>>().join(", ") }
+}
+
+const ROLES_HINT: &str = "If the PDK names them differently, set the technology's device layer roles";
+
+fn no_gate(tech: &Tech) -> String {
+    format!(
+        "No gate found: no shape on the gate layer '{}' overlaps the diffusion layer(s) {}. {ROLES_HINT}",
+        tech.roles.poly,
+        diffusion_names(tech)
+    )
+}
+
+/// Whether an operation on `layers` (empty = all but `fixed`) acts on `layer`.
+fn acts_on(layers: &[usize], fixed: &[usize], layer: usize) -> bool {
+    if layers.is_empty() { !fixed.contains(&layer) } else { layers.contains(&layer) }
 }
 
 fn map_geom(g: &mut Geometry, axis: Axis, f: &dyn Fn(i64) -> i64) {
@@ -513,13 +542,14 @@ impl Template {
         source.constraints.clear();
         source.rulers.clear();
         source.tracks.clear();
-        Template { name: name.into(), description: String::new(), source, params: vec![], ops: vec![] }
+        Template { name: name.into(), description: String::new(), source, params: vec![], ops: vec![], fixed: vec![] }
     }
 
     /// Layers the source and the operations use (not the fills' cut layers).
     pub fn layers(&self) -> BTreeSet<usize> {
         let mut out: BTreeSet<usize> = self.source.shapes.iter().map(|s| s.layer).collect();
         out.extend(self.ops.iter().flat_map(|o| o.layers().iter().copied()));
+        out.extend(self.fixed.iter().copied());
         out
     }
 
@@ -534,6 +564,9 @@ impl Template {
                     *l = map(*l);
                 }
             }
+        }
+        for l in &mut self.fixed {
+            *l = map(*l);
         }
     }
 
@@ -613,7 +646,7 @@ impl Template {
             if let Geometry::Path { points, width } = &s.geom {
                 let h = width.abs() / 2;
                 let cut = lines.iter().any(|(axis, at, ls)| {
-                    (ls.is_empty() || ls.contains(&s.layer)) && points.iter().any(|&p| (split(*axis, p).0 - at).abs() < h)
+                    acts_on(ls, &self.fixed, s.layer) && points.iter().any(|&p| (split(*axis, p).0 - at).abs() < h)
                 });
                 let outline = crate::polybool::PolySet::from_geometry(&s.geom);
                 if cut && outline.polygons().iter().all(|p| p.holes.is_empty()) {
@@ -658,7 +691,7 @@ impl Template {
             if let Op::Condition { region, when, layers } = op
                 && eval(when, &values, &format!("condition {}", k + 1))? == 0.0
             {
-                items.retain(|it| !(it.on(layers) && inside(region, &it.bbox())));
+                items.retain(|it| !(it.on(layers, &self.fixed) && inside(region, &it.bbox())));
             }
         }
         // Stretches, each moving the later lines and the repeat regions with the geometry.
@@ -689,7 +722,7 @@ impl Template {
                 n
             };
             let mut collapsed = None;
-            for it in items.iter_mut().filter(|it| it.on(layers)) {
+            for it in items.iter_mut().filter(|it| it.on(layers, &self.fixed)) {
                 if !stretch_geom(&mut it.geom, axis, &sh, &checked) && collapsed.is_none() {
                     collapsed = Some(it.layer);
                 }
@@ -742,7 +775,7 @@ impl Template {
             let at = at.unwrap_or_else(|| snap((axis.lo(&region) + axis.hi(&region)) / 2, g));
             let ext = (n - 1) * p;
             let (members, mut rest): (Vec<Item>, Vec<Item>) =
-                items.into_iter().partition(|it| it.on(layers) && inside(&region, &it.home));
+                items.into_iter().partition(|it| it.on(layers, &self.fixed) && inside(&region, &it.home));
             if ext != 0 {
                 let sh = Shift { at, hi: ext, lo: 0, grid: g };
                 for it in &mut rest {
@@ -995,7 +1028,7 @@ impl Template {
                         Side::Low => c < *at,
                         Side::Both => c != *at,
                     };
-                    let any = items.iter().filter(|it| it.on(layers)).any(|it| {
+                    let any = items.iter().filter(|it| it.on(layers, &self.fixed)).any(|it| {
                         let b = it.bbox();
                         moving(axis.lo(&b)) || moving(axis.hi(&b))
                     });
@@ -1006,7 +1039,7 @@ impl Template {
                         .source
                         .shapes
                         .iter()
-                        .filter(|s| cuts.contains(&s.layer) && (layers.is_empty() || layers.contains(&s.layer)))
+                        .filter(|s| cuts.contains(&s.layer) && acts_on(layers, &self.fixed, s.layer))
                         .filter(|s| {
                             let b = s.bbox();
                             axis.lo(&b) < *at && *at < axis.hi(&b)
@@ -1020,7 +1053,7 @@ impl Template {
                             format!("The line cuts through {} cuts, which would stretch: make them a contact fill", lname(l)),
                         );
                     }
-                    let skew = self.source.shapes.iter().filter(|s| layers.is_empty() || layers.contains(&s.layer)).any(|s| {
+                    let skew = self.source.shapes.iter().filter(|s| acts_on(layers, &self.fixed, s.layer)).any(|s| {
                         let (pts, closed) = match &s.geom {
                             Geometry::Polygon { points } => (points, true),
                             Geometry::Path { points, .. } => (points, false),
@@ -1041,7 +1074,7 @@ impl Template {
                     }
                 }
                 Op::Repeat { region, .. } | Op::Condition { region, .. } => {
-                    if !items.iter().any(|it| it.on(op.layers()) && inside(region, &it.bbox()))
+                    if !items.iter().any(|it| it.on(op.layers(), &self.fixed) && inside(region, &it.bbox()))
                         && !self.ops.iter().any(|o| matches!(o, Op::ContactFill { rect, .. } if inside(region, rect)))
                     {
                         push(Level::Warning, Target::Op(k), "No item lies wholly inside the region".into());
@@ -1059,8 +1092,111 @@ impl Template {
         if let Err(e) = self.generate(tech, &[]) {
             push(Level::Error, Target::Template, format!("Generation at the defaults fails: {e}"));
         }
+        out.extend(self.drawing_findings(tech));
         out.sort_by_key(|f| f.level);
         out
+    }
+
+    /// What an imported drawing often gets wrong: shapes on layers the technology lacks, the
+    /// same figure drawn twice on a layer (a pin or label datatype mapped onto the drawing
+    /// layer), vertices off the manufacturing grid, cuts a contact fill cannot take over, and
+    /// placed cells the operations treat as one item.
+    pub fn drawing_findings(&self, tech: &Tech) -> Vec<Finding> {
+        let mut out = vec![];
+        let mut push = |level, message: String| out.push(Finding { level, target: Target::Template, message });
+        let name = |l: usize| tech.layer(l).map_or_else(|| format!("layer #{l}"), |d| d.name.clone());
+        let g = tech.grid.max(1);
+        // Per layer: shapes, exact duplicates, off-grid shapes.
+        let mut per: BTreeMap<usize, (usize, usize, usize)> = BTreeMap::new();
+        let mut seen: HashSet<(usize, String)> = HashSet::new();
+        for s in &self.source.shapes {
+            let e = per.entry(s.layer).or_default();
+            e.0 += 1;
+            let mut geom = s.geom.clone();
+            if let Some(r) = as_rect(&geom) {
+                geom = Geometry::Rect(r);
+            }
+            canonical_points(&mut geom);
+            if !matches!(geom, Geometry::Label { .. }) && !seen.insert((s.layer, format!("{geom:?}"))) {
+                e.1 += 1;
+            }
+            let pts: Vec<(i64, i64)> = match &geom {
+                Geometry::Rect(r) => vec![(r.x0, r.y0), (r.x1, r.y1)],
+                Geometry::Polygon { points } | Geometry::Path { points, .. } => points.clone(),
+                Geometry::Label { .. } => vec![],
+            };
+            if pts.iter().any(|p| p.0 % g != 0 || p.1 % g != 0) {
+                e.2 += 1;
+            }
+        }
+        for (&l, &(n, dup, off)) in &per {
+            if tech.layer(l).is_none() {
+                push(Level::Warning, format!("{n} shape(s) on layer #{l}, which the technology does not define"));
+            }
+            if dup > 0 {
+                push(
+                    Level::Warning,
+                    format!(
+                        "{}: {dup} shape(s) drawn twice at the same place (a pin or label datatype read onto the \
+                         drawing layer?); repeats and stretches copy them too",
+                        name(l)
+                    ),
+                );
+            }
+            if off > 0 {
+                push(
+                    Level::Warning,
+                    format!("{}: {off} shape(s) with vertices off the {} grid", name(l), fmt_um(g, tech.dbu_per_um)),
+                );
+            }
+        }
+        for via in &tech.vias {
+            let Some(cut) = tech.layer_index(&via.cut) else { continue };
+            let odd = self
+                .source
+                .shapes
+                .iter()
+                .filter(|s| {
+                    s.layer == cut && as_rect(&s.geom).is_none_or(|r| r.width() != via.cut_size || r.height() != via.cut_size)
+                })
+                .count();
+            if odd > 0 {
+                push(
+                    Level::Info,
+                    format!(
+                        "{}: {odd} cut(s) are not {} µm squares; Contacts to fills leaves them, and a stretch across them \
+                         widens them",
+                        via.cut,
+                        fmt_um(via.cut_size, tech.dbu_per_um)
+                    ),
+                );
+            }
+        }
+        if !self.source.instances.is_empty() {
+            push(
+                Level::Info,
+                format!(
+                    "{} placed cell(s) in the drawing move as one item, only with operations on all layers, and their \
+                     contacts do not become fills: Flatten instances turns them into shapes",
+                    self.source.instances.len()
+                ),
+            );
+        }
+        out
+    }
+
+    /// Replace the placed cells of the drawing by their (flattened) shapes. Returns how many
+    /// instances were flattened.
+    pub fn flatten_instances(&mut self, src: &dyn crate::hier::LayoutSource) -> usize {
+        let n = self.source.instances.len();
+        if n == 0 {
+            return 0;
+        }
+        let only = Layout { instances: std::mem::take(&mut self.source.instances), ..Layout::default() };
+        for s in crate::hier::flatten(&only, src, 64) {
+            self.source.add(s.layer, s.geom);
+        }
+        n
     }
 }
 
@@ -1230,7 +1366,7 @@ impl Template {
             return Err("There already is a parameter 'nf'".into());
         }
         let gates = self.gates(tech);
-        let first = *gates.first().ok_or("No gate (poly over diffusion) found")?;
+        let first = *gates.first().ok_or_else(|| no_gate(tech))?;
         let row: Vec<IRect> = gates
             .iter()
             .copied()
@@ -1390,7 +1526,9 @@ impl Template {
             .filter(|s| diff.contains(&s.layer))
             .flat_map(|s| rects_of(&s.geom))
             .max_by_key(|r| r.width() as i128 * r.height() as i128)
-            .ok_or("No diffusion found")?;
+            .ok_or_else(|| {
+                format!("No diffusion found: no shape is on the diffusion layer(s) {}. {ROLES_HINT}", diffusion_names(tech))
+            })?;
         let dbu = tech.dbu_per_um;
         let at = snap((a.y0 + a.y1) / 2, tech.grid);
         let mut w = Param::new("w", ParamKind::Length, a.height() as f64 / dbu as f64);
@@ -1413,7 +1551,7 @@ impl Template {
         if self.param("l").is_some() {
             return Err("There already is a parameter 'l'".into());
         }
-        let g = *self.gates(tech).first().ok_or("No gate (poly over diffusion) found")?;
+        let g = *self.gates(tech).first().ok_or_else(|| no_gate(tech))?;
         let dbu = tech.dbu_per_um;
         let l0 = g.width();
         let at = snap((g.x0 + g.x1) / 2, tech.grid);
@@ -1555,7 +1693,7 @@ fn skill_of(text: &str, what: &str) -> Result<String, String> {
 
 const SKILL_ENGINE: &str = r#"    icsSnap = lambda((v) if(icsGrid <= 1 v icsGrid * floor((v + fix(icsGrid / 2.0)) / float(icsGrid))))
     icsUm = lambda((u) funcall(icsSnap round(u * icsDbu)))
-    icsOn = lambda((oIt oLs) if(oLs then and(nth(1 oIt) member(nth(1 oIt) oLs) t) else t))
+    icsOn = lambda((oIt oLs) if(oLs then and(nth(1 oIt) member(nth(1 oIt) oLs) t) else !and(nth(1 oIt) member(nth(1 oIt) icsFixed))))
     icsBox = lambda((bIt) let((bK bP bXs bYs bW)
       bK = car(bIt)  bP = nth(2 bIt)
       bXs = mapcar(lambda((bQ) car(bQ)) bP)  bYs = mapcar(lambda((bQ) cadr(bQ)) bP)
@@ -1684,6 +1822,7 @@ impl Template {
             "icsName",
             "icsDbu",
             "icsGrid",
+            "icsFixed",
             "icsItems",
             "icsSnap",
             "icsUm",
@@ -1793,6 +1932,7 @@ impl Template {
             let names: Vec<String> = ls.iter().map(|&l| lname(l).map(|n| skill_str(&n))).collect::<Result<_, _>>()?;
             Ok(format!("list({})", names.join(" ")))
         };
+        let _ = writeln!(s, "    icsFixed = {}", layers(&self.fixed)?);
         let rect = |r: &IRect| format!("list({} {} {} {})", skill_int(r.x0), skill_int(r.y0), skill_int(r.x1), skill_int(r.y1));
         for (k, op) in self.ops.iter().enumerate() {
             match op {
@@ -2234,6 +2374,64 @@ mod tests {
         let err = t.generate(&tech, &vals(&[("w", 0.4)])).unwrap_err();
         assert!(err.contains("too small"), "{err}");
         assert!(t.generate(&tech, &vals(&[("q", 1.0)])).is_err());
+    }
+
+    /// A fixed layer stays put under operations on all layers, but not under one that names it.
+    #[test]
+    fn fixed_layers_stay_put() {
+        let (tech, mut t) = plate();
+        let mk = tech.layer_index("text").unwrap();
+        t.source.add_rect(mk, 0, 0, 2500, 500);
+        t.fixed = vec![mk];
+        let lay = t.generate(&tech, &vals(&[("w", 1.5)])).unwrap();
+        let on = |l: &Layout, layer: usize| l.shapes.iter().filter(|s| s.layer == layer).map(|s| s.bbox()).collect::<Vec<_>>();
+        assert_eq!(on(&lay, mk), [IRect::new(0, 0, 2500, 500)], "fixed marker does not stretch");
+        assert_eq!(on(&lay, tech.metal1().unwrap()), [IRect::new(0, 0, 1500, 500), IRect::new(2500, 0, 3000, 500)]);
+        t.ops[0] = Op::Stretch { axis: Axis::X, at: 500, side: Side::High, amount: "w".into(), layers: vec![mk] };
+        let lay = t.generate(&tech, &vals(&[("w", 1.5)])).unwrap();
+        assert_eq!(on(&lay, mk), [IRect::new(0, 0, 3000, 500)], "named layers still stretch");
+        let skill = t.to_skill(&tech, "lib").unwrap().0;
+        assert!(skill.contains("icsFixed = list(\"text\")"), "{skill}");
+        let back: Template = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
+        assert_eq!(back.fixed, [mk]);
+    }
+
+    /// An imported drawing: duplicates, off-grid vertices, odd cuts and placed via cells are
+    /// reported; flattening turns the placed cells into shapes.
+    #[test]
+    fn drawing_findings_and_flatten() {
+        let (tech, mut t) = plate();
+        let m1 = tech.metal1().unwrap();
+        let co = tech.layer_index(&tech.vias[0].cut).unwrap();
+        t.source.add_rect(m1, 0, 0, 1000, 500);
+        t.source.add(m1, Geometry::Polygon { points: vec![(2000, 0), (2500, 0), (2500, 500), (2000, 500)] });
+        t.source.add_rect(m1, 3000, 0, 3333, 500);
+        t.source.add_rect(co, 100, 100, 100 + tech.vias[0].cut_size * 2, 100 + tech.vias[0].cut_size);
+        let via = crate::project::CellRef::new("lib", "via");
+        let mut v = Layout::default();
+        v.add_rect(co, 0, 0, tech.vias[0].cut_size, tech.vias[0].cut_size);
+        t.source.add_instance(via.clone(), crate::layout::Trans { x: 4000, ..crate::layout::Trans::IDENTITY }, None);
+        let text: Vec<String> = t.drawing_findings(&tech).into_iter().map(|f| f.message).collect();
+        let has = |s: &str| text.iter().any(|m| m.contains(s));
+        assert!(has("2 shape(s) drawn twice"), "{text:?}");
+        assert!(has("off the"), "{text:?}");
+        assert!(has("1 cut(s) are not"), "{text:?}");
+        assert!(has("1 placed cell(s)"), "{text:?}");
+        let src: HashMap<crate::project::CellRef, Layout> = [(via, v)].into();
+        assert_eq!(t.flatten_instances(&src), 1);
+        assert!(t.source.instances.is_empty());
+        assert!(t.source.shapes.iter().any(|s| s.layer == co && s.bbox().x0 == 4000));
+    }
+
+    /// Suggestions that find no device say which role layers they looked on.
+    #[test]
+    fn missing_device_names_the_role_layers() {
+        let (tech, plate) = plate();
+        let t = Template::from_layout("plate", &plate.source);
+        let err = t.clone().suggest_fingers(&tech).unwrap_err();
+        assert!(err.contains("'poly'") && err.contains("'active'") && err.contains("roles"), "{err}");
+        let err = t.clone().suggest_width(&tech).unwrap_err();
+        assert!(err.contains("'active'"), "{err}");
     }
 
     #[test]

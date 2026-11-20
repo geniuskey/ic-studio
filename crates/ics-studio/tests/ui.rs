@@ -513,6 +513,63 @@ fn pcell_designer() {
     h.get_by_label("Design").click();
     h.run_steps(3);
     shot(&mut h, "32_pcell_designer");
+    // Layer by layer: the panel lists the drawing's layers; Next / Prev / [ ] show one alone.
+    let counts = h.state().pcell_designer().layer_counts().to_vec();
+    assert!(counts.len() >= 4, "{counts:?}");
+    assert!(counts.iter().all(|c| c.source > 0 && c.generated > 0), "{counts:?}");
+    h.get_by_label("Next").click();
+    h.run_steps(2);
+    assert_eq!(h.state().pcell_designer().solo_layer(), Some(counts[0].layer));
+    shot(&mut h, "32_pcell_designer_layer");
+    h.get_by_label("Prev").click();
+    h.run_steps(2);
+    assert_eq!(h.state().pcell_designer().solo_layer(), Some(counts.last().unwrap().layer), "wraps around");
+    h.get_by_label("All").click();
+    h.run_steps(2);
+    assert_eq!(h.state().pcell_designer().solo_layer(), None);
+    // The suggestions keep the drawing: at the defaults every layer reproduces it.
+    assert_eq!(h.state().pcell_designer().differing_layers(), Some(vec![]));
+    // A condition that drops the gate at the defaults breaks poly; it is flagged and marked.
+    let poly = h.state().project().unwrap().tech.poly().unwrap();
+    let gate = h.state().pcell_designer().template().unwrap().source.shapes.iter().find(|s| s.layer == poly).unwrap().bbox();
+    h.state_mut().pcell_designer_mut().template_mut().unwrap().ops.push(ics_core::pcell_design::Op::Condition {
+        region: gate,
+        when: "0".into(),
+        layers: vec![poly],
+    });
+    h.run_steps(3);
+    assert_eq!(h.state().pcell_designer().differing_layers(), Some(vec![poly]));
+    shot(&mut h, "32_pcell_designer_diff");
+    h.state_mut().pcell_designer_mut().template_mut().unwrap().ops.pop();
+    h.run_steps(2);
+    assert_eq!(h.state().pcell_designer().differing_layers(), Some(vec![]));
+    // A fixed layer is stored with the design.
+    h.state_mut().pcell_designer_mut().set_fixed(poly, true);
+    h.run_steps(2);
+    assert_eq!(h.state().pcell_designer().template().unwrap().fixed, [poly]);
+    h.state_mut().pcell_designer_mut().set_fixed(poly, false);
+    h.run_steps(2);
+    // A deck that reads metal1 only: the other drawn layers are reported as unchecked.
+    let deck = h.state().project().unwrap().tech.drc_deck.clone();
+    h.state_mut().project_mut().unwrap().tech.drc_deck = Some("width metal1 0.23\n".into());
+    h.run_steps(2);
+    let unchecked = |h: &Harness<'_, IcStudio>| {
+        h.state().pcell_designer().findings().iter().find(|f| f.message.starts_with("No DRC rule")).map(|f| f.message.clone())
+    };
+    let msg = unchecked(&h).expect("unchecked layers reported");
+    assert!(msg.contains("poly") && msg.contains("contact") && !msg.contains("metal1") && !msg.contains("text"), "{msg}");
+    shot(&mut h, "32_pcell_designer_drc");
+    h.state_mut().project_mut().unwrap().tech.drc_deck = deck;
+    h.run_steps(2);
+    // Device layer roles: the MOS suggestions' gate and diffusion layers are set from here.
+    h.state_mut().command(Command::SetDeviceRoles("metal1".into(), vec!["active".into()]));
+    h.run_steps(1);
+    assert_eq!(h.state().project().unwrap().tech.roles.poly, "metal1");
+    h.state_mut().command(Command::SetDeviceRoles("nosuch".into(), vec!["active".into()]));
+    h.run_steps(1);
+    assert_eq!(h.state().project().unwrap().tech.roles.poly, "metal1", "unknown layers are refused");
+    h.state_mut().command(Command::SetDeviceRoles("poly".into(), vec!["active".into()]));
+    h.run_steps(2);
     h.get_all_by_label("Corners").next().unwrap().click();
     h.run_steps(2);
     h.get_by_label("Run corner check").click();

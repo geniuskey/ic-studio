@@ -181,6 +181,10 @@ PCell Designer는 Virtuoso의 PCell Designer처럼, 그린 레이아웃을 코�
 contact fill입니다. stretch, repeat, condition은 일부 레이어에만 적용할 수 있습니다.
 **Earlier** / **Later**로 순서를 바꾸고 **Undo**로 되돌립니다.
 
+레이어 패널에서 **Fix**로 표시한 레이어는 모든 레이어에 적용되는 stretch, repeat, condition이
+건드리지 않습니다. 한 번만 그리는 marker, 소자 ID, boundary 같은 레이어에 씁니다. 그 레이어를
+지정한 연산은 여전히 적용됩니다. 고정 레이어는 설계와 함께 저장되고 SKILL로도 내보내집니다.
+
 폴리곤과 path는 꼭짓점 단위로 늘어납니다. stretch 선을 비스듬히 가로지르는 변(45° chamfer나
 배선)은 각도를 유지합니다. 셀이 커지면 선 위치에 축 방향 띠가 끼워지고, 작아지면 그 띠가
 빠집니다. 45°가 아닌 변의 절단점은 grid로 반올림됩니다(**Issues**에 표시). 폴리곤의 일부가 폭
@@ -191,10 +195,16 @@ contact fill입니다. stretch, repeat, condition은 일부 레이어에만 적�
 
 | 버튼 | 결과 |
 |---|---|
+| **Flatten instances** | 도면에 배치된 셀(가져온 via 셀 등)을 도형으로 풀어서, stretch가 레이어를 고를 수 있고 cut이 fill이 될 수 있게 함. 도면에 instance가 있을 때만 보이며 가장 먼저 실행 |
 | **Contacts to fills** | via cut 묶음마다 contact fill로 바꿈 |
 | **Detect fingers (nf)** | 같은 간격의 동일한 게이트들을 한 단위로 줄이고, 새 파라미터 `nf`(기본값: 그린 개수)로 구동되는 repeat을 만듦. stretch 선을 넣기 전에 실행 |
 | **Width stretch (w)** | diffusion을 지나는 가로 선. 새 파라미터 `w`로 구동 |
 | **Length stretch (l)** | 첫 게이트를 지나는 세로 선. 새 파라미터 `l`로 구동. finger repeat의 pitch도 따라 바뀜 |
+
+MOS 제안은 테크놀로지의 gate(poly) 역할 레이어 도형이 diffusion 역할 레이어 위에 있는 곳을
+게이트로 찾습니다. PDK가 레이어 이름을 다르게 쓰면(`PO`, `OD` 등) 버튼 아래 **Device layers**에서
+레이어를 고르십시오. 이 설정은 테크놀로지의 레이어 역할을 바꾸며 extraction도 이를 사용합니다.
+소자를 찾지 못하면 오류 메시지에 찾아본 레이어 이름이 나옵니다.
 
 각 제안은 기본값에서 원래 도면을 그대로 재현합니다. pitch를 읽을 수 있도록 동일한 finger를 두세
 개 그리십시오. 게이트, diffusion, metal plate는 직교 폴리곤(dogbone 게이트, L자 active)이어도
@@ -203,6 +213,15 @@ contact fill입니다. stretch, repeat, condition은 일부 레이어에만 적�
 ### 검사
 
 - **Preview**: 편집하는 동안 아무 값에서나 셀을 생성해 봅니다.
+- **레이어 패널**(Design 탭 오른쪽): 레이어가 많은 도면을 한 레이어씩 확인합니다.
+  - **Next** / **Prev**(또는 `]` / `[`)로 한 레이어만 봅니다. **Only**는 그 레이어만,
+    체크박스는 레이어 숨기기입니다. **Hide the others**를 켜지 않으면 나머지는 흐린 윤곽으로 남습니다.
+  - 각 줄은 그 레이어의 도형 수를 도면 / 미리보기로 보여 줍니다. 미리보기에서 생기거나 사라진
+    레이어는 빨간색입니다.
+  - 점은 기본값으로 생성한 결과가 그 레이어에서 불러온 도면과 같으면(XOR이 비면) 초록, 다르면
+    빨강입니다. **Mark the differences**는 생성 결과에 더해진 부분(실선)과 빠진 부분(점선)을
+    도면 위에 표시합니다. 다른 레이어는 **Issues**에도 나옵니다.
+  - 툴팁에 GDS layer / datatype과 그 레이어에 적용되는 연산이 나옵니다.
 - **Issues**: lint 결과를 보여 줍니다.
   - 없는 파라미터를 쓰는 식
   - 어떤 연산도 쓰지 않는 파라미터, 범위가 없는 파라미터
@@ -210,12 +229,20 @@ contact fill입니다. stretch, repeat, condition은 일부 레이어에만 적�
   - 움직이는 쪽에 아무것도 없는 stretch 선, 콘택을 가로지르는 stretch 선
   - SKILL 예약어인 이름
   - 기본값에서 생성되지 않는 셀
+  - 가져온 도면에서 흔한 문제: 테크놀로지에 없는 레이어의 도형, 한 레이어에 같은 도형이 두 번
+    (pin이나 label datatype이 drawing 레이어로 읽힌 경우), 그리드를 벗어난 꼭짓점, via 크기가 아닌
+    cut(contact fill이 남겨 둠), 배치된 셀
 - **Corners**: 여러 파라미터 조합에서 테크놀로지 DRC 덱을 실행합니다.
   - 기본값
   - 각 파라미터 하나만 최솟값, 최댓값(boolean은 반전)
   - 모든 파라미터를 함께 최솟값, 모두 함께 최댓값
 
   생성할 수 없는 코너도 보고합니다. 예를 들어 최솟값에서 모서리가 stretch 선을 넘어가는 경우입니다.
+
+  코너가 clean이어도 덱이 검사하는 레이어에 대해서만 의미가 있습니다. Corners 탭과 **Issues**는
+  어떤 규칙도 (직접 또는 derived 레이어를 거쳐) 읽지 않는 도면 레이어(contact fill의 cut 레이어
+  포함)를 알려 줍니다. label만 있는 레이어는 제외합니다. 레이어 패널에는 그런 레이어가 기울임꼴로
+  표시됩니다.
 
 ### 저장과 배치
 

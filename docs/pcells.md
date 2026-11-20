@@ -187,6 +187,11 @@ later lines and regions), then the repeats, then the contact fills. Stretch, rep
 condition can be limited to some layers. **Earlier** / **Later** reorder the list, and
 **Undo** steps back.
 
+A layer marked **Fix** in the layer panel is left alone by every stretch, repeat and
+condition on all layers: markers, device IDs or a boundary that is drawn once. An operation
+that lists the layer still acts on it. Fixed layers are saved with the design and exported to
+SKILL.
+
 Polygons and paths stretch vertex by vertex. An edge that crosses a stretch line at an
 angle (a 45° chamfer or wire) keeps its angle: a band along the axis is inserted at the line
 when the cell grows, and removed when it shrinks. A cut point on an edge at another angle
@@ -198,10 +203,17 @@ generated as its outline polygon, so it widens like a rectangle; other paths sta
 
 | Button | Result |
 |---|---|
+| **Flatten instances** | Placed cells in the drawing (via cells from an import, say) become shapes, so stretches can pick their layers and their cuts can become fills. Shown when the drawing has instances; run it first |
 | **Contacts to fills** | Every cluster of via cuts becomes a contact fill |
 | **Detect fingers (nf)** | Identical, equally spaced gates become one unit and a repeat driven by a new `nf` (default: the drawn count). Run it before adding stretch lines |
 | **Width stretch (w)** | A horizontal line through the diffusion, driven by a new `w` |
 | **Length stretch (l)** | A vertical line through the first gate, driven by a new `l`. A finger repeat's pitch follows |
+
+The MOS suggestions find gates as shapes on the technology's gate (poly) role layer over its
+diffusion role layers. When a PDK names them differently (`PO`, `OD`, …), pick the layers
+under **Device layers** below the buttons. This sets the technology's layer roles, which
+extraction also reads. When no device is found, the message names the layers that were
+searched.
 
 At the defaults, each suggestion reproduces the drawing. Draw two or three identical
 fingers so the pitch can be read. Gates, diffusion and metal plates may be rectilinear
@@ -211,6 +223,18 @@ four-corner polygon cuts count as cuts.
 ### Checking
 
 - **Preview** generates the cell at any values while you edit.
+- The **layer panel** (right of the Design tab) checks a drawing with many layers one layer
+  at a time:
+  - **Next** / **Prev** (or `]` / `[`) show one layer alone. **Only** shows a given layer,
+    and the checkboxes hide layers. The other layers stay as a faint outline unless
+    **Hide the others** is on.
+  - Each row counts the layer's shapes in the drawing and in the preview. A layer that
+    appears or vanishes in the preview is red.
+  - The dot is green when generation at the defaults gives the drawing as loaded on that
+    layer (the XOR is empty), and red when it does not. **Mark the differences** outlines
+    on the drawing what generation adds (solid) and leaves out (dashed). Each differing
+    layer is also listed in **Issues**.
+  - The tooltip gives the GDS layer / datatype and the operations that act on the layer.
 - **Issues** lists the lint findings:
   - an expression naming a parameter that does not exist
   - a parameter no operation uses, or one without a range
@@ -218,6 +242,10 @@ four-corner polygon cuts count as cuts.
   - a stretch line with nothing on its moving side, or one that cuts through contacts
   - a name SKILL reserves
   - a cell that does not generate at its defaults
+  - what an imported drawing often gets wrong: shapes on layers the technology lacks, the
+    same figure drawn twice on a layer (a pin or label datatype read onto the drawing
+    layer), vertices off the grid, cuts that are not the via's size (contact fills leave
+    them), and placed cells
 - **Corners** runs the technology's DRC deck on several parameter sets:
   - the defaults
   - each parameter alone at its minimum and at its maximum (booleans toggled)
@@ -225,6 +253,11 @@ four-corner polygon cuts count as cuts.
 
   A corner that cannot be generated is reported too, for example a stretch whose minimum
   would pull edges past the line.
+
+  A clean corner only covers layers the deck checks. The Corners tab and **Issues** name the
+  drawn layers (and contact-fill cut layers) that no rule reads, directly or through a
+  derived layer. Label-only layers are left out. The layer panel shows those layers in
+  italics.
 
 ### Saving and placing
 

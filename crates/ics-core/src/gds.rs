@@ -472,6 +472,11 @@ pub fn read_stream_with(data: &[u8], tech: &Tech, lib: &str, opts: ReadOptions) 
 pub struct GdsImport {
     pub cells: Vec<(String, Layout)>,
     pub skipped_unknown_layers: usize,
+    /// Shapes skipped, per (layer, datatype).
+    pub skipped_pairs: std::collections::BTreeMap<(u16, u16), usize>,
+    /// Shapes of a (layer, datatype) the technology lacks that were read onto the layer's
+    /// datatype 0 (a pin or label datatype then lands on the drawing layer), per pair.
+    pub datatype_fallbacks: std::collections::BTreeMap<(u16, u16), usize>,
     /// Layers created for unknown (layer, datatype) pairs (see [`ReadOptions`]); shapes refer
     /// to the `k`-th as layer index `new_layer_base + k`.
     pub new_layers: Vec<LayerDef>,
@@ -836,6 +841,7 @@ impl LayerMap {
     pub(crate) fn get(&mut self, layer: u16, dt: u16, out: &mut GdsImport) -> Option<usize> {
         if self.dropped.contains(&(layer, dt)) {
             out.skipped_unknown_layers += 1;
+            *out.skipped_pairs.entry((layer, dt)).or_default() += 1;
             return None;
         }
         if self.add_unknown {
@@ -847,9 +853,15 @@ impl LayerMap {
                 })
             }));
         }
-        let l = self.by_gds.get(&(layer, dt)).or_else(|| self.by_gds.get(&(layer, 0))).copied();
-        if l.is_none() {
+        if let Some(&l) = self.by_gds.get(&(layer, dt)) {
+            return Some(l);
+        }
+        let l = self.by_gds.get(&(layer, 0)).copied();
+        if l.is_some() {
+            *out.datatype_fallbacks.entry((layer, dt)).or_default() += 1;
+        } else {
             out.skipped_unknown_layers += 1;
+            *out.skipped_pairs.entry((layer, dt)).or_default() += 1;
         }
         l
     }
@@ -1005,6 +1017,8 @@ pub(crate) mod tests {
         assert!(skip.new_layers.is_empty());
         let layers: Vec<usize> = skip.cells[0].1.shapes.iter().map(|s| s.layer).collect();
         assert_eq!(layers, [6, 6], "without the option 7/16 falls back to 7/0");
+        assert_eq!(skip.datatype_fallbacks.into_iter().collect::<Vec<_>>(), [((7, 16), 1)], "the fallback is reported");
+        assert_eq!(skip.skipped_pairs.into_iter().collect::<Vec<_>>(), [((99, 0), 2)]);
 
         let imp = read_gds_with(&bytes, &generic, "lib", ReadOptions { add_unknown_layers: true, ..Default::default() }).unwrap();
         assert_eq!(imp.skipped_unknown_layers, 0);
