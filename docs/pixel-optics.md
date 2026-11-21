@@ -230,6 +230,24 @@ reads it with the doping of `bayer_fdti`; any-angle shapes become a 10 nm stairc
 The empty-well barrier is 0.48 V (0.03 V on `bayer_fdti`). The narrower gate needs a deeper
 well to empty; 5e16 leaves only 0.3 V between Vpin and the 2.8 V reset.
 
+Its PCell `bayer_fdti_ctx_pc` (see [PCells](pcells.md)) varies the photodiode and the gate.
+With the same doping (Gr):
+
+| `params` | Vpin | Full well | Empty-well barrier | Left after 20 ns |
+|---|---|---|---|---|
+| (drawn: pd 1.2, tx_w 0.62, tx_l 0.45) | 1.95 V | 7.8k e- | 0.48 V | 154 e- |
+| `tx_w = 0.8` | 1.94 V | 8.2k e- | 0.44 V | 151 e- |
+| `pitch = 3.6, pd = 1.6` | 2.45 V | 16.8k e- | 0.51 V | 14 e- |
+| `pitch = 3.6, pd = 1.6, tx_w = 0.8` | 2.44 V | 17.3k e- | 0.47 V | 0 e- (99 % in 0.85 ns) |
+| `tx_l = 0.5` | 1.93 V | 18.1k e- | 0.03 V | 71 e- |
+| `tx_l = 0.6` | 1.92 V | 27.0k e- | -0.33 V | 407 e- |
+
+A wider gate helps once the well is deep enough to empty through it. A longer gate, held at
+-1 V, shuts the path under it so well that the well's fill level passes 0 V before the
+electrons find a way out. The device model has no forward-bias limit to the grounded p regions,
+so those full wells are upper bounds: the real well blooms near 0 V. Transfer also gets worse
+(a 0.14 V barrier under the gate at 0.6 µm).
+
 ## Device model
 
 With a `[device]` section the silicon is solved as a semiconductor device on the voxel grid of

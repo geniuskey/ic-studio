@@ -1928,9 +1928,12 @@ pub fn bayer_fdti_ctx(p: &mut Project) -> Cell {
         shapes.push((active, poly_of(&pd)));
         shapes.push((active, poly_of(&band)));
         shapes.push((poly, poly_of(&gate)));
-        // The contact head: its top-left corner 0.24 µm past the channel's edge, its top edge
-        // leaving the band at the band's corner.
-        shapes.push((poly, rect(1680, 480, 2100, 900)));
+        // The contact head, below the gate's end cap towards the pixel's right; it reaches
+        // 0.12 µm past the cap's far corner so that the cap can lengthen with the gate
+        // (`bayer_fdti_ctx_pc`), and its top-left corner is cut along x - y = 0.88 µm, so
+        // that what shows of it beside the gate stays 0.22 µm from the band's edge when the
+        // gate widens.
+        shapes.push((poly, poly_of(&[(1600, 480), (2220, 480), (2220, 1020), (1900, 1020), (1600, 720)])));
         shapes.push((pdn, rect(200, 200, q - 200, q - 200)));
     }
     for (layer, g) in shapes {
@@ -2060,6 +2063,121 @@ pub fn bayer_fdti_ctx(p: &mut Project) -> Cell {
         r.finish(),
         sim,
     )
+}
+
+/// Effective pixel pitch (µm) of the `bayer_fdti_ctx_pc` PCell: the `pitch` parameter, or more
+/// when the photodiode needs it (the corner transfer gate, its floating diffusion and the readout
+/// strips take 2 µm of the pixel beside the photodiode).
+const CTX_PC_PITCH: &str = "max(pitch, pd + 2)";
+
+/// The `bayer_fdti_ctx` layout as a PCell Designer template (`bayer_fdti_ctx_pc`) with parameters
+/// `pitch` (pixel pitch) and `pd` (photodiode side). The 45° shapes (the photodiode's cut, the
+/// transfer gate, the diagonal channel and floating diffusion) span x and y 0.58 - 2.62 µm of
+/// each pixel, and a stretch line across a diagonal edge would bend it, so the lines sit outside
+/// that span and the diagonal part moves as a whole:
+///
+/// - `pd`: x and y 0.5 µm, through the photodiode's square part, the readout strips' outer pads
+///   and the transfer gate's contact head.
+/// - pitch: x and y 0.15 µm either side of the inner trenches, past the readout strips and the
+///   supply's via2; the two take what the pitch leaves.
+///
+/// The transfer gate's width and length (`tx_w`, `tx_l`) take diagonal stretches, which move
+/// the vertices inside a region across a 45° line (see [`ctx_tx_ops`]); they run before the
+/// axis stretches. The readout transistors keep their size, and the parameters only grow from
+/// the drawn values (pitch 3.2, pd 1.2, tx_w 0.62, tx_l 0.45 µm).
+pub fn bayer_fdti_ctx_template(source: &Layout, tech: &crate::tech::Tech) -> crate::pcell_design::Template {
+    use crate::pcell_design::{Axis, Op, Param, ParamKind, Side, Template};
+    let mut t = Template::from_layout("bayer_fdti_ctx_pc", source);
+    t.description =
+        "2 x 2 Bayer 4-shared BSI pixel with full-depth DTI and corner transfer gates (bayer_fdti_ctx) by pitch and photodiode"
+            .into();
+    let param = |name: &str, default: f64, max: f64, description: &str| Param {
+        min: Some(default),
+        max: Some(max),
+        description: description.into(),
+        ..Param::new(name, ParamKind::Length, default)
+    };
+    t.params = vec![
+        param("pitch", 3.2, 4.8, "pixel pitch (raised to pd + 2 µm)"),
+        param("pd", 1.2, 2.4, "photodiode side"),
+        param("tx_w", 0.62, 0.8, "transfer gate width, the photodiode's corner cut (steps of 0.028 µm)"),
+        param("tx_l", 0.45, 0.6, "transfer gate length (steps of 0.014 µm)"),
+    ];
+    let c = 2 * CTX;
+    let l = |name: &str| tech.layer_index(name).expect("generic layer");
+    let (active, poly) = (l("active"), l("poly"));
+    for (mx, my) in [(false, false), (true, false), (false, true), (true, true)] {
+        t.ops.extend(ctx_tx_ops(active, poly).into_iter().map(|o| mirror_diagonal(o, mx, my, c)));
+    }
+    let gap = format!("{CTX_PC_PITCH} - pd");
+    for axis in [Axis::X, Axis::Y] {
+        for (at, amount) in [(500, "pd"), (CTX - 150, gap.as_str()), (CTX + 150, gap.as_str()), (c - 500, "pd")] {
+            t.ops.push(Op::Stretch { axis, at, side: Side::High, amount: amount.into(), layers: vec![] });
+        }
+    }
+    t
+}
+
+/// The diagonal stretches of R's transfer gate in `bayer_fdti_ctx_pc` (x + y = s and x - y = d
+/// are the coordinates along and across the gate's band). The width moves the corner cut in
+/// along s and widens the band across d by the same step, so the cut's ends slide along the
+/// photodiode's edges; the gate's end cap towards the contact head stays, the other moves out
+/// with the band's edge. The length moves the gate's far edge (its change is tx_l less what the
+/// width's move of the near edge adds). Each region takes in only the vertices that move, where
+/// the earlier stretches have put them.
+fn ctx_tx_ops(active: usize, poly: usize) -> Vec<crate::pcell_design::Op> {
+    use crate::pcell_design::{Diag, Op, Side};
+    let op = |dir, at, side, amount: &str, (x0, y0, x1, y1), layers: &[usize]| Op::Diagonal {
+        dir,
+        at,
+        side,
+        amount: amount.into(),
+        region: IRect::new(x0, y0, x1, y1),
+        layers: layers.to_vec(),
+    };
+    let (w, l) = ("tx_w / 2", "tx_l - tx_w / 2");
+    let both = [active, poly];
+    vec![
+        // The cut's ends (the band's near corners) and the gate's near edge move in along s.
+        op(Diag::Sum, 2400, Side::Low, w, (1360, 920, 1400, 960), &both),
+        op(Diag::Sum, 2400, Side::Low, w, (760, 1360, 960, 1560), &both),
+        op(Diag::Sum, 2400, Side::Low, w, (1720, 560, 1760, 600), &both),
+        // The band's edge towards the contact head moves out, at the cut and the far end.
+        op(Diag::Diff, 0, Side::High, w, (1300, 860, 1400, 960), &both),
+        op(Diag::Diff, 0, Side::High, w, (2600, 2160, 2640, 2200), &both),
+        // The other edge with the gate's end cap.
+        op(Diag::Diff, 0, Side::Low, w, (700, 1300, 1120, 1880), &both),
+        op(Diag::Diff, 0, Side::Low, w, (2160, 2600, 2200, 2640), &both),
+        // The gate's far edge.
+        op(Diag::Sum, 2700, Side::High, l, (2040, 880, 2080, 920), &both),
+        op(Diag::Sum, 2700, Side::High, l, (1020, 1840, 1120, 1940), &both),
+    ]
+}
+
+/// A diagonal stretch of R mirrored onto another pixel of a 2 x 2 cell of size `c`: x + y
+/// becomes c - (x - y) when mirrored in x, and so on, the side flipping with the normal.
+fn mirror_diagonal(op: crate::pcell_design::Op, mx: bool, my: bool, c: i64) -> crate::pcell_design::Op {
+    use crate::pcell_design::{Diag, Op, Side};
+    let Op::Diagonal { dir, at, side, amount, region, layers } = op else { return op };
+    let flip = |s: Side| match s {
+        Side::High => Side::Low,
+        Side::Low => Side::High,
+        Side::Both => Side::Both,
+    };
+    let (dir, at, side) = match (dir, mx, my) {
+        (_, false, false) => (dir, at, side),
+        (Diag::Sum, true, false) => (Diag::Diff, c - at, flip(side)),
+        (Diag::Sum, false, true) => (Diag::Diff, at - c, side),
+        (Diag::Sum, true, true) => (Diag::Sum, 2 * c - at, flip(side)),
+        (Diag::Diff, true, false) => (Diag::Sum, c - at, flip(side)),
+        (Diag::Diff, false, true) => (Diag::Sum, at + c, side),
+        (Diag::Diff, true, true) => (Diag::Diff, -at, flip(side)),
+    };
+    let f = |x: i64, m: bool| if m { c - x } else { x };
+    let (x0, x1) = (f(region.x0, mx), f(region.x1, mx));
+    let (y0, y1) = (f(region.y0, my), f(region.y1, my));
+    let region = IRect::new(x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1));
+    Op::Diagonal { dir, at, side, amount, region, layers }
 }
 
 /// Effective pixel pitch (µm) of the `bayer_fdti_pc` PCell: the `pitch` parameter, or more when
@@ -2346,6 +2464,8 @@ pub fn demo_project() -> Project {
     p.add_cell("work", layout_cell("devices", "Parametric devices placed from the pcells library", devices)).expect("unique");
     let bayer = p.cell(&CellRef::new("work", "bayer_fdti")).and_then(|c| c.layout.clone()).expect("bayer_fdti layout");
     p.publish_template("work", bayer_fdti_template(&bayer)).expect("bayer_fdti_pc generates");
+    let ctx = p.cell(&CellRef::new("work", "bayer_fdti_ctx")).and_then(|c| c.layout.clone()).expect("bayer_fdti_ctx layout");
+    p.publish_template("work", bayer_fdti_ctx_template(&ctx, &p.tech)).expect("bayer_fdti_ctx_pc generates");
     p
 }
 
@@ -2400,6 +2520,7 @@ pub const TOPICS: [Topic; 5] = [
             "bayer_fdti",
             "bayer_fdti_pc",
             "bayer_fdti_ctx",
+            "bayer_fdti_ctx_pc",
         ],
     },
     Topic {
@@ -2742,6 +2863,77 @@ mod flow_tests {
         let big = def.generate(&p.tech, &[("pd".into(), 2.0)]).unwrap();
         let f = big.shapes.iter().find(|s| s.layer == b).unwrap().geom.bbox();
         assert_eq!(f.width(), 2 * (2000 + 1350));
+    }
+
+    #[test]
+    fn bayer_fdti_ctx_pcell_stretches_drc_clean() {
+        use crate::pcell_design::{Axis, Op, canonical};
+        let p = demo_project();
+        let master = p.cell(&CellRef::new("work", "bayer_fdti_ctx_pc")).expect("master");
+        let Some(PCell::Template { def, .. }) = &master.pcell else { panic!("not a designer master") };
+        let drawn = p.cell(&CellRef::new("work", "bayer_fdti_ctx")).and_then(|c| c.layout.as_ref()).unwrap();
+        assert_eq!(canonical(&def.generate(&p.tech, &[]).unwrap()), canonical(drawn));
+        // No stretch line crosses a diagonal edge or cuts a contact or via.
+        let cuts: Vec<usize> = p.tech.vias.iter().filter_map(|v| p.tech.layer_index(&v.cut)).collect();
+        for op in &def.ops {
+            let Op::Stretch { axis, at, .. } = op else { continue };
+            let span = |a: i64, b: i64| a.min(b) < *at && *at < a.max(b);
+            for sh in &def.source.shapes {
+                if let Geometry::Polygon { points } = &sh.geom {
+                    for (a, b) in points.iter().zip(points.iter().cycle().skip(1)) {
+                        if a.0 != b.0 && a.1 != b.1 {
+                            let crosses = if *axis == Axis::X { span(a.0, b.0) } else { span(a.1, b.1) };
+                            assert!(!crosses, "line {axis:?} {at} crosses {a:?}-{b:?}");
+                        }
+                    }
+                }
+                if cuts.contains(&sh.layer) {
+                    let b = sh.geom.bbox();
+                    let cut = if *axis == Axis::X { span(b.x0, b.x1) } else { span(b.y0, b.y1) };
+                    assert!(!cut, "line {axis:?} {at} cuts {b:?}");
+                }
+            }
+        }
+        assert!(def.lint(&p.tech).iter().all(|f| f.level != crate::pcell_design::Level::Error), "{:?}", def.lint(&p.tech));
+        let deck = crate::drc::parse_any(&p.tech.deck_text(), &p.tech).unwrap().deck;
+        for run in def.check_corners(&p.tech, &deck, &p) {
+            let r = run.result.unwrap_or_else(|e| panic!("{}: {e}", run.label));
+            assert!(
+                r.violations.is_empty(),
+                "{}: {:?}",
+                run.label,
+                r.violations.iter().take(8).map(|v| (&v.rule, v.marker)).collect::<Vec<_>>()
+            );
+        }
+        // A 4 µm pixel with a 1.6 µm photodiode: the frame, the photodiodes, the 45° gates as drawn.
+        let lay = def.generate(&p.tech, &[("pitch".into(), 4.0), ("pd".into(), 1.6)]).unwrap();
+        let b = p.tech.layer_index("boundary").unwrap();
+        let frame = lay.shapes.iter().find(|s| s.layer == b).unwrap().geom.bbox();
+        assert_eq!((frame.width(), frame.height()), (8000, 8000));
+        let v = run_tech_deck(&lay, &p, &p.tech).unwrap().violations;
+        assert!(v.is_empty(), "{:?}", v.iter().take(8).map(|v| (&v.rule, v.marker)).collect::<Vec<_>>());
+        let x = extract(&lay, &p, &p.tech);
+        assert_eq!(x.photodiodes.len(), 4, "{:?}", x.photodiodes);
+        assert!(x.photodiodes.iter().all(|d| d.area == 1600 * 1600 - 440 * 440 / 2), "{:?}", x.photodiodes);
+        assert_eq!(x.devices.iter().filter(|d| (d.w, d.l) == (622, 453)).count(), 4);
+        assert_eq!(x.devices.iter().filter(|d| (d.w, d.l) == (300, 300)).count(), 3);
+        // A photodiode too big for the pitch raises it.
+        let big = def.generate(&p.tech, &[("pd".into(), 2.0)]).unwrap();
+        let f = big.shapes.iter().find(|s| s.layer == b).unwrap().geom.bbox();
+        assert_eq!(f.width(), 2 * (2000 + 2000));
+        // The diagonal stretches keep every edge's direction at every corner.
+        assert!(def.diagonal_bends(&p.tech).is_empty(), "{:?}", def.diagonal_bends(&p.tech));
+        // The widest, longest gate: 0.09 µm across each band edge is 0.06 in x and y (W 1.12 /
+        // √2 µm), the far edge 0.04 further out (L 0.84 / √2 µm); the cut is 0.56 µm.
+        let lay = def.generate(&p.tech, &[("tx_w".into(), 0.8), ("tx_l".into(), 0.6)]).unwrap();
+        let x = extract(&lay, &p, &p.tech);
+        assert_eq!(x.devices.iter().filter(|d| (d.w, d.l) == (792, 594)).count(), 4, "{:?}", x.devices);
+        // (within the boolean operations' rounding at the 45° edges, < 0.01 %)
+        assert!(x.photodiodes.iter().all(|d| (d.area - (1200 * 1200 - 560 * 560 / 2)).abs() < 100), "{:?}", x.photodiodes);
+        // A longer gate alone: 0.15 µm is 0.11 in x and y (L 0.86 / √2 µm).
+        let lay = def.generate(&p.tech, &[("tx_l".into(), 0.6)]).unwrap();
+        let x = extract(&lay, &p, &p.tech);
+        assert_eq!(x.devices.iter().filter(|d| (d.w, d.l) == (622, 608)).count(), 4, "{:?}", x.devices);
     }
 
     #[test]

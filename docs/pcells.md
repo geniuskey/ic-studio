@@ -178,13 +178,14 @@ for example `(nf - 1) * 0.72` or `if(guard, 0.5, 0)`.
 | Operation | What it does |
 |---|---|
 | **Stretch X / Y** | A line across the cell. Everything on its moving side (right / top, left / bottom, or both halves) shifts by the change of its amount from the defaults, so shapes crossing it grow |
+| **Diagonal** | A 45° line (x + y or x - y constant) limited to a region. The vertices inside the region on its moving side shift across it by the change of the amount (measured across the line; each coordinate moves by that / √2, on the grid), so 45° shapes crossing it lengthen and 45° edges along it move: a gate on a cut corner changes its width or length |
 | **Repeat** | Items wholly inside a region are copied `count - 1` times, `pitch` apart. Shapes that span the region (diffusion, implants, a gate strap) stretch to follow |
 | **Condition** | Items inside a region are dropped while an expression is 0 |
 | **Contact fill** | A rectangle refilled with the largest centred array of via cuts after stretching, so contacts re-array instead of stretching |
 
-Generation runs conditions first, then the stretches in list order (each also moves the
-later lines and regions), then the repeats, then the contact fills. Stretch, repeat and
-condition can be limited to some layers. **Earlier** / **Later** reorder the list, and
+Generation runs conditions first, then the diagonal stretches in list order, then the
+stretches (each also moves the later lines and regions), then the repeats, then the contact
+fills. Stretch, diagonal, repeat and condition can be limited to some layers. **Earlier** / **Later** reorder the list, and
 **Undo** steps back.
 
 A layer marked **Fix** in the layer panel is left alone by every stretch, repeat and
@@ -198,6 +199,12 @@ when the cell grows, and removed when it shrinks. A cut point on an edge at anot
 than 45° is rounded to the grid (**Issues** notes it). A polygon part squeezed to zero width
 is an error, as for a rectangle. A path that a stretch line runs along inside its width is
 generated as its outline polygon, so it widens like a rectangle; other paths stay paths.
+
+A diagonal stretch moves only vertices: an axis-parallel edge with one end in the region
+would turn, so its region should take in both ends of such an edge or neither (a rectangle
+wholly inside moves as a rectangle). Each diagonal stretch sees the vertices where the earlier
+ones put them. **Issues** warns when, at any corner of the parameter ranges, the diagonal
+stretches turn an edge that was axis-parallel or at 45°.
 
 ### Suggestions for a drawn MOS
 
@@ -240,6 +247,7 @@ four-corner polygon cuts count as cuts.
   - a parameter no operation uses, or one without a range
   - a default outside its range or off the grid
   - a stretch line with nothing on its moving side, or one that cuts through contacts
+  - a diagonal stretch with no vertex to move, or diagonal stretches that turn an edge
   - a name SKILL reserves
   - a cell that does not generate at its defaults
   - what an imported drawing often gets wrong: shapes on layers the technology lacks, the
@@ -293,6 +301,30 @@ spacings, so the parameters only grow from the drawn values. Every corner is DRC
 Open it in the PCell Designer to add parameters of your own. A pixel stack reads a variant
 without placing it: `[layout] cell = "bayer_fdti_pc"` with
 `params = { pitch = 3.0, pd = 1.6 }` (see [Pixel optics](pixel-optics.md)).
+
+`work/bayer_fdti_ctx_pc` is the corner transfer gate cell `bayer_fdti_ctx` the same way:
+
+| Parameter | Default | Range | Changes |
+|---|---|---|---|
+| `pitch` | 3.2 µm | 3.2 - 4.8 µm | the pixel pitch; raised to max(pitch, pd + 2) |
+| `pd` | 1.2 µm | 1.2 - 2.4 µm | the photodiode's side; the readout transistors keep their size |
+| `tx_w` | 0.62 µm | 0.62 - 0.8 µm | the transfer gate's width, which is the photodiode's corner cut; in steps of 0.028 µm (drawn 0.622) |
+| `tx_l` | 0.45 µm | 0.45 - 0.6 µm | the transfer gate's length; in steps of 0.014 µm (drawn 0.453) |
+
+Its 45° shapes (the photodiode's cut, the gate, the diagonal channel and floating diffusion) span
+0.58 - 2.62 µm of each pixel in x and y, so no axis line may cross there: `pd` stretches at
+0.5 µm, through the photodiode's square part, and the pitch 0.15 µm either side of the inner
+trenches, past the readout strips and the supply's via2. The diagonal part moves as a whole.
+
+The gate takes diagonal stretches, nine per pixel, each with a region around the vertices it
+moves. `tx_w` moves the cut in along the band by half its change and both band edges out by
+half: the cut's ends slide along the photodiode's edges, so the photodiode keeps its square
+part. The gate's end cap towards the contact head stays, the other follows the band's edge.
+`tx_l` moves the gate's far edge by `tx_l - tx_w / 2`, since the width's move of the near edge
+lengthens the gate too. The contact head reaches 0.12 µm past the end cap's far corner and its
+top-left corner is cut along x - y = 0.88 µm, so the cap can lengthen inside it and what shows
+of it stays 0.22 µm from the widest band's edge. Every corner is DRC clean, and extraction
+gives W 0.792 / L 0.594 µm at `tx_w = 0.8, tx_l = 0.6`.
 
 ### With the Design Copilot or an MCP agent
 

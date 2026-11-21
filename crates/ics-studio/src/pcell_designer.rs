@@ -15,7 +15,7 @@ use ics_core::drc;
 use ics_core::layout::Geometry;
 use ics_core::layout_diff::{self, LayoutDiff};
 use ics_core::pcell::PCell;
-use ics_core::pcell_design::{Axis, CornerRun, Finding, Level, Op, Param, ParamKind, Side, Target, Template, Values};
+use ics_core::pcell_design::{Axis, CornerRun, Diag, Finding, Level, Op, Param, ParamKind, Side, Target, Template, Values};
 use ics_core::{CellRef, IRect, Layout, Project, Tech};
 
 use crate::layout_view::layer_color;
@@ -756,6 +756,23 @@ impl PCellDesigner {
                         Pick::Line,
                     ));
                 }
+                if ui
+                    .small_button("+ Diagonal")
+                    .on_hover_text("A 45° line (x + y constant) in a region; vertices up and right of it move across it")
+                    .clicked()
+                {
+                    add = Some((
+                        Op::Diagonal {
+                            dir: Diag::Sum,
+                            at: snap(mid.0 + mid.1, tech.grid),
+                            side: Side::High,
+                            amount: first_len(t),
+                            region: bb,
+                            layers: vec![],
+                        },
+                        Pick::Region,
+                    ));
+                }
                 if ui.small_button("+ Repeat").on_hover_text("Copy what lies inside a region count times, pitch apart").clicked()
                 {
                     add = Some((
@@ -1287,6 +1304,41 @@ impl PCellDesigner {
                     expr_edit(ui, "Amount", amount, &params, "µm; the line moves by its change from the defaults");
                     layers_edit(ui, layers, tech);
                 }
+                Op::Diagonal { dir, at, side, amount, region, layers } => {
+                    let lb = ui.label("Line");
+                    egui::ComboBox::from_id_salt("pd_diag")
+                        .selected_text(format!("{} =", dir.label()))
+                        .show_ui(ui, |ui| {
+                            for d in Diag::ALL {
+                                ui.selectable_value(dir, d, format!("{} =", d.label()));
+                            }
+                        })
+                        .response
+                        .labelled_by(lb.id);
+                    ui.end_row();
+                    let lb = ui.label("Line at");
+                    len_edit(ui, at, tech, lb.id);
+                    ui.end_row();
+                    let lb = ui.label("Moves");
+                    let name = |s: Side| match s {
+                        Side::High => "high side (larger value)",
+                        Side::Low => "low side (smaller value)",
+                        Side::Both => "both sides (centred)",
+                    };
+                    egui::ComboBox::from_id_salt("pd_dside")
+                        .selected_text(name(*side))
+                        .show_ui(ui, |ui| {
+                            for s in Side::ALL {
+                                ui.selectable_value(side, s, name(s));
+                            }
+                        })
+                        .response
+                        .labelled_by(lb.id);
+                    ui.end_row();
+                    region_row(ui, "Region", region, tech, &mut pick);
+                    expr_edit(ui, "Amount", amount, &params, "µm across the line; vertices move by its change / √2 in x and y");
+                    layers_edit(ui, layers, tech);
+                }
                 Op::Repeat { axis, region, count, pitch, at, layers } => {
                     axis_pick(ui, axis);
                     region_row(ui, "Region", region, tech, &mut pick);
@@ -1452,6 +1504,30 @@ impl PCellDesigner {
                         c,
                     );
                 }
+                Op::Diagonal { dir, at, region, .. } => {
+                    let r = fit.r(region);
+                    dashed_rect(&p, r, Stroke::new(1.0, c.gamma_multiply(0.6)));
+                    // The line inside the region.
+                    let (x0, x1) = match dir {
+                        Diag::Sum => (region.x0.max(at - region.y1), region.x1.min(at - region.y0)),
+                        Diag::Diff => (region.x0.max(region.y0 + at), region.x1.min(region.y1 + at)),
+                    };
+                    let y = |x: i64| match dir {
+                        Diag::Sum => at - x,
+                        Diag::Diff => x - at,
+                    };
+                    if x0 <= x1 {
+                        let (a, b) = (fit.pt(x0, y(x0)), fit.pt(x1, y(x1)));
+                        p.extend(egui::Shape::dashed_line(&[a, b], Stroke::new(w, c), 8.0, 5.0));
+                    }
+                    p.text(
+                        r.left_top() + Vec2::new(3.0, 2.0),
+                        Align2::LEFT_TOP,
+                        format!("{} {}", k + 1, dir.label()),
+                        FontId::proportional(11.0),
+                        c,
+                    );
+                }
                 Op::Condition { region, .. } => {
                     let r = fit.r(region);
                     dashed_rect(&p, r, Stroke::new(w, pal.warning.gamma_multiply(if on { 1.0 } else { 0.7 })));
@@ -1549,7 +1625,9 @@ impl PCellDesigner {
                             self.checkpoint();
                             if let Some(op) = self.tpl.as_mut().and_then(|t| t.ops.get_mut(k)) {
                                 match op {
-                                    Op::Repeat { region, .. } | Op::Condition { region, .. } => *region = r,
+                                    Op::Repeat { region, .. } | Op::Condition { region, .. } | Op::Diagonal { region, .. } => {
+                                        *region = r
+                                    }
                                     Op::ContactFill { rect, .. } => *rect = r,
                                     Op::Stretch { .. } => {}
                                 }
@@ -1603,7 +1681,10 @@ impl PCellDesigner {
             let d = match op {
                 Op::Stretch { axis: Axis::X, at, .. } => (fit.pt(*at, 0).x - pos.x).abs(),
                 Op::Stretch { axis: Axis::Y, at, .. } => (fit.pt(0, *at).y - pos.y).abs(),
-                Op::Repeat { region: r, .. } | Op::Condition { region: r, .. } | Op::ContactFill { rect: r, .. } => {
+                Op::Repeat { region: r, .. }
+                | Op::Condition { region: r, .. }
+                | Op::Diagonal { region: r, .. }
+                | Op::ContactFill { rect: r, .. } => {
                     let sr = fit.r(r);
                     if sr.expand(4.0).contains(pos) { 3.0 + sr.area().sqrt() * 0.01 } else { f32::INFINITY }
                 }
@@ -2003,7 +2084,7 @@ fn rename_in_ops(ops: &mut [Op], from: &str, to: &str) {
     };
     for op in ops {
         match op {
-            Op::Stretch { amount, .. } => swap(amount),
+            Op::Stretch { amount, .. } | Op::Diagonal { amount, .. } => swap(amount),
             Op::Repeat { count, pitch, .. } => {
                 swap(count);
                 swap(pitch);
@@ -2018,6 +2099,9 @@ fn explain(op: &Op) -> &'static str {
     match op {
         Op::Stretch { .. } => {
             "Everything on the moving side shifts by the change of the amount from its default value; shapes crossing the line grow."
+        }
+        Op::Diagonal { .. } => {
+            "Vertices inside the region on the moving side of the 45° line shift across it: 45° shapes crossing it lengthen. Keep axis-parallel shapes wholly in or out of the region."
         }
         Op::Repeat { .. } => {
             "Items wholly inside the region are copied count times, pitch apart; shapes that span the region stretch to cover the copies."
@@ -2361,9 +2445,10 @@ fn ops_on_layer(t: &Template, layer: usize, tech: &Tech) -> Vec<String> {
     let mut out = vec![];
     for (k, op) in t.ops.iter().enumerate() {
         let on = match op {
-            Op::Stretch { layers, .. } | Op::Repeat { layers, .. } | Op::Condition { layers, .. } => {
-                layers.is_empty() || layers.contains(&layer)
-            }
+            Op::Stretch { layers, .. }
+            | Op::Diagonal { layers, .. }
+            | Op::Repeat { layers, .. }
+            | Op::Condition { layers, .. } => layers.is_empty() || layers.contains(&layer),
             Op::ContactFill { via, .. } => tech
                 .vias
                 .iter()

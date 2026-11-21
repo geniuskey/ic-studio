@@ -3,6 +3,8 @@
 # photodiode's inner corner is cut at 45 degrees, the transfer gate lies across the cut and its
 # diagonal floating diffusion runs towards the cell's centre. The layout's any-angle shapes are
 # read as a staircase of 10 nm bands. Same stack and doping as `pixels/bayer_fdti.toml`.
+# For a variant of the PCell: cell = "bayer_fdti_ctx_pc" with params = { pitch = 3.6, pd = 1.6, tx_w = 0.8 }
+# (pitch, pd, tx_w, tx_l in um).
 #   ics pixel pixels/bayer_fdti_ctx.toml --project <demo project> --cra 15 --lux 100
 #   ics pixel pixels/bayer_fdti_ctx.toml --project <demo project> --transfer B
 name = "bayer_fdti_ctx BSI FDTI, corner TX"

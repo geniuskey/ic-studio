@@ -7,13 +7,15 @@
 //! - [`Op::Condition`]: items inside a region are dropped when an expression is false.
 //! - [`Op::Stretch`]: a line across the cell; coordinates on the moving side shift by
 //!   `amount(values) - amount(defaults)`, so shapes crossing the line grow.
+//! - [`Op::Diagonal`]: a 45° line (x + y or x - y constant); the vertices inside a region on
+//!   the moving side shift across it, so 45° shapes (a gate on a cut corner) change size.
 //! - [`Op::Repeat`]: items inside a region are copied `count - 1` times `pitch` apart, and the
 //!   items that span the region (diffusion, implants, a gate strap) are stretched to follow.
 //! - [`Op::ContactFill`]: a rectangle refilled with the largest centred array of via cuts after
 //!   stretching, so contacts are re-arrayed instead of stretched.
 //!
-//! Generation runs them in that order: conditions, stretches (each also moves the later lines
-//! and regions), repeats, fills. Expressions ([`parse_expr`]) are in µm over the parameter
+//! Generation runs them in this order: conditions, diagonal stretches, stretches (each also
+//! moves the later lines and regions), repeats, fills. Expressions ([`parse_expr`]) are in µm over the parameter
 //! names. [`Template::lint`] reports mistakes, [`Template::check_corners`] runs DRC on the
 //! parameter extremes, and the `suggest_*` helpers read a drawn device to propose contact
 //! fills, a finger repeat (reducing the drawing to one unit) and W / L stretch lines.
@@ -143,6 +145,122 @@ impl Side {
     }
 }
 
+/// The direction of a 45° stretch line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Diag {
+    /// The line x + y = at; vertices move along (1, 1), the high side being up and right.
+    #[default]
+    Sum,
+    /// The line x - y = at; vertices move along (1, -1), the high side being down and right.
+    Diff,
+}
+
+impl Diag {
+    pub const ALL: [Diag; 2] = [Diag::Sum, Diag::Diff];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Diag::Sum => "x+y",
+            Diag::Diff => "x-y",
+        }
+    }
+
+    /// The coordinate across the line.
+    pub fn value(self, (x, y): (i64, i64)) -> i64 {
+        match self {
+            Diag::Sum => x + y,
+            Diag::Diff => x - y,
+        }
+    }
+
+    /// The move of `k` in each coordinate towards the high side.
+    fn vec(self, k: i64) -> (i64, i64) {
+        match self {
+            Diag::Sum => (k, k),
+            Diag::Diff => (k, -k),
+        }
+    }
+}
+
+/// The move in each coordinate (grid) for a diagonal stretch of `um` across its line.
+fn diag_step(um: f64, tech: &Tech) -> i64 {
+    snap((um * tech.dbu_per_um as f64 / std::f64::consts::SQRT_2).round() as i64, tech.grid)
+}
+
+/// One diagonal stretch: vertices inside `region` above the line move by `hi` in each
+/// coordinate towards the high side, those below by `lo` towards the low side.
+struct DiagShift {
+    dir: Diag,
+    at: i64,
+    hi: i64,
+    lo: i64,
+    region: IRect,
+}
+
+impl DiagShift {
+    fn new(dir: Diag, at: i64, side: Side, k: i64, region: IRect, g: i64) -> DiagShift {
+        let (hi, lo) = match side {
+            Side::High => (k, 0),
+            Side::Low => (0, k),
+            Side::Both => {
+                let h = snap(k / 2, g);
+                (h, k - h)
+            }
+        };
+        DiagShift { dir, at, hi, lo, region }
+    }
+
+    /// The moved point, and whether it passed the line.
+    fn map(&self, p: (i64, i64)) -> ((i64, i64), bool) {
+        let r = &self.region;
+        if p.0 < r.x0 || p.0 > r.x1 || p.1 < r.y0 || p.1 > r.y1 {
+            return (p, false);
+        }
+        let v = self.dir.value(p);
+        let k = if v > self.at {
+            self.hi
+        } else if v < self.at {
+            -self.lo
+        } else {
+            0
+        };
+        let (dx, dy) = self.dir.vec(k);
+        let n = (p.0 + dx, p.1 + dy);
+        let w = self.dir.value(n);
+        (n, (v > self.at && w < self.at) || (v < self.at && w > self.at))
+    }
+
+    /// Move a shape's vertices. A rectangle whose corners move apart becomes a polygon;
+    /// `crossed` is set when a vertex passes the line.
+    fn apply(&self, g: &mut Geometry, crossed: &mut bool) {
+        let mut m = |p: (i64, i64)| {
+            let (n, c) = self.map(p);
+            *crossed |= c;
+            n
+        };
+        match g {
+            Geometry::Rect(r) => {
+                let corners = [(r.x0, r.y0), (r.x1, r.y0), (r.x1, r.y1), (r.x0, r.y1)];
+                let moved = corners.map(&mut m);
+                let d = |k: usize| (moved[k].0 - corners[k].0, moved[k].1 - corners[k].1);
+                if (1..4).all(|k| d(k) == d(0)) {
+                    let (dx, dy) = d(0);
+                    *r = IRect::new(r.x0 + dx, r.y0 + dy, r.x1 + dx, r.y1 + dy);
+                } else {
+                    *g = Geometry::Polygon { points: moved.to_vec() };
+                }
+            }
+            Geometry::Polygon { points } | Geometry::Path { points, .. } => {
+                for q in points.iter_mut() {
+                    *q = m(*q);
+                }
+            }
+            Geometry::Label { at, .. } => *at = m(*at),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Op {
@@ -155,6 +273,24 @@ pub enum Op {
         /// Expression in µm; the line moves by its change from the defaults.
         amount: String,
         /// Layers that stretch; empty = all (instances only move with all layers).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        layers: Vec<usize>,
+    },
+    /// A 45° stretch line limited to a region: the vertices inside `region` on the moving side
+    /// shift across the line, so the 45° edges that cross it lengthen and those along it move.
+    /// Axis-parallel edges crossing it would turn, so the region should take in only 45°
+    /// shapes there (a rectangle moved whole stays one).
+    Diagonal {
+        dir: Diag,
+        /// The line: x + y (or x - y) = at, source dbu.
+        at: i64,
+        #[serde(default)]
+        side: Side,
+        /// Expression in µm, measured across the line; each coordinate moves by its change
+        /// from the defaults / √2, on the grid.
+        amount: String,
+        /// Vertices inside (edges included) move.
+        region: IRect,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         layers: Vec<usize>,
     },
@@ -190,6 +326,7 @@ impl Op {
     pub fn title(&self) -> &'static str {
         match self {
             Op::Stretch { .. } => "Stretch",
+            Op::Diagonal { .. } => "Diagonal stretch",
             Op::Repeat { .. } => "Repeat",
             Op::Condition { .. } => "Condition",
             Op::ContactFill { .. } => "Contact fill",
@@ -208,6 +345,14 @@ impl Op {
                 };
                 format!("stretch {} @ {} by {amount}{s}", axis.label(), um(*at))
             }
+            Op::Diagonal { dir, at, side, amount, .. } => {
+                let s = match side {
+                    Side::High => "",
+                    Side::Low => " (low side)",
+                    Side::Both => " (centred)",
+                };
+                format!("stretch {} = {} by {amount}{s}", dir.label(), um(*at))
+            }
             Op::Repeat { axis, count, pitch, .. } => format!("repeat along {}: {count} copies, pitch {pitch}", axis.label()),
             Op::Condition { when, .. } => format!("keep if {when}"),
             Op::ContactFill { via, rect } => format!("{via} fill {} × {} µm", um(rect.width()), um(rect.height())),
@@ -216,7 +361,7 @@ impl Op {
 
     fn exprs(&self) -> Vec<(&'static str, &str)> {
         match self {
-            Op::Stretch { amount, .. } => vec![("amount", amount)],
+            Op::Stretch { amount, .. } | Op::Diagonal { amount, .. } => vec![("amount", amount)],
             Op::Repeat { count, pitch, .. } => vec![("count", count), ("pitch", pitch)],
             Op::Condition { when, .. } => vec![("condition", when)],
             Op::ContactFill { .. } => vec![],
@@ -225,7 +370,10 @@ impl Op {
 
     fn layers(&self) -> &[usize] {
         match self {
-            Op::Stretch { layers, .. } | Op::Repeat { layers, .. } | Op::Condition { layers, .. } => layers,
+            Op::Stretch { layers, .. }
+            | Op::Diagonal { layers, .. }
+            | Op::Repeat { layers, .. }
+            | Op::Condition { layers, .. } => layers,
             Op::ContactFill { .. } => &[],
         }
     }
@@ -559,7 +707,11 @@ impl Template {
             s.layer = map(s.layer);
         }
         for op in &mut self.ops {
-            if let Op::Stretch { layers, .. } | Op::Repeat { layers, .. } | Op::Condition { layers, .. } = op {
+            if let Op::Stretch { layers, .. }
+            | Op::Diagonal { layers, .. }
+            | Op::Repeat { layers, .. }
+            | Op::Condition { layers, .. } = op
+            {
                 for l in layers.iter_mut() {
                     *l = map(*l);
                 }
@@ -582,6 +734,10 @@ impl Template {
         for op in &mut self.ops {
             match op {
                 Op::Stretch { at, .. } => s(at),
+                Op::Diagonal { at, region, .. } => {
+                    s(at);
+                    r(region);
+                }
                 Op::Repeat { region, at, .. } => {
                     r(region);
                     if let Some(a) = at {
@@ -683,6 +839,75 @@ impl Template {
         out
     }
 
+    /// Apply one diagonal stretch to the items on `layers`.
+    fn diagonal(&self, items: &mut [Item], sh: &DiagShift, layers: &[usize]) -> Result<(), String> {
+        let mut crossed = false;
+        for it in items.iter_mut().filter(|it| it.on(layers, &self.fixed)) {
+            sh.apply(&mut it.geom, &mut crossed);
+            if it.fill.is_some() && !matches!(it.geom, Geometry::Rect(_)) {
+                return Err("moves part of a contact fill: take all of it into the region or none".into());
+            }
+        }
+        if crossed {
+            return Err("is too small: vertices would pass the line".into());
+        }
+        Ok(())
+    }
+
+    /// Edges the diagonal stretches turn at the corners of the parameter ranges: (corner,
+    /// layer, a vertex of the edge in source dbu). An axis-parallel or 45° edge should keep
+    /// its direction; the vertices it joins move apart when only one is in the region.
+    pub fn diagonal_bends(&self, tech: &Tech) -> Vec<(String, usize, (i64, i64))> {
+        if !self.ops.iter().any(|o| matches!(o, Op::Diagonal { .. })) {
+            return vec![];
+        }
+        let class = |a: (i64, i64), b: (i64, i64)| {
+            let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+            match () {
+                _ if dx == 0 && dy == 0 => 0,
+                _ if dy == 0 => 1,
+                _ if dx == 0 => 2,
+                _ if dx == dy => 3,
+                _ if dx == -dy => 4,
+                _ => 5,
+            }
+        };
+        let edges = |g: &Geometry| -> Vec<((i64, i64), (i64, i64))> {
+            let (pts, closed) = match g {
+                Geometry::Rect(r) => (vec![(r.x0, r.y0), (r.x1, r.y0), (r.x1, r.y1), (r.x0, r.y1)], true),
+                Geometry::Polygon { points } => (points.clone(), true),
+                Geometry::Path { points, .. } => (points.clone(), false),
+                Geometry::Label { .. } => return vec![],
+            };
+            let n = pts.len();
+            (0..if closed { n } else { n.saturating_sub(1) }).map(|i| (pts[i], pts[(i + 1) % n])).collect()
+        };
+        let defaults = self.defaults();
+        let mut out = vec![];
+        for (label, given) in self.corners() {
+            let Ok(values) = self.resolve(&given) else { continue };
+            let mut items = self.items();
+            for op in &self.ops {
+                let Op::Diagonal { dir, at, side, amount, region, layers } = op else { continue };
+                let Ok(e) = parse_expr(amount) else { continue };
+                let (Ok(a), Ok(b)) = (e.eval(&values), e.eval(&defaults)) else { continue };
+                let step = diag_step(a - b, tech);
+                if step != 0 {
+                    let _ = self.diagonal(&mut items, &DiagShift::new(*dir, *at, *side, step, *region, tech.grid), layers);
+                }
+            }
+            for (src, it) in self.items().iter().zip(&items) {
+                let (Some(layer), (e0, e1)) = (src.layer, (edges(&src.geom), edges(&it.geom))) else { continue };
+                if let Some((a, _)) =
+                    e0.iter().zip(&e1).find(|((a, b), (c, d))| class(*a, *b) != 5 && class(*a, *b) != class(*c, *d)).map(|x| x.0)
+                {
+                    out.push((label.clone(), layer, *a));
+                }
+            }
+        }
+        out
+    }
+
     /// The layout for parameter values `given` (the others take their defaults).
     pub fn generate(&self, tech: &Tech, given: &[(String, f64)]) -> Result<Layout, String> {
         let values = self.resolve(given)?;
@@ -716,6 +941,15 @@ impl Template {
                 && eval(when, &values, &format!("condition {}", k + 1))? == 0.0
             {
                 items.retain(|it| !(it.on(layers, &self.fixed) && inside(region, &it.bbox())));
+            }
+        }
+        for (k, op) in self.ops.iter().enumerate() {
+            let Op::Diagonal { dir, at, side, amount, region, layers } = op else { continue };
+            let what = format!("diagonal stretch {}", k + 1);
+            let step = diag_step(eval(amount, &values, &what)? - eval(amount, &defaults, &what)?, tech);
+            if step != 0 {
+                let sh = DiagShift::new(*dir, *at, *side, step, *region, g);
+                self.diagonal(&mut items, &sh, layers).map_err(|e| format!("{what} ({amount}) {e}"))?;
             }
         }
         // Stretches, each moving the later lines and the repeat regions with the geometry.
@@ -1097,6 +1331,33 @@ impl Template {
                         );
                     }
                 }
+                Op::Diagonal { dir, at, side, region, layers, .. } => {
+                    let moving = |p: (i64, i64)| {
+                        let v = dir.value(p);
+                        let r = region;
+                        p.0 >= r.x0
+                            && p.0 <= r.x1
+                            && p.1 >= r.y0
+                            && p.1 <= r.y1
+                            && match side {
+                                Side::High => v > *at,
+                                Side::Low => v < *at,
+                                Side::Both => v != *at,
+                            }
+                    };
+                    let any = items.iter().filter(|it| it.on(layers, &self.fixed)).any(|it| match &it.geom {
+                        Geometry::Rect(r) => [(r.x0, r.y0), (r.x1, r.y0), (r.x1, r.y1), (r.x0, r.y1)].into_iter().any(moving),
+                        Geometry::Polygon { points } | Geometry::Path { points, .. } => points.iter().copied().any(moving),
+                        Geometry::Label { at, .. } => moving(*at),
+                    });
+                    if !any {
+                        push(
+                            Level::Warning,
+                            Target::Op(k),
+                            "No vertex inside the region is on the moving side: it has no effect".into(),
+                        );
+                    }
+                }
                 Op::Repeat { region, .. } | Op::Condition { region, .. } => {
                     if !items.iter().any(|it| it.on(op.layers(), &self.fixed) && inside(region, &it.bbox()))
                         && !self.ops.iter().any(|o| matches!(o, Op::ContactFill { rect, .. } if inside(region, rect)))
@@ -1115,6 +1376,18 @@ impl Template {
         }
         if let Err(e) = self.generate(tech, &[]) {
             push(Level::Error, Target::Template, format!("Generation at the defaults fails: {e}"));
+        }
+        if let Some((corner, layer, (x, y))) = self.diagonal_bends(tech).into_iter().next() {
+            push(
+                Level::Warning,
+                Target::Template,
+                format!(
+                    "At {corner}, the diagonal stretches turn an edge of a {} shape (at {}, {} µm): take both of its ends into the region or neither",
+                    lname(layer),
+                    fmt_um(x, tech.dbu_per_um),
+                    fmt_um(y, tech.dbu_per_um)
+                ),
+            );
         }
         out.extend(self.drawing_findings(tech));
         out.sort_by_key(|f| f.level);
@@ -1772,6 +2045,22 @@ const SKILL_ENGINE: &str = r#"    icsSnap = lambda((v) if(icsGrid <= 1 v icsGrid
         when(and(tC cdr(tO) equal(car(tO) car(last(tO)))) tO = cdr(tO))
         list(car(tIt) nth(1 tIt) reverse(tO) nth(3 tIt) nth(4 tIt)))
       else funcall(icsMap tIt tX icsSh)))
+    ;; Move an item's vertices with icsDg (a diagonal stretch). A rectangle whose corners
+    ;; move apart becomes a polygon (icsBent is set if it is a contact fill).
+    icsDi = lambda((dIt) let((dK dP dC dM dX dY dU)
+      dK = car(dIt)  dP = nth(2 dIt)
+      if(memq(dK '(rect fill)) then
+        dC = list(car(dP) list(car(cadr(dP)) cadr(car(dP))) cadr(dP) list(car(car(dP)) cadr(cadr(dP))))
+        dM = mapcar(icsDg dC)
+        dX = car(car(dM)) - car(car(dC))  dY = cadr(car(dM)) - cadr(car(dC))
+        dU = t
+        for(dI 1 3
+          unless(and(car(nth(dI dM)) - car(nth(dI dC)) == dX cadr(nth(dI dM)) - cadr(nth(dI dC)) == dY) dU = nil))
+        if(dU then list(dK nth(1 dIt) list(car(dM) nth(2 dM)) nth(3 dIt) nth(4 dIt))
+        else
+          when(eq(dK 'fill) icsBent = t)
+          list('poly nth(1 dIt) dM nil nil))
+      else list(dK nth(1 dIt) mapcar(icsDg dP) nth(3 dIt) nth(4 dIt)))))
 "#;
 
 const SKILL_OUTPUT: &str = r#"    ;; Create the shapes; contact fills become the largest centred array of cuts.
@@ -1876,6 +2165,9 @@ impl Template {
             "icsSt",
             "icsGone",
             "icsCut",
+            "icsDg",
+            "icsDi",
+            "icsBent",
         ]
         .map(String::from)
         .to_vec();
@@ -1980,6 +2272,56 @@ impl Template {
                     rect(region)
                 );
             }
+        }
+        for (k, op) in self.ops.iter().enumerate() {
+            let Op::Diagonal { dir, at, side, amount, region, layers: ls } = op else { continue };
+            let what = format!("diagonal stretch {}", k + 1);
+            let e = parse_expr(amount).map_err(|e| format!("{what} '{amount}': {e}"))?;
+            let d0 = e.eval(&defaults).map_err(|e| format!("{what} '{amount}': {e}"))?;
+            let (hi, lo) = match side {
+                Side::High => ("icsD", "0"),
+                Side::Low => ("0", "icsD"),
+                Side::Both => ("funcall(icsSnap fix(icsD / 2.0))", "icsD - icsHi"),
+            };
+            let (val, dy) = match dir {
+                Diag::Sum => ("car(gQ) + cadr(gQ)", "+ gK"),
+                Diag::Diff => ("car(gQ) - cadr(gQ)", "- gK"),
+            };
+            let _ = writeln!(s, "    ;; {}. stretch {} = {} by {amount}", k + 1, dir.label(), skill_int(*at));
+            let _ =
+                writeln!(s, "    icsD = funcall(icsSnap round(({} - {}) * icsDbu / sqrt(2.0)))", skill_expr(&e), skill_num(d0));
+            let _ = writeln!(
+                s,
+                "    unless(icsD == 0\n      icsHi = {hi}\n      icsLo = {lo}\n      icsAt = {}\n      icsCross = nil\n      icsBent = nil",
+                skill_int(*at)
+            );
+            let _ = writeln!(
+                s,
+                "      icsDg = lambda((gQ) let((gV gK gW)\n        \
+                 if(and(car(gQ) >= {x0} car(gQ) <= {x1} cadr(gQ) >= {y0} cadr(gQ) <= {y1}) then\n          \
+                 gV = {val}\n          gK = if(gV > icsAt icsHi if(gV < icsAt 0 - icsLo 0))\n          \
+                 gW = gV + 2 * gK\n          \
+                 when(or(and(gV > icsAt gW < icsAt) and(gV < icsAt gW > icsAt)) icsCross = t)\n          \
+                 list(car(gQ) + gK cadr(gQ) {dy})\n        else gQ)))",
+                x0 = skill_int(region.x0),
+                x1 = skill_int(region.x1),
+                y0 = skill_int(region.y0),
+                y1 = skill_int(region.y1),
+            );
+            let _ = writeln!(
+                s,
+                "      icsItems = mapcar(lambda((dIt) if(funcall(icsOn dIt {}) funcall(icsDi dIt) dIt)) icsItems)",
+                layers(ls)?
+            );
+            let a = amount.replace('"', "'");
+            let _ = writeln!(
+                s,
+                "      when(icsBent error(\"%s: {what} ({a}) moves part of a contact fill: take all of it into the region or none\" icsName))"
+            );
+            let _ = writeln!(
+                s,
+                "      when(icsCross error(\"%s: {what} ({a}) is too small: vertices would pass the line\" icsName)))"
+            );
         }
         for (k, op) in self.ops.iter().enumerate() {
             let Op::Stretch { axis, side, amount, layers: ls, .. } = op else { continue };
@@ -2622,6 +2964,62 @@ mod tests {
         q.tech = tech.clone();
         let e = crate::skill::run(&mut q, &bad, None).unwrap_err();
         assert!(e.to_string().contains("too small"), "{e}");
+    }
+
+    /// Diagonal stretches move 45° shapes across their lines and rectangles whole, the same in
+    /// SKILL; a rectangle with one end in the region is reported.
+    #[test]
+    fn diagonal_stretch_moves_45_degree_shapes() {
+        let tech = Tech::generic();
+        let (m1, m2) = (tech.layer_index("metal1").unwrap(), tech.layer_index("metal2").unwrap());
+        let mut lay = Layout::default();
+        // A 45° band: x + y from 1 to 2 µm, x - y within ±0.4 µm.
+        let band = vec![(700, 300), (1200, 800), (800, 1200), (300, 700)];
+        lay.add(m1, Geometry::Polygon { points: band });
+        lay.add_rect(m2, 1100, 1100, 1300, 1300);
+        let mut t = Template::from_layout("pc_diag", &lay);
+        t.params = vec![Param::new("l", ParamKind::Length, 0.5), Param::new("w", ParamKind::Length, 0.8)];
+        let region = IRect::new(0, 0, 2000, 2000);
+        t.ops.push(Op::Diagonal { dir: Diag::Sum, at: 1500, side: Side::High, amount: "l".into(), region, layers: vec![] });
+        t.ops.push(Op::Diagonal { dir: Diag::Diff, at: 0, side: Side::Both, amount: "w".into(), region, layers: vec![m1] });
+        assert!(t.lint(&tech).iter().all(|f| f.level != Level::Error), "{:?}", t.lint(&tech));
+        assert!(t.diagonal_bends(&tech).is_empty());
+        // l + 0.3 µm: 0.3 / √2 = 0.21 µm in x and y beyond the line.
+        let g = t.generate(&tech, &vals(&[("l", 0.8)])).unwrap();
+        let poly = |l: &Layout| l.shapes.iter().find(|s| s.layer == m1).map(|s| s.geom.clone()).unwrap();
+        assert_eq!(poly(&g), Geometry::Polygon { points: vec![(700, 300), (1410, 1010), (1010, 1410), (300, 700)] });
+        let r = g.shapes.iter().find(|s| s.layer == m2).unwrap();
+        assert_eq!(r.geom, Geometry::Rect(IRect::new(1310, 1310, 1510, 1510)));
+        // w + 0.2 µm, centred: 0.07 µm each way across x - y = 0.
+        let g = t.generate(&tech, &vals(&[("w", 1.0)])).unwrap();
+        assert_eq!(poly(&g), Geometry::Polygon { points: vec![(770, 230), (1270, 730), (730, 1270), (230, 770)] });
+        assert!(t.generate(&tech, &vals(&[("l", 0.0)])).unwrap_err().contains("too small"));
+        // The SKILL export agrees.
+        let (text, _) = t.to_skill(&tech, "pclib").unwrap();
+        let sets = [vec![], vals(&[("l", 0.8)]), vals(&[("w", 1.0), ("l", 0.3)]), vals(&[("w", 1.2), ("l", 0.9)])];
+        let mut src = text.clone();
+        src.push_str("cv = dbOpenCellViewByType(\"work\" \"top\" \"layout\" \"maskLayout\" \"w\")\n");
+        for (i, set) in sets.iter().enumerate() {
+            let ps: Vec<String> = set.iter().map(|(n, v)| format!("list(\"{n}\" \"float\" {v:?})")).collect();
+            src.push_str(&format!(
+                "dbCreateParamInstByMasterName(cv \"pclib\" \"pc_diag\" \"layout\" \"I{i}\" {}:0 \"R0\" 1 list({}))\n",
+                i * 100,
+                ps.join(" ")
+            ));
+        }
+        let mut p = crate::project::Project::new("t");
+        p.tech = tech.clone();
+        crate::skill::run(&mut p, &src, None).unwrap_or_else(|e| panic!("{e}\n{text}"));
+        let top = p.cell(&crate::project::CellRef::new("work", "top")).and_then(|c| c.layout.clone()).unwrap();
+        for (inst, set) in top.instances.iter().zip(&sets) {
+            let got = p.cell(&inst.cell).and_then(|c| c.layout.clone()).unwrap();
+            assert_eq!(canonical(&got), canonical(&t.generate(&tech, set).unwrap()), "{set:?}");
+        }
+        // A metal1 rectangle across the line turns into a skewed polygon: reported.
+        t.source.add_rect(m1, 1400, 0, 1700, 100);
+        t.params[0].max = Some(1.0);
+        assert!(!t.diagonal_bends(&tech).is_empty());
+        assert!(t.lint(&tech).iter().any(|f| f.message.contains("diagonal stretches turn an edge")));
     }
 
     /// The drawing as polygons (as some imports give it) reads like the drawing as rectangles.

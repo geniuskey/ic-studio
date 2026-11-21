@@ -3,7 +3,7 @@
 //! to Virtuoso. The template lives in its master cell (`lib/<name>`), whose layout is the PCell at
 //! its defaults; every edit stores it again and regenerates the variants already placed.
 
-use ics_core::pcell_design::{Axis, Level, Op, Param, ParamKind, Side, Target, Template};
+use ics_core::pcell_design::{Axis, Diag, Level, Op, Param, ParamKind, Side, Target, Template};
 
 use super::*;
 
@@ -71,21 +71,38 @@ fn axis_arg(o: &Map<String, Value>, op: &str) -> Result<Axis, String> {
     }
 }
 
+fn side_arg(o: &Map<String, Value>, op: &str) -> Result<Side, String> {
+    match o.get("side").and_then(Value::as_str).unwrap_or("high") {
+        "high" => Ok(Side::High),
+        "low" => Ok(Side::Low),
+        "both" => Ok(Side::Both),
+        s => Err(format!("{op}: unknown side '{s}' (use high, low or both)")),
+    }
+}
+
 fn op_from_json(t: &Tech, v: &Value) -> Result<Op, String> {
     let o = v.as_object().ok_or("each op must be an object")?;
-    let kind = o.get("op").and_then(Value::as_str).ok_or("each op needs 'op': stretch, repeat, condition or contact_fill")?;
+    let kind =
+        o.get("op").and_then(Value::as_str).ok_or("each op needs 'op': stretch, diagonal, repeat, condition or contact_fill")?;
     let num = |k: &str| o.get(k).and_then(Value::as_f64).ok_or_else(|| format!("{kind}: '{k}' must be a number (µm)"));
     Ok(match kind {
         "stretch" => Op::Stretch {
             axis: axis_arg(o, kind)?,
             at: dbu(t, num("at")?),
-            side: match o.get("side").and_then(Value::as_str).unwrap_or("high") {
-                "high" => Side::High,
-                "low" => Side::Low,
-                "both" => Side::Both,
-                s => return Err(format!("stretch: unknown side '{s}' (use high, low or both)")),
-            },
+            side: side_arg(o, kind)?,
             amount: expr_arg(o, "amount", kind)?,
+            layers: layers_arg(t, o)?,
+        },
+        "diagonal" => Op::Diagonal {
+            dir: match o.get("dir").and_then(Value::as_str) {
+                Some("x+y") => Diag::Sum,
+                Some("x-y") => Diag::Diff,
+                _ => return Err("diagonal: 'dir' must be \"x+y\" or \"x-y\"".into()),
+            },
+            at: dbu(t, num("at")?),
+            side: side_arg(o, kind)?,
+            amount: expr_arg(o, "amount", kind)?,
+            region: rect_arg(t, o.get("region").unwrap_or(&Value::Null), "diagonal region")?,
             layers: layers_arg(t, o)?,
         },
         "repeat" => Op::Repeat {
@@ -112,7 +129,7 @@ fn op_from_json(t: &Tech, v: &Value) -> Result<Op, String> {
             }
             Op::ContactFill { rect: rect_arg(t, o.get("rect").unwrap_or(&Value::Null), "contact_fill rect")?, via: via.into() }
         }
-        k => return Err(format!("unknown op '{k}' (use stretch, repeat, condition or contact_fill)")),
+        k => return Err(format!("unknown op '{k}' (use stretch, diagonal, repeat, condition or contact_fill)")),
     })
 }
 
@@ -121,6 +138,10 @@ fn op_json(t: &Tech, k: usize, op: &Op) -> Value {
     let mut v = match op {
         Op::Stretch { axis, at, side, amount, layers: l } => json!({
             "op": "stretch", "axis": axis, "at": um(t, *at), "side": side, "amount": amount, "layers": layers(l),
+        }),
+        Op::Diagonal { dir, at, side, amount, region, layers: l } => json!({
+            "op": "diagonal", "dir": dir.label(), "at": um(t, *at), "side": side, "amount": amount,
+            "region": rect_um(t, *region), "layers": layers(l),
         }),
         Op::Repeat { axis, region, count, pitch, at, layers: l } => json!({
             "op": "repeat", "axis": axis, "region": rect_um(t, *region), "count": count, "pitch": pitch,
@@ -606,10 +627,11 @@ fn edit_props(t: &mut Map<String, Value>) {
         },
         "add_ops": {
             "type": "array",
-            "description": format!("Operations to append (or insert at 'index'). Generation runs conditions, then stretches in list order (each moving later lines and regions), then repeats, then contact fills. Coordinates are µm in the source drawing. stretch {{axis: x (vertical line, moves along x) | y, at: line position, side: high (right / top moves; default) | low | both (centred), amount: expression, layers}}: coordinates beyond the line shift by amount(values) - amount(defaults), so shapes crossing it grow. repeat {{axis, region, count: expression, pitch: expression, at?: where spanning shapes stretch, layers}}: items wholly inside are copied count - 1 times pitch apart; shapes spanning the region follow. condition {{region, when: expression, layers}}: items inside are dropped when when is 0. contact_fill {{rect, via}}: refilled with the largest centred cut array after stretching. {expr}"),
+            "description": format!("Operations to append (or insert at 'index'). Generation runs conditions, then diagonal stretches, then stretches in list order (each moving later lines and regions), then repeats, then contact fills. Coordinates are µm in the source drawing. stretch {{axis: x (vertical line, moves along x) | y, at: line position, side: high (right / top moves; default) | low | both (centred), amount: expression, layers}}: coordinates beyond the line shift by amount(values) - amount(defaults), so shapes crossing it grow. diagonal {{dir: x+y | x-y (the 45° line dir = at), at, side, amount: expression measured across the line, region, layers}}: vertices inside region on the moving side shift across the line by amount's change (each coordinate by that / √2 on the grid), so 45° shapes crossing it lengthen; keep axis-parallel shapes either wholly in or out of it. repeat {{axis, region, count: expression, pitch: expression, at?: where spanning shapes stretch, layers}}: items wholly inside are copied count - 1 times pitch apart; shapes spanning the region follow. condition {{region, when: expression, layers}}: items inside are dropped when when is 0. contact_fill {{rect, via}}: refilled with the largest centred cut array after stretching. {expr}"),
             "items": {"type": "object", "properties": {
-                "op": {"type": "string", "enum": ["stretch", "repeat", "condition", "contact_fill"]},
-                "axis": {"type": "string", "enum": ["x", "y"]}, "at": {"type": "number"},
+                "op": {"type": "string", "enum": ["stretch", "diagonal", "repeat", "condition", "contact_fill"]},
+                "axis": {"type": "string", "enum": ["x", "y"]}, "dir": {"type": "string", "enum": ["x+y", "x-y"]},
+                "at": {"type": "number"},
                 "side": {"type": "string", "enum": ["high", "low", "both"]},
                 "amount": {"type": "string"}, "count": {"type": "string"}, "pitch": {"type": "string"},
                 "when": {"type": "string"}, "region": rect.clone(), "rect": rect, "via": {"type": "string"},
