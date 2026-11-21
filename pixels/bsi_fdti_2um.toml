@@ -1,0 +1,132 @@
+# Back-side illuminated 2.0 um pixel with full-depth deep trench isolation (FDTI), generic,
+# for illustration: microlens, colour filter, tungsten grid, anti-reflection films, 3 um of
+# silicon cut by oxide trenches through its whole depth, a pinned photodiode under the front
+# p-well, a transfer gate onto an n+ floating diffusion, and metal 1 on the front side that
+# sends light crossing the silicon back into it.
+#   ics pixel pixels/bsi_fdti_2um.toml --cra 15 --lux 100
+#   ics pixel pixels/bsi_fdti_2um.toml --method rcwa --harmonics 9
+# Every pixel has the same front side here (shapes in µm from each pixel's lower-left corner,
+# seen from the front). `pixels/bayer_fdti.toml` reads a 2 x 2 cell's own layout instead.
+name = "BSI 2.0 um FDTI"
+pitch = 2.0
+
+[microlens]
+height = 0.7
+
+[[layers]]
+name = "planarisation"
+material = "resin"
+thickness = 0.1
+
+[[layers]]
+name = "colour filter"
+kind = "color_filter"
+thickness = 0.6
+
+[[layers]]
+name = "metal grid"
+material = "sio2"
+thickness = 0.25
+grid = { material = "w", width = 0.15 }
+
+[[layers]]
+name = "buffer oxide"
+material = "sio2"
+thickness = 0.05
+
+[[arc]]                         # anti-reflection films on the back surface
+material = "ta2o5"
+thickness = 0.05
+
+[[arc]]
+material = "hfo2"
+thickness = 0.01
+
+[[front]]                       # below the silicon: the front side's dielectric and metal 1
+name = "PMD"
+material = "sio2"
+thickness = 0.3
+
+[[front]]
+name = "metal 1"
+material = "sio2"
+thickness = 0.2
+pattern = { material = "al", rects = [[0.3, 0.3, 1.7, 1.7]] }   # a reflector under the photodiode
+
+[photodiode]                    # depth range used for the optical crosstalk figure
+top = 0.3
+bottom = 2.7
+
+[silicon]
+thickness = 3.0                 # thinned silicon; light leaving its front goes into [[front]]
+dti = { depth = 3.0, width = 0.15, fill = "sio2" }   # full depth: optics and carriers see the walls
+grid = 0.1
+
+# Device model: doping, potential, drift and diffusion of the electrons, the photodiode well,
+# the transfer gate. Depths count from the front surface (the transistors' side) unless
+# `side = "back"` (the illuminated surface) or `side = "dti"` (distance from the trench wall).
+[device]
+background = { type = "p", concentration = 1e15 }          # p- epi
+transfer = { pixel = "Gr", on_time = 20, settle = 5 }      # ns
+
+[[device.doping]]
+name = "back-side p+ (pinning of the illuminated surface)"
+type = "p"
+peak = 2e18
+side = "back"
+straggle = 0.06
+
+[[device.doping]]
+name = "trench liner p (passivates the walls)"
+type = "p"
+peak = 5e17
+side = "dti"
+straggle = 0.05
+
+[[device.doping]]
+name = "deep photodiode n"
+type = "n"
+peak = 6e15
+depth = 1.4
+straggle = 0.45
+lateral = 0.1
+rects = [[0.2, 0.2, 1.8, 1.8]]
+photodiode = true
+
+[[device.doping]]
+name = "photodiode surface n (to the transfer gate)"
+type = "n"
+peak = 4e16
+depth = 0.25
+straggle = 0.15
+rects = [[0.3, 0.3, 1.2, 1.2]]
+photodiode = true
+
+[[device.doping]]
+name = "p-well"
+type = "p"
+peak = 3e17
+depth = 0.25
+straggle = 0.12
+rects = [[0, 0, 2, 0.3], [0, 1.2, 2, 2], [0, 0.3, 0.3, 1.2], [1.35, 0.3, 2, 1.2]]
+
+[[device.doping]]
+name = "pinning p+"
+type = "p"
+peak = 5e18
+straggle = 0.03
+rects = [[0.25, 0.25, 1.05, 1.25]]
+
+[[device.doping]]
+name = "floating diffusion n+"
+type = "n"
+peak = 1e20
+straggle = 0.04
+rects = [[1.55, 0.5, 1.8, 1.0]]
+contact = 2.8                   # reset level (V)
+
+[[device.gate]]
+name = "TG"
+rects = [[1.1, 0.45, 1.6, 1.05]]
+off = -1.0
+on = 2.8

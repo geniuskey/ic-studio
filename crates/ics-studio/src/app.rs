@@ -122,6 +122,13 @@ pub enum Command {
     /// Write the photocurrent of a Bayer colour (0 R, 1 Gr, 2 Gb, 3 B) into a current source of
     /// the active cell's schematic.
     ApplyPhotocurrent(String, usize),
+    /// Load a measured QE table into the Pixel Optics window (a file dialog without a path).
+    LoadMeasuredQe(Option<PathBuf>),
+    /// Fit the Pixel Optics stack's parameters (the window's Fit list) to the measured QE.
+    FitPixelStack,
+    /// Write the Pixel Optics device model's mean pinning voltage and storage capacitance into
+    /// the technology's photodiode (the circuit simulation's pinned photodiode).
+    ApplyPixelDevice,
     /// Evaluate a calculator expression on the active cell's shown dataset and plot waveforms.
     CalcPlot(String),
     /// Open the Corner / Sweep Manager on the active cell.
@@ -1461,6 +1468,27 @@ impl IcStudio {
                 }
             }
             Command::PixelStackFromPdk => self.pixel_stack_from_pdk(),
+            Command::ApplyPixelDevice => self.apply_pixel_device(),
+            Command::LoadMeasuredQe(path) => {
+                let path = path.or_else(|| rfd::FileDialog::new().add_filter("Measured QE", &["csv", "txt"]).pick_file());
+                if let Some(path) = path {
+                    self.pixel.show();
+                    if let Err(e) = self.pixel.load_measured(&path) {
+                        self.warn(e);
+                    }
+                }
+            }
+            Command::FitPixelStack => {
+                self.pixel.show();
+                self.pixel.start_fit(Some(ctx), self.project.as_ref());
+                // Automation waits for the fit.
+                self.pixel.wait();
+                match &self.pixel.fit {
+                    Some(Ok(f)) => self.info(format!("Pixel stack fit: RMS {:.4} -> {:.4}", f.rms_before, f.rms_after)),
+                    Some(Err(e)) => self.warn(format!("Pixel stack fit: {e}")),
+                    None => {}
+                }
+            }
             Command::ApplyPhotocurrent(source, color) => match self.pixel.currents {
                 Some(cur) if color < 4 => self.set_photocurrent(&source, cur[color]),
                 _ => self.warn("Run the pixel optics model first".into()),
@@ -2178,6 +2206,39 @@ impl IcStudio {
     }
 
     /// Set current source `source` of the active cell's schematic to `amps` (undoable).
+    /// The device model's photodiode figures into the technology (see
+    /// [`ics_core::pixel_layout::apply_device_photodiode`]).
+    fn apply_pixel_device(&mut self) {
+        let Some(Ok(r)) = &self.pixel.result else {
+            self.warn("Run the pixel model with a [device] section first".into());
+            return;
+        };
+        let (Some(d), Some(src), Some(st)) = (&r.device, self.pixel.layout_source.clone(), &self.pixel.stack) else {
+            self.warn("Applying to the technology needs a stack with [device] that reads a layout ([layout])".into());
+            return;
+        };
+        let n = d.pixels.len().max(1) as f64;
+        let vpin = d.pixels.iter().map(|p| p.pinning_voltage).sum::<f64>() / n;
+        let cap = d.pixels.iter().map(|p| p.capacitance).sum::<f64>() / n;
+        let pixels = if st.cell_layout { 4 } else { 1 };
+        let Some(p) = self.project.as_mut() else { return };
+        let cell = match src.cell.split_once('/') {
+            Some((lib, cell)) => Some(ics_core::CellRef::new(lib, cell)),
+            None => p.all_cells().find(|(_, c)| c.name == src.cell).map(|(r, _)| r),
+        };
+        let Some(cell) = cell else {
+            self.warn(format!("no cell '{}'", src.cell));
+            return;
+        };
+        match ics_core::pixel_layout::apply_device_photodiode(p, &cell, src.boundary.as_deref(), pixels, vpin, cap) {
+            Ok(msg) => {
+                self.mark_dirty();
+                self.info(msg);
+            }
+            Err(e) => self.warn(e),
+        }
+    }
+
     fn set_photocurrent(&mut self, source: &str, amps: f64) {
         let (Some(r), Some(p)) = (self.active.clone(), self.project.as_mut()) else {
             self.warn("Open the pixel circuit's schematic first".into());
@@ -5056,6 +5117,9 @@ impl IcStudio {
             ("Waveform calculator".into(), "", Command::Calculator),
             ("Pixel optics (QE, crosstalk, photocurrent)".into(), "", Command::PixelOptics),
             ("Run pixel optics model".into(), "", Command::RunPixelOptics),
+            ("Pixel device model into the technology's photodiode".into(), "", Command::ApplyPixelDevice),
+            ("Load measured QE…".into(), "", Command::LoadMeasuredQe(None)),
+            ("Fit pixel stack to measured QE".into(), "", Command::FitPixelStack),
             ("Pixel stack of the open cell from the PDK cross section".into(), "", Command::PixelStackFromPdk),
             ("Corner / sweep manager".into(), "", Command::SweepManager),
             ("Verification (all tests)".into(), "", Command::Verification),
@@ -7311,6 +7375,9 @@ impl eframe::App for IcStudio {
             Some(PixelAction::Run) => self.pixel.run(Some(&ctx), self.project.as_ref()),
             Some(PixelAction::FromPdk) => self.pixel_stack_from_pdk(),
             Some(PixelAction::SetSource { source, amps }) => self.set_photocurrent(&source, amps),
+            Some(PixelAction::ApplyDevice) => self.apply_pixel_device(),
+            Some(PixelAction::LoadMeasured) => self.queue.push(Command::LoadMeasuredQe(None)),
+            Some(PixelAction::Fit) => self.pixel.start_fit(Some(&ctx), self.project.as_ref()),
             None => {}
         }
         self.sweep_window(&ctx);

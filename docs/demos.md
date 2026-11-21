@@ -27,7 +27,7 @@ unless `--force`) and `ics examples` lists them.
 | `getting_started` | `cmos_inverter`, `rc_lowpass`, `diode_clipper`, `devices` |
 | `analog` | `current_mirror`, `ota5t`, `ota2s` |
 | `digital` | `nand2`, `nor2`, `ring_osc5`, `full_adder` |
-| `memory_and_pixels` | `sram6t`, `sram_array`, `dram1t1c`, `dram_array`, `nand_string`, `nand_array`, `aps4t`, `pixel_array`, `aps2s` |
+| `memory_and_pixels` | `sram6t`, `sram_array`, `dram1t1c`, `dram_array`, `nand_string`, `nand_array`, `aps4t`, `pixel_array`, `aps2s`, `bayer_fdti` |
 | `hierarchy` | `inv_chain`, `inv_array`, `inv_tiles` |
 
 Each topic also contains the cells its layouts place, e.g. `cmos_inverter` in `hierarchy`
@@ -166,6 +166,7 @@ rendering keeps pan and zoom smooth.
 | `aps4t` | 4T image sensor pixel, DRC and LVS clean: transient reset, integration and transfer |
 | `pixel_array` | 8 × 8 array of `aps4t` |
 | `aps2s` | 2-shared 4T pixel (5.6 × 11.2 µm), DRC and LVS clean: two photodiodes with TX1 / TX2 onto one floating diffusion and a shared RST / SF / SEL; the transient reads pixel 1, resets, then reads pixel 2 |
+| `bayer_fdti` | 2 × 2 Bayer 4-shared back-side illuminated pixel (2.4 µm pixels, 4.8 × 4.8 µm cell) with full-depth deep trench isolation (`dti`, `pdn` layers), DRC and LVS clean: four photodiodes with wide transfer gates (W 0.89, L 0.45 µm) onto their own floating diffusions joined in metal, a shared RST / SF / SEL; the transient reads R, Gr, Gb, B in turn. `pixels/bayer_fdti.toml` simulates its optics and silicon ([Pixel optics](pixel-optics.md#device-model)) |
 | `inv_chain` | Four placed `cmos_inverter` instances |
 | `inv_array` | 16 × 8 array of inverters |
 | `inv_tiles` | 8 × 8 array of `inv_array`: 8,192 inverters, two levels of hierarchy |

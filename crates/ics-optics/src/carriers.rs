@@ -14,14 +14,54 @@
 
 use serde::Deserialize;
 
-/// Deep-trench isolation walls on the pixel boundaries.
+/// Deep-trench isolation walls on the pixel boundaries: no carrier crosses them, and the optics
+/// see the trench fill in the silicon (light reflects off the walls).
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Dti {
-    /// Depth from the surface (µm).
+    /// Depth from the surface it is etched from (µm); at least the silicon's `thickness` for
+    /// full-depth trenches.
     pub depth: f64,
     /// Width centred on the pixel boundary (µm).
     pub width: f64,
+    /// Trench fill material (default `sio2`).
+    #[serde(default = "sio2")]
+    pub fill: String,
+    /// `back` (default: etched from the illuminated surface) or `front` (from the far side of
+    /// a back-side illuminated silicon, which needs its `thickness`).
+    #[serde(default = "back")]
+    pub side: String,
+}
+
+fn sio2() -> String {
+    "sio2".into()
+}
+
+fn back() -> String {
+    "back".into()
+}
+
+impl Dti {
+    /// A silicon-dioxide trench from the illuminated surface.
+    pub fn new(depth: f64, width: f64) -> Dti {
+        Dti { depth, width, fill: sio2(), side: back() }
+    }
+
+    /// Depth range (from the illuminated surface) the trench occupies in silicon `thickness`
+    /// thick (None: semi-infinite).
+    pub fn span(&self, thickness: Option<f64>) -> Result<(f64, f64), String> {
+        match (self.side.to_ascii_lowercase().as_str(), thickness) {
+            ("back", t) => Ok((0.0, t.map_or(self.depth, |t| self.depth.min(t)))),
+            ("front", Some(t)) => Ok(((t - self.depth).max(0.0), t)),
+            ("front", None) => Err("silicon: front-side trenches need the silicon's thickness".into()),
+            (other, _) => Err(format!("silicon: dti side '{other}' (back, front)")),
+        }
+    }
+
+    /// Whether the trench reaches through the whole silicon.
+    pub fn full_depth(&self, thickness: Option<f64>) -> bool {
+        thickness.is_some_and(|t| self.depth >= t - 1e-9)
+    }
 }
 
 /// Electrical model of the silicon (the `[silicon]` section of a stack).
@@ -32,9 +72,15 @@ pub struct Silicon {
     #[serde(default = "default_l")]
     pub diffusion_length: f64,
     /// Thickness of the epitaxial layer: carriers reaching its bottom are lost (µm); default the
-    /// photodiode's bottom plus 2 µm.
+    /// photodiode's bottom plus 2 µm, or the silicon's `thickness`.
     #[serde(default)]
     pub epi: Option<f64>,
+    /// Thickness of the silicon (µm) of a back-side illuminated pixel: light leaving its far
+    /// side goes into the stack's `front` layers (and may come back), and carriers reaching it
+    /// stay (a passivated front surface). Unset: the silicon is semi-infinite (front-side
+    /// illuminated).
+    #[serde(default)]
+    pub thickness: Option<f64>,
     /// `reflecting` (passivated surface, default) or `recombining`.
     #[serde(default = "reflecting")]
     pub surface: String,
@@ -55,7 +101,7 @@ fn reflecting() -> String {
 
 impl Default for Silicon {
     fn default() -> Self {
-        Silicon { diffusion_length: default_l(), epi: None, surface: reflecting(), dti: None, grid: None }
+        Silicon { diffusion_length: default_l(), epi: None, thickness: None, surface: reflecting(), dti: None, grid: None }
     }
 }
 
@@ -101,13 +147,13 @@ impl Grid {
     }
 }
 
-/// The collection model of a stack: grid and the probability of the photodiode of the pixel
-/// at the cell's origin.
+/// The collection model of a stack: grid and the collection probability of each photodiode.
 #[derive(Debug, Clone)]
 pub struct Collection {
     pub grid: Grid,
-    /// P per voxel for pixel (0, 0).
-    pub p: Vec<f64>,
+    /// P per voxel: one vector for the pixel at the cell's origin (every pixel the same, by
+    /// translation), or one per pixel (index `pj * 2 + pi`).
+    pub p: Vec<Vec<f64>>,
     pitch: f64,
 }
 
@@ -120,40 +166,54 @@ enum Cell {
     Wall,
 }
 
+/// The pixel (index `pj * 2 + pi` in the cell) whose photodiode holds (x, y), if any.
+/// `cell_rects`: the rectangles are in Bayer-cell coordinates (each belongs to the pixel of its
+/// centre); else in pixel coordinates, repeated in every pixel.
+pub fn pd_owner(pd: &[[f64; 4]], cell_rects: bool, p: f64, x: f64, y: f64) -> Option<usize> {
+    let pix = |x: f64, y: f64| ((x / p).floor().rem_euclid(2.0) as usize) + 2 * ((y / p).floor().rem_euclid(2.0) as usize);
+    if pd.is_empty() {
+        return Some(pix(x, y));
+    }
+    if cell_rects {
+        let (lx, ly) = (x.rem_euclid(2.0 * p), y.rem_euclid(2.0 * p));
+        pd.iter()
+            .find(|r| lx >= r[0] && lx < r[2] && ly >= r[1] && ly < r[3])
+            .map(|r| pix((r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0))
+    } else {
+        let (lx, ly) = (x.rem_euclid(p), y.rem_euclid(p));
+        pd.iter().any(|r| lx >= r[0] && lx < r[2] && ly >= r[1] && ly < r[3]).then(|| pix(x, y))
+    }
+}
+
 impl Collection {
-    /// Solve the collection probability for pitch `p`, photodiode area `pd_rects` per pixel
-    /// (empty: whole pixel) and depth range `pd_depth` (µm).
-    pub fn solve(si: &Silicon, p: f64, pd_rects: &[[f64; 4]], pd_depth: (f64, f64)) -> Result<Collection, String> {
+    /// Solve the collection probability for pitch `p`, photodiode area `pd_rects` (empty: whole
+    /// pixel; in cell coordinates when `cell_rects`) and depth range `pd_depth` (µm).
+    pub fn solve(
+        si: &Silicon,
+        p: f64,
+        pd_rects: &[[f64; 4]],
+        cell_rects: bool,
+        pd_depth: (f64, f64),
+    ) -> Result<Collection, String> {
         if si.diffusion_length.is_nan() || si.diffusion_length <= 0.0 {
             return Err("silicon: diffusion_length must be positive".into());
         }
-        let epi = si.epi.unwrap_or(pd_depth.1 + 2.0);
+        let epi = si.epi.or(si.thickness).unwrap_or(pd_depth.1 + 2.0);
         if epi <= pd_depth.1 {
             return Err(format!("silicon: the epitaxial layer ({epi} µm) must be deeper than the photodiode"));
         }
+        // Carriers reaching the far side of a thinned (back-side illuminated) silicon stay.
+        let sink_bottom = si.thickness.is_none_or(|t| epi < t - 1e-9);
         let recombining = match si.surface.to_ascii_lowercase().as_str() {
             "reflecting" => false,
             "recombining" => true,
             other => return Err(format!("silicon: surface '{other}' (reflecting, recombining)")),
         };
-        let h = si.grid.unwrap_or((p / 16.0).min(0.25));
-        // An even count puts the pixel boundaries on voxel faces.
-        let nx = (((2.0 * p / h / 2.0).round() as usize) * 2).max(4);
-        let dx = 2.0 * p / nx as f64;
-        let dz = h.min(0.1).min(pd_depth.1.max(0.2) / 8.0);
-        let nz = ((epi / dz).round() as usize).max(4);
-        let dz = epi / nz as f64;
-        let grid = Grid { nx, ny: nx, nz, dx, dz };
-        if grid.len() > 4_000_000 {
-            return Err(format!("silicon: {} voxels; use a coarser grid", grid.len()));
-        }
-
-        // Classify voxels.
-        let whole = [[0.0, 0.0, p, p]];
-        let pd: &[[f64; 4]] = if pd_rects.is_empty() { &whole } else { pd_rects };
-        let in_pd = |x: f64, y: f64| {
-            let (lx, ly) = (x.rem_euclid(p), y.rem_euclid(p));
-            pd.iter().any(|r| lx >= r[0] && lx < r[2] && ly >= r[1] && ly < r[3])
+        let grid = Grid::for_cell(si, p, epi, pd_depth.1)?;
+        let (nx, nz, dx, dz) = (grid.nx, grid.nz, grid.dx, grid.dz);
+        let span = match &si.dti {
+            Some(d) => Some(d.span(si.thickness)?),
+            None => None,
         };
         // Walls wider than a voxel fill voxels; every wall also blocks the faces on the pixel
         // boundaries (thin trenches).
@@ -163,124 +223,162 @@ impl Collection {
                     let r = v.rem_euclid(p);
                     r < d.width / 2.0 || r > p - d.width / 2.0
                 };
-                z < d.depth && (near(x) || near(y))
+                let (z0, z1) = span.unwrap();
+                z >= z0 && z < z1 && (near(x) || near(y))
             })
         };
-        let dti_depth = si.dti.as_ref().map_or(0.0, |d| d.depth);
         let half = nx / 2;
         // Whether the face between voxel column `a` and `a + 1` (mod nx) is a pixel boundary.
         let boundary_face = |a: usize| (a + 1).is_multiple_of(half);
-        let mut cells = vec![Cell::Free; grid.len()];
-        for k in 0..nz {
-            for j in 0..nx {
-                for i in 0..nx {
-                    let (x, y, z) = grid.centre(i, j, k);
-                    let c = if on_wall(x, y, z) {
-                        Cell::Wall
-                    } else if z >= pd_depth.0 && z < pd_depth.1 && in_pd(x, y) {
-                        let own = (x / p).floor() as i64 == 0 && (y / p).floor() as i64 == 0;
-                        Cell::Fixed(if own { 1.0 } else { 0.0 })
-                    } else {
-                        Cell::Free
-                    };
-                    cells[grid.index(i, j, k)] = c;
-                }
-            }
-        }
-
-        // A x = b on the free voxels: (Σ face weights + 1/L²) P - Σ w P_nb = fixed neighbours.
-        let (wx, wz) = (1.0 / (dx * dx), 1.0 / (dz * dz));
-        let sink = 1.0 / (si.diffusion_length * si.diffusion_length);
-        let neighbours = |i: usize, j: usize, k: usize| -> [(Option<usize>, f64); 6] {
-            let z = (k as f64 + 0.5) * dz;
-            let walled = |a: usize| z < dti_depth && boundary_face(a);
-            let xm = (!walled((i + nx - 1) % nx)).then(|| grid.index((i + nx - 1) % nx, j, k));
-            let xp = (!walled(i)).then(|| grid.index((i + 1) % nx, j, k));
-            let ym = (!walled((j + nx - 1) % nx)).then(|| grid.index(i, (j + nx - 1) % nx, k));
-            let yp = (!walled(j)).then(|| grid.index(i, (j + 1) % nx, k));
-            // Above the surface: none (reflecting) or a P = 0 ghost (recombining, at half a
-            // step); below the epi: a P = 0 ghost.
-            let zm = if k == 0 { None } else { Some(grid.index(i, j, k - 1)) };
-            let zp = if k + 1 == nz { None } else { Some(grid.index(i, j, k + 1)) };
-            [(xm, wx), (xp, wx), (ym, wx), (yp, wx), (zm, wz), (zp, wz)]
-        };
-        let n = grid.len();
-        let mut diag = vec![0.0; n];
-        let mut b = vec![0.0; n];
-        for k in 0..nz {
-            for j in 0..nx {
-                for i in 0..nx {
-                    let v = grid.index(i, j, k);
-                    if cells[v] != Cell::Free {
-                        continue;
-                    }
-                    let mut d = sink;
-                    for (q, (nb, w)) in neighbours(i, j, k).into_iter().enumerate() {
-                        match nb.map(|u| cells[u]) {
-                            Some(Cell::Free) => d += w,
-                            // The junction edge lies on the shared face, half a step away.
-                            Some(Cell::Fixed(val)) => {
-                                d += 2.0 * w;
-                                b[v] += 2.0 * w * val;
+        let owners: Vec<usize> = if cell_rects { vec![0, 1, 2, 3] } else { vec![0] };
+        let mut out = vec![];
+        for &own in &owners {
+            let mut cells = vec![Cell::Free; grid.len()];
+            for k in 0..nz {
+                for j in 0..nx {
+                    for i in 0..nx {
+                        let (x, y, z) = grid.centre(i, j, k);
+                        let c = if on_wall(x, y, z) {
+                            Cell::Wall
+                        } else if z >= pd_depth.0 && z < pd_depth.1 {
+                            match pd_owner(pd_rects, cell_rects, p, x, y) {
+                                Some(o) => Cell::Fixed(if o == own { 1.0 } else { 0.0 }),
+                                None => Cell::Free,
                             }
-                            Some(Cell::Wall) => {}
-                            // Lateral: an isolation wall on the face. Vertical: the surface
-                            // (q = 4) or the epi bottom (q = 5).
-                            None if q < 4 => {}
-                            None if q == 4 && !recombining => {}
-                            None => d += 2.0 * w,
-                        }
+                        } else {
+                            Cell::Free
+                        };
+                        cells[grid.index(i, j, k)] = c;
                     }
-                    diag[v] = d;
                 }
             }
-        }
-        let apply = |x: &[f64], out: &mut [f64]| {
+
+            // A x = b on the free voxels: (Σ face weights + 1/L²) P - Σ w P_nb = fixed neighbours.
+            let (wx, wz) = (1.0 / (dx * dx), 1.0 / (dz * dz));
+            let sink = 1.0 / (si.diffusion_length * si.diffusion_length);
+            let neighbours = |i: usize, j: usize, k: usize| -> [(Option<usize>, f64); 6] {
+                let z = (k as f64 + 0.5) * dz;
+                let walled = |a: usize| span.is_some_and(|(z0, z1)| z >= z0 && z < z1) && boundary_face(a);
+                let xm = (!walled((i + nx - 1) % nx)).then(|| grid.index((i + nx - 1) % nx, j, k));
+                let xp = (!walled(i)).then(|| grid.index((i + 1) % nx, j, k));
+                let ym = (!walled((j + nx - 1) % nx)).then(|| grid.index(i, (j + nx - 1) % nx, k));
+                let yp = (!walled(j)).then(|| grid.index(i, (j + 1) % nx, k));
+                // Above the surface: none (reflecting) or a P = 0 ghost (recombining, at half a
+                // step); below the epi: a P = 0 ghost (or none for a thinned silicon).
+                let zm = if k == 0 { None } else { Some(grid.index(i, j, k - 1)) };
+                let zp = if k + 1 == nz { None } else { Some(grid.index(i, j, k + 1)) };
+                [(xm, wx), (xp, wx), (ym, wx), (yp, wx), (zm, wz), (zp, wz)]
+            };
+            let n = grid.len();
+            let mut diag = vec![0.0; n];
+            let mut b = vec![0.0; n];
             for k in 0..nz {
                 for j in 0..nx {
                     for i in 0..nx {
                         let v = grid.index(i, j, k);
                         if cells[v] != Cell::Free {
-                            out[v] = 0.0;
                             continue;
                         }
-                        let mut s = diag[v] * x[v];
-                        for (nb, w) in neighbours(i, j, k) {
-                            if let Some(u) = nb
-                                && cells[u] == Cell::Free
-                            {
-                                s -= w * x[u];
+                        let mut d = sink;
+                        for (q, (nb, w)) in neighbours(i, j, k).into_iter().enumerate() {
+                            match nb.map(|u| cells[u]) {
+                                Some(Cell::Free) => d += w,
+                                // The junction edge lies on the shared face, half a step away.
+                                Some(Cell::Fixed(val)) => {
+                                    d += 2.0 * w;
+                                    b[v] += 2.0 * w * val;
+                                }
+                                Some(Cell::Wall) => {}
+                                // Lateral: an isolation wall on the face. Vertical: the surface
+                                // (q = 4) or the epi bottom (q = 5).
+                                None if q < 4 => {}
+                                None if q == 4 && !recombining => {}
+                                None if q == 5 && !sink_bottom => {}
+                                None => d += 2.0 * w,
                             }
                         }
-                        out[v] = s;
+                        diag[v] = d;
                     }
                 }
             }
-        };
-        let x = conjugate_gradient(&apply, &b, &diag, |v| cells[v] == Cell::Free, 1e-10, 20_000);
-        let p_out: Vec<f64> = (0..n)
-            .map(|v| match cells[v] {
-                Cell::Free => x[v].clamp(0.0, 1.0),
-                Cell::Fixed(val) => val,
-                Cell::Wall => 0.0,
-            })
-            .collect();
-        Ok(Collection { grid, p: p_out, pitch: p })
+            let apply = |x: &[f64], out: &mut [f64]| {
+                for k in 0..nz {
+                    for j in 0..nx {
+                        for i in 0..nx {
+                            let v = grid.index(i, j, k);
+                            if cells[v] != Cell::Free {
+                                out[v] = 0.0;
+                                continue;
+                            }
+                            let mut s = diag[v] * x[v];
+                            for (nb, w) in neighbours(i, j, k) {
+                                if let Some(u) = nb
+                                    && cells[u] == Cell::Free
+                                {
+                                    s -= w * x[u];
+                                }
+                            }
+                            out[v] = s;
+                        }
+                    }
+                }
+            };
+            let x = conjugate_gradient(&apply, &b, &diag, |v| cells[v] == Cell::Free, 1e-10, 20_000);
+            out.push(
+                (0..n)
+                    .map(|v| match cells[v] {
+                        Cell::Free => x[v].clamp(0.0, 1.0),
+                        Cell::Fixed(val) => val,
+                        Cell::Wall => 0.0,
+                    })
+                    .collect(),
+            );
+        }
+        Ok(Collection { grid, p: out, pitch: p })
+    }
+
+    /// A collection model from given probabilities (one vector per pixel, index `pj * 2 + pi`).
+    pub fn from_probabilities(grid: Grid, p: Vec<Vec<f64>>, pitch: f64) -> Collection {
+        Collection { grid, p, pitch }
     }
 
     /// Collection probability of the photodiode of pixel (pi, pj) of the cell at voxel `v`.
     pub fn prob(&self, pi: usize, pj: usize, v: usize) -> f64 {
+        if self.p.len() == 4 {
+            return self.p[pj * 2 + pi][v];
+        }
         let g = &self.grid;
         let k = v / (g.nx * g.ny);
         let j = (v / g.nx) % g.ny;
         let i = v % g.nx;
         // Shift by one pixel = half the cell.
         let (si, sj) = (pi * g.nx / 2, pj * g.ny / 2);
-        self.p[g.index((i + g.nx - si) % g.nx, (j + g.ny - sj) % g.ny, k)]
+        self.p[0][g.index((i + g.nx - si) % g.nx, (j + g.ny - sj) % g.ny, k)]
     }
 
     pub fn pitch(&self) -> f64 {
         self.pitch
+    }
+}
+
+impl Grid {
+    /// The voxel grid of a silicon model over the Bayer cell of pitch `p`, down to `depth`.
+    pub fn for_cell(si: &Silicon, p: f64, depth: f64, pd_bottom: f64) -> Result<Grid, String> {
+        let h = si.grid.unwrap_or((p / 16.0).min(0.25));
+        if h.is_nan() || h <= 0.0 {
+            return Err("silicon: grid must be positive".into());
+        }
+        // An even count puts the pixel boundaries on voxel faces.
+        let nx = (((2.0 * p / h / 2.0).round() as usize) * 2).max(4);
+        let dx = 2.0 * p / nx as f64;
+        let dz = h.min(0.1).min(pd_bottom.max(0.2) / 8.0);
+        let nz = ((depth / dz).round() as usize).max(4);
+        let dz = depth / nz as f64;
+        let grid = Grid { nx, ny: nx, nz, dx, dz };
+        if grid.len() > 4_000_000 {
+            return Err(format!("silicon: {} voxels; use a coarser grid", grid.len()));
+        }
+        Ok(grid)
     }
 }
 
@@ -342,7 +440,7 @@ mod tests {
         // Photodiode over the whole pixel from 0 to 1 µm, neutral silicon to 4 µm, P = 0 at the
         // bottom: P(z) = sinh((epi - z) / L) / sinh((epi - d) / L) below the photodiode.
         let si = Silicon { diffusion_length: 2.0, epi: Some(4.0), grid: Some(0.25), ..Silicon::default() };
-        let c = Collection::solve(&si, 1.0, &[], (0.0, 1.0)).unwrap();
+        let c = Collection::solve(&si, 1.0, &[], false, (0.0, 1.0)).unwrap();
         let g = &c.grid;
         for k in 0..g.nz {
             let z = (k as f64 + 0.5) * g.dz;
@@ -363,7 +461,7 @@ mod tests {
         // diffusion length and a reflecting bottom almost all are collected by someone.
         let pd = [[0.4, 0.4, 1.0, 1.0]];
         let open = Silicon { diffusion_length: 50.0, epi: Some(3.0), grid: Some(0.1), ..Silicon::default() };
-        let c = Collection::solve(&open, 1.4, &pd, (0.0, 1.0)).unwrap();
+        let c = Collection::solve(&open, 1.4, &pd, false, (0.0, 1.0)).unwrap();
         let g = &c.grid;
         // A point under pixel (0, 0) near its boundary to pixel (1, 0): collected partly by (1, 0).
         let v = g.voxel(1.3, 0.7, 1.5).unwrap();
@@ -371,8 +469,8 @@ mod tests {
         let nb = c.prob(1, 0, v);
         assert!(own > 0.15 && nb > 0.15, "own {own} neighbour {nb}");
         // Deep trench isolation on the boundaries keeps more of it home.
-        let dti = Silicon { dti: Some(Dti { depth: 3.0, width: 0.1 }), ..open.clone() };
-        let d = Collection::solve(&dti, 1.4, &pd, (0.0, 1.0)).unwrap();
+        let dti = Silicon { dti: Some(Dti::new(3.0, 0.1)), ..open.clone() };
+        let d = Collection::solve(&dti, 1.4, &pd, false, (0.0, 1.0)).unwrap();
         let v2 = d.grid.voxel(1.3, 0.7, 1.5).unwrap();
         assert!(d.prob(1, 0, v2) < 0.2 * nb, "{} vs {nb}", d.prob(1, 0, v2));
         assert!(d.prob(0, 0, v2) > own);
@@ -393,10 +491,10 @@ mod tests {
             surface: surface.into(),
             ..Silicon::default()
         };
-        let refl = Collection::solve(&mk("reflecting"), 1.0, &pd, (0.5, 1.5)).unwrap();
-        let rec = Collection::solve(&mk("recombining"), 1.0, &pd, (0.5, 1.5)).unwrap();
+        let refl = Collection::solve(&mk("reflecting"), 1.0, &pd, false, (0.5, 1.5)).unwrap();
+        let rec = Collection::solve(&mk("recombining"), 1.0, &pd, false, (0.5, 1.5)).unwrap();
         let v = refl.grid.voxel(0.5, 0.5, 0.05).unwrap();
         assert!(rec.prob(0, 0, v) < 0.5 * refl.prob(0, 0, v), "{} vs {}", rec.prob(0, 0, v), refl.prob(0, 0, v));
-        assert!(Collection::solve(&mk("sticky"), 1.0, &pd, (0.5, 1.5)).is_err());
+        assert!(Collection::solve(&mk("sticky"), 1.0, &pd, false, (0.5, 1.5)).is_err());
     }
 }

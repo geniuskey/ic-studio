@@ -1202,6 +1202,11 @@ impl Tech {
                 // Second poly (control gates of floating-gate cells, poly-poly capacitors), last so
                 // the indices of the layers above stay those of earlier projects.
                 l("poly2", 12, [240, 120, 170, 150], FillStyle::Hatch, 180, 240, false),
+                // Image sensor layers, after the others for the same reason: the deep photodiode
+                // n implant (under the transistors of a back-side illuminated pixel) and deep
+                // trench isolation between the pixels. Neither conducts nor is read by extraction.
+                l("pdn", 20, [150, 90, 230, 70], FillStyle::SparseDots, 400, 300, false).line(LineStyle::ShortDash),
+                l("dti", 21, [90, 200, 230, 130], FillStyle::Grid, 150, 300, false),
             ],
             vias: vec![
                 v("contact", "active", "contact", "metal1", 220, 250, 100, 60, 10.0, 0.1e-3),
@@ -1248,7 +1253,8 @@ impl Tech {
             models: None,
             signoff: vec![],
             pcell_layers: vec![],
-            drc_extra: vec![],
+            // Silicon keeps clear of the deep trenches (the pixel isolation of an image sensor).
+            drc_extra: vec!["dti_active: separation dti active 0.1".into()],
             pin_labels: vec![],
             stream_map: vec![],
             cross_section: Some(CrossSection::generic180()),

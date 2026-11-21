@@ -17,20 +17,47 @@ use num_complex::Complex64;
 use serde::Deserialize;
 
 use crate::carriers::{Collection, Grid as SiGrid, Silicon};
+use crate::device::{Device, DeviceModel, DeviceResult, Map, SiliconGeometry};
 use crate::material::{MaterialSpec, Materials};
 use crate::tmm;
 
 /// The four pixels of a Bayer cell.
 pub const COLORS: [&str; 4] = ["R", "Gr", "Gb", "B"];
 
+/// Shape of the microlens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LensShape {
+    /// Spherical cap of base radius `radius`.
+    #[default]
+    Sphere,
+    /// Superellipse footprint and power-law sag: ρ = (|x/Rx|^n + |y/Ry|^n)^(1/n),
+    /// z = h·max(0, 1 − ρ^α) (n = 2 round, large n square; α = 2 a paraboloid, α < 2 pointed,
+    /// α > 2 flat-topped).
+    Superellipse,
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Microlens {
-    /// Height of the cap (µm).
+    /// Height of the lens (µm).
     pub height: f64,
-    /// Radius of the cap's base (µm); default: half the pixel diagonal (gapless).
+    /// Radius of the lens's base (µm), the semi-axis Rx for a superellipse; default: the
+    /// footprint through the pixel's corners (gapless): p/√2 for a sphere, 2^(1/n)·p/2 for a
+    /// superellipse.
     #[serde(default)]
     pub radius: Option<f64>,
+    /// Superellipse: the semi-axis Ry (µm); default `radius`.
+    #[serde(default)]
+    pub radius_y: Option<f64>,
+    #[serde(default)]
+    pub shape: LensShape,
+    /// Superellipse: exponent of the footprint (≥ 1, default 2).
+    #[serde(default)]
+    pub n: Option<f64>,
+    /// Superellipse: exponent of the sag (> 0, default 2).
+    #[serde(default)]
+    pub alpha: Option<f64>,
     #[serde(default = "resin")]
     pub material: String,
     /// Shift of every lens from its pixel's centre (µm), e.g. to sit over an off-centre
@@ -76,8 +103,20 @@ pub struct LayoutSource {
     /// Layer or expression whose bounding box is the pixel; default all shapes.
     #[serde(default)]
     pub boundary: Option<String>,
+    /// The cell is a whole 2 × 2 Bayer cell (four pixels, each with its own shapes): the frame
+    /// is two pitches wide and shapes keep their place in the cell.
+    #[serde(default)]
+    pub bayer: bool,
 }
 
+/// The rectangles (µm) of a layout layer or expression.
+pub type RectsOf<'a> = dyn Fn(&str) -> Result<Vec<[f64; 4]>, String> + 'a;
+
+/// The silicon as slabs (thickness, trenched), and the trenches' width and fill.
+type Slabs = (Vec<(f64, bool)>, Option<(f64, String)>);
+
+/// Whether (x, y) lies in one of `rects`, which repeat with `p` (the pitch, or the Bayer cell
+/// for shapes in cell coordinates).
 fn inside(rects: &[[f64; 4]], x: f64, y: f64, p: f64) -> bool {
     let (x, y) = (x.rem_euclid(p), y.rem_euclid(p));
     rects.iter().any(|r| x >= r[0] && x < r[2] && y >= r[1] && y < r[3])
@@ -144,6 +183,22 @@ pub struct ColorFilters {
     pub green: String,
     #[serde(default = "cf_blue")]
     pub blue: String,
+    /// Pigment density of the red, green and blue filters: their absorption (k) is scaled by
+    /// it, as a thicker or denser dye would (fitted to measured QE by `ics pixel --fit`).
+    #[serde(default = "unit3")]
+    pub density: [f64; 3],
+}
+
+fn unit3() -> [f64; 3] {
+    [1.0; 3]
+}
+
+impl ColorFilters {
+    /// The three filters' indices at `lambda`, with their densities.
+    fn indices(&self, mats: &Materials, lambda: f64) -> Result<[Complex64; 3], String> {
+        let n = [mats.get(&self.red)?, mats.get(&self.green)?, mats.get(&self.blue)?].map(|m| m.index(lambda));
+        Ok(std::array::from_fn(|c| Complex64::new(n[c].re, n[c].im * self.density[c])))
+    }
 }
 
 fn cf_red() -> String {
@@ -158,7 +213,7 @@ fn cf_blue() -> String {
 
 impl Default for ColorFilters {
     fn default() -> Self {
-        ColorFilters { red: cf_red(), green: cf_green(), blue: cf_blue() }
+        ColorFilters { red: cf_red(), green: cf_green(), blue: cf_blue(), density: unit3() }
     }
 }
 
@@ -181,11 +236,24 @@ pub struct PixelStack {
     /// Thin films on the silicon, top to bottom (coherent).
     #[serde(default)]
     pub arc: Vec<Film>,
+    /// Layers below a thinned silicon (`[silicon] thickness`), top to bottom: the front side of
+    /// a back-side illuminated pixel (dielectrics, the metal patterns of the transistors'
+    /// wiring), which send light that crosses the silicon back into it.
+    #[serde(default)]
+    pub front: Vec<Layer>,
+    /// The medium below the `front` layers (default `sio2`).
+    #[serde(default = "sio2")]
+    pub carrier: String,
     pub photodiode: Photodiode,
     /// Carrier diffusion in the silicon: with it, QE counts the carriers each photodiode
     /// collects (also from outside its depletion region) and electrical crosstalk is reported.
     #[serde(default)]
     pub silicon: Option<Silicon>,
+    /// Device model of the silicon (doping, potential, drift and diffusion): with it, QE counts
+    /// what each photodiode collects by drift and diffusion, and the result carries the
+    /// photodiodes' pinning voltage, full well and charge transfer. Needs `[silicon]`.
+    #[serde(default)]
+    pub device: Option<Device>,
     #[serde(default)]
     pub color_filters: ColorFilters,
     /// Extra materials by name.
@@ -194,10 +262,18 @@ pub struct PixelStack {
     /// Medium above the lens.
     #[serde(default = "air")]
     pub ambient: String,
+    /// Shapes (patterns, photodiode, device masks) are in Bayer-cell coordinates, each pixel
+    /// with its own (set when the stack is read from a 2 × 2 cell's layout).
+    #[serde(default)]
+    pub cell_layout: bool,
 }
 
 fn air() -> String {
     "air".into()
+}
+
+fn sio2() -> String {
+    "sio2".into()
 }
 
 impl PixelStack {
@@ -216,7 +292,34 @@ impl PixelStack {
     pub fn needs_layout(&self) -> bool {
         (self.layout.is_some() && self.pitch == 0.0)
             || self.photodiode.layout.is_some() && self.photodiode.rects.is_empty()
-            || self.layers.iter().any(|l| l.pattern.as_ref().is_some_and(|p| p.layout.is_some() && p.rects.is_empty()))
+            || self
+                .layers
+                .iter()
+                .chain(&self.front)
+                .any(|l| l.pattern.as_ref().is_some_and(|p| p.layout.is_some() && p.rects.is_empty()))
+            || self.device.as_ref().is_some_and(|d| d.needs_layout())
+    }
+
+    /// The period of the shapes' coordinates: the pitch, or the Bayer cell.
+    pub fn rect_period(&self) -> f64 {
+        if self.cell_layout { 2.0 * self.pitch } else { self.pitch }
+    }
+
+    /// The silicon's geometry for the device model.
+    pub fn silicon_geometry(&self) -> Result<SiliconGeometry, String> {
+        let si = self.silicon.as_ref().ok_or("the device model needs a [silicon] section")?;
+        let depth = si.thickness.or(si.epi).unwrap_or(self.photodiode.bottom + 2.0);
+        let dti = match &si.dti {
+            Some(d) => Some((d.span(si.thickness)?, d.width)),
+            None => None,
+        };
+        Ok(SiliconGeometry {
+            pitch: self.pitch,
+            depth,
+            back_illuminated: si.thickness.is_some(),
+            dti,
+            cell_rects: self.cell_layout,
+        })
     }
 
     /// Fill the `layout` entries: `size` is the pixel frame (µm) and `rects` gives the
@@ -226,24 +329,29 @@ impl PixelStack {
         size: (f64, f64),
         rects: impl Fn(&str) -> Result<Vec<[f64; 4]>, String>,
     ) -> Result<(), String> {
+        let bayer = self.layout.as_ref().is_some_and(|l| l.bayer);
         if self.pitch == 0.0 {
             if (size.0 - size.1).abs() > 1e-6 * size.0.max(1.0) {
                 return Err(format!("the pixel frame is {} x {} µm; the model needs square pixels", size.0, size.1));
             }
-            self.pitch = size.0;
+            self.pitch = if bayer { size.0 / 2.0 } else { size.0 };
         }
+        self.cell_layout = bayer;
         if let Some(expr) = self.photodiode.layout.clone() {
             self.photodiode.rects = rects(&expr).map_err(|e| format!("photodiode '{expr}': {e}"))?;
             if self.photodiode.rects.is_empty() {
                 return Err(format!("photodiode '{expr}' is empty in the layout"));
             }
         }
-        for l in &mut self.layers {
+        for l in self.layers.iter_mut().chain(self.front.iter_mut()) {
             if let Some(p) = &mut l.pattern
                 && let Some(expr) = p.layout.clone()
             {
                 p.rects = rects(&expr).map_err(|e| format!("layer '{}' pattern '{expr}': {e}", l.name))?;
             }
+        }
+        if let Some(d) = &mut self.device {
+            d.fill_from_layout(&rects)?;
         }
         self.layout = None;
         self.center_lenses()?;
@@ -264,9 +372,11 @@ impl PixelStack {
             if pd.is_empty() {
                 return Err("microlens center = \"photodiode\" needs the photodiode's area (rects or layout)".into());
             }
+            // In cell coordinates, each rectangle counts from its own pixel's corner.
+            let local = |v: f64| if self.cell_layout { v - (v / p).floor() * p } else { v };
             let area: f64 = pd.iter().map(|r| (r[2] - r[0]) * (r[3] - r[1])).sum();
-            let cx = pd.iter().map(|r| (r[2] - r[0]) * (r[3] - r[1]) * (r[0] + r[2]) / 2.0).sum::<f64>() / area;
-            let cy = pd.iter().map(|r| (r[2] - r[0]) * (r[3] - r[1]) * (r[1] + r[3]) / 2.0).sum::<f64>() / area;
+            let cx = pd.iter().map(|r| (r[2] - r[0]) * (r[3] - r[1]) * local((r[0] + r[2]) / 2.0)).sum::<f64>() / area;
+            let cy = pd.iter().map(|r| (r[2] - r[0]) * (r[3] - r[1]) * local((r[1] + r[3]) / 2.0)).sum::<f64>() / area;
             ml.offset = [cx - p / 2.0, cy - p / 2.0];
             ml.center = None;
         }
@@ -301,10 +411,53 @@ impl PixelStack {
                 return Err(format!("layer '{}': grid width must be between 0 and the pitch", l.name));
             }
         }
-        if let Some(m) = &self.microlens
-            && !(m.height > 0.0 && m.radius.is_none_or(|r| r > m.height))
-        {
-            return Err("microlens: need height > 0 and radius > height".into());
+        if let Some(m) = &self.microlens {
+            match m.shape {
+                LensShape::Sphere => {
+                    if !(m.height > 0.0 && m.radius.is_none_or(|r| r > m.height)) {
+                        return Err("microlens: need height > 0 and radius > height".into());
+                    }
+                    if m.n.is_some() || m.alpha.is_some() || m.radius_y.is_some() {
+                        return Err("microlens: n, alpha and radius_y are for shape = \"superellipse\"".into());
+                    }
+                }
+                LensShape::Superellipse => {
+                    if !(m.height > 0.0 && m.radius.is_none_or(|r| r > 0.0) && m.radius_y.is_none_or(|r| r > 0.0)) {
+                        return Err("microlens: need height > 0, radius > 0 and radius_y > 0".into());
+                    }
+                    if !(m.n.unwrap_or(2.0) >= 1.0 && m.alpha.unwrap_or(2.0) > 0.0) {
+                        return Err("microlens: superellipse needs n >= 1 and alpha > 0".into());
+                    }
+                }
+            }
+        }
+        if let Some(si) = &self.silicon {
+            if let Some(t) = si.thickness
+                && !(t > self.photodiode.top)
+            {
+                return Err("silicon: thickness must be positive and below the photodiode's top".into());
+            }
+            if let Some(d) = &si.dti {
+                if !(d.width > 0.0 && d.width < self.pitch / 2.0 && d.depth > 0.0) {
+                    return Err("silicon: dti needs a positive depth and a width below half the pitch".into());
+                }
+                d.span(si.thickness)?;
+            }
+        }
+        let thinned = self.silicon.as_ref().is_some_and(|s| s.thickness.is_some());
+        if !self.front.is_empty() && !thinned {
+            return Err("front layers sit below a thinned silicon: set [silicon] thickness".into());
+        }
+        for l in &self.front {
+            if !(l.thickness > 0.0) || l.kind != LayerKind::Uniform || l.material.is_empty() || l.grid.is_some() {
+                return Err(format!("front layer '{}': a material and a positive thickness (patterns, no grid)", l.name));
+            }
+        }
+        if let Some(d) = &self.device {
+            if self.silicon.is_none() {
+                return Err("[device] needs a [silicon] section".into());
+            }
+            d.check()?;
         }
         Ok(())
     }
@@ -337,9 +490,26 @@ pub struct Budget {
     pub other_layers: f64,
     pub silicon_shallow: f64,
     pub collected: f64,
-    /// Absorbed at the photodiode's depth but outside its lateral area.
+    /// Absorbed at the photodiode's depth but outside its lateral area (with a carrier model:
+    /// absorbed in the silicon and not collected).
     pub silicon_outside: f64,
     pub silicon_deep: f64,
+    /// Through a thinned silicon into the front-side layers (absorbed there or passing them).
+    pub transmitted: f64,
+}
+
+impl Budget {
+    pub fn total(&self) -> f64 {
+        self.reflected
+            + self.color_filter
+            + self.metal
+            + self.other_layers
+            + self.silicon_shallow
+            + self.collected
+            + self.silicon_outside
+            + self.silicon_deep
+            + self.transmitted
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -365,6 +535,11 @@ pub struct PixelResult {
     /// `ray` or `rcwa`. RCWA gives no per-lens crosstalk (zeros) and lumps the absorption above
     /// the silicon into `other_layers`.
     pub method: String,
+    /// With the device model: mean time (ns) from generation to collection per colour and
+    /// wavelength.
+    pub collection_time: [Vec<f64>; 4],
+    /// Device model results (pinning voltage, full well, transfer, maps).
+    pub device: Option<DeviceResult>,
 }
 
 /// Solver of the pixel model.
@@ -375,6 +550,14 @@ pub enum Method {
     /// Rigorous coupled-wave analysis over the Bayer cell with this many harmonics per
     /// direction (odd); the microlens is staircased.
     Rcwa { harmonics: usize },
+}
+
+/// RCWA harmonics per direction that converge a Bayer cell of pitch `pitch` (µm) to about
+/// 0.01 in QE over the visible: about 3.8 per µm of the cell, odd, at least 11 (checked on
+/// 1.4, 2.0 and 2.4 µm pixels: 11, 17, 19).
+pub fn suggested_harmonics(pitch: f64) -> usize {
+    let h = (3.8 * 2.0 * pitch).ceil().max(11.0) as usize;
+    h | 1
 }
 
 /// Simulation settings.
@@ -439,23 +622,350 @@ struct Optics {
     layers: Vec<LayerOptics>,
     arc: Vec<(Complex64, f64)>,
     si: Complex64,
+    /// Rays in a modelled silicon (with a carrier model): walls, far side, reflections.
+    silicon: Option<SiOptics>,
 }
 
-/// The cap of the microlens of pixel (i, j): (centre, radius) of its sphere, or None.
-fn lens_sphere(stack: &PixelStack, ml: &Microlens, top: f64, i: i64, j: i64) -> ([f64; 3], f64) {
-    let p = stack.pitch;
-    let a = ml.radius.unwrap_or(p / std::f64::consts::SQRT_2);
-    let rc = (a * a + ml.height * ml.height) / (2.0 * ml.height);
-    let cx = (i as f64 + 0.5) * p + ml.offset[0];
-    let cy = (j as f64 + 0.5) * p + ml.offset[1];
-    ([cx, cy, top + ml.height - rc], rc)
+/// Reflectance against the angle of incidence, 0 - 90° in 1° steps (interpolated).
+struct AngleTable([f64; 91]);
+
+impl AngleTable {
+    fn new(f: impl Fn(f64) -> f64) -> AngleTable {
+        // Grazing incidence (90°) is taken just short of it; a failed evaluation counts as
+        // total reflection.
+        AngleTable(std::array::from_fn(|i| {
+            let r = f((i as f64).min(89.9).to_radians());
+            if r.is_finite() { r.clamp(0.0, 1.0) } else { 1.0 }
+        }))
+    }
+
+    fn at(&self, cos: f64) -> f64 {
+        let deg = cos.clamp(0.0, 1.0).acos().to_degrees();
+        let i = (deg.floor() as usize).min(89);
+        let f = deg - i as f64;
+        self.0[i] * (1.0 - f) + self.0[i + 1] * f
+    }
+}
+
+/// The optics of a modelled silicon at one wavelength.
+struct SiOptics {
+    alpha: f64,
+    thickness: Option<f64>,
+    /// Trench depth range and width, and the walls' reflectance (silicon | fill | silicon).
+    dti: Option<((f64, f64), f64)>,
+    wall: AngleTable,
+    /// Reflectance back into the silicon at the illuminated surface (through the
+    /// anti-reflection films) and at the far side: open, or over each front layer's metal.
+    back: AngleTable,
+    front_open: AngleTable,
+    front_metal: Vec<(Vec<[f64; 4]>, AngleTable)>,
+    rect_period: f64,
+}
+
+impl SiOptics {
+    fn new(stack: &PixelStack, mats: &Materials, lambda: f64, n_above: Complex64) -> Result<Option<SiOptics>, String> {
+        let Some(si) = &stack.silicon else { return Ok(None) };
+        let idx = |name: &str| mats.get(name).map(|m| m.index(lambda));
+        let n_si = idx("si")?;
+        let si_re = Complex64::new(n_si.re, 0.0);
+        let real = |n: Complex64| Complex64::new(n.re, n.im.max(0.0));
+        let dti = match &si.dti {
+            Some(d) => Some((d.span(si.thickness)?, d.width, idx(&d.fill)?)),
+            None => None,
+        };
+        let wall = match dti {
+            Some((_, w, fill)) => AngleTable::new(|th| tmm::rt_unpolarised(si_re, &[(fill, w)], si_re, th, lambda).r),
+            None => AngleTable([0.0; 91]),
+        };
+        let arc_up: Vec<(Complex64, f64)> =
+            stack.arc.iter().rev().map(|f| idx(&f.material).map(|n| (n, f.thickness))).collect::<Result<_, _>>()?;
+        let back = AngleTable::new(|th| tmm::rt_unpolarised(si_re, &arc_up, real(n_above), th, lambda).r);
+        let mut films = vec![];
+        let mut front_metal = vec![];
+        for l in &stack.front {
+            if let Some(pt) = &l.pattern
+                && !pt.rects.is_empty()
+            {
+                let metal = idx(&pt.material)?;
+                let above = films.clone();
+                front_metal
+                    .push((pt.rects.clone(), AngleTable::new(|th| tmm::rt_unpolarised(si_re, &above, metal, th, lambda).r)));
+            }
+            films.push((idx(&l.material)?, l.thickness));
+        }
+        let carrier = idx(&stack.carrier)?;
+        let front_open = AngleTable::new(|th| tmm::rt_unpolarised(si_re, &films, real(carrier), th, lambda).r);
+        Ok(Some(SiOptics {
+            alpha: 4.0 * std::f64::consts::PI * n_si.im / lambda,
+            thickness: si.thickness,
+            dti: dti.map(|(span, w, _)| (span, w)),
+            wall,
+            back,
+            front_open,
+            front_metal,
+            rect_period: stack.rect_period(),
+        }))
+    }
+
+    fn front_r(&self, x: f64, y: f64, cos: f64) -> f64 {
+        for (rects, t) in &self.front_metal {
+            if inside(rects, x, y, self.rect_period) {
+                return t.at(cos);
+            }
+        }
+        self.front_open.at(cos)
+    }
+}
+
+impl Microlens {
+    /// Semi-axis of the footprint (µm) at pitch `p`.
+    pub fn base_radius(&self, p: f64) -> f64 {
+        match self.shape {
+            LensShape::Sphere => self.radius.unwrap_or(p / std::f64::consts::SQRT_2),
+            LensShape::Superellipse => self.radius.unwrap_or(2f64.powf(1.0 / self.exponents().0) * p / 2.0),
+        }
+    }
+
+    /// Semi-axes (Rx, Ry) of the footprint (µm) at pitch `p`.
+    pub fn radii(&self, p: f64) -> (f64, f64) {
+        let a = self.base_radius(p);
+        match self.shape {
+            LensShape::Sphere => (a, a),
+            LensShape::Superellipse => (a, self.radius_y.unwrap_or(a)),
+        }
+    }
+
+    /// Superellipse exponents (n, α).
+    pub fn exponents(&self) -> (f64, f64) {
+        (self.n.unwrap_or(2.0), self.alpha.unwrap_or(2.0))
+    }
+
+    /// Fraction of the pixel's area under a lens.
+    pub fn fill_factor(&self, p: f64) -> f64 {
+        const N: usize = 200;
+        let inside = (0..N * N)
+            .filter(|k| {
+                let (x, y) = (((k % N) as f64 + 0.5) / N as f64 * p, ((k / N) as f64 + 0.5) / N as f64 * p);
+                self.height_at(p, x + self.offset[0], y + self.offset[1]) > 0.0
+            })
+            .count();
+        inside as f64 / (N * N) as f64
+    }
+
+    /// Height of the lens over its base (µm) at (dx, dy) from its centre, and the gradient of
+    /// that height; None outside the footprint.
+    pub fn surface(&self, p: f64, dx: f64, dy: f64) -> Option<(f64, [f64; 2])> {
+        let a = self.base_radius(p);
+        let h = self.height;
+        match self.shape {
+            LensShape::Sphere => {
+                let r2 = dx * dx + dy * dy;
+                if r2 > a * a {
+                    return None;
+                }
+                let rc = (a * a + h * h) / (2.0 * h);
+                let q = (rc * rc - r2).sqrt().max(1e-12);
+                Some((h - rc + q, [-dx / q, -dy / q]))
+            }
+            LensShape::Superellipse => {
+                let (n, alpha) = self.exponents();
+                let (ax, ay) = self.radii(p);
+                let (u, v) = ((dx / ax).abs(), (dy / ay).abs());
+                let s = u.powf(n) + v.powf(n);
+                if s >= 1.0 {
+                    return None;
+                }
+                // ρ^n = s; z = h (1 - ρ^α) = h (1 - s^(α/n)).
+                let z = h * (1.0 - s.powf(alpha / n));
+                // dz/ds = -h (α/n) s^(α/n - 1); ds/dx = n u^(n-1) sign(x) / Rx.
+                let dzds = if s > 0.0 { -h * (alpha / n) * s.powf(alpha / n - 1.0) } else { 0.0 };
+                let g = |t: f64, d: f64, r: f64| dzds * n * t.powf(n - 1.0) * d.signum() / r;
+                Some((z, [g(u, dx, ax), g(v, dy, ay)]))
+            }
+        }
+    }
+
+    /// Height of the lens array over its base (µm) at (x, y): the lens of the pixel holding the
+    /// point (each lens is cut at its pixel's edges), 0 between lenses.
+    pub fn height_at(&self, p: f64, x: f64, y: f64) -> f64 {
+        let (i, j) = pixel_of(x - self.offset[0], y - self.offset[1], p);
+        let (cx, cy) = self.centre(p, i, j);
+        self.surface(p, x - cx, y - cy).map_or(0.0, |s| s.0)
+    }
+
+    /// Centre of the lens of pixel (i, j).
+    fn centre(&self, p: f64, i: i64, j: i64) -> (f64, f64) {
+        ((i as f64 + 0.5) * p + self.offset[0], (j as f64 + 0.5) * p + self.offset[1])
+    }
+
+    /// Where a ray from `origin` (above the lenses) along `d` first meets the lens surface:
+    /// the point, the outward unit normal and the lens's pixel; None if it falls between lenses
+    /// onto the base at height `base`.
+    fn hit(&self, p: f64, base: f64, origin: V3, d: V3) -> Option<(V3, V3, (i64, i64))> {
+        let at = |t: f64| [origin[0] + t * d[0], origin[1] + t * d[1], origin[2] + t * d[2]];
+        let normal = |x: V3| {
+            let (i, j) = pixel_of(x[0] - self.offset[0], x[1] - self.offset[1], p);
+            let (cx, cy) = self.centre(p, i, j);
+            let g = self.surface(p, x[0] - cx, x[1] - cy).map_or([0.0, 0.0], |s| s.1);
+            let l = (g[0] * g[0] + g[1] * g[1] + 1.0).sqrt();
+            ([-g[0] / l, -g[1] / l, 1.0 / l], (i, j))
+        };
+        if self.shape == LensShape::Sphere {
+            // Closed form: the nearest sphere hit among the pixels around the ray.
+            let a = self.base_radius(p);
+            let rc = (a * a + self.height * self.height) / (2.0 * self.height);
+            let t_top = (origin[2] - base - self.height) / -d[2];
+            let top = at(t_top);
+            let (pi, pj) = pixel_of(top[0] - self.offset[0], top[1] - self.offset[1], p);
+            let mut best: Option<(f64, V3, V3, (i64, i64))> = None;
+            for di in -1..=1 {
+                for dj in -1..=1 {
+                    let (i, j) = (pi + di, pj + dj);
+                    let (cx, cy) = self.centre(p, i, j);
+                    let c = [cx, cy, base + self.height - rc];
+                    let oc = [origin[0] - c[0], origin[1] - c[1], origin[2] - c[2]];
+                    let bq = dot(oc, d);
+                    let disc = bq * bq - (dot(oc, oc) - rc * rc);
+                    if disc < 0.0 {
+                        continue;
+                    }
+                    let t = -bq - disc.sqrt();
+                    let hit = at(t);
+                    if hit[2] < base || pixel_of(hit[0] - self.offset[0], hit[1] - self.offset[1], p) != (i, j) {
+                        continue;
+                    }
+                    if best.as_ref().is_none_or(|b| t < b.0) {
+                        let nrm = [(hit[0] - c[0]) / rc, (hit[1] - c[1]) / rc, (hit[2] - c[2]) / rc];
+                        best = Some((t, hit, nrm, (i, j)));
+                    }
+                }
+            }
+            return best.map(|(_, h, n, ij)| (h, n, ij));
+        }
+        // March down from the lenses' top to their base for the first point under the surface,
+        // then bisect.
+        let below = |t: f64| {
+            let x = at(t);
+            x[2] - base <= self.height_at(p, x[0], x[1])
+        };
+        let t0 = (origin[2] - base - self.height) / -d[2];
+        let t1 = (origin[2] - base) / -d[2];
+        const STEPS: usize = 256;
+        let mut prev = t0;
+        for k in 1..=STEPS {
+            let t = t0 + (t1 - t0) * k as f64 / STEPS as f64;
+            if below(t) {
+                let (mut lo, mut hi) = (prev, t);
+                for _ in 0..50 {
+                    let mid = 0.5 * (lo + hi);
+                    if below(mid) { hi = mid } else { lo = mid }
+                }
+                let x = at(hi);
+                if self.height_at(p, x[0], x[1]) <= 0.0 {
+                    return None;
+                }
+                let (nrm, ij) = normal(x);
+                return Some((x, nrm, ij));
+            }
+            prev = t;
+        }
+        None
+    }
+}
+
+/// The carrier model of a stack with a `[silicon]` section: diffusion, or the device model.
+/// A stack's carrier model: the collection probabilities, and the device model they came from.
+pub type CarrierModel = (Collection, Option<DeviceModel>);
+
+pub fn carrier_model(stack: &PixelStack) -> Result<Option<CarrierModel>, String> {
+    let Some(si) = &stack.silicon else { return Ok(None) };
+    if let Some(dev) = &stack.device {
+        let m = dev.solve(si, &stack.silicon_geometry()?)?;
+        let c = Collection::from_probabilities(m.grid.clone(), m.prob.clone(), stack.pitch);
+        return Ok(Some((c, Some(m))));
+    }
+    let pd = &stack.photodiode;
+    Ok(Some((Collection::solve(si, stack.pitch, &pd.rects, stack.cell_layout, (pd.top, pd.bottom))?, None)))
+}
+
+/// Per-wavelength device figures: the mean collection time (ns) per colour, and generation
+/// sections at a few wavelengths for display.
+#[derive(Default)]
+struct DeviceTrace {
+    time: [Vec<f64>; 4],
+    maps: Vec<Map>,
+}
+
+/// One wavelength's device figures: mean collection time (ns) per colour and, at a few
+/// wavelengths, a generation section.
+fn device_sample(m: &DeviceModel, lambda: f64, genv: &[f64], cell_area: f64) -> ([f64; 4], Option<Map>) {
+    let times = std::array::from_fn(|k| m.mean_time(k, genv) * 1e9);
+    let g = &m.grid;
+    let wanted = [0.45, 0.53, 0.62, 0.85];
+    let map = wanted.iter().any(|w| (w - lambda).abs() < 0.0049).then(|| {
+        let j = g.ny / 4;
+        let vol = g.dx * g.dx * g.dz;
+        Map {
+            name: format!("Generation at {:.0} nm", lambda * 1e3),
+            unit: "log10 (per um^3, per photon/um^2)".into(),
+            nx: g.nx,
+            ny: g.nz,
+            width: g.nx as f64 * g.dx,
+            height: g.nz as f64 * g.dz,
+            values: (0..g.nz)
+                .flat_map(|k| (0..g.nx).map(move |i| (i, k)))
+                .map(|(i, k)| {
+                    let v = genv[g.index(i, j, k)] * cell_area / vol;
+                    if v > 0.0 { v.log10().max(-6.0) } else { f64::NAN }
+                })
+                .collect(),
+        }
+    });
+    (times, map)
+}
+
+impl DeviceTrace {
+    fn add(&mut self, m: &DeviceModel, lambda: f64, genv: &[f64], cell_area: f64) {
+        self.push(device_sample(m, lambda, genv, cell_area));
+    }
+
+    fn push(&mut self, (times, map): ([f64; 4], Option<Map>)) {
+        for k in 0..4 {
+            self.time[k].push(times[k]);
+        }
+        if let Some(m) = map
+            && !self.maps.iter().any(|x| x.name == m.name)
+        {
+            self.maps.push(m);
+        }
+    }
+
+    /// The device result with each colour's collection time at its peak QE.
+    fn finish(self, m: Option<&DeviceModel>, qe: &[Vec<f64>; 4]) -> ([Vec<f64>; 4], Option<DeviceResult>) {
+        let Some(m) = m else { return (Default::default(), None) };
+        let mut r = m.result.clone();
+        for k in 0..4 {
+            let peak = (0..qe[k].len()).max_by(|&a, &b| qe[k][a].total_cmp(&qe[k][b]));
+            r.collection_time[k] = peak.map_or(0.0, |i| self.time[k][i]);
+        }
+        r.maps.extend(self.maps);
+        (self.time, Some(r))
+    }
 }
 
 /// Run the pixel model.
 pub fn simulate(stack: &PixelStack, settings: &Settings) -> Result<PixelResult, String> {
     stack.check()?;
+    let model = carrier_model(stack)?;
+    simulate_with(stack, settings, model.as_ref())
+}
+
+/// Run the pixel model with a carrier model computed before ([`carrier_model`] of a stack with
+/// the same silicon), e.g. while fitting optical parameters.
+pub fn simulate_with(stack: &PixelStack, settings: &Settings, model: Option<&CarrierModel>) -> Result<PixelResult, String> {
+    stack.check()?;
     if let Method::Rcwa { harmonics } = settings.method {
-        return simulate_rcwa(stack, settings, harmonics);
+        return simulate_rcwa(stack, settings, harmonics, model);
     }
     let mats = stack.materials()?;
     let p = stack.pitch;
@@ -466,17 +976,18 @@ pub fn simulate(stack: &PixelStack, settings: &Settings) -> Result<PixelResult, 
     let (cra, az) = (settings.cra.to_radians(), settings.azimuth.to_radians());
     let d0: V3 = [cra.sin() * az.cos(), cra.sin() * az.sin(), -cra.cos()];
 
-    let coll = match &stack.silicon {
-        Some(si) => Some(Collection::solve(si, p, &stack.photodiode.rects, (stack.photodiode.top, stack.photodiode.bottom))?),
-        None => None,
+    let (coll, dev_model) = match model {
+        Some((c, m)) => (Some(c), m.as_ref()),
+        None => (None, None),
     };
+    let mut dtrace = DeviceTrace::default();
     let mut qe: [Vec<f64>; 4] = Default::default();
     let mut xt: [Vec<f64>; 4] = Default::default();
     let mut xte: [Vec<f64>; 4] = Default::default();
     let mut budget = vec![];
     for &lambda in &settings.wavelengths {
         let idx = |name: &str| mats.get(name).map(|m| m.index(lambda));
-        let cf = [idx(&stack.color_filters.red)?, idx(&stack.color_filters.green)?, idx(&stack.color_filters.blue)?];
+        let cf = stack.color_filters.indices(&mats, lambda)?;
         let mut layers = vec![];
         for l in &stack.layers {
             let base = match l.kind {
@@ -503,7 +1014,10 @@ pub fn simulate(stack: &PixelStack, settings: &Settings) -> Result<PixelResult, 
             layers,
             arc: stack.arc.iter().map(|f| idx(&f.material).map(|n| (n, f.thickness))).collect::<Result<_, _>>()?,
             si: idx("si")?,
+            silicon: None,
         };
+        let n_above = optics.layers.last().map_or(optics.lens.unwrap_or(optics.ambient), |l| l.0);
+        let optics = Optics { silicon: SiOptics::new(stack, &mats, lambda, n_above)?, ..optics };
 
         let mut collected = [0.0; 4];
         // Light entering through each colour's lens: total collected and collected elsewhere.
@@ -522,6 +1036,9 @@ pub fn simulate(stack: &PixelStack, settings: &Settings) -> Result<PixelResult, 
         // QE per pixel: the cell holds one pixel of each colour, illuminated with 4 pixels' light.
         match (&coll, &genv) {
             (Some(c), Some((_, g))) => {
+                if let Some(m) = dev_model {
+                    dtrace.add(m, lambda, g, 4.0 * p * p);
+                }
                 let (q, x, got, total) = collect(c, g);
                 b.collected = got;
                 b.silicon_outside = total - got;
@@ -542,6 +1059,7 @@ pub fn simulate(stack: &PixelStack, settings: &Settings) -> Result<PixelResult, 
         }
         budget.push(b);
     }
+    let (collection_time, device) = dtrace.finish(dev_model, &qe);
     Ok(PixelResult {
         name: stack.name.clone(),
         cra: settings.cra,
@@ -553,11 +1071,14 @@ pub fn simulate(stack: &PixelStack, settings: &Settings) -> Result<PixelResult, 
         budget,
         rays: (2 * n_side) * (2 * n_side),
         method: "ray".into(),
+        collection_time,
+        device,
     })
 }
 
-/// QE per colour, light budget and electrical crosstalk per colour at one wavelength.
-type WavelengthResult = ([f64; 4], Budget, [f64; 4]);
+/// QE per colour, light budget, electrical crosstalk per colour and the device figures at one
+/// wavelength.
+type WavelengthResult = ([f64; 4], Budget, [f64; 4], Option<([f64; 4], Option<Map>)>);
 
 /// Steps of the staircased microlens in the RCWA model.
 const LENS_SLICES: usize = 8;
@@ -565,7 +1086,12 @@ const LENS_SLICES: usize = 8;
 const SAMPLES_PER_PIXEL: usize = 32;
 
 /// The RCWA model: the Bayer cell as one period.
-fn simulate_rcwa(stack: &PixelStack, settings: &Settings, harmonics: usize) -> Result<PixelResult, String> {
+fn simulate_rcwa(
+    stack: &PixelStack,
+    settings: &Settings,
+    harmonics: usize,
+    model: Option<&CarrierModel>,
+) -> Result<PixelResult, String> {
     use crate::rcwa::{Eps, Layer, Problem};
     let mats = stack.materials()?;
     let p = stack.pitch;
@@ -595,28 +1121,62 @@ fn simulate_rcwa(stack: &PixelStack, settings: &Settings, harmonics: usize) -> R
         mats.get(&m.material)?;
     }
 
+    for l in &stack.front {
+        mats.get(&l.material)?;
+        if let Some(pt) = &l.pattern {
+            mats.get(&pt.material)?;
+        }
+    }
+    mats.get(&stack.carrier)?;
+    // The silicon as slabs (thickness, trenched) down to its far side, or to the trenches'
+    // bottom over a semi-infinite silicon.
+    let (si_slabs, dti_fill): Slabs = match &stack.silicon {
+        Some(si) if si.thickness.is_some() || si.dti.is_some() => {
+            let mut slabs = vec![];
+            let fill = match &si.dti {
+                Some(d) => {
+                    mats.get(&d.fill)?;
+                    let (z0, z1) = d.span(si.thickness)?;
+                    if z0 > 1e-9 {
+                        slabs.push((z0, false));
+                    }
+                    slabs.push((z1 - z0, true));
+                    if let Some(t) = si.thickness
+                        && t - z1 > 1e-9
+                    {
+                        slabs.push((t - z1, false));
+                    }
+                    Some((d.width, d.fill.clone()))
+                }
+                None => {
+                    slabs.push((si.thickness.unwrap(), false));
+                    None
+                }
+            };
+            (slabs, fill)
+        }
+        _ => (vec![], None),
+    };
+    let slab_depth: f64 = si_slabs.iter().map(|s| s.0).sum();
+    let thinned = stack.silicon.as_ref().is_some_and(|s| s.thickness.is_some());
     let problem = |lambda: f64| -> Problem {
         let idx = |name: &str| mats.get(name).map(|m| m.index(lambda)).unwrap();
         let eps = |n: Complex64| n * n;
         let ambient = idx(&stack.ambient);
-        let cf = [idx(&stack.color_filters.red), idx(&stack.color_filters.green), idx(&stack.color_filters.blue)];
+        let cf = stack.color_filters.indices(&mats, lambda).unwrap();
         let mut layers = vec![];
         if let Some(ml) = &stack.microlens {
             let n_lens = idx(&ml.material);
-            let a = ml.radius.unwrap_or(p / std::f64::consts::SQRT_2);
-            let rc = (a * a + ml.height * ml.height) / (2.0 * ml.height);
+            let heights: Vec<f64> = (0..ns * ns)
+                .map(|s| {
+                    let (x, y) = xy(s % ns, s / ns);
+                    ml.height_at(p, x, y)
+                })
+                .collect();
             for k in 0..LENS_SLICES {
                 // Height of the slice's middle above the lens base.
                 let zm = ml.height * (1.0 - (k as f64 + 0.5) / LENS_SLICES as f64);
-                let r = (rc * rc - (zm - (ml.height - rc)).powi(2)).max(0.0).sqrt();
-                let samples = (0..ns * ns)
-                    .map(|s| {
-                        let (x, y) = xy(s % ns, s / ns);
-                        let [ox, oy] = ml.offset;
-                        let (cx, cy) = ((((x - ox) / p).floor() + 0.5) * p + ox, (((y - oy) / p).floor() + 0.5) * p + oy);
-                        eps(if (x - cx).hypot(y - cy) <= r { n_lens } else { ambient })
-                    })
-                    .collect();
+                let samples = heights.iter().map(|&z| eps(if z >= zm { n_lens } else { ambient })).collect();
                 layers.push(Layer { thickness: ml.height / LENS_SLICES as f64, eps: Eps::Grid { nx: ns, ny: ns, samples } });
             }
         }
@@ -641,7 +1201,7 @@ fn simulate_rcwa(stack: &PixelStack, settings: &Settings, harmonics: usize) -> R
                                 return eps(nm);
                             }
                             if let Some((nm, rects)) = pattern
-                                && inside(rects, x, y, p)
+                                && inside(rects, x, y, stack.rect_period())
                             {
                                 return eps(nm);
                             }
@@ -656,43 +1216,91 @@ fn simulate_rcwa(stack: &PixelStack, settings: &Settings, harmonics: usize) -> R
         for f in &stack.arc {
             layers.push(Layer { thickness: f.thickness, eps: Eps::Uniform(eps(idx(&f.material))) });
         }
+        // A modelled silicon with trenches or a far side: silicon layers whose fields are kept,
+        // then the front-side layers over the carrier.
+        let n_si = idx("si");
+        let first_si = layers.len();
+        for (t, trenched) in &si_slabs {
+            let e = match (trenched, &dti_fill) {
+                (true, Some((w, fill))) => Eps::Grid {
+                    nx: ns,
+                    ny: ns,
+                    samples: (0..ns * ns)
+                        .map(|s| {
+                            let (x, y) = xy(s % ns, s / ns);
+                            eps(if on_grid(x, y, p, *w) { idx(fill) } else { n_si })
+                        })
+                        .collect(),
+                },
+                _ => Eps::Uniform(eps(n_si)),
+            };
+            layers.push(Layer { thickness: *t, eps: e });
+        }
+        let monitor = first_si..layers.len();
+        for l in &stack.front {
+            let base = idx(&l.material);
+            let e = match &l.pattern {
+                Some(pt) if !pt.rects.is_empty() => {
+                    let nm = idx(&pt.material);
+                    Eps::Grid {
+                        nx: ns,
+                        ny: ns,
+                        samples: (0..ns * ns)
+                            .map(|s| {
+                                let (x, y) = xy(s % ns, s / ns);
+                                eps(if inside(&pt.rects, x, y, stack.rect_period()) { nm } else { base })
+                            })
+                            .collect(),
+                    }
+                }
+                _ => Eps::Uniform(eps(base)),
+            };
+            layers.push(Layer { thickness: l.thickness, eps: e });
+        }
+        let thinned = stack.silicon.as_ref().is_some_and(|s| s.thickness.is_some());
         Problem {
             period: (cell, cell),
             harmonics: (h, h),
             n_in: ambient,
             layers,
-            n_sub: idx("si"),
+            n_sub: if thinned { idx(&stack.carrier) } else { n_si },
             wavelength: lambda,
             theta: settings.cra.to_radians(),
             phi: settings.azimuth.to_radians(),
+            monitor,
         }
     };
 
     let pd = &stack.photodiode;
-    let coll = match &stack.silicon {
-        Some(si) => Some(Collection::solve(si, p, &pd.rects, (pd.top, pd.bottom))?),
-        None => None,
+    let (coll, dev_model) = match model {
+        Some((c, m)) => (Some(c), m.as_ref()),
+        None => (None, None),
     };
-    let one = |lambda: f64| -> ([f64; 4], Budget, [f64; 4]) {
+    let one = |lambda: f64| -> WavelengthResult {
         let sols = problem(lambda).solve();
         let mut qe = [0.0; 4];
         let mut b = Budget::default();
         let w = 1.0 / sols.len() as f64;
-        if let Some(c) = &coll {
+        if let Some(c) = coll {
             let mut genv = vec![0.0; c.grid.len()];
             let whole = (0.0, cell);
             let depth = c.grid.nz as f64 * c.grid.dz;
             for s in &sols {
                 s.add_generation(&c.grid, &mut genv, w);
                 b.reflected += s.r * w;
-                b.silicon_deep += s.absorbed(whole, whole, (depth, f64::INFINITY)) * w;
-                let total = s.absorbed(whole, whole, (0.0, f64::INFINITY));
-                b.other_layers += (1.0 - s.r - total).max(0.0) * w;
+                if thinned {
+                    b.transmitted += s.transmitted * w;
+                } else {
+                    // Below the grid, in the semi-infinite silicon under the slabs.
+                    b.silicon_deep += s.absorbed(whole, whole, ((depth - slab_depth).max(0.0), f64::INFINITY)) * w;
+                }
             }
             let (q, x, got, total) = collect(c, &genv);
             b.collected = got;
             b.silicon_outside = (total - got).max(0.0);
-            return (q, b, x);
+            b.other_layers = (1.0 - b.reflected - b.transmitted - b.silicon_deep - total).max(0.0);
+            let sample = dev_model.map(|m| device_sample(m, lambda, &genv, cell * cell));
+            return (q, b, x, sample);
         }
         for s in &sols {
             let whole_pixel = [[0.0, 0.0, p, p]];
@@ -700,8 +1308,15 @@ fn simulate_rcwa(stack: &PixelStack, settings: &Settings, harmonics: usize) -> R
             let mut got = 0.0;
             for (i, j) in [(0usize, 0usize), (1, 0), (0, 1), (1, 1)] {
                 let (ox, oy) = (i as f64 * p, j as f64 * p);
-                let a: f64 =
-                    area.iter().map(|r| s.absorbed((ox + r[0], ox + r[2]), (oy + r[1], oy + r[3]), (pd.top, pd.bottom))).sum();
+                // Rectangles in cell coordinates belong to the pixel of their centre.
+                let a: f64 = if stack.cell_layout && !pd.rects.is_empty() {
+                    area.iter()
+                        .filter(|r| pixel_of((r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0, p) == (i as i64, j as i64))
+                        .map(|r| s.absorbed((r[0], r[2]), (r[1], r[3]), (pd.top, pd.bottom)))
+                        .sum()
+                } else {
+                    area.iter().map(|r| s.absorbed((ox + r[0], ox + r[2]), (oy + r[1], oy + r[3]), (pd.top, pd.bottom))).sum()
+                };
                 qe[PixelStack::color(i as i64, j as i64)] += 4.0 * a * w;
                 b.collected += a * w;
                 got += a;
@@ -716,7 +1331,7 @@ fn simulate_rcwa(stack: &PixelStack, settings: &Settings, harmonics: usize) -> R
             b.silicon_deep += s.absorbed(whole, whole, (pd.bottom, f64::INFINITY)) * w;
             b.other_layers += (1.0 - s.r - total).max(0.0) * w;
         }
-        (qe, b, [0.0; 4])
+        (qe, b, [0.0; 4], None)
     };
 
     // Wavelengths in parallel; the linear algebra itself stays sequential.
@@ -739,13 +1354,18 @@ fn simulate_rcwa(stack: &PixelStack, settings: &Settings, harmonics: usize) -> R
     let mut qe: [Vec<f64>; 4] = Default::default();
     let mut xte: [Vec<f64>; 4] = Default::default();
     let mut budget = vec![];
-    for (q, b, x) in out.into_iter().map(Option::unwrap) {
+    let mut dtrace = DeviceTrace::default();
+    for (q, b, x, sample) in out.into_iter().map(Option::unwrap) {
         for c in 0..4 {
             qe[c].push(q[c]);
             xte[c].push(x[c]);
         }
         budget.push(b);
+        if let Some(smp) = sample {
+            dtrace.push(smp);
+        }
     }
+    let (collection_time, device) = dtrace.finish(dev_model, &qe);
     Ok(PixelResult {
         name: stack.name.clone(),
         cra: settings.cra,
@@ -757,6 +1377,8 @@ fn simulate_rcwa(stack: &PixelStack, settings: &Settings, harmonics: usize) -> R
         budget,
         rays: 0,
         method: "rcwa".into(),
+        collection_time,
+        device,
     })
 }
 
@@ -834,37 +1456,15 @@ fn trace(
             // Back up the start so that the ray reaches (x0, y0) at the lens top.
             let t_back = (z_start - (lens_base + ml.height)) / -d[2];
             let origin = [start[0] - d[0] * t_back, start[1] - d[1] * t_back, z_start];
-            let (pi, pj) = pixel_of(start[0] - ml.offset[0], start[1] - ml.offset[1], p);
-            let mut best: Option<(f64, V3, V3, (i64, i64))> = None;
-            for di in -1..=1 {
-                for dj in -1..=1 {
-                    let (i, j) = (pi + di, pj + dj);
-                    let (c, rc) = lens_sphere(stack, ml, lens_base, i, j);
-                    let oc = [origin[0] - c[0], origin[1] - c[1], origin[2] - c[2]];
-                    let bq = dot(oc, d);
-                    let disc = bq * bq - (dot(oc, oc) - rc * rc);
-                    if disc < 0.0 {
-                        continue;
-                    }
-                    let t = -bq - disc.sqrt();
-                    let hit = [origin[0] + t * d[0], origin[1] + t * d[1], origin[2] + t * d[2]];
-                    if hit[2] < lens_base || pixel_of(hit[0] - ml.offset[0], hit[1] - ml.offset[1], p) != (i, j) {
-                        continue;
-                    }
-                    if best.as_ref().is_none_or(|b| t < b.0) {
-                        let nrm = [(hit[0] - c[0]) / rc, (hit[1] - c[1]) / rc, (hit[2] - c[2]) / rc];
-                        best = Some((t, hit, nrm, (i, j)));
-                    }
-                }
-            }
+            let best = ml.hit(p, lens_base, origin, d);
             match best {
-                Some((_, hit, nrm, pix)) => {
+                Some((hit, nrm, pix)) => {
                     let cos_i = -dot(nrm, d);
                     let t = fresnel_t(n_cur, n_lens, cos_i);
                     b.reflected += power * (1.0 - t);
                     power *= t;
                     let Some(nd) = refract(d, nrm, n_cur.re, n_lens.re) else {
-                        b.reflected += w;
+                        b.reflected += power;
                         return;
                     };
                     d = nd;
@@ -926,7 +1526,7 @@ fn trace(
                 return;
             }
             if let Some((_, rects)) = pattern
-                && inside(rects, mid[0], mid[1], p)
+                && inside(rects, mid[0], mid[1], stack.rect_period())
             {
                 b.metal += power;
                 return;
@@ -973,26 +1573,14 @@ fn trace(
     let generated = |z0: f64, z1: f64| (-alpha * z0 * path_per_depth).exp() - (-alpha * z1 * path_per_depth).exp();
     let lens_color = PixelStack::color(lens_pixel.0, lens_pixel.1);
     if let Some((g, cells)) = genv {
-        // Carrier model: deposit the generation in the voxels it falls in, to the epi bottom;
-        // collection is computed afterwards. Optical crosstalk counts, as without the carrier
-        // model, the generation over the photodiode depth that lands under another pixel.
-        let depth = g.nz as f64 * g.dz;
-        for k in 0..g.nz {
-            let (za, zb) = (k as f64 * g.dz, (k + 1) as f64 * g.dz);
-            let zm = 0.5 * (za + zb);
-            let (x, y) = (pos[0] + dsi[0] * zm * path_per_depth, pos[1] + dsi[1] * zm * path_per_depth);
-            let dep = power * generated(za, zb);
-            if let Some(v) = g.voxel(x, y, zm) {
-                cells[v] += dep;
-            }
-            if zm >= pd.top && zm <= pd.bottom {
-                entered[lens_color][0] += dep;
-                if pixel_of(x, y, p) != lens_pixel {
-                    entered[lens_color][1] += dep;
-                }
-            }
-        }
-        b.silicon_deep += power * (-alpha * depth * path_per_depth).exp();
+        // Carrier model: deposit the generation in the voxels it falls in, following the ray
+        // off the trench walls and the silicon's surfaces; collection is computed afterwards.
+        // Optical crosstalk counts, as without the carrier model, the generation over the
+        // photodiode depth that lands under another pixel.
+        let so = o.silicon.as_ref().expect("silicon optics with a carrier model");
+        let dir = [dsi[0], dsi[1], -dsi[2]];
+        trace_silicon(stack, so, [pos[0], pos[1]], dir, power, g, cells, lens_pixel, lens_color, entered, b);
+        let _ = (generated, path_per_depth, alpha);
         return;
     }
     b.silicon_shallow += power * generated(0.0, pd.top);
@@ -1005,7 +1593,7 @@ fn trace(
         let x = pos[0] + dsi[0] * zm * path_per_depth;
         let y = pos[1] + dsi[1] * zm * path_per_depth;
         let g = power * generated(za, zb);
-        if !pd.rects.is_empty() && !inside(&pd.rects, x, y, p) {
+        if !pd.rects.is_empty() && !inside(&pd.rects, x, y, stack.rect_period()) {
             b.silicon_outside += g;
             continue;
         }
@@ -1015,6 +1603,128 @@ fn trace(
         entered[lens_color][0] += g;
         if (i, j) != lens_pixel {
             entered[lens_color][1] += g;
+        }
+    }
+}
+
+/// A ray in the silicon (depth coordinates: z down from the illuminated surface), from `start`
+/// in direction `dir` with `power`: generation along its path into the voxels of `g`,
+/// reflections (and transmission) at the trench walls, the far side and the illuminated surface.
+#[allow(clippy::too_many_arguments)]
+fn trace_silicon(
+    stack: &PixelStack,
+    so: &SiOptics,
+    start: [f64; 2],
+    dir: V3,
+    power: f64,
+    g: &SiGrid,
+    cells: &mut [f64],
+    lens_pixel: (i64, i64),
+    lens_color: usize,
+    entered: &mut [[f64; 2]; 4],
+    b: &mut Budget,
+) {
+    let p = stack.pitch;
+    let pd = &stack.photodiode;
+    let bottom = so.thickness.unwrap_or(g.nz as f64 * g.dz);
+    let step_len = 0.5 * g.dx.min(g.dz);
+    let floor = power * 1e-4;
+    let mut rays = vec![(start[0], start[1], 1e-9, dir, power, 0usize)];
+    while let Some((mut x, mut y, mut z, mut d, mut pw, mut events)) = rays.pop() {
+        loop {
+            if pw < floor || events > 64 {
+                b.silicon_deep += pw;
+                break;
+            }
+            let t_z = if d[2] > 1e-12 {
+                (bottom - z) / d[2]
+            } else if d[2] < -1e-12 {
+                -z / d[2]
+            } else {
+                f64::INFINITY
+            };
+            // The next trench wall the ray meets within the trench's depth.
+            let (mut t_w, mut axis) = (f64::INFINITY, 0);
+            if let Some((span, w)) = so.dti {
+                for ax in 0..2 {
+                    let (c, dc) = (if ax == 0 { x } else { y }, d[ax]);
+                    if dc.abs() < 1e-12 {
+                        continue;
+                    }
+                    let m = (c / p).floor();
+                    let plane = if dc > 0.0 { (m + 1.0) * p - w / 2.0 } else { m * p + w / 2.0 };
+                    let t = ((plane - c) / dc).max(0.0);
+                    let zh = z + d[2] * t;
+                    if zh >= span.0 && zh <= span.1 && t < t_w {
+                        (t_w, axis) = (t, ax);
+                    }
+                }
+            }
+            let t = t_z.min(t_w);
+            if !t.is_finite() {
+                b.silicon_deep += pw;
+                break;
+            }
+            let n_steps = ((t / step_len).ceil() as usize).clamp(1, 200_000);
+            let ds = t / n_steps as f64;
+            let keep = (-so.alpha * ds).exp();
+            for st in 0..n_steps {
+                let tm = (st as f64 + 0.5) * ds;
+                let (xm, ym, zm) = (x + d[0] * tm, y + d[1] * tm, z + d[2] * tm);
+                let dep = pw * (1.0 - keep);
+                pw -= dep;
+                match g.voxel(xm, ym, zm) {
+                    Some(v) => cells[v] += dep,
+                    None => b.silicon_deep += dep,
+                }
+                if zm >= pd.top && zm <= pd.bottom {
+                    entered[lens_color][0] += dep;
+                    if pixel_of(xm, ym, p) != lens_pixel {
+                        entered[lens_color][1] += dep;
+                    }
+                }
+            }
+            x += d[0] * t;
+            y += d[1] * t;
+            z += d[2] * t;
+            events += 1;
+            if t_w <= t_z {
+                // Off the wall; what tunnels through the trench goes on in the neighbour.
+                let r = so.wall.at(d[axis].abs());
+                let through = pw * (1.0 - r);
+                let w = so.dti.map_or(0.0, |x| x.1);
+                if through > floor {
+                    let mut q = [x, y];
+                    q[axis] += d[axis].signum() * (w + 1e-9);
+                    rays.push((q[0], q[1], z, d, through, events));
+                } else {
+                    b.silicon_deep += through;
+                }
+                pw *= r;
+                d[axis] = -d[axis];
+                if axis == 0 {
+                    x += d[0].signum() * 1e-9;
+                } else {
+                    y += d[1].signum() * 1e-9;
+                }
+            } else if d[2] > 0.0 {
+                if so.thickness.is_none() {
+                    // Past the modelled depth of a thick silicon.
+                    b.silicon_deep += pw;
+                    break;
+                }
+                let r = so.front_r(x, y, d[2]);
+                b.transmitted += pw * (1.0 - r);
+                pw *= r;
+                d[2] = -d[2];
+                z = bottom - 1e-9;
+            } else {
+                let r = so.back.at(-d[2]);
+                b.reflected += pw * (1.0 - r);
+                pw *= r;
+                d[2] = -d[2];
+                z = 1e-9;
+            }
         }
     }
 }
@@ -1118,6 +1828,88 @@ bottom = 3.0
                 + b.silicon_deep;
             assert!((sum - 1.0).abs() < 1e-6, "{b:?}");
         }
+    }
+
+    fn superellipse(n: f64, m: f64, radius: Option<f64>) -> PixelStack {
+        let mut s = PixelStack::from_toml(BSI).unwrap();
+        let ml = s.microlens.as_mut().unwrap();
+        ml.shape = LensShape::Superellipse;
+        (ml.n, ml.alpha, ml.radius) = (Some(n), Some(m), radius);
+        s.check().unwrap();
+        s
+    }
+
+    #[test]
+    fn superellipse_lens_surface() {
+        let ml = Microlens {
+            height: 1.0,
+            radius: Some(1.0),
+            radius_y: None,
+            shape: LensShape::Superellipse,
+            n: None,
+            alpha: None,
+            material: "resin".into(),
+            offset: [0.0; 2],
+            center: None,
+        };
+        // n = α = 2: a paraboloid, z = h (1 - r²/a²).
+        for (x, y) in [(0.0, 0.0), (0.3, 0.4), (-0.6, 0.2), (0.0, -0.9)] {
+            let (z, _) = ml.surface(4.0, x, y).unwrap();
+            assert!((z - (1.0 - x * x - y * y)).abs() < 1e-9, "{x} {y} {z}");
+        }
+        assert!(ml.surface(4.0, 0.8, 0.8).is_none());
+        // An elliptic footprint: Rx = 1, Ry = 0.5.
+        let el = Microlens { radius_y: Some(0.5), ..ml.clone() };
+        assert!(el.surface(4.0, 0.9, 0.0).is_some() && el.surface(4.0, 0.0, 0.6).is_none());
+        // Fill factor: a circle of radius p/2 covers π/4 of its pixel, the default lens all of it.
+        assert!((Microlens { radius: Some(2.0), ..ml.clone() }.fill_factor(4.0) - std::f64::consts::FRAC_PI_4).abs() < 2e-3);
+        assert!((Microlens { radius: None, n: Some(4.0), ..ml.clone() }.fill_factor(4.0) - 1.0).abs() < 1e-3);
+        // Square-ish footprint: the corner direction reaches further than a circle's.
+        let sq = Microlens { n: Some(6.0), alpha: Some(1.5), radius_y: Some(0.9), ..ml.clone() };
+        assert!(sq.surface(4.0, 0.75, 0.7).is_some());
+        // The gradient matches finite differences.
+        for (x, y) in [(0.3, 0.2), (-0.5, 0.6), (0.1, -0.7)] {
+            let (_, g) = sq.surface(4.0, x, y).unwrap();
+            let e = 1e-6;
+            let fx = (sq.surface(4.0, x + e, y).unwrap().0 - sq.surface(4.0, x - e, y).unwrap().0) / (2.0 * e);
+            let fy = (sq.surface(4.0, x, y + e).unwrap().0 - sq.surface(4.0, x, y - e).unwrap().0) / (2.0 * e);
+            assert!((g[0] - fx).abs() < 1e-5 && (g[1] - fy).abs() < 1e-5, "{g:?} vs {fx} {fy}");
+        }
+        // A ray finds the surface: straight down lands on the height, at an angle on the surface.
+        let base = 2.0;
+        for (d, x0) in [([0.0, 0.0, -1.0], [2.3, 1.7]), ([0.3, -0.2, -(1.0f64 - 0.13).sqrt()], [1.5, 2.5])] {
+            let o = [x0[0], x0[1], base + 3.0];
+            let (hit, nrm, ij) = sq.hit(4.0, base, o, d).unwrap();
+            assert_eq!(ij, (0, 0));
+            assert!((hit[2] - base - sq.height_at(4.0, hit[0], hit[1])).abs() < 1e-9, "{hit:?}");
+            assert!(nrm[2] > 0.0 && (dot(nrm, nrm) - 1.0).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn superellipse_lens_fills_the_corners() {
+        // Same semi-axis (half the pitch): a squarer lens covers the pixel's corners and sends
+        // less light into the grid; light is conserved either way.
+        let round = run(&superellipse(2.0, 2.0, Some(0.7)), 0.0);
+        let square = run(&superellipse(8.0, 2.0, Some(0.7)), 0.0);
+        let i = round.wavelengths.iter().position(|&x| (x - 0.54).abs() < 1e-9).unwrap();
+        assert!(square.qe[1][i] > round.qe[1][i] + 0.01, "{} vs {}", square.qe[1][i], round.qe[1][i]);
+        for r in [&round, &square] {
+            for b in &r.budget {
+                assert!((b.total() - 1.0).abs() < 1e-6, "{b:?}");
+            }
+        }
+        // RCWA takes the same surface, staircased.
+        let st = superellipse(4.0, 2.0, None);
+        let wl = vec![0.45, 0.54, 0.62];
+        let r =
+            simulate(&st, &Settings { wavelengths: wl, method: Method::Rcwa { harmonics: 7 }, ..Settings::default() }).unwrap();
+        assert!(r.qe[0][2] > 0.1 && r.qe[3][0] > 0.1 && r.qe.iter().flatten().all(|q| (0.0..1.0).contains(q)), "{:?}", r.qe);
+        // Exponents are checked; a sphere takes none.
+        let mut bad = st.clone();
+        bad.microlens.as_mut().unwrap().n = Some(0.5);
+        assert!(bad.check().is_err());
+        assert!(PixelStack::from_toml(&BSI.replace("height = 0.55", "height = 0.55\nn = 3")).is_err());
     }
 
     #[test]
@@ -1269,7 +2061,7 @@ bottom = 3.0
                 epi: Some(4.0),
                 // On the photodiode's edges, so that the voxels match the box model's volume.
                 grid: Some(0.1),
-                dti: dti.then_some(crate::carriers::Dti { depth: 4.0, width: 0.1 }),
+                dti: dti.then_some(crate::carriers::Dti::new(4.0, 0.1)),
                 ..Silicon::default()
             });
             st
@@ -1303,6 +2095,141 @@ bottom = 3.0
                 assert!((sum - 1.0).abs() < 2e-3, "{m:?} {b:?}");
             }
         }
+    }
+
+    /// A 2 µm back-side illuminated pixel on 3 µm of silicon, trenches to the given depth (0:
+    /// none), metal 1 under the photodiode on the front side, and the device model.
+    fn fdti_stack(dti_depth: f64) -> PixelStack {
+        let device = crate::device::tests::PIXEL
+            .replace("[[doping]]", "[[device.doping]]")
+            .replace("[[gate]]", "[[device.gate]]")
+            .replace("background =", "[device]\nbackground =");
+        let dti = if dti_depth > 0.0 { format!("dti = {{ depth = {dti_depth}, width = 0.15 }}") } else { String::new() };
+        let text = format!(
+            r#"
+name = "FDTI 2 um"
+pitch = 2.0
+[microlens]
+height = 0.7
+[[layers]]
+name = "planarisation"
+material = "resin"
+thickness = 0.1
+[[layers]]
+name = "colour filter"
+kind = "color_filter"
+thickness = 0.6
+[[layers]]
+name = "grid"
+material = "sio2"
+thickness = 0.25
+grid = {{ material = "w", width = 0.15 }}
+[[arc]]
+material = "ta2o5"
+thickness = 0.05
+[[arc]]
+material = "hfo2"
+thickness = 0.01
+[[front]]
+name = "PMD"
+material = "sio2"
+thickness = 0.3
+[[front]]
+name = "metal 1"
+material = "sio2"
+thickness = 0.2
+pattern = {{ material = "al", rects = [[0.3, 0.3, 1.7, 1.7]] }}
+[photodiode]
+top = 0.3
+bottom = 2.7
+[silicon]
+thickness = 3.0
+grid = 0.1
+{dti}
+{device}
+"#
+        );
+        let mut st = PixelStack::from_toml(&text).unwrap();
+        if dti_depth == 0.0 {
+            st.device = None;
+        } else {
+            st.device.as_mut().unwrap().transfer = None;
+        }
+        st
+    }
+
+    #[test]
+    fn back_side_illuminated_pixel_with_full_depth_trenches() {
+        let wl = vec![0.45, 0.53, 0.62, 0.85];
+        let run = |st: &PixelStack, m| {
+            simulate(st, &Settings { wavelengths: wl.clone(), rays_per_side: 16, cra: 15.0, method: m, ..Settings::default() })
+                .unwrap()
+        };
+        let t0 = std::time::Instant::now();
+        let fdti = fdti_stack(3.0);
+        let ray = run(&fdti, Method::Ray);
+        eprintln!("ray + device: {:?}", t0.elapsed());
+        // Energy is accounted for: the far side passes some red and infrared to the front side.
+        for b in &ray.budget {
+            assert!((b.total() - 1.0).abs() < 2e-3, "{b:?}");
+        }
+        assert!(ray.budget[3].transmitted > 0.01, "{:?}", ray.budget[3]);
+        let dev = ray.device.as_ref().unwrap();
+        assert_eq!(dev.pixels.len(), 4);
+        assert!(dev.pixels.iter().all(|p| p.full_well > 1000.0));
+        assert!(dev.collection_time.iter().all(|&t| t > 0.0 && t < 10.0), "{:?}", dev.collection_time);
+        assert!(dev.maps.iter().any(|m| m.name.starts_with("Generation at 530")));
+        // Full-depth trenches cut the electrical crosstalk to nothing and the optical crosstalk
+        // in the silicon (light reflects off the walls) at a chief ray angle.
+        let mut open = fdti.clone();
+        open.silicon.as_mut().unwrap().dti = None;
+        let ro = run(&open, Method::Ray);
+        let wide = |st: &PixelStack| {
+            simulate(st, &Settings { wavelengths: wl.clone(), rays_per_side: 16, cra: 30.0, ..Settings::default() }).unwrap()
+        };
+        let (w_fdti, w_open) = (wide(&fdti), wide(&open));
+        for i in 0..wl.len() {
+            eprintln!(
+                "{} nm: QE G {:.3} / {:.3} (open), optical xt {:.3} / {:.3}, electrical xt {:.4} / {:.4}",
+                wl[i] * 1e3,
+                ray.qe[1][i],
+                ro.qe[1][i],
+                ray.crosstalk[1][i],
+                ro.crosstalk[1][i],
+                ray.crosstalk_electrical[1][i],
+                ro.crosstalk_electrical[1][i]
+            );
+        }
+        eprintln!("CRA 30°: optical crosstalk G {:?} (FDTI) vs {:?}", w_fdti.crosstalk[1], w_open.crosstalk[1]);
+        assert!(ray.crosstalk_electrical[0][3] < 1e-6);
+        assert!(ro.crosstalk_electrical[0][3] > 0.003, "{:?}", ro.crosstalk_electrical[0]);
+        assert!(w_fdti.crosstalk[1][2] < 0.7 * w_open.crosstalk[1][2], "{:?} vs {:?}", w_fdti.crosstalk[1], w_open.crosstalk[1]);
+        if fdti.device.is_none() {
+            fdti_stack(0.0);
+        }
+        // RCWA solves the same silicon with its trenches and the metal under it.
+        let t0 = std::time::Instant::now();
+        let rc = run(&fdti, Method::Rcwa { harmonics: 7 });
+        eprintln!("rcwa + device: {:?}", t0.elapsed());
+        for (i, b) in rc.budget.iter().enumerate() {
+            eprintln!(
+                "{} nm: RCWA QE R {:.3} Gr {:.3} B {:.3}; budget {b:?}",
+                wl[i] * 1e3,
+                rc.qe[0][i],
+                rc.qe[1][i],
+                rc.qe[3][i]
+            );
+            assert!((b.total() - 1.0).abs() < 5e-3, "{b:?}");
+        }
+        assert!(rc.qe[3][0] > rc.qe[0][0] && rc.qe[1][1] > rc.qe[3][1] && rc.qe[0][2] > rc.qe[3][2], "{:?}", rc.qe);
+        assert!(rc.crosstalk_electrical[1].iter().all(|&x| x < 1e-6));
+    }
+
+    #[test]
+    fn harmonics_follow_the_cell() {
+        assert_eq!(suggested_harmonics(1.4), 11);
+        assert_eq!(suggested_harmonics(2.0), 17);
+        assert_eq!(suggested_harmonics(2.4), 19);
     }
 
     #[test]

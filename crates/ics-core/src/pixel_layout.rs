@@ -71,6 +71,51 @@ impl<'a> PixelLayout<'a> {
     }
 }
 
+/// Write a device simulation's photodiode figures into the technology's cross-section
+/// photodiode (the pinned photodiode model of the circuit simulation): the pinning voltage
+/// `vpin` (V) and the storage capacitance `cap_ff` (fF per photodiode) as `cap_area`, per area
+/// of the technology's photodiode layer in `cell`'s layout (`pixels` photodiodes in its frame).
+/// Returns a summary of the change.
+pub fn apply_device_photodiode(
+    project: &mut Project,
+    cell: &CellRef,
+    boundary: Option<&str>,
+    pixels: usize,
+    vpin: f64,
+    cap_ff: f64,
+) -> Result<String, String> {
+    if !(vpin.is_finite() && cap_ff.is_finite() && cap_ff > 0.0 && pixels > 0) {
+        return Err("no pinning voltage or storage capacitance to apply".into());
+    }
+    let layer = project
+        .tech
+        .cross_section
+        .as_ref()
+        .and_then(|c| c.photodiode.as_ref())
+        .map(|d| d.layer.clone())
+        .ok_or("the technology has no cross-section photodiode to set")?;
+    let area = {
+        let px = PixelLayout::new(project, cell, boundary)?;
+        px.region(&layer)?.area() as f64 / (project.tech.dbu_per_um as f64).powi(2) / pixels as f64
+    };
+    if area <= 0.0 {
+        return Err(format!("{cell}: no photodiode ('{layer}') in the layout"));
+    }
+    let def = project.tech.cross_section.as_mut().and_then(|c| c.photodiode.as_mut()).unwrap();
+    let old = (def.pinning, def.cap_area);
+    def.pinning = Some((vpin * 1000.0).round() / 1000.0);
+    def.cap_area = Some((cap_ff / area * 1e4).round() / 1e4);
+    def.cap_perimeter = None;
+    let f = |v: Option<f64>| v.map_or("unset".to_string(), |v| format!("{v}"));
+    Ok(format!(
+        "technology photodiode: pinning {} -> {} V, cap_area {} -> {} fF/um^2 ({cap_ff:.3} fF over {area:.3} um^2 of '{layer}')",
+        f(old.0),
+        f(def.pinning),
+        f(old.1),
+        f(def.cap_area)
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,5 +137,18 @@ mod tests {
         assert!(!m2.is_empty());
         assert!(px.rects_um("nosuch and metal1").is_err());
         assert!(PixelLayout::new(&p, &CellRef::new("work", "rc_lowpass"), None).is_err());
+    }
+
+    #[test]
+    fn device_figures_into_the_technology() {
+        let mut p = crate::examples::demo_project();
+        let cell = CellRef::new("work", "bayer_fdti");
+        let msg = apply_device_photodiode(&mut p, &cell, Some("boundary"), 4, 1.6937, 0.741).unwrap();
+        let pd = p.tech.cross_section.as_ref().unwrap().photodiode.as_ref().unwrap();
+        assert_eq!(pd.pinning, Some(1.694));
+        // 0.741 fF over each 1.05 x 1.05 µm photodiode.
+        assert!((pd.cap_area.unwrap() - 0.741 / (1.05 * 1.05)).abs() < 1e-4, "{msg}");
+        assert!((pd.storage_cap(1.05 * 1.05, 4.2) - 0.741e-15).abs() < 1e-19);
+        assert!(apply_device_photodiode(&mut p, &cell, Some("boundary"), 4, f64::NAN, 0.7).is_err());
     }
 }

@@ -1,0 +1,18 @@
+# Measured QE for `ics pixel <stack> --measured <this file> --fit ...` (see the Pixel optics page,
+# "Calibration against measured QE"). Replace the rows with your measurement.
+#
+# - wavelength: nm (or µm when every value is below 10); any order, any step.
+# - R, Gr, Gb, B: QE of each Bayer pixel as fractions (0.62) or percent (62). Leave a cell empty
+#   where a colour was not measured; drop columns you do not have, or give one G column for both
+#   greens. Rows outside 300 - 1200 nm are ignored.
+# - QE is electrons out per photon on the pixel's area (the whole pitch squared), at the chief
+#   ray angle you then pass as --cra, with or without an IR-cut filter as the stack has it.
+# - Lines starting with # are comments; a comma, semicolon or tab separates the columns.
+wavelength,R,Gr,Gb,B
+400,,,,
+450,,,,
+500,,,,
+550,,,,
+600,,,,
+650,,,,
+700,,,,

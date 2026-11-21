@@ -752,6 +752,99 @@ fn pixel_optics() {
     shot(&mut h, "37_pixel_optics_pdk");
 }
 
+/// Pixel Optics against measured QE: a table over the model, and a fit of the filters' density.
+#[test]
+fn pixel_measured_fit() {
+    let mut h = app(demo_args("aps4t", "schematic", false));
+    settle(&mut h, "pixel fit");
+    h.state_mut().command(Command::RunPixelOptics);
+    h.run_steps(2);
+    let csv = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../pixels/bsi_1p4um_synthetic_qe.csv");
+    h.state_mut().command(Command::LoadMeasuredQe(Some(csv)));
+    h.run_steps(2);
+    let px = h.state().pixel_optics();
+    let before =
+        ics_studio::pixel_view::rms_against(px.result.as_ref().unwrap().as_ref().unwrap(), &px.measured.as_ref().unwrap().1)
+            .unwrap();
+    assert!(before > 0.02, "{before}");
+    h.state_mut().pixel_optics_mut().fit_knobs = "cf_density".into();
+    h.state_mut().command(Command::FitPixelStack);
+    h.run_steps(3);
+    let px = h.state().pixel_optics();
+    let f = px.fit.as_ref().unwrap().as_ref().unwrap();
+    assert!(f.rms_after < f.rms_before && f.knobs[0].2.contains("density"), "{} -> {}", f.rms_before, f.rms_after);
+    // The fitted density goes back into the stack text.
+    let patched = f.patched.as_ref().unwrap();
+    let st = ics_optics::PixelStack::from_toml(patched).unwrap();
+    assert!((st.color_filters.density[0] - 1.0).abs() > 0.01 && patched.contains("# Back-side illuminated"), "{patched}");
+    // The plot now shows the fitted stack.
+    let after =
+        ics_studio::pixel_view::rms_against(px.result.as_ref().unwrap().as_ref().unwrap(), &px.measured.as_ref().unwrap().1)
+            .unwrap();
+    assert!(after < before, "{after} vs {before}");
+    shot(&mut h, "41_pixel_measured_fit");
+}
+
+/// Pixel Optics with the device model: a back-side illuminated pixel with full-depth trenches,
+/// its photodiode wells, collection by drift and diffusion, and (for the screenshot) the charge
+/// transfer and the maps.
+#[test]
+fn pixel_device() {
+    let mut h = app(demo_args("aps4t", "schematic", false));
+    settle(&mut h, "pixel device");
+    let shots = std::env::var("ICS_SHOT_DIR").is_ok();
+    let mut text = ics_studio::pixel_view::FDTI_EXAMPLE.to_string();
+    if !shots {
+        // Quicker: no transfer, a coarser grid.
+        text = text.replace("transfer = { pixel = \"Gr\", on_time = 20, settle = 5 }", "").replace("grid = 0.1", "grid = 0.125");
+    }
+    h.state_mut().pixel_optics_mut().text = text;
+    h.state_mut().pixel_optics_mut().cra = 15.0;
+    h.state_mut().command(Command::RunPixelOptics);
+    h.run_steps(3);
+    let px = h.state().pixel_optics();
+    let r = px.result.as_ref().unwrap().as_ref().unwrap();
+    let d = r.device.as_ref().expect("device results");
+    assert_eq!(d.pixels.len(), 4);
+    assert!(d.pixels.iter().all(|p| p.full_well > 1000.0 && (0.5..2.0).contains(&p.pinning_voltage)), "{:?}", d.pixels);
+    assert!(r.crosstalk_electrical[1].iter().all(|&x| x < 1e-6), "full-depth trenches");
+    let g = r.qe[1][r.wavelengths.iter().position(|&l| (l - 0.53).abs() < 1e-9).unwrap()];
+    assert!(g > 0.5, "{g}");
+    if shots {
+        assert!(d.transfer.is_some());
+        let k = d.maps.iter().position(|m| m.name.starts_with("Generation at 530")).unwrap();
+        // The potential section, then the generation of green light.
+        shot(&mut h, "38_pixel_device");
+        h.state_mut().pixel_optics_mut().map = k;
+        h.run_steps(2);
+        shot(&mut h, "39_pixel_device_generation");
+    }
+    // The demo 2 x 2 cell from its layout: four pixels with their own transfer gates, which
+    // open without a barrier.
+    let text = ics_studio::pixel_view::BAYER_EXAMPLE.replace("transfer = { pixel = \"Gr\", on_time = 20, settle = 5 }", "");
+    h.state_mut().pixel_optics_mut().text = text;
+    h.state_mut().command(Command::RunPixelOptics);
+    h.run_steps(3);
+    let px = h.state().pixel_optics();
+    let r = px.result.as_ref().unwrap().as_ref().unwrap();
+    assert!(px.stack.as_ref().unwrap().cell_layout);
+    let d = r.device.as_ref().expect("device results");
+    assert!(d.warnings.is_empty(), "{:?}", d.warnings);
+    for p in &d.pixels {
+        assert!(p.full_well > 3000.0 && p.transfer_barrier >= p.pinning_voltage, "{p:?}");
+    }
+    let vpin = d.pixels[0].pinning_voltage;
+    if shots {
+        shot(&mut h, "40_pixel_device_bayer");
+    }
+    // Its photodiode figures into the technology, for the circuit simulation.
+    h.state_mut().command(Command::ApplyPixelDevice);
+    h.run_steps(2);
+    let pd = h.state().project().unwrap().tech.cross_section.as_ref().unwrap().photodiode.clone().unwrap();
+    assert!((pd.pinning.unwrap() - vpin).abs() < 0.01, "{pd:?}");
+    assert!((0.3..1.5).contains(&pd.cap_area.unwrap()), "{pd:?}");
+}
+
 /// Corner / Sweep Manager: sweep R1 and check the bandwidth spec on every point.
 #[test]
 fn sweep_manager() {

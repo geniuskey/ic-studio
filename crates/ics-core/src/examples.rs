@@ -1653,6 +1653,191 @@ pub fn aps2s(p: &mut Project) -> Cell {
     )
 }
 
+/// Pitch (dbu) of the 2 x 2 Bayer pixel: 2.4 µm. With the deep trenches (0.15 µm, active kept
+/// 0.1 µm clear) a pixel has 2.04 µm of silicon: the photodiode 1.05 µm, a wide transfer gate
+/// (L 0.45 µm) on its edge with the floating diffusion after it, and beside them a readout strip
+/// whose gates keep clear of the transfer gate. 2.2 µm leaves no room for both.
+const BAYER: i64 = 2400;
+
+/// 2 x 2 Bayer 4-shared back-side illuminated pixel with full-depth deep trench isolation
+/// (4.8 x 4.8 µm, 2.4 µm pitch). Pixel (i, j) has its photodiode in its outer corner and its
+/// transfer gate TX(1 + i + 2 j) along the photodiode's edge facing the horizontal centre line:
+/// the channel (W 0.89 µm, L 0.45 µm) continues the photodiode, the floating diffusion after it
+/// is as wide, and the gate contact sits past the gate's inner end. R (pd1) is bottom left, Gr
+/// (pd2) bottom right, Gb (pd3) top left, B (pd4) top right. The trenches cut the silicon, so
+/// the four floating diffusions are joined in metal (`fd`): metal1 on each side, metal2 across.
+/// The readout strips lie in the left pixels next to the vertical trench: SEL and SF in series in
+/// R, RST in Gb, with 0.3 µm gates whose poly crosses the trench to contacts in the right
+/// pixels. The deep photodiode implant `pdn` lies under each whole pixel, transistors included,
+/// as it does in a BSI sensor. Rows (SEL, TX2, TX1, TX3, TX4, RST) run on metal2, the column line
+/// on metal1 at the left edge.
+pub fn bayer_fdti(p: &mut Project) -> Cell {
+    let o = Orient::default();
+    let mut s = Schematic::default();
+    let pd = IRect { x0: 180, y0: 180, x1: 1230, y1: 1230 };
+    let (a, pe) = (pd.width() * pd.height(), 2 * (pd.width() + pd.height()));
+    let (pd_as, pd_ps) = (format!("{}p", a as f64 / 1e6), format!("{}u", pe as f64 / 1e3));
+    // Photocurrents under the colour filters: R, Gr, Gb, B.
+    for (k, iph_dc) in [(1, "1n"), (2, "2n"), (3, "2n"), (4, "0.6n")] {
+        let y = 2 + 10 * k;
+        let tx = s.add_instance(DeviceKind::Nmos, Pt::new(8, y), R90);
+        set(&mut s, tx, &[("w", "890n"), ("l", "450n"), ("as", &pd_as), ("ps", &pd_ps)]);
+        let (pdk, txk) = (format!("pd{k}"), format!("tx{k}"));
+        pin_labels(&mut s, tx, &[("d", "fd"), ("g", &txk), ("s", &pdk), ("b", "0")]);
+        let iph = s.add_instance(DeviceKind::ISource, Pt::new(1, y + 6), o);
+        set(&mut s, iph, &[("dc", iph_dc)]);
+        pin_labels(&mut s, iph, &[("p", &pdk), ("n", "0")]);
+    }
+    // The floating diffusions with their metal on the reset source: a few fF.
+    let rst = mos(&mut s, DeviceKind::Nmos, (16, 4), false, "300n", "180n", None);
+    set(&mut s, rst, &[("ad", "3p"), ("pd", "8u")]);
+    pin_labels(&mut s, rst, &[("d", "fd"), ("g", "rst"), ("s", "vdd")]);
+    let sf = mos(&mut s, DeviceKind::Nmos, (24, 12), false, "300n", "350n", None);
+    pin_labels(&mut s, sf, &[("d", "vdd"), ("g", "fd"), ("s", "x")]);
+    let sel = mos(&mut s, DeviceKind::Nmos, (24, 20), false, "300n", "180n", None);
+    pin_labels(&mut s, sel, &[("d", "x"), ("g", "sel"), ("s", "col")]);
+    let icol = s.add_instance(DeviceKind::ISource, Pt::new(32, 26), o);
+    set(&mut s, icol, &[("dc", "2u")]);
+    pin_labels(&mut s, icol, &[("p", "col"), ("n", "0")]);
+    // Reset the photodiodes and FD (all TX and RST high) and integrate; then for each pixel in
+    // turn reset FD, release the reset (reset level) and transfer (signal level), 400 ns apart.
+    let hi = 2.8;
+    let rst_pwl = format!(
+        "PWL(0 {hi} 300n {hi} 301n 0 600n 0 601n {hi} 700n {hi} 701n 0 1000n 0 1001n {hi} 1100n {hi} 1101n 0 1400n 0 1401n {hi} 1500n {hi} 1501n 0)"
+    );
+    let tx_pwl = |k: i32| {
+        let t = 400 * k;
+        format!("PWL(0 {hi} 50n {hi} 51n 0 {t}n 0 {}n {hi} {}n {hi} {}n 0)", t + 1, t + 50, t + 51)
+    };
+    source(&mut s, (-56, 8), "vdd", &[("dc", "2.8")]);
+    source(&mut s, (-48, 8), "rst", &[("dc", "2.8"), ("tran", &rst_pwl)]);
+    for k in 1..=4 {
+        source(&mut s, (-48 + 8 * k, 8), &format!("tx{k}"), &[("dc", "2.8"), ("tran", &tx_pwl(k))]);
+    }
+    source(&mut s, (-8, 8), "sel", &[("dc", "2.8")]);
+    let mut sim = sim(&["tran"]);
+    set_tran(&mut sim, "1n", "1800n");
+
+    let mut r = Router::new(&p.tech);
+    let l = |name: &str| p.tech.layer_index(name).expect("generic layer");
+    let (active, poly, m1, m2) = (l("active"), l("poly"), l("metal1"), l("metal2"));
+    let (nplus, pdn, dti, boundary) = (l("nplus"), l("pdn"), l("dti"), l("boundary"));
+    let c = 2 * BAYER;
+    // The four pixels are mirror images of the bottom-left one about the centre lines.
+    let mut rects: Vec<(usize, IRect)> = Vec::new();
+    for (mx, my) in [(false, false), (true, false), (false, true), (true, true)] {
+        let mut add = |layer: usize, x0: i64, y0: i64, x1: i64, y1: i64| {
+            let (x0, x1) = if mx { (c - x1, c - x0) } else { (x0, x1) };
+            let (y0, y1) = if my { (c - y1, c - y0) } else { (y0, y1) };
+            rects.push((layer, IRect { x0, y0, x1, y1 }));
+        };
+        add(active, pd.x0, pd.y0, pd.x1, pd.y1); // photodiode
+        // The transfer gate along the photodiode's inner edge, its channel the photodiode's
+        // continuation, and the floating diffusion after it, as wide as the channel.
+        add(active, 340, 1230, 1230, 1680);
+        add(active, 340, 1680, 1230, 2100);
+        add(poly, 120, 1230, 1450, 1680); // TX, W 0.89 µm, L 0.45 µm; its contact past the end
+        add(pdn, 200, 200, 2200, 2200);
+    }
+    for (layer, r_) in rects {
+        r.lay.add(layer, Geometry::Rect(r_));
+    }
+    for (layer, (x0, y0, x1, y1)) in [
+        // R: column contact, SEL, SF, supply contact (gates on a 0.3 µm strip, clear of TX1).
+        (active, (1800, 180, 2220, 600)),
+        (active, (1920, 600, 2220, 1410)),
+        (active, (1800, 1410, 2220, 1830)),
+        // Gb: supply contact, RST, FD contact.
+        (active, (1800, 2970, 2220, 3390)),
+        (active, (1920, 3390, 2220, 4200)),
+        (active, (1800, 4200, 2220, 4620)),
+        (poly, (1700, 620, 2810, 800)),   // SEL, its contact in Gr
+        (poly, (1700, 1040, 2810, 1390)), // SF, its contact in Gr
+        (poly, (1700, 4000, 2810, 4180)), // RST, its contact in B
+        (m1, (110, 0, 340, c)),           // column line
+        (m1, (110, 220, 2180, 560)),
+        (m1, (1840, 1450, 2180, 3350)), // supply
+        (m1, (600, 1720, 980, 4580)),   // floating diffusions, left, and the reset source
+        (m1, (600, 4240, 2180, 4580)),
+        (m1, (3820, 1720, 4200, 3080)), // floating diffusions, right
+        (m2, (790, 2250, 4010, 2550)),  // floating diffusions across, and the SF gate
+        (nplus, (0, 0, c, c)),
+        (boundary, (0, 0, c, c)),
+    ] {
+        r.lay.add_rect(layer, x0, y0, x1, y1);
+    }
+    // Deep trenches on the pixel edges, centred on the cell edges so that tiled cells share them.
+    let t = 75;
+    for (x0, y0, x1, y1) in [
+        (-t, -t, t, c + t),
+        (c - t, -t, c + t, c + t),
+        (-t, -t, c + t, t),
+        (-t, c - t, c + t, c + t),
+        (BAYER - t, -t, BAYER + t, c + t),
+        (-t, BAYER - t, c + t, BAYER + t),
+    ] {
+        r.lay.add_rect(dti, x0, y0, x1, y1);
+    }
+    for (name, at) in [
+        ("contact", (790, 1890)),
+        ("contact", (4010, 1890)),
+        ("contact", (790, 2910)),
+        ("contact", (4010, 2910)),
+        ("contact", (2010, 390)),
+        ("contact", (2010, 1620)),
+        ("contact", (2010, 3180)),
+        ("contact", (2010, 4410)),
+        ("polycon", (1440, 1860)),
+        ("polycon", (3360, 1860)),
+        ("polycon", (1440, 2940)),
+        ("polycon", (3360, 2940)),
+        ("polycon", (2600, 590)),
+        ("polycon", (2600, 1250)),
+        ("polycon", (2600, 4210)),
+        ("via1", (790, 2400)),
+        ("via1", (4010, 2400)),
+    ] {
+        r.via(name, at);
+    }
+    // The SF gate up to the floating diffusions' metal2.
+    r.bar("metal1", (2600, 1250), (2600, 2400));
+    r.via("via1", (2600, 2400));
+    // Rows: each gate contact up to its metal2 row.
+    let rows = [
+        ("sel", 500, 590, 2600),
+        ("tx2", 1120, 1860, 3360),
+        ("tx1", 1740, 1860, 1420),
+        ("tx3", 3060, 2940, 1420),
+        ("tx4", 3680, 2940, 3360),
+        ("rst", 4300, 4210, 2600),
+    ];
+    for (net, ry, gy, vx) in rows {
+        r.bar("metal1", (vx, gy), (vx, ry));
+        r.via("via1", (vx, ry));
+        r.lay.add_rect(m2, 0, ry - 150, c, ry + 150);
+        r.label(net, (4700, ry));
+    }
+    let labels = [
+        ("pd1", (700, 800)),
+        ("pd2", (4100, 800)),
+        ("pd3", (400, 4100)),
+        ("pd4", (4100, 4000)),
+        ("vdd", (2010, 2750)),
+        ("col", (225, 2750)),
+        ("fd", (4010, 2750)),
+    ];
+    for (net, at) in labels {
+        r.label(net, at);
+    }
+    full_flow_cell(
+        "bayer_fdti",
+        "2 x 2 Bayer 4-shared BSI pixel with full-depth DTI, 2.4 µm pitch: four photodiodes with TX1-TX4 onto one floating diffusion, shared RST / SF / SEL (DRC / LVS clean)",
+        s,
+        r.finish(),
+        sim,
+    )
+}
+
 /// 8 x 8 image sensor array of `aps4t`: labelled TX / reset / select rows and column lines, and
 /// a supply strap joining the supply rows.
 pub fn pixel_array(tech: &Tech, lib: &str) -> Cell {
@@ -1767,7 +1952,21 @@ pub fn demo_project() -> Project {
     for c in [cmos_inverter(), rc_lowpass(), diode_clipper(), inv(), buffer_tb(), bandgap()].into_iter().chain(hier) {
         p.add_cell("work", c).expect("unique");
     }
-    for make in [nand2, nor2, ring_osc5, current_mirror, ota5t, sram6t, dram1t1c, nand_string, aps4t, aps2s, full_adder, ota2s] {
+    for make in [
+        nand2,
+        nor2,
+        ring_osc5,
+        current_mirror,
+        ota5t,
+        sram6t,
+        dram1t1c,
+        nand_string,
+        aps4t,
+        aps2s,
+        bayer_fdti,
+        full_adder,
+        ota2s,
+    ] {
         let c = make(&mut p);
         p.add_cell("work", c).expect("unique");
     }
@@ -1825,7 +2024,18 @@ pub const TOPICS: [Topic; 5] = [
         title: "Memory and pixels",
         summary: "SRAM, DRAM, flash, pixels",
         description: "6T SRAM, planar 1T1C DRAM, NAND flash string and 4T pixel, each with an array (AREF) of word / bit or row / column lines, and a 2-shared 4T pixel",
-        cells: &["sram6t", "sram_array", "dram1t1c", "dram_array", "nand_string", "nand_array", "aps4t", "pixel_array", "aps2s"],
+        cells: &[
+            "sram6t",
+            "sram_array",
+            "dram1t1c",
+            "dram_array",
+            "nand_string",
+            "nand_array",
+            "aps4t",
+            "pixel_array",
+            "aps2s",
+            "bayer_fdti",
+        ],
     },
     Topic {
         name: "hierarchy",
@@ -2064,6 +2274,16 @@ mod flow_tests {
     #[test]
     fn aps2s_full_flow() {
         full_flow("aps2s");
+    }
+
+    #[test]
+    fn bayer_fdti_full_flow() {
+        full_flow("bayer_fdti");
+        let p = demo_project();
+        let lay = p.cell(&CellRef::new("work", "bayer_fdti")).and_then(|c| c.layout.as_ref()).unwrap();
+        let x = extract(lay, &p, &p.tech);
+        assert_eq!(x.photodiodes.len(), 4, "{:?}", x.photodiodes);
+        assert!(x.photodiodes.iter().all(|d| d.area == 1050 * 1050), "{:?}", x.photodiodes);
     }
 
     #[test]

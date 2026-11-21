@@ -962,6 +962,33 @@ mod tests {
     }
 
     #[test]
+    fn finds_the_bayer_pixel() {
+        let mut p = crate::examples::demo_project();
+        let r = CellRef::new("work", "bayer_fdti");
+        let x = crate::extract::extract(p.cell(&r).unwrap().layout.as_ref().unwrap(), &p, &p.tech);
+        assert_eq!(x.photodiodes.len(), 4, "{:?}", x.warnings);
+        let pc = classify(&x);
+        assert!(pc.warnings.is_empty(), "{:?}", pc.warnings);
+        assert_eq!(pc.pixels.len(), 1);
+        let px = &pc.pixels[0];
+        let net = |i: usize| x.nets[i].name.as_str();
+        let mut tgs: Vec<(&str, &str)> =
+            px.photodiodes.iter().map(|&(d, t)| (net(x.photodiodes[d].node()), net(x.devices[t.unwrap()].g))).collect();
+        tgs.sort();
+        assert_eq!(tgs, [("pd1", "tx1"), ("pd2", "tx2"), ("pd3", "tx3"), ("pd4", "tx4")]);
+        assert_eq!((net(px.fd), px.supply.map(net), px.column.map(net)), ("fd", Some("vdd"), Some("col")));
+        let gate = |d: Option<usize>| d.map(|d| net(x.devices[d].g));
+        assert_eq!((gate(px.rst), gate(px.sf), gate(px.sel)), (Some("rst"), Some("fd"), Some("sel")));
+        assert!(px.other.is_empty());
+        // The schematic generated from the layout matches it.
+        let (sch, _) = schematic(&x, &pc, Some(&Testbench::for_tech(&x, &p.tech)));
+        p.cell_mut(&r).unwrap().schematic = Some(sch);
+        let circuit = p.circuit(&r).unwrap();
+        let rep = crate::lvs::compare(&circuit, &x, &crate::lvs::LvsOptions::for_tech(&p.tech));
+        assert!(rep.matched, "{:?}", rep.errors);
+    }
+
+    #[test]
     fn shared_and_3t_pixels() {
         use crate::extract::{DevKind, Device, Net, Photodiode};
         let net = |n: &str| Net { name: n.into(), labelled: true, shapes: vec![], bbox: None };

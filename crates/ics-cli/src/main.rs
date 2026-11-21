@@ -804,9 +804,10 @@ enum Cmd {
         /// includes diffraction; slower).
         #[arg(long, default_value = "ray")]
         method: String,
-        /// Harmonics per direction for RCWA (odd; more is more accurate and slower).
-        #[arg(long, default_value_t = 11)]
-        harmonics: usize,
+        /// Harmonics per direction for RCWA (odd; more is more accurate and slower). Default:
+        /// about 3.8 per µm of the Bayer cell, at least 11 (converged to about 0.01 in QE).
+        #[arg(long)]
+        harmonics: Option<usize>,
         /// Illuminance at the pixel (lux) for the photocurrent.
         #[arg(long)]
         lux: Option<f64>,
@@ -823,6 +824,37 @@ enum Cmd {
         /// Pixel colour for `--set`: R, Gr, Gb or B.
         #[arg(long, default_value = "Gr")]
         color: String,
+        /// With a `[device]` model: simulate the charge transfer of this pixel (R, Gr, Gb, B),
+        /// or `none` to skip the one the stack asks for.
+        #[arg(long)]
+        transfer: Option<String>,
+        /// With a `[device]` model and a stack read from a layout: write the photodiodes' mean
+        /// pinning voltage and storage capacitance into the technology's photodiode (the pinned
+        /// photodiode of the circuit simulation, `ics extract --pixel --characterize`) and save
+        /// the project.
+        #[arg(long)]
+        apply: bool,
+        /// Measured QE (CSV: a wavelength column in nm, and R / Gr / Gb / B or G columns as
+        /// fractions or percent): compare the model with it (RMS difference per colour).
+        #[arg(long)]
+        measured: Option<PathBuf>,
+        /// With --measured: fit these stack parameters to it (comma separated): cf_red, cf_green,
+        /// cf_blue, cf (all three densities), cf_density (one factor for all), cf_thickness,
+        /// arc, si_thickness, lens, lens_n / lens_alpha / lens_shape (a superellipse lens's
+        /// exponents), qe_scale.
+        #[arg(long, value_delimiter = ',')]
+        fit: Vec<String>,
+        /// Model runs the fit may use (with `--method rcwa`: the ray stage's; RCWA refines with a
+        /// third of them).
+        #[arg(long, default_value_t = 200)]
+        fit_evals: usize,
+        /// With --fit: write the stack file with the fitted values (comments kept).
+        #[arg(long)]
+        write_stack: Option<PathBuf>,
+        /// With --measured: write the measured QE and the model before / after the fit per
+        /// wavelength (CSV).
+        #[arg(long)]
+        compare_csv: Option<PathBuf>,
         #[arg(long)]
         json: bool,
     },
@@ -1542,12 +1574,19 @@ fn run(cli: Cli) -> Result<(), String> {
             ir_cut,
             set,
             color,
+            transfer,
+            apply,
+            measured,
+            fit,
+            fit_evals,
+            write_stack,
+            compare_csv,
             json,
         } => {
             use ics_optics::pixel::{COLORS, Method, Settings};
-            let method = match method.to_ascii_lowercase().as_str() {
-                "ray" => Method::Ray,
-                "rcwa" => Method::Rcwa { harmonics },
+            let rcwa = match method.to_ascii_lowercase().as_str() {
+                "ray" => false,
+                "rcwa" => true,
                 other => return Err(format!("unknown --method '{other}' (ray, rcwa)")),
             };
             let (text, stack) = match (&stack, &cell) {
@@ -1567,6 +1606,10 @@ fn run(cli: Cli) -> Result<(), String> {
                 _ => return Err("give a stack file, or --project and --cell for one from the technology's cross section".into()),
             };
             let mut st = ics_optics::PixelStack::from_toml(&text).map_err(|e| format!("{}: {e}", stack.display()))?;
+            let layout_src = st.layout.clone();
+            if apply && (st.device.is_none() || layout_src.is_none() || project.is_none()) {
+                return Err("--apply needs a stack with [device] that reads a layout ([layout]), and --project".into());
+            }
             if let Some(src) = st.layout.clone() {
                 let pdir =
                     project.as_ref().ok_or(format!("{}: reads the layout of {}; give --project", stack.display(), src.cell))?;
@@ -1575,12 +1618,34 @@ fn run(cli: Cli) -> Result<(), String> {
                 let px = ics_core::pixel_layout::PixelLayout::new(&p, &r, src.boundary.as_deref())?;
                 st.fill_from_layout(px.size_um(), |e| px.rects_um(e))?;
                 eprintln!(
-                    "{r}: {:.2} x {:.2} um pixel, photodiode {} rectangle(s)",
+                    "{r}: {:.2} x {:.2} um {}, photodiode {} rectangle(s)",
                     px.size_um().0,
                     px.size_um().1,
+                    if st.cell_layout { "2 x 2 Bayer cell" } else { "pixel" },
                     st.photodiode.rects.len()
                 );
             }
+            if let Some(t) = &transfer {
+                let dev = st.device.as_mut().ok_or("--transfer needs a [device] section in the stack")?;
+                if t.eq_ignore_ascii_case("none") {
+                    dev.transfer = None;
+                } else {
+                    let mut tr = dev.transfer.clone().unwrap_or(ics_optics::device::Transfer {
+                        pixel: t.clone(),
+                        on_time: 20.0,
+                        settle: 10.0,
+                        electrons: None,
+                    });
+                    tr.pixel = t.clone();
+                    dev.transfer = Some(tr);
+                    dev.check()?;
+                }
+            }
+            let method = if rcwa {
+                Method::Rcwa { harmonics: harmonics.unwrap_or_else(|| ics_optics::pixel::suggested_harmonics(st.pitch)) }
+            } else {
+                Method::Ray
+            };
             let r: Vec<f64> = range
                 .split(':')
                 .map(|v| v.parse::<f64>().map_err(|_| format!("bad --range '{range}'")))
@@ -1591,10 +1656,95 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             let n = ((b - a) / step + 1e-9).floor() as usize;
             let wavelengths: Vec<f64> = (0..=n).map(|i| (a + i as f64 * step) / 1000.0).collect();
-            let res = ics_optics::simulate(
-                &st,
-                &Settings { wavelengths: wavelengths.clone(), cra, azimuth, rays_per_side: rays, method },
-            )?;
+            let settings = Settings { wavelengths: wavelengths.clone(), cra, azimuth, rays_per_side: rays, method };
+            // Calibration against measured QE, first: a fit changes the stack the rest reports on.
+            let mut calibration = None;
+            if let Some(f) = &measured {
+                use ics_optics::calibrate::{Knob, Measured, compare, fit as fit_stack, settings_for};
+                let csv = std::fs::read_to_string(f).map_err(|e| format!("{}: {e}", f.display()))?;
+                let m = Measured::from_csv(&csv).map_err(|e| format!("{}: {e}", f.display()))?;
+                let mut knobs = vec![];
+                for k in &fit {
+                    knobs.extend(Knob::parse(k)?);
+                }
+                let rms_text = |r: &([f64; 4], f64)| {
+                    let per: Vec<String> =
+                        COLORS.iter().zip(r.0).filter(|(_, v)| v.is_finite()).map(|(c, v)| format!("{c} {:.4}", v)).collect();
+                    format!("{:.4} ({})", r.1, per.join(", "))
+                };
+                if write_stack.is_some() && knobs.is_empty() {
+                    return Err("--write-stack needs --fit".into());
+                }
+                if knobs.is_empty() {
+                    let r = ics_optics::simulate(&st, &settings_for(&settings, &m))?;
+                    let rms = compare(&r, &m);
+                    eprintln!("measured {}: RMS QE difference {}", f.display(), rms_text(&rms));
+                    if let Some(out) = &compare_csv {
+                        let none = ics_optics::calibrate::Fit {
+                            knobs: vec![],
+                            fitted: vec![],
+                            rms_before: rms,
+                            rms_after: rms,
+                            evaluations: 1,
+                            stack: st.clone(),
+                            before: r.clone(),
+                            result: r.clone(),
+                            qe_scale: 1.0,
+                            warnings: vec![],
+                            stages: vec![],
+                        };
+                        std::fs::write(out, ics_optics::calibrate::comparison_csv(&m, &none))
+                            .map_err(|e| format!("{}: {e}", out.display()))?;
+                        eprintln!("wrote {}", out.display());
+                    }
+                    calibration = Some(serde_json::json!({"measured": m, "rms": rms.1, "rms_per_color": rms.0}));
+                } else {
+                    let fitted = fit_stack(&st, &settings, &m, &knobs, fit_evals)?;
+                    eprintln!(
+                        "fit to {} in {} model runs: RMS QE difference {} -> {}",
+                        f.display(),
+                        fitted.evaluations,
+                        rms_text(&fitted.rms_before),
+                        rms_text(&fitted.rms_after)
+                    );
+                    for stage in &fitted.stages {
+                        eprintln!("  {stage}");
+                    }
+                    for (name, factor, line) in &fitted.knobs {
+                        eprintln!("  {name}: x {factor:.4}  ->  {line}");
+                    }
+                    for w in &fitted.warnings {
+                        eprintln!("  warning: {w}");
+                    }
+                    if let Some(out) = &write_stack {
+                        if cell.is_some() {
+                            return Err("--write-stack needs a stack file (not --cell)".into());
+                        }
+                        let patched = ics_optics::calibrate::patch_stack_toml(&text, &fitted)?;
+                        std::fs::write(out, patched).map_err(|e| format!("{}: {e}", out.display()))?;
+                        eprintln!("wrote {}", out.display());
+                    }
+                    if let Some(out) = &compare_csv {
+                        std::fs::write(out, ics_optics::calibrate::comparison_csv(&m, &fitted))
+                            .map_err(|e| format!("{}: {e}", out.display()))?;
+                        eprintln!("wrote {}", out.display());
+                    }
+                    calibration = Some(serde_json::json!({
+                        "measured": m,
+                        "rms_before": fitted.rms_before.1,
+                        "rms": fitted.rms_after.1,
+                        "rms_per_color": fitted.rms_after.0,
+                        "parameters": fitted.knobs.iter().map(|(n, f, l)| serde_json::json!({"name": n, "factor": f, "value": l})).collect::<Vec<_>>(),
+                        "qe_scale": fitted.qe_scale,
+                        "stages": fitted.stages,
+                        "warnings": fitted.warnings,
+                    }));
+                    st = fitted.stack;
+                }
+            } else if !fit.is_empty() || write_stack.is_some() || compare_csv.is_some() {
+                return Err("--fit, --write-stack and --compare-csv need --measured".into());
+            }
+            let res = ics_optics::simulate(&st, &settings)?;
             let currents: Option<Vec<f64>> = lux.map(|lux| {
                 let cut = (ir_cut > 0.0).then_some(ir_cut / 1000.0);
                 let sp = ics_optics::light::Spectrum::blackbody(&wavelengths, cct, lux, cut);
@@ -1604,6 +1754,9 @@ fn run(cli: Cli) -> Result<(), String> {
                 let mut v = serde_json::to_value(&res).map_err(|e| e.to_string())?;
                 if let Some(cur) = &currents {
                     v["photocurrent"] = serde_json::json!({"lux": lux, "cct": cct, "ir_cut_nm": ir_cut, "amps": cur});
+                }
+                if let Some(c) = calibration {
+                    v["calibration"] = c;
                 }
                 println!("{v}");
             } else {
@@ -1617,6 +1770,21 @@ fn run(cli: Cli) -> Result<(), String> {
                             st.name, st.pitch
                         )
                     }
+                }
+                if let Some(ml) = &st.microlens {
+                    let (rx, ry) = ml.radii(st.pitch);
+                    let shape = match ml.shape {
+                        ics_optics::pixel::LensShape::Sphere => format!("spherical cap, radius {rx:.3} um"),
+                        ics_optics::pixel::LensShape::Superellipse => {
+                            let (n, alpha) = ml.exponents();
+                            format!("superellipse, Rx {rx:.3} um, Ry {ry:.3} um, n {n}, alpha {alpha}")
+                        }
+                    };
+                    println!(
+                        "microlens: {shape}, height {} um, fill factor {:.1} %",
+                        ml.height,
+                        100.0 * ml.fill_factor(st.pitch)
+                    );
                 }
                 let elec = st.silicon.is_some();
                 println!(
@@ -1651,6 +1819,21 @@ fn run(cli: Cli) -> Result<(), String> {
                         println!("  {name:<2} {:.4e} A", cur[c]);
                     }
                 }
+                if let Some(d) = &res.device {
+                    print_device(d);
+                }
+            }
+            if apply && let (Some(d), Some(src), Some(pdir)) = (&res.device, &layout_src, &project) {
+                let n = d.pixels.len().max(1) as f64;
+                let vpin = d.pixels.iter().map(|p| p.pinning_voltage).sum::<f64>() / n;
+                let cap = d.pixels.iter().map(|p| p.capacitance).sum::<f64>() / n;
+                let mut p = Project::open(pdir).map_err(|e| e.to_string())?;
+                let r = resolve(&p, &src.cell)?;
+                let pixels = if st.cell_layout { 4 } else { 1 };
+                let msg =
+                    ics_core::pixel_layout::apply_device_photodiode(&mut p, &r, src.boundary.as_deref(), pixels, vpin, cap)?;
+                p.save().map_err(|e| e.to_string())?;
+                eprintln!("{msg}");
             }
             if let Some(set) = set {
                 let cur = currents.ok_or("--set needs --lux")?;
@@ -3383,5 +3566,58 @@ fn main() -> ExitCode {
             eprintln!("error: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// The device model's results of `ics pixel`, as text.
+fn print_device(d: &ics_optics::device::DeviceResult) {
+    println!("device model ({} nodes): drift-diffusion collection, photodiode wells", d.nodes);
+    for w in &d.warnings {
+        println!("  warning: {w}");
+    }
+    println!(
+        "  {:<3} {:>9} {:>11} {:>10} {:>9} {:>11}  lowest barrier (empty well)",
+        "", "Vpin (V)", "full well", "level (V)", "C (fF)", "t_coll (ps)"
+    );
+    for (k, p) in d.pixels.iter().enumerate() {
+        println!(
+            "  {:<3} {:>9.3} {:>9.0} e {:>10.3} {:>9.3} {:>11.1}  {:.3} V to {}",
+            p.color,
+            p.pinning_voltage,
+            p.full_well,
+            p.full_well_level,
+            p.capacitance,
+            d.collection_time[k] * 1e3,
+            p.barrier,
+            p.barrier_to
+        );
+    }
+    for p in &d.pixels {
+        let a = p.transfer_barrier_at;
+        println!(
+            "  {:<3} gate on: lowest point {:.3} V on the way out ({}) at x {:.2}, y {:.2}, depth {:.2} um",
+            p.color,
+            p.transfer_barrier,
+            if p.transfer_barrier >= p.pinning_voltage - 1e-3 {
+                "no barrier".to_string()
+            } else {
+                format!("{:.3} V below the well", p.pinning_voltage - p.transfer_barrier)
+            },
+            a[0],
+            a[1],
+            a[2]
+        );
+    }
+    if let Some(t) = &d.transfer {
+        let f = |v: Option<f64>| v.map_or("-".to_string(), |v| format!("{v:.2} ns"));
+        println!(
+            "  transfer of {} ({:.0} e): 90 % in {}, 99 % in {}, {:.1} e left in the photodiode ({:.3} %)",
+            t.color,
+            t.electrons,
+            f(t.t90),
+            f(t.t99),
+            t.residual,
+            100.0 * t.residual / t.electrons.max(1.0)
+        );
     }
 }
