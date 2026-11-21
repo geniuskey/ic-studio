@@ -1,0 +1,157 @@
+# The demo 2 x 2 Bayer cell `bayer_fdti_ctx` (3.2 um pixels, 4-shared, generic 180 nm process)
+# as a back-side illuminated pixel with full-depth trenches and corner transfer gates: each
+# photodiode's inner corner is cut at 45 degrees, the transfer gate lies across the cut and its
+# diagonal floating diffusion runs towards the cell's centre. The layout's any-angle shapes are
+# read as a staircase of 10 nm bands. Same stack and doping as `pixels/bayer_fdti.toml`.
+#   ics pixel pixels/bayer_fdti_ctx.toml --project <demo project> --cra 15 --lux 100
+#   ics pixel pixels/bayer_fdti_ctx.toml --project <demo project> --transfer B
+name = "bayer_fdti_ctx BSI FDTI, corner TX"
+
+[layout]
+cell = "bayer_fdti_ctx"
+boundary = "boundary"
+bayer = true                    # the frame is the 2 x 2 cell; the pitch is half of it
+
+[microlens]
+height = 0.7
+
+[[layers]]
+name = "planarisation"
+material = "resin"
+thickness = 0.1
+
+[[layers]]
+name = "colour filter"
+kind = "color_filter"
+thickness = 0.6
+
+[[layers]]
+name = "metal grid"
+material = "sio2"
+thickness = 0.25
+grid = { material = "w", width = 0.15 }
+
+[[layers]]
+name = "buffer oxide"
+material = "sio2"
+thickness = 0.05
+
+[[arc]]                         # anti-reflection films on the back surface
+material = "ta2o5"
+thickness = 0.05
+
+[[arc]]
+material = "hfo2"
+thickness = 0.01
+
+[[front]]                       # below the silicon: the transistors' wiring
+name = "PMD"
+material = "sio2"
+thickness = 0.3
+
+[[front]]
+name = "metal 1"
+material = "sio2"
+thickness = 0.2
+pattern = { material = "al", layout = "metal1" }
+
+[[front]]
+name = "IMD 1"
+material = "sio2"
+thickness = 0.3
+
+[[front]]
+name = "metal 2"
+material = "sio2"
+thickness = 0.2
+pattern = { material = "al", layout = "metal2" }
+
+[photodiode]                    # depth range used for the optical crosstalk figure
+top = 0.3
+bottom = 2.7
+layout = "pdn"
+
+[silicon]
+thickness = 3.0
+dti = { depth = 3.0, width = 0.15, fill = "sio2" }
+grid = 0.1
+
+# Masks are layout layers or derived-layer expressions of the technology, per pixel of the cell.
+# Derived layers used below: `w` the photodiode squares (diffusion off the gates, without a
+# contact, at least 0.5 um wide: any size of the `bayer_fdti_pc` PCell), `b` the diffusion
+# pieces holding them, `c` those without a contact, `g` gates, `t` the transfer gates (on a
+# photodiode), `e` / `u` the strip under each transfer gate's photodiode-side edge, where the
+# photodiode's n reaches under the gate. The pinning layer stops short of the gate.
+[device]
+background = { type = "p", concentration = 1e15 }
+transfer = { pixel = "Gr", on_time = 20, settle = 5 }
+
+[[device.doping]]
+name = "back-side p+"
+type = "p"
+peak = 2e18
+side = "back"
+straggle = 0.06
+
+[[device.doping]]
+name = "trench liner p"
+type = "p"
+peak = 5e17
+side = "dti"
+straggle = 0.05
+
+[[device.doping]]
+name = "deep photodiode n"
+type = "n"
+peak = 6e15
+depth = 1.4
+straggle = 0.45
+lateral = 0.1
+layout = "pdn"
+photodiode = true
+
+[[device.doping]]
+name = "photodiode surface n"
+type = "n"
+peak = 4e16
+depth = 0.25
+straggle = 0.15
+layout = "a = active not poly; n = a not interact contact; w = n wide 0.5; b = a interact w; c = b not interact contact; g = poly and active; t = g interact c; e = c size 0.2; u = t and e; c or u"
+photodiode = true
+
+[[device.doping]]
+name = "p-well"
+type = "p"
+peak = 3e17
+depth = 0.25
+straggle = 0.12
+layout = "a = active not poly; n = a not interact contact; w = n wide 0.5; b = a interact w; c = b not interact contact; d = c size 0.3; boundary not d"
+
+[[device.doping]]
+name = "pinning p+ (pulled back 0.12 um from the transfer gate)"
+type = "p"
+peak = 5e18
+straggle = 0.03
+layout = "a = active not poly; n = a not interact contact; w = n wide 0.5; w size -0.12"
+
+[[device.doping]]
+name = "n+ diffusions (floating diffusions, sources and drains)"
+type = "n"
+peak = 1e20
+straggle = 0.04
+layout = "a = active not poly; n = a not interact contact; w = n wide 0.5; a not interact w"
+contact = 2.8
+
+[[device.doping]]
+name = "transfer gate p (against punch-through)"
+type = "p"
+peak = 2e17
+depth = 0.15
+straggle = 0.08
+layout = "a = active not poly; n = a not interact contact; w = n wide 0.5; b = a interact w; c = b not interact contact; g = poly and active; t = g interact c; e = c size 0.2; t not e"
+
+[[device.gate]]
+name = "transfer gates"
+layout = "a = active not poly; n = a not interact contact; w = n wide 0.5; b = a interact w; g = poly and active; g interact b"
+off = -1.0
+on = 2.8

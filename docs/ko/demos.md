@@ -26,7 +26,7 @@ cargo run --release -- --demo
 | `getting_started` | `cmos_inverter`, `rc_lowpass`, `diode_clipper`, `devices` |
 | `analog` | `current_mirror`, `ota5t`, `ota2s` |
 | `digital` | `nand2`, `nor2`, `ring_osc5`, `full_adder` |
-| `memory_and_pixels` | `sram6t`, `sram_array`, `dram1t1c`, `dram_array`, `nand_string`, `nand_array`, `aps4t`, `pixel_array`, `aps2s`, `bayer_fdti` |
+| `memory_and_pixels` | `sram6t`, `sram_array`, `dram1t1c`, `dram_array`, `nand_string`, `nand_array`, `aps4t`, `pixel_array`, `aps2s`, `bayer_fdti`, `bayer_fdti_pc`, `bayer_fdti_ctx` |
 | `hierarchy` | `inv_chain`, `inv_array`, `inv_tiles` |
 
 각 주제에는 레이아웃이 배치하는 셀도 들어 있습니다. 예를 들어 `hierarchy`에는 `cmos_inverter`가,
@@ -160,6 +160,8 @@ common-centroid 순서로 배치한 뒤 배선합니다. 개루프 이득은 약
 | `pixel_array` | `aps4t`의 8 × 8 어레이 |
 | `aps2s` | DRC와 LVS를 통과한 2-공유 4T 픽셀(5.6 × 11.2 µm): 두 포토다이오드가 TX1 / TX2로 하나의 플로팅 디퓨전에 전송하고 RST / SF / SEL을 공유. 과도 해석으로 픽셀 1을 읽고, 리셋한 뒤 픽셀 2를 읽음 |
 | `bayer_fdti` | DRC와 LVS를 통과한 2 × 2 Bayer 4-공유 후면 조사 픽셀(픽셀 2.4 µm, 셀 4.8 × 4.8 µm), 전체 깊이 deep trench isolation(`dti`, `pdn` 레이어): 네 포토다이오드가 넓은 전송 게이트(W 0.89, L 0.45 µm)로 각자의 플로팅 디퓨전에 전송하고, 디퓨전은 금속으로 연결되며 RST / SF / SEL을 공유. 과도 해석으로 R, Gr, Gb, B를 차례로 읽음. `pixels/bayer_fdti.toml`이 광학과 실리콘을 시뮬레이션([픽셀 광학](pixel-optics.md#소자-모델)) |
+| `bayer_fdti_pc` | `bayer_fdti`의 PCell Designer 마스터: 피치, 포토다이오드, 전송 게이트 길이, 45° 디퓨전 모서리([PCell](pcells.md)) |
+| `bayer_fdti_ctx` | 코너 전송 게이트의 2 × 2 Bayer FDTI 픽셀(픽셀 3.2 µm, 셀 6.4 µm), DRC와 LVS 통과: 포토다이오드 안쪽 모서리를 깎은 면에 45° 게이트(W 0.62, L 0.45 µm), 대각선 플로팅 디퓨전을 중심의 metal1 고리로 연결. `pixels/bayer_fdti_ctx.toml`로 시뮬레이션([픽셀 광학](pixel-optics.md#코너-전송-게이트)) |
 | `inv_chain` | 배치된 `cmos_inverter` 인스턴스 4개 |
 | `inv_array` | 인버터 16 × 8 어레이 |
 | `inv_tiles` | `inv_array`의 8 × 8 어레이: 인버터 8,192개, 2단계 계층 |

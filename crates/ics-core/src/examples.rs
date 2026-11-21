@@ -1838,6 +1838,230 @@ pub fn bayer_fdti(p: &mut Project) -> Cell {
     )
 }
 
+/// Pitch (dbu) of `bayer_fdti_ctx`: 3.2 µm. The corner transfer gate's diagonal channel and
+/// floating diffusion run from the photodiode's inner corner towards the pixel's; its contact
+/// head must sit past the gate's end cap (0.22 µm of poly beyond the channel, measured across
+/// the 45° edge) and still 0.24 µm from the readout gate beside it, which takes 3.2 µm.
+const CTX: i64 = 3200;
+
+/// 2 x 2 Bayer 4-shared BSI pixel with full-depth DTI and corner transfer gates (6.4 x 6.4 µm,
+/// 3.2 µm pitch). Each photodiode (1.2 µm, bottom-left of R) has its inner corner cut at 45°;
+/// the transfer gate lies across that cut as a 45° band (W 0.62 µm, L 0.45 µm) and its channel
+/// runs on as a diagonal floating diffusion towards the cell's centre, where a metal1 ring joins
+/// the four. Photodiodes, gates and diffusions are mirror images about the centre lines; each
+/// gate's end cap towards the pixel's right (R) runs on to a contact head that leaves the 45°
+/// band at its corner. The readout transistors (W 0.3, L 0.3 µm) take one strip each along the
+/// inner trenches: SF in R's right strip, SEL in R's top strip, RST in Gb's right strip, each
+/// gate's poly crossing the trench to its contact in the next pixel. Rows (TX1-TX4, SEL, RST)
+/// run on metal2, the column line on metal1 at the left edge, the supply on two metal2 rows
+/// joined by metal3 over the centre trench.
+pub fn bayer_fdti_ctx(p: &mut Project) -> Cell {
+    let o = Orient::default();
+    let mut s = Schematic::default();
+    // The chamfered photodiode: 1.2 µm square less the corner beyond x + y = 2.32 µm.
+    let (pd_a, pd_pe) = (1200.0 * 1200.0 - 440.0 * 440.0 / 2.0, 2.0 * 1200.0 + 2.0 * 760.0 + 440.0 * std::f64::consts::SQRT_2);
+    let (pd_as, pd_ps) = (format!("{}p", pd_a / 1e6), format!("{:.3}u", pd_pe / 1e3));
+    for (k, iph_dc) in [(1, "1n"), (2, "2n"), (3, "2n"), (4, "0.6n")] {
+        let y = 2 + 10 * k;
+        let tx = s.add_instance(DeviceKind::Nmos, Pt::new(8, y), R90);
+        set(&mut s, tx, &[("w", "622n"), ("l", "453n"), ("as", &pd_as), ("ps", &pd_ps)]);
+        let (pdk, txk) = (format!("pd{k}"), format!("tx{k}"));
+        pin_labels(&mut s, tx, &[("d", "fd"), ("g", &txk), ("s", &pdk), ("b", "0")]);
+        let iph = s.add_instance(DeviceKind::ISource, Pt::new(1, y + 6), o);
+        set(&mut s, iph, &[("dc", iph_dc)]);
+        pin_labels(&mut s, iph, &[("p", &pdk), ("n", "0")]);
+    }
+    let rst = mos(&mut s, DeviceKind::Nmos, (16, 4), false, "300n", "300n", None);
+    set(&mut s, rst, &[("ad", "3p"), ("pd", "8u")]);
+    pin_labels(&mut s, rst, &[("d", "fd"), ("g", "rst"), ("s", "vdd")]);
+    let sf = mos(&mut s, DeviceKind::Nmos, (24, 12), false, "300n", "300n", None);
+    pin_labels(&mut s, sf, &[("d", "vdd"), ("g", "fd"), ("s", "x")]);
+    let sel = mos(&mut s, DeviceKind::Nmos, (24, 20), false, "300n", "300n", None);
+    pin_labels(&mut s, sel, &[("d", "x"), ("g", "sel"), ("s", "col")]);
+    let icol = s.add_instance(DeviceKind::ISource, Pt::new(32, 26), o);
+    set(&mut s, icol, &[("dc", "2u")]);
+    pin_labels(&mut s, icol, &[("p", "col"), ("n", "0")]);
+    let hi = 2.8;
+    let rst_pwl = format!(
+        "PWL(0 {hi} 300n {hi} 301n 0 600n 0 601n {hi} 700n {hi} 701n 0 1000n 0 1001n {hi} 1100n {hi} 1101n 0 1400n 0 1401n {hi} 1500n {hi} 1501n 0)"
+    );
+    let tx_pwl = |k: i32| {
+        let t = 400 * k;
+        format!("PWL(0 {hi} 50n {hi} 51n 0 {t}n 0 {}n {hi} {}n {hi} {}n 0)", t + 1, t + 50, t + 51)
+    };
+    source(&mut s, (-56, 8), "vdd", &[("dc", "2.8")]);
+    source(&mut s, (-48, 8), "rst", &[("dc", "2.8"), ("tran", &rst_pwl)]);
+    for k in 1..=4 {
+        source(&mut s, (-48 + 8 * k, 8), &format!("tx{k}"), &[("dc", "2.8"), ("tran", &tx_pwl(k))]);
+    }
+    source(&mut s, (-8, 8), "sel", &[("dc", "2.8")]);
+    let mut sim = sim(&["tran"]);
+    set_tran(&mut sim, "1n", "1800n");
+
+    let mut r = Router::new(&p.tech);
+    let l = |name: &str| p.tech.layer_index(name).expect("generic layer");
+    let (active, poly, m1, m2, m3) = (l("active"), l("poly"), l("metal1"), l("metal2"), l("metal3"));
+    let (nplus, pdn, dti, boundary) = (l("nplus"), l("pdn"), l("dti"), l("boundary"));
+    let (q, c) = (CTX, 2 * CTX);
+    // Rotated coordinates of R: s = x + y along the diagonal, d = x - y across it.
+    let rot = |s: i64, d: i64| ((s + d) / 2, (s - d) / 2);
+    let pd = [(180, 180), (1380, 180), (1380, 940), (940, 1380), (180, 1380)];
+    // Channel and floating diffusion: s 2.32 - 4.8 µm, |d| <= 0.44 µm.
+    let band = [rot(2320, 440), rot(4800, 440), rot(4800, -440), rot(2320, -440)];
+    // The gate: s 2.32 - 2.96 µm (L 0.45 µm); its end caps reach d = -0.76 and, towards the
+    // contact head, d = 1.16 µm.
+    let gate = [rot(2320, 1160), rot(2960, 1160), rot(2960, -760), rot(2320, -760)];
+    let mut shapes: Vec<(usize, Geometry)> = Vec::new();
+    for (mx, my) in [(false, false), (true, false), (false, true), (true, true)] {
+        let f = |(x, y): (i64, i64)| (if mx { c - x } else { x }, if my { c - y } else { y });
+        let poly_of = |pts: &[(i64, i64)]| {
+            let mut v: Vec<(i64, i64)> = pts.iter().map(|&q| f(q)).collect();
+            if mx != my {
+                v.reverse();
+            }
+            Geometry::Polygon { points: v }
+        };
+        let rect = |x0: i64, y0: i64, x1: i64, y1: i64| {
+            let (a, b) = (f((x0, y0)), f((x1, y1)));
+            Geometry::Rect(IRect::new(a.0.min(b.0), a.1.min(b.1), a.0.max(b.0), a.1.max(b.1)))
+        };
+        shapes.push((active, poly_of(&pd)));
+        shapes.push((active, poly_of(&band)));
+        shapes.push((poly, poly_of(&gate)));
+        // The contact head: its top-left corner 0.24 µm past the channel's edge, its top edge
+        // leaving the band at the band's corner.
+        shapes.push((poly, rect(1680, 480, 2100, 900)));
+        shapes.push((pdn, rect(200, 200, q - 200, q - 200)));
+    }
+    for (layer, g) in shapes {
+        r.lay.add(layer, g);
+    }
+    // Strips along the inner trenches: pads 0.42 µm, the gate's part 0.3 µm wide.
+    let (sx0, sx1, nx0) = (q - 600, q - 180, q - 480);
+    for (layer, (x0, y0, x1, y1)) in [
+        // SF in R's right strip: drain (supply), gate, source.
+        (active, (sx0, 180, sx1, 600)),
+        (active, (nx0, 600, sx1, 900)),
+        (active, (sx0, 900, sx1, 1320)),
+        (poly, (nx0 - 220, 600, q + 520, 900)),
+        (poly, (q + 100, 540, q + 520, 960)), // its contact in Gr
+        // SEL in R's top strip: column, gate, drain.
+        (active, (180, sx0, 600, sx1)),
+        (active, (600, nx0, 900, sx1)),
+        (active, (900, sx0, 1320, sx1)),
+        (poly, (600, nx0 - 220, 900, q + 520)),
+        (poly, (540, q + 100, 960, q + 520)), // its contact in Gb
+        // RST in Gb's right strip: floating diffusion, gate, supply.
+        (active, (sx0, c - 1320, sx1, c - 900)),
+        (active, (nx0, c - 900, sx1, c - 600)),
+        (active, (sx0, c - 600, sx1, c - 180)),
+        (poly, (nx0 - 220, c - 900, q + 520, c - 600)),
+        (poly, (q + 100, c - 960, q + 520, c - 540)), // its contact in B
+        // Metal1: column line; the SF source to the SEL drain.
+        (m1, (110, 0, 340, c)),
+        (m1, (q - 560, 1110, q - 220, 1770)),
+        (m1, (940, 1430, q - 220, 1770)),
+        (m1, (940, 1430, 1280, q - 390)),
+        // The floating diffusions' ring, the SF gate and the reset source onto it.
+        (m1, (2030, 2030, c - 2030, 2370)),
+        (m1, (c - 2370, 2030, c - 2030, c - 2030)),
+        (m1, (2030, c - 2370, c - 2030, c - 2030)),
+        (m1, (q + 140, 750, q + 480, 2030)),
+        (m1, (q - 560, c - 2030, q - 220, c - 910)),
+        // Supply contacts to their rows.
+        (m1, (q - 580, 10, q - 200, 560)),
+        (m1, (q - 580, c - 560, q - 200, c - 10)),
+        // Gate contacts to their rows.
+        (m1, (1700, 520, 2080, 1050)),                 // TX1
+        (m1, (c - 2080, 520, c - 1700, 1660)),         // TX2
+        (m1, (1700, c - 1660 - 10, 2080, c - 520)),    // TX3
+        (m1, (c - 2060, c - 860, c - 1430, c - 520)),  // TX4 across ...
+        (m1, (c - 1770, c - 2270, c - 1430, c - 520)), // ... and down
+        (m1, (q + 120, c - 1050, q + 500, c - 580)),   // RST
+        (m1, (580, q + 120, 990, q + 680)),            // SEL
+        (m2, (q - 580, 10, q + 190, 390)),             // supply vias joined on each row
+        (m2, (q - 580, c - 390, q + 190, c - 10)),
+        (m3, (q - 140, 10, q + 140, c - 10)), // supply rows joined
+        (nplus, (0, 0, c, c)),
+        (boundary, (0, 0, c, c)),
+    ] {
+        r.lay.add_rect(layer, x0, y0, x1, y1);
+    }
+    // Deep trenches on the pixel edges, centred on the cell edges so that tiled cells share them.
+    let t = 75;
+    for (x0, y0, x1, y1) in [
+        (-t, -t, t, c + t),
+        (c - t, -t, c + t, c + t),
+        (-t, -t, c + t, t),
+        (-t, c - t, c + t, c + t),
+        (q - t, -t, q + t, c + t),
+        (-t, q - t, c + t, q + t),
+    ] {
+        r.lay.add_rect(dti, x0, y0, x1, y1);
+    }
+    let fd = c - 2200;
+    let mut vias: Vec<(&'static str, (i64, i64))> = vec![
+        ("contact", (2200, 2200)),
+        ("contact", (fd, 2200)),
+        ("contact", (2200, fd)),
+        ("contact", (fd, fd)),
+        ("contact", (q - 390, 390)),
+        ("contact", (q - 390, 1110)),
+        ("contact", (390, q - 390)),
+        ("contact", (1110, q - 390)),
+        ("contact", (q - 390, c - 1110)),
+        ("contact", (q - 390, c - 390)),
+        ("polycon", (1890, 690)),
+        ("polycon", (c - 1890, 690)),
+        ("polycon", (1890, c - 690)),
+        ("polycon", (c - 1890, c - 690)),
+        ("polycon", (q + 310, 750)),
+        ("polycon", (750, q + 310)),
+        ("polycon", (q + 310, c - 750)),
+    ];
+    // Rows: (net, y, via x).
+    let rows = [
+        ("vdd", 200, q - 390),
+        ("tx1", 860, 1890),
+        ("tx2", 1470, c - 1890),
+        ("sel", q + 510, 800),
+        ("tx4", c - 2080, c - 1600),
+        ("tx3", c - 1470, 1890),
+        ("rst", c - 860, q + 310),
+        ("vdd", c - 200, q - 390),
+    ];
+    for (net, y, vx) in rows {
+        vias.push(("via1", (vx, y)));
+        r.lay.add_rect(m2, 0, y - 140, c, y + 140);
+        if net != "vdd" {
+            r.label(net, (c - 300, y));
+        }
+    }
+    vias.push(("via2", (q, 200)));
+    vias.push(("via2", (q, c - 200)));
+    for (name, at) in vias {
+        r.via(name, at);
+    }
+    for (net, at) in [
+        ("pd1", (700, 700)),
+        ("pd2", (c - 700, 700)),
+        ("pd3", (700, c - 700)),
+        ("pd4", (c - 700, c - 700)),
+        ("vdd", (q, q - 200)),
+        ("col", (225, 2000)),
+        ("fd", (c - 2200, q)),
+    ] {
+        r.label(net, at);
+    }
+    full_flow_cell(
+        "bayer_fdti_ctx",
+        "2 x 2 Bayer 4-shared BSI pixel with full-depth DTI and corner transfer gates, 3.2 µm pitch: 45° gates on the photodiodes' inner corners, diagonal floating diffusions joined at the centre (DRC / LVS clean)",
+        s,
+        r.finish(),
+        sim,
+    )
+}
+
 /// Effective pixel pitch (µm) of the `bayer_fdti_pc` PCell: the `pitch` parameter, or more when
 /// the photodiode and the transfer gate need it (the readout strip beside the photodiode takes
 /// 1.35 µm across the pixel, the floating diffusion and its clearance to the trench 0.9 µm
@@ -2100,6 +2324,7 @@ pub fn demo_project() -> Project {
         aps4t,
         aps2s,
         bayer_fdti,
+        bayer_fdti_ctx,
         full_adder,
         ota2s,
     ] {
@@ -2174,6 +2399,7 @@ pub const TOPICS: [Topic; 5] = [
             "aps2s",
             "bayer_fdti",
             "bayer_fdti_pc",
+            "bayer_fdti_ctx",
         ],
     },
     Topic {
@@ -2423,6 +2649,20 @@ mod flow_tests {
         let x = extract(lay, &p, &p.tech);
         assert_eq!(x.photodiodes.len(), 4, "{:?}", x.photodiodes);
         assert!(x.photodiodes.iter().all(|d| d.area == 1050 * 1050), "{:?}", x.photodiodes);
+    }
+
+    #[test]
+    fn bayer_fdti_ctx_full_flow() {
+        full_flow("bayer_fdti_ctx");
+        let p = demo_project();
+        let lay = p.cell(&CellRef::new("work", "bayer_fdti_ctx")).and_then(|c| c.layout.as_ref()).unwrap();
+        let x = extract(lay, &p, &p.tech);
+        assert_eq!(x.photodiodes.len(), 4, "{:?}", x.photodiodes);
+        // The 45° transfer gates measure as drawn (W = the 0.62 µm cut, L = 0.64 / √2 µm), and
+        // the chamfered photodiodes take their exact area.
+        let tx: Vec<_> = x.devices.iter().filter(|d| (d.w, d.l) == (622, 453)).collect();
+        assert_eq!(tx.len(), 4, "{:?}", x.devices.iter().map(|d| (d.w, d.l)).collect::<Vec<_>>());
+        assert!(x.photodiodes.iter().all(|d| d.area == 1200 * 1200 - 440 * 440 / 2), "{:?}", x.photodiodes);
     }
 
     #[test]

@@ -213,6 +213,23 @@ gives Vpin 2.43 V and full well 27.6k e-; with the surface n lowered to 2.5e16 c
 and 19.6k e-, but 2 % of the charge stays after a 20 ns transfer (the electrons cross a wider
 photodiode), which a doping gradient toward the transfer gate would have to fix.
 
+## Corner transfer gate
+
+`bayer_fdti_ctx` (3.2 µm pitch) puts each transfer gate across a 45° cut of its photodiode's
+inner corner, with a diagonal floating diffusion towards the cell's centre (DRC / LVS clean;
+extraction measures the 45° gates as drawn, W 0.62, L 0.45 µm). `pixels/bayer_fdti_ctx.toml`
+reads it with the doping of `bayer_fdti`; any-angle shapes become a 10 nm staircase. Gr:
+
+| Photodiode surface n | Vpin | Full well | Left after 20 ns |
+|---|---|---|---|
+| 4e16 cm⁻³ (as `bayer_fdti`) | 1.95 V | 7.8k e- | 154 e- (2 %) |
+| 4.5e16 | 2.23 V | 8.9k e- | 51 e- |
+| 5e16 | 2.51 V | 10.0k e- | 6.5 e- |
+| 3e16 | 1.53 V | 6.2k e- | 11 % |
+
+The empty-well barrier is 0.48 V (0.03 V on `bayer_fdti`). The narrower gate needs a deeper
+well to empty; 5e16 leaves only 0.3 V between Vpin and the 2.8 V reset.
+
 ## Device model
 
 With a `[device]` section the silicon is solved as a semiconductor device on the voxel grid of
