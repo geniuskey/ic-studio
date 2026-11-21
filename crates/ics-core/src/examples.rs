@@ -1838,6 +1838,142 @@ pub fn bayer_fdti(p: &mut Project) -> Cell {
     )
 }
 
+/// Effective pixel pitch (µm) of the `bayer_fdti_pc` PCell: the `pitch` parameter, or more when
+/// the photodiode and the transfer gate need it (the readout strip beside the photodiode takes
+/// 1.35 µm across the pixel, the floating diffusion and its clearance to the trench 0.9 µm
+/// along it).
+const BAYER_PC_PITCH: &str = "max(pitch, pd + 1.35, pd + tx_l + 0.9)";
+
+/// The `bayer_fdti` layout as a PCell Designer template (`bayer_fdti_pc`) with parameters
+/// `pitch` (pixel pitch), `pd` (photodiode side; the transfer gate's width follows, W = pd −
+/// 0.16 µm) and `tx_l` (transfer gate length). The four pixels stay mirror images: each
+/// parameter has a stretch line in every pixel, placed where no contact is cut and nothing is
+/// at its minimum spacing across the line:
+///
+/// - `pd`: x through the photodiode and the transfer gate past the floating diffusion's
+///   contact, y through the photodiode between the SEL and SF gates.
+/// - `tx_l`: y through the transfer gate, above the SF gate.
+/// - pitch: x between the transfer gate's contact and the readout strip, y between the
+///   floating diffusion and the trench; they take what the pitch leaves.
+///
+/// The drawing is at its minimum spacings in the other direction, so the parameters only grow
+/// from the drawn values (pitch 2.4, pd 1.05, tx_l 0.45 µm).
+pub fn bayer_fdti_template(source: &Layout) -> crate::pcell_design::Template {
+    use crate::pcell_design::{Axis, Op, Param, ParamKind, Side, Template};
+    let mut t = Template::from_layout("bayer_fdti_pc", source);
+    t.description =
+        "2 x 2 Bayer 4-shared BSI pixel with full-depth DTI (bayer_fdti) by pitch, photodiode and transfer gate".into();
+    let param = |name: &str, default: f64, max: f64, description: &str| Param {
+        min: Some(default),
+        max: Some(max),
+        description: description.into(),
+        ..Param::new(name, ParamKind::Length, default)
+    };
+    t.params = vec![
+        param("pitch", 2.4, 4.0, "pixel pitch (raised to fit pd and tx_l)"),
+        param("pd", 1.05, 2.4, "photodiode side; the transfer gate is pd - 0.16 wide"),
+        param("tx_l", 0.45, 0.8, "transfer gate length"),
+        Param {
+            description: "45° corners (0.12 µm) on the photodiodes and the floating diffusions".into(),
+            ..Param::new("chamfer", ParamKind::Bool, 1.0)
+        },
+    ];
+    chamfer_diffusions(&mut t);
+    let c = 2 * BAYER;
+    let gap_x = format!("{BAYER_PC_PITCH} - pd");
+    let gap_y = format!("{BAYER_PC_PITCH} - pd - tx_l");
+    let line =
+        |axis: Axis, at: i64, amount: &str| Op::Stretch { axis, at, side: Side::High, amount: amount.into(), layers: vec![] };
+    // Lines in the bottom-left pixel; the other pixels take the mirror images.
+    for (axis, at, amount) in [
+        (Axis::X, 1100, "pd"),
+        (Axis::X, 1665, gap_x.as_str()),
+        (Axis::Y, 900, "pd"),
+        (Axis::Y, 1470, "tx_l"),
+        (Axis::Y, 2150, &gap_y),
+    ] {
+        t.ops.push(line(axis, at, amount));
+        t.ops.push(line(axis, c - at, amount));
+    }
+    // Lines in increasing position, so that each one moves the later ones by its stretch.
+    t.ops.sort_by_key(|o| match o {
+        Op::Stretch { axis, at, .. } => (*axis == Axis::Y, *at),
+        _ => (true, i64::MAX),
+    });
+    t
+}
+
+/// Cut of the 45° corners of `bayer_fdti_pc` (dbu): below the 130 between the photodiode's edge
+/// and its stretch line, so that no line crosses a diagonal edge.
+const BAYER_CHAMFER: i64 = 120;
+
+/// Give the photodiodes and the floating diffusions of a `bayer_fdti` drawing 45° corners
+/// wherever no other diffusion meets the corner (the transfer gate's channel continues the
+/// photodiode at one corner and starts the floating diffusion at two). Each diffusion becomes
+/// the chamfered polygon plus a triangle per corner, kept when `chamfer` is off, so the
+/// rectangles come back exactly.
+fn chamfer_diffusions(t: &mut crate::pcell_design::Template) {
+    use crate::pcell_design::Op;
+    let Some(active) = t
+        .source
+        .shapes
+        .iter()
+        .find_map(|s| matches!(s.geom, Geometry::Rect(r) if r.width() == 1050 && r.height() == 1050).then_some(s.layer))
+    else {
+        return;
+    };
+    let rects: Vec<IRect> = t
+        .source
+        .shapes
+        .iter()
+        .filter(|s| s.layer == active)
+        .filter_map(|s| if let Geometry::Rect(r) = s.geom { Some(r) } else { None })
+        .collect();
+    // Photodiodes (1.05 µm squares) and floating diffusions (0.89 x 0.42 µm, beyond a channel).
+    let targets: Vec<IRect> = rects
+        .iter()
+        .copied()
+        .filter(|r| (r.width(), r.height()) == (1050, 1050) || (r.width(), r.height()) == (890, 420))
+        .collect();
+    let c = BAYER_CHAMFER;
+    let mut shapes = vec![];
+    for r in &targets {
+        let corners = [(r.x0, r.y0), (r.x1, r.y0), (r.x1, r.y1), (r.x0, r.y1)];
+        let free: Vec<bool> = corners
+            .iter()
+            .map(|&(x, y)| !rects.iter().any(|o| o != r && o.x0 <= x && x <= o.x1 && o.y0 <= y && y <= o.y1))
+            .collect();
+        if !free.iter().any(|&f| f) {
+            continue;
+        }
+        let mut pts = vec![];
+        for (k, &(x, y)) in corners.iter().enumerate() {
+            if !free[k] {
+                pts.push((x, y));
+                continue;
+            }
+            // Towards the previous and the next corner, `c` along each edge.
+            let (px, py) = corners[(k + 3) % 4];
+            let (nx, ny) = corners[(k + 1) % 4];
+            let step = |a: i64, b: i64| (b - a).signum() * c;
+            let a = (x + step(x, px), y + step(y, py));
+            let b = (x + step(x, nx), y + step(y, ny));
+            pts.push(a);
+            pts.push(b);
+            shapes.push((
+                Geometry::Polygon { points: vec![a, (x, y), b] },
+                IRect::new(x.min(a.0).min(b.0), y.min(a.1).min(b.1), x.max(a.0).max(b.0), y.max(a.1).max(b.1)),
+            ));
+        }
+        t.source.shapes.retain(|s| !(s.layer == active && s.geom == Geometry::Rect(*r)));
+        t.source.add(active, Geometry::Polygon { points: pts });
+    }
+    for (tri, region) in shapes {
+        t.source.add(active, tri);
+        t.ops.push(Op::Condition { region, when: "!chamfer".into(), layers: vec![active] });
+    }
+}
+
 /// 8 x 8 image sensor array of `aps4t`: labelled TX / reset / select rows and column lines, and
 /// a supply strap joining the supply rows.
 pub fn pixel_array(tech: &Tech, lib: &str) -> Cell {
@@ -1983,6 +2119,8 @@ pub fn demo_project() -> Project {
         x += w + 3000;
     }
     p.add_cell("work", layout_cell("devices", "Parametric devices placed from the pcells library", devices)).expect("unique");
+    let bayer = p.cell(&CellRef::new("work", "bayer_fdti")).and_then(|c| c.layout.clone()).expect("bayer_fdti layout");
+    p.publish_template("work", bayer_fdti_template(&bayer)).expect("bayer_fdti_pc generates");
     p
 }
 
@@ -2035,6 +2173,7 @@ pub const TOPICS: [Topic; 5] = [
             "pixel_array",
             "aps2s",
             "bayer_fdti",
+            "bayer_fdti_pc",
         ],
     },
     Topic {
@@ -2284,6 +2423,85 @@ mod flow_tests {
         let x = extract(lay, &p, &p.tech);
         assert_eq!(x.photodiodes.len(), 4, "{:?}", x.photodiodes);
         assert!(x.photodiodes.iter().all(|d| d.area == 1050 * 1050), "{:?}", x.photodiodes);
+    }
+
+    #[test]
+    fn bayer_fdti_pcell_stretches_drc_clean() {
+        use crate::pcell_design::{Axis, Op, canonical};
+        use crate::polybool::PolySet;
+        use crate::region::BoolOp;
+        let p = demo_project();
+        let master = p.cell(&CellRef::new("work", "bayer_fdti_pc")).expect("master");
+        let Some(PCell::Template { def, .. }) = &master.pcell else { panic!("not a designer master") };
+        let drawn = p.cell(&CellRef::new("work", "bayer_fdti")).and_then(|c| c.layout.as_ref()).unwrap();
+        // Without the 45° corners it is the drawn cell: the same shapes, the diffusion as a
+        // chamfered polygon and its corner triangles.
+        let active = p.tech.layer_index("active").unwrap();
+        let square = def.generate(&p.tech, &[("chamfer".into(), 0.0)]).unwrap();
+        let others = |l: &Layout| {
+            let mut l = l.clone();
+            l.shapes.retain(|s| s.layer != active);
+            canonical(&l)
+        };
+        assert_eq!(others(&square), others(drawn));
+        let diff = |l: &Layout| PolySet::from_geometries(l.shapes.iter().filter(|s| s.layer == active).map(|s| &s.geom));
+        assert_eq!(diff(&square).boolean(&diff(drawn), BoolOp::Xor).area(), 0.0);
+        // With them (the default) the photodiodes lose three corners and the diffusions two.
+        let cut = (BAYER_CHAMFER * BAYER_CHAMFER / 2) as f64;
+        let lost = diff(drawn).area() - diff(&def.generate(&p.tech, &[]).unwrap()).area();
+        assert_eq!(lost, 4.0 * 5.0 * cut);
+        // No stretch line crosses a diagonal edge, which would bend it.
+        for op in &def.ops {
+            let Op::Stretch { axis, at, .. } = op else { continue };
+            for sh in &def.source.shapes {
+                let Geometry::Polygon { points } = &sh.geom else { continue };
+                for (a, b) in points.iter().zip(points.iter().cycle().skip(1)) {
+                    if a.0 != b.0 && a.1 != b.1 {
+                        let (lo, hi) = if *axis == Axis::X { (a.0.min(b.0), a.0.max(b.0)) } else { (a.1.min(b.1), a.1.max(b.1)) };
+                        assert!(!(lo < *at && *at < hi), "line {axis:?} {at} crosses {a:?}-{b:?}");
+                    }
+                }
+            }
+        }
+        assert!(def.lint(&p.tech).iter().all(|f| f.level != crate::pcell_design::Level::Error), "{:?}", def.lint(&p.tech));
+        // No stretch line cuts a contact or via.
+        let cuts: Vec<usize> = p.tech.vias.iter().filter_map(|v| p.tech.layer_index(&v.cut)).collect();
+        for op in &def.ops {
+            let Op::Stretch { axis, at, .. } = op else { continue };
+            for sh in drawn.shapes.iter().filter(|s| cuts.contains(&s.layer)) {
+                let b = sh.geom.bbox();
+                let (lo, hi) = if *axis == Axis::X { (b.x0, b.x1) } else { (b.y0, b.y1) };
+                assert!(!(lo < *at && *at < hi), "line {axis:?} {at} cuts {b:?}");
+            }
+        }
+        // Every corner is DRC clean.
+        let deck = crate::drc::parse_any(&p.tech.deck_text(), &p.tech).unwrap().deck;
+        for run in def.check_corners(&p.tech, &deck, &p) {
+            let r = run.result.unwrap_or_else(|e| panic!("{}: {e}", run.label));
+            assert!(
+                r.violations.is_empty(),
+                "{}: {:?}",
+                run.label,
+                r.violations.iter().take(8).map(|v| (&v.rule, v.marker)).collect::<Vec<_>>()
+            );
+        }
+        // A 3 µm pixel with a 1.6 µm photodiode: the frame, the photodiodes, the transfer gates.
+        let lay = def.generate(&p.tech, &[("pitch".into(), 3.0), ("pd".into(), 1.6), ("tx_l".into(), 0.5)]).unwrap();
+        let b = p.tech.layer_index("boundary").unwrap();
+        let frame = lay.shapes.iter().find(|s| s.layer == b).unwrap().geom.bbox();
+        assert_eq!((frame.width(), frame.height()), (6000, 6000));
+        let x = extract(&lay, &p, &p.tech);
+        assert_eq!(x.photodiodes.len(), 4, "{:?}", x.photodiodes);
+        // The extraction's staircase of the 45° corners is within a few % of the exact area.
+        let exact = (1600 * 1600) as f64 - 3.0 * cut;
+        assert!(x.photodiodes.iter().all(|d| (d.area as f64 - exact).abs() < 0.01 * exact), "{:?}", x.photodiodes);
+        let tx: Vec<_> = x.devices.iter().filter(|d| d.l == 500).collect();
+        assert_eq!(tx.len(), 4, "{:?}", x.devices.iter().map(|d| (d.w, d.l)).collect::<Vec<_>>());
+        assert!(tx.iter().all(|d| d.w == 1440));
+        // A photodiode too big for the pitch raises it.
+        let big = def.generate(&p.tech, &[("pd".into(), 2.0)]).unwrap();
+        let f = big.shapes.iter().find(|s| s.layer == b).unwrap().geom.bbox();
+        assert_eq!(f.width(), 2 * (2000 + 1350));
     }
 
     #[test]

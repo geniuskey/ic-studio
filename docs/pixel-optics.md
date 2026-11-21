@@ -196,6 +196,23 @@ A stack can read a whole 2 × 2 Bayer cell, each pixel with its own layout (a 4-
 `[layout] bayer = true`. The frame is then the cell, the pitch half of it, and shapes keep their
 place in the cell (`pixels/bayer_fdti.toml` reads the demo cell `bayer_fdti`).
 
+When the cell is a PCell Designer master, `params` picks a variant, generated for the run:
+
+```toml
+[layout]
+cell = "bayer_fdti_pc"            # the demo's bayer_fdti as a PCell (see PCells)
+boundary = "boundary"
+bayer = true
+params = { pitch = 3.0, pd = 1.6 } # µm; tx_l keeps its default
+```
+
+Any-angle shapes (the PCell's 45° corners) are read as a staircase of 10 nm bands.
+`--apply` then sizes the circuit's photodiode from that variant. The device model keeps the
+stack's doping, so a larger photodiode needs its own: at pitch 3.0 and pd 1.6 the same doping
+gives Vpin 2.43 V and full well 27.6k e-; with the surface n lowered to 2.5e16 cm⁻³, Vpin 1.63 V
+and 19.6k e-, but 2 % of the charge stays after a 20 ns transfer (the electrons cross a wider
+photodiode), which a doping gradient toward the transfer gate would have to fix.
+
 ## Device model
 
 With a `[device]` section the silicon is solved as a semiconductor device on the voxel grid of

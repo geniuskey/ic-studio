@@ -1615,10 +1615,12 @@ fn run(cli: Cli) -> Result<(), String> {
                     project.as_ref().ok_or(format!("{}: reads the layout of {}; give --project", stack.display(), src.cell))?;
                 let p = Project::open(pdir).map_err(|e| e.to_string())?;
                 let r = resolve(&p, &src.cell)?;
-                let px = ics_core::pixel_layout::PixelLayout::new(&p, &r, src.boundary.as_deref())?;
+                let px = ics_core::pixel_layout::PixelLayout::with_params(&p, &r, &src.param_list(), src.boundary.as_deref())?;
                 st.fill_from_layout(px.size_um(), |e| px.rects_um(e))?;
+                let params: Vec<String> = src.params.iter().map(|(k, v)| format!("{k}={v}")).collect();
                 eprintln!(
-                    "{r}: {:.2} x {:.2} um {}, photodiode {} rectangle(s)",
+                    "{r}{}: {:.2} x {:.2} um {}, photodiode {} rectangle(s)",
+                    if params.is_empty() { String::new() } else { format!(" ({})", params.join(", ")) },
                     px.size_um().0,
                     px.size_um().1,
                     if st.cell_layout { "2 x 2 Bayer cell" } else { "pixel" },
@@ -1830,8 +1832,15 @@ fn run(cli: Cli) -> Result<(), String> {
                 let mut p = Project::open(pdir).map_err(|e| e.to_string())?;
                 let r = resolve(&p, &src.cell)?;
                 let pixels = if st.cell_layout { 4 } else { 1 };
-                let msg =
-                    ics_core::pixel_layout::apply_device_photodiode(&mut p, &r, src.boundary.as_deref(), pixels, vpin, cap)?;
+                let msg = ics_core::pixel_layout::apply_device_photodiode(
+                    &mut p,
+                    &r,
+                    &src.param_list(),
+                    src.boundary.as_deref(),
+                    pixels,
+                    vpin,
+                    cap,
+                )?;
                 p.save().map_err(|e| e.to_string())?;
                 eprintln!("{msg}");
             }

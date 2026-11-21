@@ -23,7 +23,32 @@ impl<'a> PixelLayout<'a> {
     /// The layout of `cell`; the frame is the bounding box of `boundary` (a layer or
     /// expression), else of all shapes.
     pub fn new(project: &'a Project, cell: &CellRef, boundary: Option<&str>) -> Result<PixelLayout<'a>, String> {
-        let lay = project.cell(cell).and_then(|c| c.layout.as_ref()).ok_or_else(|| format!("{cell} has no layout"))?;
+        Self::with_params(project, cell, &[], boundary)
+    }
+
+    /// [`Self::new`] for the variant of PCell Designer master `cell` with parameter values
+    /// `params` (µm), generated on the fly; no values read the cell's own layout.
+    pub fn with_params(
+        project: &'a Project,
+        cell: &CellRef,
+        params: &[(String, f64)],
+        boundary: Option<&str>,
+    ) -> Result<PixelLayout<'a>, String> {
+        let c = project.cell(cell).ok_or_else(|| format!("no cell {cell}"))?;
+        let generated;
+        let lay = if params.is_empty() {
+            c.layout.as_ref().ok_or_else(|| format!("{cell} has no layout"))?
+        } else {
+            let Some(crate::pcell::PCell::Template { def, .. }) = &c.pcell else {
+                return Err(format!("{cell} is not a PCell Designer master; its layout takes no parameters"));
+            };
+            generated = def.generate(&project.tech, params).map_err(|e| format!("{cell}: {e}"))?;
+            &generated
+        };
+        Self::of_layout(project, lay, boundary).map_err(|e| format!("{cell}: {e}"))
+    }
+
+    fn of_layout(project: &'a Project, lay: &crate::layout::Layout, boundary: Option<&str>) -> Result<PixelLayout<'a>, String> {
         let tech = &project.tech;
         let mut geoms: Vec<Vec<crate::layout::Geometry>> = vec![vec![]; tech.layers.len()];
         for s in flatten(lay, project, 64) {
@@ -31,9 +56,17 @@ impl<'a> PixelLayout<'a> {
                 geoms[s.layer].push(s.geom);
             }
         }
+        // Any-angle shapes (45° corners, diagonal gates) as a staircase of grid-high bands.
+        let step = tech.grid.max(10);
         let layers = geoms
             .iter()
-            .map(|g| Region::from_rects(g.iter().filter_map(|g| Region::from_geometry(g).ok()).flat_map(|r| r.rects().to_vec())))
+            .map(|g| {
+                Region::from_rects(g.iter().flat_map(|g| {
+                    let r = Region::from_geometry(g)
+                        .unwrap_or_else(|_| crate::polybool::PolySet::from_geometry(g).manhattanize(step));
+                    r.rects().to_vec()
+                }))
+            })
             .collect::<Vec<_>>();
         let mut px = PixelLayout { project, layers, frame: IRect { x0: 0, y0: 0, x1: 0, y1: 0 } };
         let all = Region::from_rects(px.layers.iter().flat_map(|r| r.rects().iter().copied()));
@@ -41,7 +74,7 @@ impl<'a> PixelLayout<'a> {
             Some(b) => px.region(b)?.bbox(),
             None => all.bbox(),
         };
-        px.frame = frame.ok_or_else(|| format!("{cell}: the layout is empty"))?;
+        px.frame = frame.ok_or_else(|| "the layout is empty".to_string())?;
         Ok(px)
     }
 
@@ -74,11 +107,12 @@ impl<'a> PixelLayout<'a> {
 /// Write a device simulation's photodiode figures into the technology's cross-section
 /// photodiode (the pinned photodiode model of the circuit simulation): the pinning voltage
 /// `vpin` (V) and the storage capacitance `cap_ff` (fF per photodiode) as `cap_area`, per area
-/// of the technology's photodiode layer in `cell`'s layout (`pixels` photodiodes in its frame).
-/// Returns a summary of the change.
+/// of the technology's photodiode layer in `cell`'s layout (`pixels` photodiodes in its frame;
+/// the variant of `params` for a PCell Designer master). Returns a summary of the change.
 pub fn apply_device_photodiode(
     project: &mut Project,
     cell: &CellRef,
+    params: &[(String, f64)],
     boundary: Option<&str>,
     pixels: usize,
     vpin: f64,
@@ -95,7 +129,7 @@ pub fn apply_device_photodiode(
         .map(|d| d.layer.clone())
         .ok_or("the technology has no cross-section photodiode to set")?;
     let area = {
-        let px = PixelLayout::new(project, cell, boundary)?;
+        let px = PixelLayout::with_params(project, cell, params, boundary)?;
         px.region(&layer)?.area() as f64 / (project.tech.dbu_per_um as f64).powi(2) / pixels as f64
     };
     if area <= 0.0 {
@@ -143,12 +177,12 @@ mod tests {
     fn device_figures_into_the_technology() {
         let mut p = crate::examples::demo_project();
         let cell = CellRef::new("work", "bayer_fdti");
-        let msg = apply_device_photodiode(&mut p, &cell, Some("boundary"), 4, 1.6937, 0.741).unwrap();
+        let msg = apply_device_photodiode(&mut p, &cell, &[], Some("boundary"), 4, 1.6937, 0.741).unwrap();
         let pd = p.tech.cross_section.as_ref().unwrap().photodiode.as_ref().unwrap();
         assert_eq!(pd.pinning, Some(1.694));
         // 0.741 fF over each 1.05 x 1.05 µm photodiode.
         assert!((pd.cap_area.unwrap() - 0.741 / (1.05 * 1.05)).abs() < 1e-4, "{msg}");
         assert!((pd.storage_cap(1.05 * 1.05, 4.2) - 0.741e-15).abs() < 1e-19);
-        assert!(apply_device_photodiode(&mut p, &cell, Some("boundary"), 4, f64::NAN, 0.7).is_err());
+        assert!(apply_device_photodiode(&mut p, &cell, &[], Some("boundary"), 4, f64::NAN, 0.7).is_err());
     }
 }

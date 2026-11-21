@@ -753,7 +753,8 @@ mod tests {
         let sk = call(&mut s, "pcell_design_export_skill", json!({"cell": "nmos3"})).unwrap();
         assert!(sk["skill"].as_str().unwrap().contains("pcDefinePCell"));
         let info = call(&mut s, "project_info", json!({})).unwrap();
-        assert_eq!(info["pcell_designs"][0]["cell"], "work/nmos3", "{}", info["pcell_designs"]);
+        let designs: Vec<&str> = info["pcell_designs"].as_array().unwrap().iter().filter_map(|d| d["cell"].as_str()).collect();
+        assert!(designs.contains(&"work/nmos3") && designs.contains(&"work/bayer_fdti_pc"), "{designs:?}");
         assert!(
             call(&mut s, "pcell_design_check", json!({"cell": "nmos_drawn"}))
                 .unwrap_err()

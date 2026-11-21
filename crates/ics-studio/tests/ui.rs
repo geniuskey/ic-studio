@@ -580,9 +580,8 @@ fn pcell_designer() {
     h.get_by_label("Save PCell").click();
     h.run_steps(3);
     let p = h.state().project().unwrap();
-    let masters = p.template_masters();
-    assert_eq!(masters.len(), 1, "saved");
-    assert_eq!(masters[0].0, CellRef::new("work", "nmos_drawn_pc"));
+    let masters: Vec<CellRef> = p.template_masters().into_iter().map(|m| m.0).collect();
+    assert!(masters.contains(&CellRef::new("work", "nmos_drawn_pc")), "saved: {masters:?}");
     let variant = ics_core::pcell::PCell::Template { def: Box::new(t), values: vec![("nf".into(), 4.0)] };
     assert!(variant.generate(&p.tech).unwrap().shapes.len() > 20);
 }

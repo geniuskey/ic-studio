@@ -5,6 +5,8 @@
 # silicon. Shapes are read per pixel of the cell (`bayer = true`), seen from the front.
 #   ics pixel pixels/bayer_fdti.toml --project <demo project> --cra 15 --lux 100
 #   ics pixel pixels/bayer_fdti.toml --project <demo project> --transfer B
+# For other sizes read the PCell `bayer_fdti_pc` instead: cell = "bayer_fdti_pc" and
+# params = { pitch = 3.0, pd = 1.6, tx_l = 0.5 } under [layout].
 name = "bayer_fdti BSI FDTI"
 
 [layout]
@@ -77,7 +79,8 @@ dti = { depth = 3.0, width = 0.15, fill = "sio2" }
 grid = 0.1
 
 # Masks are layout layers or derived-layer expressions of the technology, per pixel of the cell.
-# Derived layers used below: `w` the photodiode squares (wide diffusion), `b` the diffusion
+# Derived layers used below: `w` the photodiode squares (diffusion off the gates, without a
+# contact, at least 0.5 um wide: any size of the `bayer_fdti_pc` PCell), `b` the diffusion
 # pieces holding them, `c` those without a contact, `g` gates, `t` the transfer gates (on a
 # photodiode), `e` / `u` the strip under each transfer gate's photodiode-side edge, where the
 # photodiode's n reaches under the gate. The pinning layer stops short of the gate.
@@ -115,7 +118,7 @@ type = "n"
 peak = 4e16
 depth = 0.25
 straggle = 0.15
-layout = "a = active not poly; w = active wide 1; b = a interact w; c = b not interact contact; g = poly and active; t = g interact c; e = c size 0.2; u = t and e; c or u"
+layout = "a = active not poly; n = a not interact contact; w = n wide 0.5; b = a interact w; c = b not interact contact; g = poly and active; t = g interact c; e = c size 0.2; u = t and e; c or u"
 photodiode = true
 
 [[device.doping]]
@@ -124,21 +127,21 @@ type = "p"
 peak = 3e17
 depth = 0.25
 straggle = 0.12
-layout = "a = active not poly; w = active wide 1; b = a interact w; c = b not interact contact; d = c size 0.3; boundary not d"
+layout = "a = active not poly; n = a not interact contact; w = n wide 0.5; b = a interact w; c = b not interact contact; d = c size 0.3; boundary not d"
 
 [[device.doping]]
 name = "pinning p+ (pulled back 0.12 um from the transfer gate)"
 type = "p"
 peak = 5e18
 straggle = 0.03
-layout = "w = active wide 1; w size -0.12"
+layout = "a = active not poly; n = a not interact contact; w = n wide 0.5; w size -0.12"
 
 [[device.doping]]
 name = "n+ diffusions (floating diffusions, sources and drains)"
 type = "n"
 peak = 1e20
 straggle = 0.04
-layout = "a = active not poly; w = active wide 1; a not interact w"
+layout = "a = active not poly; n = a not interact contact; w = n wide 0.5; a not interact w"
 contact = 2.8
 
 [[device.doping]]
@@ -147,10 +150,10 @@ type = "p"
 peak = 2e17
 depth = 0.15
 straggle = 0.08
-layout = "a = active not poly; w = active wide 1; b = a interact w; c = b not interact contact; g = poly and active; t = g interact c; e = c size 0.2; t not e"
+layout = "a = active not poly; n = a not interact contact; w = n wide 0.5; b = a interact w; c = b not interact contact; g = poly and active; t = g interact c; e = c size 0.2; t not e"
 
 [[device.gate]]
 name = "transfer gates"
-layout = "a = active not poly; w = active wide 1; b = a interact w; g = poly and active; g interact b"
+layout = "a = active not poly; n = a not interact contact; w = n wide 0.5; b = a interact w; g = poly and active; g interact b"
 off = -1.0
 on = 2.8

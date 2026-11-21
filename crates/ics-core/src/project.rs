@@ -634,9 +634,11 @@ impl Project {
         for c in self.libraries.iter_mut().flat_map(|l| &mut l.cells) {
             if let Some(PCell::Template { def, .. }) = &mut c.pcell {
                 def.remap_layers(&|l| map.get(l).copied().flatten().unwrap_or(l));
-                if scale.is_some() {
-                    warnings
-                        .push(format!("PCell Designer cell {}: its drawing was not rescaled to the new database unit", def.name));
+                if let Some(f) = scale {
+                    // The drawing and the operations' positions are in dbu; the parameters and
+                    // expressions are in µm and stay.
+                    scale_layout(&mut def.source, f);
+                    def.scale_positions(f);
                 }
             }
         }
@@ -1476,6 +1478,13 @@ mod tests {
         let warnings = p.set_tech(fine).unwrap();
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert_eq!(rect(&p), IRect::new(b0.x0 * 2, b0.y0 * 2, b0.x1 * 2, b0.y1 * 2));
+        // A PCell Designer master is rescaled with the rest: its parameters stay in µm.
+        let Some(PCell::Template { def, .. }) = &p.cell(&CellRef::new("work", "bayer_fdti_pc")).unwrap().pcell else {
+            panic!("designer master")
+        };
+        let lay = def.generate(&p.tech, &[("pitch".into(), 3.0)]).unwrap();
+        let b = p.tech.layer_index("boundary").unwrap();
+        assert_eq!(lay.shapes.iter().find(|s| s.layer == b).unwrap().geom.bbox().width(), 12000);
         assert!(p.set_tech(Tech { dbu_per_um: 0, ..Tech::generic() }).is_err());
     }
 

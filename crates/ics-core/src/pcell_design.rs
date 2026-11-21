@@ -570,6 +570,30 @@ impl Template {
         }
     }
 
+    /// Scale the operations' positions (dbu) by `f`, for a new database unit; the source is
+    /// scaled with the other layouts.
+    pub fn scale_positions(&mut self, f: f64) {
+        let s = |v: &mut i64| *v = (*v as f64 * f).round() as i64;
+        let r = |q: &mut IRect| {
+            for v in [&mut q.x0, &mut q.y0, &mut q.x1, &mut q.y1] {
+                s(v);
+            }
+        };
+        for op in &mut self.ops {
+            match op {
+                Op::Stretch { at, .. } => s(at),
+                Op::Repeat { region, at, .. } => {
+                    r(region);
+                    if let Some(a) = at {
+                        s(a);
+                    }
+                }
+                Op::Condition { region, .. } => r(region),
+                Op::ContactFill { rect, .. } => r(rect),
+            }
+        }
+    }
+
     pub fn param(&self, name: &str) -> Option<&Param> {
         self.params.iter().find(|p| p.name == name)
     }

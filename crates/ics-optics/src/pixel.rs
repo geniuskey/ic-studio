@@ -107,6 +107,17 @@ pub struct LayoutSource {
     /// is two pitches wide and shapes keep their place in the cell.
     #[serde(default)]
     pub bayer: bool,
+    /// Parameter values (µm) when `cell` is a PCell Designer master (e.g. `bayer_fdti_pc`):
+    /// the variant is generated for the run, the others take their defaults.
+    #[serde(default)]
+    pub params: std::collections::BTreeMap<String, f64>,
+}
+
+impl LayoutSource {
+    /// `params` as a list.
+    pub fn param_list(&self) -> Vec<(String, f64)> {
+        self.params.iter().map(|(k, v)| (k.clone(), *v)).collect()
+    }
 }
 
 /// The rectangles (µm) of a layout layer or expression.

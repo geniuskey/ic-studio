@@ -271,6 +271,29 @@ regenerates every placed variant with its own values.
 SKILL `pcDefinePCell` for Cadence Virtuoso that generates the same layout. The drawing is
 stored as data, and a small engine in the PCell body runs the operations.
 
+### Example: the Bayer FDTI pixel
+
+The demo project's `work/bayer_fdti_pc` is the 2 × 2 Bayer FDTI pixel `bayer_fdti` as a
+designer master, with three length parameters:
+
+| Parameter | Default | Range | Changes |
+|---|---|---|---|
+| `pitch` | 2.4 µm | 2.4 - 4.0 µm | the pixel pitch; raised to max(pitch, pd + 1.35, pd + tx_l + 0.9) when the photodiode and the transfer gate need more |
+| `pd` | 1.05 µm | 1.05 - 2.4 µm | the photodiode's side; the transfer gate is as wide less 0.16 µm |
+| `tx_l` | 0.45 µm | 0.45 - 0.8 µm | the transfer gate's length |
+| `chamfer` | on | on / off | 45° corners (0.12 µm) on each photodiode's three free corners and the floating diffusion's two, against field crowding at the trench corners |
+
+Each parameter has a stretch line in every pixel, mirrored about the cell's centre lines, so
+the four pixels stay mirror images; the lines cross no contact and no diagonal edge (a line
+through one would bend it), which is why the corners are cut 0.12 µm: the photodiode's
+stretch line runs 0.13 µm inside its edge. Each chamfered diffusion is one polygon plus a
+corner triangle per cut, kept by a condition when `chamfer` is off, so the rectangles come back
+exactly (`chamfer` off is the drawn `bayer_fdti`). The drawing is at its minimum
+spacings, so the parameters only grow from the drawn values. Every corner is DRC clean.
+Open it in the PCell Designer to add parameters of your own. A pixel stack reads a variant
+without placing it: `[layout] cell = "bayer_fdti_pc"` with
+`params = { pitch = 3.0, pd = 1.6 }` (see [Pixel optics](pixel-optics.md)).
+
 ### With the Design Copilot or an MCP agent
 
 The [Design Copilot](tools.md) and any [MCP](mcp.md) client have the same workflow as

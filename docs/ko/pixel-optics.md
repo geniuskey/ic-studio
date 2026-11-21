@@ -132,6 +132,21 @@ deep trench isolation), `grid`(복셀 크기, 기본 피치/16 정도)입니다.
 `[layout] bayer = true`. 이때 프레임은 셀이고 피치는 그 절반이며, 도형은 셀 안의 위치를 그대로 유지합니다
 (`pixels/bayer_fdti.toml`은 데모 셀 `bayer_fdti`를 읽습니다).
 
+셀이 PCell Designer 마스터이면 `params`로 변형을 고르며, 실행할 때 생성됩니다:
+
+```toml
+[layout]
+cell = "bayer_fdti_pc"            # 데모 bayer_fdti의 PCell (PCell 문서 참고)
+boundary = "boundary"
+bayer = true
+params = { pitch = 3.0, pd = 1.6 } # µm; tx_l은 기본값
+```
+
+대각선 도형(PCell의 45° 모서리)은 10 nm 띠의 계단으로 읽습니다. `--apply`는 그 변형으로 회로의 포토다이오드 크기를 정합니다. 소자 모델은 스택의 도핑을 그대로 쓰므로 더 큰
+포토다이오드에는 따로 도핑이 필요합니다: 피치 3.0, pd 1.6에서 같은 도핑이면 Vpin 2.43 V, full well 27.6k e-이고,
+표면 n을 2.5e16 cm⁻³로 낮추면 Vpin 1.63 V, 19.6k e-이지만 20 ns 전송 뒤 전하의 2 %가 남습니다(전자가 더 넓은
+포토다이오드를 건너야 함). 이는 전송 게이트 쪽으로 도핑 경사를 주어 풀어야 합니다.
+
 ## 소자 모델
 
 `[device]` 섹션이 있으면 2 × 2 셀의 복셀 격자에서 실리콘을 반도체 소자로 풉니다(`ics_optics::device`).

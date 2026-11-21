@@ -2230,7 +2230,15 @@ impl IcStudio {
             self.warn(format!("no cell '{}'", src.cell));
             return;
         };
-        match ics_core::pixel_layout::apply_device_photodiode(p, &cell, src.boundary.as_deref(), pixels, vpin, cap) {
+        match ics_core::pixel_layout::apply_device_photodiode(
+            p,
+            &cell,
+            &src.param_list(),
+            src.boundary.as_deref(),
+            pixels,
+            vpin,
+            cap,
+        ) {
             Ok(msg) => {
                 self.mark_dirty();
                 self.info(msg);

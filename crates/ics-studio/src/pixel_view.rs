@@ -135,7 +135,7 @@ impl PixelOptics {
                     p.all_cells().find(|(_, c)| c.name == src.cell).map(|(r, _)| r).ok_or(format!("no cell '{}'", src.cell))?
                 }
             };
-            let px = ics_core::pixel_layout::PixelLayout::new(p, &r, src.boundary.as_deref())?;
+            let px = ics_core::pixel_layout::PixelLayout::with_params(p, &r, &src.param_list(), src.boundary.as_deref())?;
             st.fill_from_layout(px.size_um(), |e| px.rects_um(e))?;
         }
         Ok(st)
