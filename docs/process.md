@@ -18,8 +18,14 @@ a [pixel](pixel-optics.md) or a parasitic model.
   the material stack at that point. With dopants in the flow, **Doping** colours silicon and
   poly by net doping (red n-type, blue p-type, darker with the concentration, junctions as
   dark lines). The plot beside the section is the dopant profile at the probe, and the lines
-  below it list the doped layers and the junction depths. **Edit flow** edits the flow,
-  **Load...** reads a flow file.
+  below it list the doped layers and the junction depths. **Load...** reads a flow file.
+  **Edit flow** opens the step editor: the flow settings, the list of steps (click one to see
+  the wafer after it), **Add step** / **Duplicate** / **Up** / **Down** / **Delete**, and a
+  form for the selected step (mask layers from **Pick**). Edits rewrite the flow file and
+  keep its comments; **TOML** edits the text directly. The flow runs in the background with
+  a progress bar (**Cancel** keeps the last section). A checkpoint is kept after every step,
+  so moving **After step** back is instant and an edit of a step runs again from that step
+  only. Changing the cut, the layout or the flow settings starts from the substrate.
 - CLI: `ics xsection <project> <cell> [--flow FILE] [--cut x0,y0,x1,y1] [--steps N] [--at X]... [--svg FILE] [--profile CSV] [--json]`
 - MCP: `process_cross_section`
 

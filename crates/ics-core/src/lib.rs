@@ -42,6 +42,7 @@ pub mod polybool;
 pub mod predict;
 pub mod process;
 pub mod process_data;
+pub mod process_edit;
 pub mod project;
 pub mod region;
 pub mod reshape;

@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize};
 use crate::dopants::Species;
 use crate::pixel_layout::PixelLayout;
 use crate::project::{CellRef, Project};
+use std::sync::Arc;
 
 /// A process flow.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -748,51 +749,202 @@ pub fn emulate_with(
     mask: &mut MaskFn,
     progress: &mut ProgressFn,
 ) -> Result<Section, String> {
+    let mut e = Emulator::new(flow, length)?;
+    e.run(steps, mask, progress, &mut |_| {})?;
+    Ok(e.into_section())
+}
+
+/// The state of an emulation after some steps of its flow, to resume from (see
+/// [`Emulator::resume`]). Dopant arrays are shared with the checkpoint it was taken after when
+/// unchanged, so one per step of a flow stays small.
+#[derive(Debug, Clone)]
+pub struct Checkpoint {
+    /// Steps run.
+    pub done: usize,
+    materials: Vec<String>,
+    semi: Vec<bool>,
+    cells: Arc<Vec<u8>>,
+    dopants: Vec<(Species, Arc<Vec<f64>>)>,
+    semi_names: Vec<String>,
+    nx: usize,
+    nz: usize,
+    h: f64,
+    z0: f64,
+}
+
+impl Checkpoint {
+    /// The section at this point.
+    pub fn section(&self) -> Section {
+        Section {
+            materials: self.materials.clone(),
+            nx: self.nx,
+            nz: self.nz,
+            h: self.h,
+            z0: self.z0,
+            cells: self.cells.as_ref().clone(),
+            semi: self.semi.clone(),
+            dopants: self.dopants.iter().map(|(sp, c)| (*sp, c.as_ref().clone())).collect(),
+        }
+    }
+
+    /// Heap bytes of the arrays not shared with `prev`.
+    pub fn bytes_over(&self, prev: Option<&Checkpoint>) -> usize {
+        let shared = |p: &Arc<Vec<f64>>| prev.is_some_and(|q| q.dopants.iter().any(|(_, c)| Arc::ptr_eq(c, p)));
+        let cells = if prev.is_some_and(|q| Arc::ptr_eq(&q.cells, &self.cells)) { 0 } else { self.cells.len() };
+        cells + self.dopants.iter().filter(|(_, c)| !shared(c)).map(|(_, c)| c.len() * 8).sum::<usize>()
+    }
+}
+
+/// Columns and rows of the grid of `flow` on a cut of `length` µm.
+fn grid(flow: &ProcessFlow, length: f64) -> (usize, usize) {
     let h = flow.resolution;
     let nx = ((length / h).round() as usize).max(1);
-    let z0 = -flow.substrate_depth;
     let nz = (((flow.substrate_depth + flow.deposited()) / h).ceil() as usize + 4).max(2);
-    if nx.saturating_mul(nz) > 40_000_000 {
-        return Err(format!("{nx} x {nz} cells: use a coarser resolution or a shorter cut"));
+    (nx, nz)
+}
+
+/// A process flow run step by step on a cut.
+pub struct Emulator<'f> {
+    flow: &'f ProcessFlow,
+    s: Section,
+    semi_names: Vec<String>,
+    xs: Vec<f64>,
+    done: usize,
+}
+
+impl<'f> Emulator<'f> {
+    /// The substrate of `flow` on a cut of `length` µm, no step run.
+    pub fn new(flow: &'f ProcessFlow, length: f64) -> Result<Emulator<'f>, String> {
+        let (nx, nz) = grid(flow, length);
+        let (h, z0) = (flow.resolution, -flow.substrate_depth);
+        if nx.saturating_mul(nz) > 40_000_000 {
+            return Err(format!("{nx} x {nz} cells: use a coarser resolution or a shorter cut"));
+        }
+        let mut s = Section { materials: vec![], nx, nz, h, z0, cells: vec![0; nx * nz], semi: vec![], dopants: vec![] };
+        let sub = s.id(&flow.substrate);
+        let surface = (flow.substrate_depth / h).round() as usize; // rows of substrate
+        for iz in 0..surface.min(nz) {
+            s.cells[iz * nx..(iz + 1) * nx].fill(sub);
+        }
+        // Materials that hold dopants: the substrate, the flow's semiconductors and what
+        // implants make of them.
+        let mut semi_names: Vec<String> = flow.semiconductors.clone();
+        semi_names.push(flow.substrate.clone());
+        if let Some(d) = &flow.substrate_doping {
+            let sp = Species::parse(&d.species).ok_or_else(|| format!("unknown species '{}'", d.species))?;
+            let c: Vec<f64> = s.cells.iter().map(|c| if *c == sub { d.concentration } else { 0.0 }).collect();
+            s.dopants.push((sp, c));
+        }
+        s.refresh_semi(&semi_names);
+        let xs: Vec<f64> = (0..nx).map(|ix| (ix as f64 + 0.5) * h).collect();
+        Ok(Emulator { flow, s, semi_names, xs, done: 0 })
     }
-    let mut s = Section { materials: vec![], nx, nz, h, z0, cells: vec![0; nx * nz], semi: vec![], dopants: vec![] };
-    let sub = s.id(&flow.substrate);
-    let surface = (flow.substrate_depth / h).round() as usize; // rows of substrate
-    for iz in 0..surface.min(nz) {
-        s.cells[iz * nx..(iz + 1) * nx].fill(sub);
+
+    /// Continue from `cp`, taken on the same cut with a flow whose first `cp.done` steps (and
+    /// everything but the steps) are those of `flow`.
+    /// The grid grows or shrinks at the top (air) to the height `flow` needs.
+    pub fn resume(flow: &'f ProcessFlow, cp: &Checkpoint) -> Emulator<'f> {
+        let mut s = cp.section();
+        let (_, want) = grid(flow, s.nx as f64 * s.h);
+        let used = (0..s.nz).rev().find(|&iz| s.cells[iz * s.nx..(iz + 1) * s.nx].iter().any(|c| *c != 0)).map_or(0, |iz| iz + 1);
+        let nz = want.max(used);
+        if nz != s.nz {
+            let n = s.nx * nz;
+            s.cells.resize(n, 0);
+            for (_, c) in &mut s.dopants {
+                c.resize(n, 0.0);
+            }
+            s.nz = nz;
+        }
+        let xs: Vec<f64> = (0..s.nx).map(|ix| (ix as f64 + 0.5) * s.h).collect();
+        Emulator { flow, s, semi_names: cp.semi_names.clone(), xs, done: cp.done.min(flow.steps.len()) }
     }
-    // Materials that hold dopants: the substrate, the flow's semiconductors and what implants
-    // make of them.
-    let mut semi_names: Vec<String> = flow.semiconductors.clone();
-    semi_names.push(flow.substrate.clone());
-    if let Some(d) = &flow.substrate_doping {
-        let sp = Species::parse(&d.species).ok_or_else(|| format!("unknown species '{}'", d.species))?;
-        let c: Vec<f64> = s.cells.iter().map(|c| if *c == sub { d.concentration } else { 0.0 }).collect();
-        s.dopants.push((sp, c));
+
+    /// Steps run.
+    pub fn done(&self) -> usize {
+        self.done
     }
-    let xs: Vec<f64> = (0..nx).map(|ix| (ix as f64 + 0.5) * h).collect();
-    let open = |m: &Mask, mask: &mut MaskFn| -> Result<Vec<bool>, String> {
+
+    pub fn section(&self) -> &Section {
+        &self.s
+    }
+
+    pub fn into_section(self) -> Section {
+        self.s
+    }
+
+    /// The state now, sharing the arrays that did not change since `prev`.
+    pub fn checkpoint(&self, prev: Option<&Checkpoint>) -> Checkpoint {
+        let cells = match prev {
+            Some(p) if *p.cells == self.s.cells => p.cells.clone(),
+            _ => Arc::new(self.s.cells.clone()),
+        };
+        let dopants = self
+            .s
+            .dopants
+            .iter()
+            .map(|(sp, c)| {
+                let old = prev.and_then(|p| p.dopants.iter().find(|(q, d)| q == sp && **d == *c));
+                (*sp, old.map_or_else(|| Arc::new(c.clone()), |(_, d)| d.clone()))
+            })
+            .collect();
+        Checkpoint {
+            done: self.done,
+            materials: self.s.materials.clone(),
+            semi: self.s.semi.clone(),
+            cells,
+            dopants,
+            semi_names: self.semi_names.clone(),
+            nx: self.s.nx,
+            nz: self.s.nz,
+            h: self.s.h,
+            z0: self.s.z0,
+        }
+    }
+
+    /// Run up to step `steps` (the whole flow with `None`), telling `progress` before each step
+    /// and `checkpoint` after each.
+    pub fn run(
+        &mut self,
+        steps: Option<usize>,
+        mask: &mut MaskFn,
+        progress: &mut ProgressFn,
+        checkpoint: &mut dyn FnMut(&Emulator),
+    ) -> Result<(), String> {
+        let n = steps.unwrap_or(self.flow.steps.len()).min(self.flow.steps.len());
+        while self.done < n {
+            if !progress(self.done, n) {
+                return Err(CANCELLED.into());
+            }
+            self.step(mask)?;
+            checkpoint(self);
+        }
+        progress(n, n);
+        Ok(())
+    }
+
+    fn open(&self, m: &Mask, mask: &mut MaskFn) -> Result<Vec<bool>, String> {
         match (&m.mask, &m.keep) {
-            (Some(e), _) => mask(e, &xs),
-            (None, Some(e)) => Ok(mask(e, &xs)?.into_iter().map(|b| !b).collect()),
-            (None, None) => Ok(vec![true; xs.len()]),
+            (Some(e), _) => mask(e, &self.xs),
+            (None, Some(e)) => Ok(mask(e, &self.xs)?.into_iter().map(|b| !b).collect()),
+            (None, None) => Ok(vec![true; self.xs.len()]),
         }
-    };
-    let n = steps.unwrap_or(flow.steps.len()).min(flow.steps.len());
-    s.refresh_semi(&semi_names);
-    for (k, step) in flow.steps[..n].iter().enumerate() {
-        if !progress(k, n) {
-            return Err(CANCELLED.into());
-        }
+    }
+
+    /// Run the next step.
+    pub fn step(&mut self, mask: &mut MaskFn) -> Result<(), String> {
+        let flow = self.flow;
+        let Some(step) = flow.steps.get(self.done) else { return Ok(()) };
+        let (nx, nz, h, z0) = (self.s.nx, self.s.nz, self.s.h, self.s.z0);
         match step {
             Step::Deposit { material, thickness, conformal, .. } => {
-                let id = s.id(material);
+                let id = self.s.id(material);
                 let t = thickness / h;
                 if *conformal {
-                    let seed: Vec<bool> = s.cells.iter().map(|c| *c != 0).collect();
+                    let seed: Vec<bool> = self.s.cells.iter().map(|c| *c != 0).collect();
                     let d = edt(&seed, nx, nz);
                     let r2 = (t + 1e-9) * (t + 1e-9);
-                    for (c, d) in s.cells.iter_mut().zip(&d) {
+                    for (c, d) in self.s.cells.iter_mut().zip(&d) {
                         if *c == 0 && *d <= r2 {
                             *c = id;
                         }
@@ -800,39 +952,39 @@ pub fn emulate_with(
                 } else {
                     let rows = t.round().max(1.0) as usize;
                     for ix in 0..nx {
-                        let start = s.top(ix).map_or(0, |iz| iz + 1);
+                        let start = self.s.top(ix).map_or(0, |iz| iz + 1);
                         for iz in start..(start + rows).min(nz) {
-                            s.cells[iz * nx + ix] = id;
+                            self.s.cells[iz * nx + ix] = id;
                         }
                     }
                 }
             }
             Step::Etch { mask: m, materials, depth, isotropic, .. } => {
-                let cols = open(m, mask)?;
-                let ids = s.ids(materials);
+                let cols = self.open(m, mask)?;
+                let ids = self.s.ids(materials);
                 if *isotropic {
                     let d = depth.unwrap_or(0.0) / h;
                     // Seed: the air above the surface of the open columns.
                     let mut seed = vec![false; nx * nz];
                     for ix in (0..nx).filter(|&ix| cols[ix]) {
-                        let start = s.top(ix).map_or(0, |iz| iz + 1);
+                        let start = self.s.top(ix).map_or(0, |iz| iz + 1);
                         for iz in start..nz {
                             seed[iz * nx + ix] = true;
                         }
                     }
                     let dist = edt(&seed, nx, nz);
                     let r2 = (d + 1e-9) * (d + 1e-9);
-                    for (c, dd) in s.cells.iter_mut().zip(&dist) {
+                    for (c, dd) in self.s.cells.iter_mut().zip(&dist) {
                         if *dd <= r2 && ids.contains(c) {
                             *c = 0;
                         }
                     }
                 } else {
                     for ix in (0..nx).filter(|&ix| cols[ix]) {
-                        let Some(top) = s.top(ix) else { continue };
+                        let Some(top) = self.s.top(ix) else { continue };
                         let floor = depth.map_or(0, |d| (top as f64 + 1.0 - d / h).round().max(0.0) as usize);
                         for iz in (floor..=top).rev() {
-                            let c = &mut s.cells[iz * nx + ix];
+                            let c = &mut self.s.cells[iz * nx + ix];
                             if *c == 0 {
                                 continue;
                             }
@@ -845,14 +997,14 @@ pub fn emulate_with(
                 }
             }
             Step::Implant { mask: m, material, into, depth, species, dose, energy, .. } => {
-                let cols = open(m, mask)?;
+                let cols = self.open(m, mask)?;
                 if let (Some(sp), Some(dose), Some(energy)) = (species, dose, energy) {
                     let species = Species::parse(sp).ok_or_else(|| format!("unknown species '{sp}'"))?;
                     let (rp, drp) = crate::dopants::implant_range(sp, *energy).ok_or("implant energy")?;
                     let peak = dose / ((2.0 * std::f64::consts::PI).sqrt() * drp * 1e-4);
                     let mut add = vec![0.0; nx * nz];
                     for ix in (0..nx).filter(|&ix| cols[ix]) {
-                        let Some(top) = s.top(ix) else { continue };
+                        let Some(top) = self.s.top(ix) else { continue };
                         for iz in 0..=top {
                             let d = (top - iz) as f64 * h + 0.5 * h;
                             let u = (d - rp) / drp;
@@ -862,28 +1014,28 @@ pub fn emulate_with(
                         }
                     }
                     crate::dopants::blur_rows(&mut add, nx, 0.8 * drp / h);
-                    let k = match s.dopants.iter().position(|(x, _)| *x == species) {
+                    let k = match self.s.dopants.iter().position(|(x, _)| *x == species) {
                         Some(k) => k,
                         None => {
-                            s.dopants.push((species, vec![0.0; nx * nz]));
-                            s.dopants.len() - 1
+                            self.s.dopants.push((species, vec![0.0; nx * nz]));
+                            self.s.dopants.len() - 1
                         }
                     };
-                    for (c, a) in s.dopants[k].1.iter_mut().zip(&add) {
+                    for (c, a) in self.s.dopants[k].1.iter_mut().zip(&add) {
                         *c += a;
                     }
                 }
                 if let (Some(material), Some(depth)) = (material, depth) {
-                    let ids = s.ids(into);
-                    if into.iter().any(|i| semi_names.contains(i)) && !semi_names.contains(material) {
-                        semi_names.push(material.clone());
+                    let ids = self.s.ids(into);
+                    if into.iter().any(|i| self.semi_names.contains(i)) && !self.semi_names.contains(material) {
+                        self.semi_names.push(material.clone());
                     }
-                    let id = s.id(material);
+                    let id = self.s.id(material);
                     let rows = (depth / h).round() as usize;
                     for ix in (0..nx).filter(|&ix| cols[ix]) {
-                        let Some(top) = s.top(ix) else { continue };
+                        let Some(top) = self.s.top(ix) else { continue };
                         for iz in (top + 1).saturating_sub(rows)..=top {
-                            let c = &mut s.cells[iz * nx + ix];
+                            let c = &mut self.s.cells[iz * nx + ix];
                             if ids.contains(c) {
                                 *c = id;
                             }
@@ -892,21 +1044,21 @@ pub fn emulate_with(
                 }
             }
             Step::Anneal { temperature, time, .. } => {
-                s.refresh_semi(&semi_names);
-                s.anneal(*temperature, *time);
+                self.s.refresh_semi(&self.semi_names);
+                self.s.anneal(*temperature, *time);
             }
             Step::Oxidize { temperature, time, wet, material, .. } => {
-                s.refresh_semi(&semi_names);
-                let ox = s.id(material);
-                let oxides: Vec<u8> = s.ids(&[material.clone(), "sio2".into(), "gox".into()]);
+                self.s.refresh_semi(&self.semi_names);
+                let ox = self.s.id(material);
+                let oxides: Vec<u8> = self.s.ids(&[material.clone(), "sio2".into(), "gox".into()]);
                 for ix in 0..nx {
-                    let Some(top) = s.top(ix) else { continue };
+                    let Some(top) = self.s.top(ix) else { continue };
                     // Down through the oxide to the first other material.
                     let mut iz = top;
-                    while iz > 0 && oxides.contains(&s.cells[iz * nx + ix]) {
+                    while iz > 0 && oxides.contains(&self.s.cells[iz * nx + ix]) {
                         iz -= 1;
                     }
-                    if !s.is_semi(ix, iz) {
+                    if !self.s.is_semi(ix, iz) {
                         continue;
                     }
                     let xi = (top - iz) as f64 * h;
@@ -922,55 +1074,53 @@ pub fn emulate_with(
                         return Err("the oxide outgrows the grid".into());
                     }
                     for k in 0..consumed {
-                        if iz < k || !s.is_semi(ix, iz - k) {
+                        if iz < k || !self.s.is_semi(ix, iz - k) {
                             break;
                         }
-                        s.cells[(iz - k) * nx + ix] = ox;
+                        self.s.cells[(iz - k) * nx + ix] = ox;
                     }
                     for r in (iz + 1..=top).rev() {
-                        s.cells[(r + grown) * nx + ix] = s.cells[r * nx + ix];
+                        self.s.cells[(r + grown) * nx + ix] = self.s.cells[r * nx + ix];
                     }
                     for r in iz + 1..=iz + grown {
-                        s.cells[r * nx + ix] = ox;
+                        self.s.cells[r * nx + ix] = ox;
                     }
                 }
-                s.refresh_semi(&semi_names);
-                s.clear_outside();
-                s.anneal(*temperature, *time);
+                self.s.refresh_semi(&self.semi_names);
+                self.s.clear_outside();
+                self.s.anneal(*temperature, *time);
             }
             Step::Planarize { height, stop, .. } => {
                 let cut_row = match (height, stop) {
                     (Some(z), _) => ((z - z0) / h).round().max(0.0) as usize,
                     (None, Some(m)) => {
-                        let ids = s.ids(std::slice::from_ref(m));
-                        let top = (0..nz).rev().find(|&iz| (0..nx).any(|ix| ids.contains(&s.cells[iz * nx + ix])));
-                        match top {
-                            Some(t) => t + 1,
-                            None => continue,
-                        }
+                        let ids = self.s.ids(std::slice::from_ref(m));
+                        let top = (0..nz).rev().find(|&iz| (0..nx).any(|ix| ids.contains(&self.s.cells[iz * nx + ix])));
+                        // Nothing of `stop`: nothing to remove.
+                        top.map_or(nz, |t| t + 1)
                     }
-                    _ => continue,
+                    _ => nz,
                 };
-                for c in s.cells.iter_mut().skip(cut_row * nx) {
+                for c in self.s.cells.iter_mut().skip(cut_row * nx) {
                     *c = 0;
                 }
             }
             Step::Strip { material, .. } => {
-                let ids = s.ids(std::slice::from_ref(material));
-                for c in s.cells.iter_mut() {
+                let ids = self.s.ids(std::slice::from_ref(material));
+                for c in self.s.cells.iter_mut() {
                     if ids.contains(c) {
                         *c = 0;
                     }
                 }
             }
         }
-        s.refresh_semi(&semi_names);
+        self.s.refresh_semi(&self.semi_names);
         if !matches!(step, Step::Anneal { .. }) {
-            s.clear_outside();
+            self.s.clear_outside();
         }
+        self.done += 1;
+        Ok(())
     }
-    progress(n, n);
-    Ok(s)
 }
 
 /// Emulate `flow` on the layout of `cell` along `cut` (µm, layout coordinates).
@@ -993,22 +1143,30 @@ pub fn emulate_cell_with(
     steps: Option<usize>,
     progress: &mut ProgressFn,
 ) -> Result<Section, String> {
+    let mut mask = cell_masks(project, cell, cut)?;
+    emulate_with(flow, cut.length(), steps, &mut mask, progress)
+}
+
+/// The masks of `cell`'s layout along `cut` (µm, layout coordinates), for [`Emulator`].
+pub fn cell_masks<'a>(project: &'a Project, cell: &CellRef, cut: &Cut) -> Result<Box<MaskFn<'a>>, String> {
     let px = PixelLayout::new(project, cell, None)?;
     let u = project.tech.dbu_per_um as f64;
     let (fx, fy) = (px.frame.x0 as f64 / u, px.frame.y0 as f64 / u);
+    let cut = *cut;
     let len = cut.length();
     let (dx, dy) = ((cut.x1 - cut.x0) / len, (cut.y1 - cut.y0) / len);
     let mut cache: Vec<(String, Vec<[f64; 4]>)> = vec![];
-    let mut mask = |expr: &str, xs: &[f64]| -> Result<Vec<bool>, String> {
-        let rects = match cache.iter().find(|(e, _)| e == expr) {
-            Some((_, r)) => r.clone(),
+    Ok(Box::new(move |expr: &str, xs: &[f64]| -> Result<Vec<bool>, String> {
+        let k = match cache.iter().position(|(e, _)| e == expr) {
+            Some(k) => k,
             None => {
                 let r: Vec<[f64; 4]> =
                     px.rects_um(expr)?.into_iter().map(|r| [r[0] + fx, r[1] + fy, r[2] + fx, r[3] + fy]).collect();
-                cache.push((expr.to_string(), r.clone()));
-                r
+                cache.push((expr.to_string(), r));
+                cache.len() - 1
             }
         };
+        let rects = &cache[k].1;
         Ok(xs
             .iter()
             .map(|t| {
@@ -1016,8 +1174,7 @@ pub fn emulate_cell_with(
                 rects.iter().any(|r| x >= r[0] && x < r[2] && y >= r[1] && y < r[3])
             })
             .collect())
-    };
-    emulate_with(flow, len, steps, &mut mask, progress)
+    }))
 }
 
 /// A horizontal cut across a cell's layout through the middle of its largest diffusion
@@ -1087,6 +1244,56 @@ thickness = 0.05
         assert_eq!(seen, [(0, 2), (1, 2), (2, 2)]);
         let r = emulate_with(&f, 1.0, None, &mut masks(&[]), &mut |k, _| k < 1);
         assert_eq!(r.unwrap_err(), CANCELLED);
+    }
+
+    /// Resuming from any step's checkpoint gives the section of a run from the start, and
+    /// checkpoints share the arrays a step left alone.
+    #[test]
+    fn resume_from_checkpoints() {
+        let f = ProcessFlow::from_toml(GENERIC180).unwrap();
+        let mut m = masks(&[
+            ("active", &[(0.2, 1.4)]),
+            ("nwell", &[(0.0, 0.8)]),
+            ("poly", &[(0.6, 0.8)]),
+            ("nplus", &[(0.8, 1.6)]),
+            ("pplus", &[(0.0, 0.8)]),
+            ("contact", &[(0.3, 0.4)]),
+            ("metal1", &[(0.2, 0.5)]),
+            ("via1", &[(0.3, 0.4)]),
+            ("metal2", &[(0.2, 0.5)]),
+            ("via2", &[(0.3, 0.4)]),
+            ("metal3", &[(0.2, 0.5)]),
+        ]);
+        let mut cps: Vec<Checkpoint> = vec![];
+        let mut e = Emulator::new(&f, 1.6).unwrap();
+        cps.push(e.checkpoint(None));
+        e.run(None, &mut m, &mut |_, _| true, &mut |e| {
+            let cp = e.checkpoint(cps.last());
+            cps.push(cp);
+        })
+        .unwrap();
+        let full = e.into_section();
+        assert_eq!(cps.len(), f.steps.len() + 1);
+        for k in [1, f.steps.len() / 2, f.steps.len() - 1] {
+            let mut r = Emulator::resume(&f, &cps[k]);
+            assert_eq!(r.done(), k);
+            r.run(None, &mut m, &mut |_, _| true, &mut |_| {}).unwrap();
+            assert!(r.section() == &full, "resumed after step {k}");
+        }
+        assert!(cps.last().unwrap().section() == full);
+        // A thicker last deposit needs a taller grid: resuming before it matches a fresh run.
+        let mut g = f.clone();
+        let last_dep = g.steps.iter().rposition(|s| matches!(s, Step::Deposit { .. })).unwrap();
+        if let Step::Deposit { thickness, .. } = &mut g.steps[last_dep] {
+            *thickness += 0.5;
+        }
+        let fresh = emulate(&g, 1.6, None, &mut m).unwrap();
+        let mut r = Emulator::resume(&g, &cps[last_dep]);
+        r.run(None, &mut m, &mut |_, _| true, &mut |_| {}).unwrap();
+        assert!(fresh.nz > full.nz && r.section() == &fresh);
+        // The metal steps leave the dopants alone: their checkpoints add only the cells.
+        let last = cps.len() - 1;
+        assert_eq!(cps[last].bytes_over(Some(&cps[last - 1])), full.cells.len());
     }
 
     #[test]

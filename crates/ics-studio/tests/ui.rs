@@ -3002,14 +3002,43 @@ fn process_emulation() {
     h.run_steps(2);
     shot(&mut h, "39_process_emulation");
     let pe = h.state_mut().process_emulation();
+    let n = pe.flow.as_ref().unwrap().steps.len();
+    assert_eq!(pe.checkpoints(), (0..=n).collect::<Vec<_>>(), "a checkpoint after every step");
+    // Back to the gate etch: straight from its checkpoint, no run.
     let gate = pe.flow.as_ref().unwrap().steps.iter().position(|s| s.label().starts_with("gate etch")).unwrap();
-    pe.steps = gate + 1;
-    pe.set_text(pe.text.clone());
-    pe.steps = gate + 1;
+    pe.select(gate);
+    h.run_steps(2);
+    let pe = h.state_mut().process_emulation();
+    assert!(!pe.is_running());
+    assert_eq!(pe.resumed_from, Some(gate + 1));
+    let s = pe.section.clone().unwrap();
+    assert!(!s.materials.iter().any(|m| m == "al"), "{:?}", s.materials);
+    // Edit the gate etch in the step editor: the run starts from the step before it.
+    let mut etch = pe.flow.as_ref().unwrap().steps[gate].clone();
+    if let ics_core::process::Step::Etch { name, .. } = &mut etch {
+        *name = "gate etch (edited)".into();
+    }
+    pe.edit(|t| ics_core::process_edit::set_step(t, gate, &etch));
+    h.run_steps(2);
+    let pe = h.state_mut().process_emulation();
+    pe.wait();
+    assert_eq!(pe.resumed_from, Some(gate));
+    assert!(pe.text.contains("gate etch (edited)") && pe.text.contains("# Shallow trench isolation"));
+    // Insert a step after it from the editor.
+    let ann = ics_core::process_edit::new_step("anneal").unwrap();
+    pe.edit(|t| ics_core::process_edit::insert_step(t, gate + 1, &ann));
+    pe.select(gate + 1);
+    pe.show_flow = true;
+    h.run_steps(2);
+    let pe = h.state_mut().process_emulation();
+    pe.wait();
+    assert_eq!(pe.resumed_from, Some(gate + 1));
+    assert_eq!(pe.flow.as_ref().unwrap().steps.len(), n + 1);
+    pe.select(3);
     h.run_steps(3);
     h.state_mut().process_emulation().wait();
-    let s = h.state_mut().process_emulation().section.clone().unwrap();
-    assert!(!s.materials.iter().any(|m| m == "al"), "{:?}", s.materials);
+    h.run_steps(2);
+    shot(&mut h, "39b_process_flow_editor");
 }
 
 /// Process data: the example WAT data against the built-in spec, with the shifted lot caught.
