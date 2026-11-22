@@ -727,9 +727,27 @@ impl Section {
 /// The mask of a layer expression at the column centres `xs` (µm along the cut).
 pub type MaskFn<'a> = dyn FnMut(&str, &[f64]) -> Result<Vec<bool>, String> + 'a;
 
+/// Told before each step `(k, n)` (step `k` of the `n` run, from 0) and once more with `(n, n)`
+/// when the flow is done; returning `false` cancels the run with [`CANCELLED`].
+pub type ProgressFn<'a> = dyn FnMut(usize, usize) -> bool + 'a;
+
+/// The error of a run its progress callback cancelled.
+pub const CANCELLED: &str = "cancelled";
+
 /// Run the first `steps` steps of `flow` (all with `None`) on a cut of `length` µm, the mask of
 /// a layer expression given per column by `mask`.
 pub fn emulate(flow: &ProcessFlow, length: f64, steps: Option<usize>, mask: &mut MaskFn) -> Result<Section, String> {
+    emulate_with(flow, length, steps, mask, &mut |_, _| true)
+}
+
+/// [`emulate`], reporting each step to `progress`, which can cancel the run.
+pub fn emulate_with(
+    flow: &ProcessFlow,
+    length: f64,
+    steps: Option<usize>,
+    mask: &mut MaskFn,
+    progress: &mut ProgressFn,
+) -> Result<Section, String> {
     let h = flow.resolution;
     let nx = ((length / h).round() as usize).max(1);
     let z0 = -flow.substrate_depth;
@@ -762,7 +780,10 @@ pub fn emulate(flow: &ProcessFlow, length: f64, steps: Option<usize>, mask: &mut
     };
     let n = steps.unwrap_or(flow.steps.len()).min(flow.steps.len());
     s.refresh_semi(&semi_names);
-    for step in &flow.steps[..n] {
+    for (k, step) in flow.steps[..n].iter().enumerate() {
+        if !progress(k, n) {
+            return Err(CANCELLED.into());
+        }
         match step {
             Step::Deposit { material, thickness, conformal, .. } => {
                 let id = s.id(material);
@@ -948,6 +969,7 @@ pub fn emulate(flow: &ProcessFlow, length: f64, steps: Option<usize>, mask: &mut
             s.clear_outside();
         }
     }
+    progress(n, n);
     Ok(s)
 }
 
@@ -958,6 +980,18 @@ pub fn emulate_cell(
     flow: &ProcessFlow,
     cut: &Cut,
     steps: Option<usize>,
+) -> Result<Section, String> {
+    emulate_cell_with(project, cell, flow, cut, steps, &mut |_, _| true)
+}
+
+/// [`emulate_cell`], reporting each step to `progress`, which can cancel the run.
+pub fn emulate_cell_with(
+    project: &Project,
+    cell: &CellRef,
+    flow: &ProcessFlow,
+    cut: &Cut,
+    steps: Option<usize>,
+    progress: &mut ProgressFn,
 ) -> Result<Section, String> {
     let px = PixelLayout::new(project, cell, None)?;
     let u = project.tech.dbu_per_um as f64;
@@ -983,7 +1017,7 @@ pub fn emulate_cell(
             })
             .collect())
     };
-    emulate(flow, len, steps, &mut mask)
+    emulate_with(flow, len, steps, &mut mask, progress)
 }
 
 /// A horizontal cut across a cell's layout through the middle of its largest diffusion
@@ -1027,6 +1061,32 @@ mod tests {
 
     fn thickness(s: &Section, x: f64, m: &str) -> f64 {
         s.stack_at(x).iter().filter(|(n, _)| n == m).map(|(_, t)| t).sum()
+    }
+
+    /// The progress callback sees every step and the end, and can cancel the run.
+    #[test]
+    fn progress_and_cancel() {
+        let f = flow(
+            r#"
+[[step]]
+op = "deposit"
+material = "sio2"
+thickness = 0.02
+[[step]]
+op = "deposit"
+material = "poly"
+thickness = 0.05
+"#,
+        );
+        let mut seen = vec![];
+        emulate_with(&f, 1.0, None, &mut masks(&[]), &mut |k, n| {
+            seen.push((k, n));
+            true
+        })
+        .unwrap();
+        assert_eq!(seen, [(0, 2), (1, 2), (2, 2)]);
+        let r = emulate_with(&f, 1.0, None, &mut masks(&[]), &mut |k, _| k < 1);
+        assert_eq!(r.unwrap_err(), CANCELLED);
     }
 
     #[test]

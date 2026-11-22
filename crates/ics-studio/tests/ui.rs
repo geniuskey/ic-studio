@@ -2990,6 +2990,7 @@ fn process_emulation() {
     h.state_mut().command(Command::ProcessEmulation);
     h.run_steps(3);
     let pe = h.state_mut().process_emulation();
+    pe.wait();
     let s = pe.section.as_ref().unwrap_or_else(|| panic!("{:?}", pe.error));
     for m in ["si", "gox", "poly", "w", "al"] {
         assert!(s.materials.iter().any(|x| x == m), "{m}: {:?}", s.materials);
@@ -3006,6 +3007,7 @@ fn process_emulation() {
     pe.set_text(pe.text.clone());
     pe.steps = gate + 1;
     h.run_steps(3);
+    h.state_mut().process_emulation().wait();
     let s = h.state_mut().process_emulation().section.clone().unwrap();
     assert!(!s.materials.iter().any(|m| m == "al"), "{:?}", s.materials);
 }

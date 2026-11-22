@@ -3,11 +3,26 @@
 
 use eframe::egui::{self, Color32, ColorImage, RichText, TextureHandle, TextureOptions};
 use egui_plot::{Legend, Line, Plot, PlotImage, PlotPoint, PlotPoints, Points};
-use ics_core::process::{Cut, GENERIC180, ProcessFlow, Section, default_cut, emulate_cell};
+use ics_core::process::{CANCELLED, Cut, GENERIC180, ProcessFlow, Section, default_cut, emulate_cell_with};
 use ics_core::{CellRef, Project};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, TryRecvError};
+use std::time::Instant;
 
 pub enum ProcessAction {
     Load,
+}
+
+/// A flow running on a worker thread.
+struct Job {
+    rx: Receiver<Result<Section, String>>,
+    /// 0 while the layout is read, then 1 + the step running (`steps + 1` when done).
+    stage: Arc<AtomicUsize>,
+    cancel: Arc<AtomicBool>,
+    /// Steps run, and the label of each.
+    labels: Vec<String>,
+    started: Instant,
 }
 
 pub struct ProcessView {
@@ -28,6 +43,7 @@ pub struct ProcessView {
     probe: Option<f64>,
     /// Colour the semiconductors by net doping.
     pub show_doping: bool,
+    job: Option<Job>,
 }
 
 impl Default for ProcessView {
@@ -46,6 +62,7 @@ impl Default for ProcessView {
             texture: None,
             probe: None,
             show_doping: true,
+            job: None,
         }
     }
 }
@@ -63,32 +80,108 @@ impl ProcessView {
         self.open = true;
     }
 
-    /// Re-run the flow when the inputs changed.
-    pub fn update(&mut self, project: &Project) {
+    /// Re-run the flow on a worker thread when the inputs changed. A run still going is
+    /// cancelled first (it stops at its next step), so at most one runs at a time.
+    pub fn update(&mut self, ctx: &egui::Context, project: &Project) {
+        self.poll();
         if !self.dirty {
             return;
         }
+        if let Some(job) = &self.job {
+            job.cancel.store(true, Ordering::Relaxed);
+            return;
+        }
         self.dirty = false;
-        self.texture = None;
-        self.section = None;
         let Some(cell) = self.cell.clone() else { return };
         let flow = match ProcessFlow::from_toml(&self.text) {
             Ok(f) => f,
             Err(e) => {
                 self.error = Some(format!("process flow: {e}"));
                 self.flow = None;
+                self.section = None;
+                self.texture = None;
                 return;
             }
         };
         let steps = self.steps.min(flow.steps.len());
-        match emulate_cell(project, &cell, &flow, &self.cut, Some(steps)) {
+        let labels = flow.steps[..steps].iter().map(|s| s.label()).collect();
+        let stage = Arc::new(AtomicUsize::new(0));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (project, cut, run) = (project.clone(), self.cut, flow.clone());
+        let (st, cn, ctx) = (stage.clone(), cancel.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let r = emulate_cell_with(&project, &cell, &run, &cut, Some(steps), &mut |k, _| {
+                st.store(k + 1, Ordering::Relaxed);
+                ctx.request_repaint();
+                !cn.load(Ordering::Relaxed)
+            });
+            let _ = tx.send(r);
+            ctx.request_repaint();
+        });
+        self.flow = Some(flow);
+        self.job = Some(Job { rx, stage, cancel, labels, started: Instant::now() });
+    }
+
+    /// Take the result of the run when it is done.
+    fn poll(&mut self) {
+        let Some(job) = &self.job else { return };
+        let r = match job.rx.try_recv() {
+            Ok(r) => r,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => Err("the process emulation stopped".into()),
+        };
+        self.job = None;
+        self.finish(r);
+    }
+
+    fn finish(&mut self, r: Result<Section, String>) {
+        match r {
             Ok(s) => {
                 self.section = Some(s);
+                self.texture = None;
                 self.error = None;
             }
-            Err(e) => self.error = Some(e),
+            // Cancelled: keep the last section.
+            Err(e) if e == CANCELLED => {}
+            Err(e) => {
+                self.section = None;
+                self.texture = None;
+                self.error = Some(e);
+            }
         }
-        self.flow = Some(flow);
+    }
+
+    /// Whether a flow is running.
+    pub fn is_running(&self) -> bool {
+        self.job.is_some()
+    }
+
+    /// Block until the run in progress ends (for tests and scripts).
+    pub fn wait(&mut self) {
+        if let Some(job) = self.job.take() {
+            let r = job.rx.recv().unwrap_or_else(|_| Err("the process emulation stopped".into()));
+            self.finish(r);
+        }
+    }
+
+    /// The progress line of the run: fraction done and what it is doing.
+    fn progress(job: &Job, restart: bool) -> (f32, String) {
+        let n = job.labels.len();
+        let stage = job.stage.load(Ordering::Relaxed);
+        let secs = job.started.elapsed().as_secs_f32();
+        if job.cancel.load(Ordering::Relaxed) {
+            let what = if restart { "Restarting with the new settings" } else { "Cancelling" };
+            return (0.0, format!("{what}… ({secs:.1} s)"));
+        }
+        match stage {
+            0 => (0.0, format!("Reading the layout… ({secs:.1} s)")),
+            k if k <= n => {
+                let f = (k - 1) as f32 / n.max(1) as f32;
+                (f, format!("Step {k} of {n}: {} ({secs:.1} s)", job.labels[k - 1]))
+            }
+            _ => (1.0, format!("Finishing… ({secs:.1} s)")),
+        }
     }
 
     /// Load a flow file.
@@ -146,8 +239,9 @@ impl ProcessView {
         if !self.open {
             return None;
         }
-        if let Some(p) = project {
-            self.update(p);
+        match project {
+            Some(p) => self.update(ctx, p),
+            None => self.poll(),
         }
         let mut action = None;
         let mut open = self.open;
@@ -220,6 +314,20 @@ impl ProcessView {
                         self.dirty = true;
                     }
                 });
+            }
+            if let Some(job) = &self.job {
+                let (f, text) = Self::progress(job, self.dirty);
+                ui.horizontal(|ui| {
+                    ui.add(egui::Spinner::new());
+                    ui.add(egui::ProgressBar::new(f).desired_width(220.0).show_percentage());
+                    ui.label(RichText::new(text).color(pal.text_weak));
+                    if ui.button("Cancel").on_hover_text("Stop the run, keeping the last section").clicked() {
+                        job.cancel.store(true, Ordering::Relaxed);
+                    }
+                });
+                if self.section.is_some() {
+                    ui.label(RichText::new("Showing the previous section until the run ends").small().color(pal.text_weak));
+                }
             }
             if let Some(e) = &self.error {
                 ui.colored_label(pal.danger, e);
@@ -356,6 +464,9 @@ impl ProcessView {
             }
         });
         self.open = open;
+        if !open && let Some(job) = &self.job {
+            job.cancel.store(true, Ordering::Relaxed);
+        }
         action
     }
 }
