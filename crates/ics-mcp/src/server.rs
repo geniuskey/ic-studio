@@ -215,8 +215,10 @@ mod tests {
 
     #[test]
     fn file_arguments_are_confined() {
-        let mut s = Rpc { standalone: true, ..Rpc::default() };
-        let e = call(&mut s, "new_project", json!({"path": "/ics-confine-test/p"})).unwrap_err();
+        let base = std::env::current_dir().unwrap();
+        let roots = crate::confine::Roots::new(base.clone(), vec![base.join("allowed")]);
+        let mut s = Rpc { standalone: true, roots, ..Rpc::default() };
+        let e = call(&mut s, "open_project", json!({"path": base.join("outside")})).unwrap_err();
         assert!(e.contains("outside the folders"), "{e}");
     }
 
@@ -407,22 +409,14 @@ mod tests {
         assert_eq!((d[0]["type"].as_str(), d[1]["type"].as_str()), (Some("p"), Some("n")), "{xs}");
         assert_eq!(xs["columns"][0]["junctions"].as_array().unwrap().len(), 1, "{xs}");
 
-        let wat = call(
-            &mut s,
-            "process_data",
-            json!({"path": concat!(env!("CARGO_MANIFEST_DIR"), "/../../process/generic180_wat.csv")}),
-        )
-        .unwrap();
+        let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let wat_path = crate_dir.parent().unwrap().parent().unwrap().join("process/generic180_wat.csv");
+        let wat = call(&mut s, "process_data", json!({"path": wat_path})).unwrap();
         let vtn = wat["params"].as_array().unwrap().iter().find(|p| p["name"] == "vtn").unwrap();
         assert_eq!(vtn["alarms"][0]["lot"], "L004", "{wat}");
         assert!(wat["correlations"].as_array().unwrap().iter().any(|c| c["a"] == "vtn" && c["b"] == "idsat_n"), "{wat}");
 
-        let cor = call(
-            &mut s,
-            "extract_corners",
-            json!({"path": concat!(env!("CARGO_MANIFEST_DIR"), "/../../process/generic180_wat.csv")}),
-        )
-        .unwrap();
+        let cor = call(&mut s, "extract_corners", json!({"path": wat_path})).unwrap();
         assert_eq!(cor["corners"].as_array().unwrap().len(), 5, "{cor}");
         assert!(
             cor["library"].as_str().unwrap().contains(".lib ss") && cor["library"].as_str().unwrap().contains(".lib mc"),

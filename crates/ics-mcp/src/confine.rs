@@ -58,13 +58,19 @@ impl Roots {
         let mut out = args.clone();
         for (k, v) in out.iter_mut() {
             let Value::String(s) = v else { continue };
-            let p = Path::new(s.as_str());
-            // On Windows `\x` and `C:x` are "relative" yet leave the base when joined.
-            let relative_to_project = PROJECT_RELATIVE.contains(&k.as_str())
-                && p.components().all(|c| matches!(c, Component::Normal(_) | Component::CurDir | Component::ParentDir));
             if !PATH_ARGS.contains(&k.as_str()) && !PROJECT_RELATIVE.contains(&k.as_str()) {
                 continue;
             }
+            let p = Path::new(s.as_str());
+            #[cfg(windows)]
+            if !plain_windows_path(p) {
+                return Err(format!(
+                    "argument '{k}': unsupported Windows path '{s}'; use a local drive or relative path without '..'"
+                ));
+            }
+            // On Windows `\x` and `C:x` are "relative" yet leave the base when joined.
+            let relative_to_project = PROJECT_RELATIVE.contains(&k.as_str())
+                && p.components().all(|c| matches!(c, Component::Normal(_) | Component::CurDir | Component::ParentDir));
             if relative_to_project {
                 if p.components().any(|c| matches!(c, Component::ParentDir)) {
                     return Err(format!("argument '{k}': '{s}' may not leave the project directory"));
@@ -86,6 +92,19 @@ impl Roots {
         }
         Ok(out)
     }
+}
+
+#[cfg(windows)]
+fn plain_windows_path(path: &Path) -> bool {
+    use std::path::Prefix;
+
+    let mut components = path.components();
+    match components.next() {
+        Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::Disk(_)) && path.is_absolute() => {}
+        Some(Component::Prefix(_) | Component::RootDir | Component::ParentDir) => return false,
+        _ => {}
+    }
+    !components.any(|component| component == Component::ParentDir)
 }
 
 fn absolute(base: &Path, p: &Path) -> PathBuf {
@@ -134,8 +153,7 @@ mod tests {
 
     #[test]
     fn paths_must_stay_inside_the_roots() {
-        // Canonical, so a symlinked temp folder (macOS /var) cannot hide a `..` escape.
-        let dir = ics_core::tmp::private_dir("ics-confine").unwrap().canonicalize().unwrap();
+        let dir = ics_core::tmp::private_dir("ics-confine").unwrap();
         let root = dir.join("work");
         std::fs::create_dir_all(&root).unwrap();
         let r = Roots::new(root.clone(), vec![root.clone()]);
@@ -153,7 +171,15 @@ mod tests {
         assert!(r.check(&args(json!({"data": "../iv.csv"})), None).is_err());
         assert!(r.check(&args(json!({"data": "/etc/passwd"})), None).is_err());
         #[cfg(windows)]
-        assert!(r.check(&args(json!({"data": "C:x.csv"})), None).is_err());
+        {
+            assert!(r.check(&args(json!({"data": "C:x.csv"})), None).is_err());
+            let verbatim = root.canonicalize().unwrap();
+            let local = verbatim.to_str().unwrap().strip_prefix(r"\\?\").unwrap();
+            assert!(r.check(&args(json!({"path": local.to_ascii_lowercase().replace('\\', "/")})), None).is_ok());
+            for bad in [verbatim.to_str().unwrap(), r"\\localhost\share\file", r"\rooted", "chip/../chip"] {
+                assert!(r.check(&args(json!({"path": bad})), None).is_err(), "{bad}");
+            }
+        }
         #[cfg(unix)]
         {
             // A link inside a root that points out of it is outside.
