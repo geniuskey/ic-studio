@@ -111,6 +111,7 @@ for path in sorted(root.rglob("*.html")):
     e = html.escape
     head = [
         f'<link rel="canonical" href="{url}">',
+        '<meta name="author" content="Euiyun Lab">',
         f'<meta property="og:type" content="website">',
         f'<meta property="og:site_name" content="{SITE}">',
         f'<meta property="og:title" content="{e(full_title)}">',
