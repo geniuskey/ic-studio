@@ -8,7 +8,8 @@ written in Rust (egui/eframe 0.37 on wgpu). See README.md for features and archi
 - **Primary development machine: Windows.** Use PowerShell syntax in commands
   (`$env:VAR="x"`, not `VAR=x cmd`). Paths use `\`. The project was originally built on
   macOS and has **not yet been verified on Windows**. If something breaks, fix it here
-  first.
+  first. To verify it, follow `docs/dev/windows-verification.md`. It writes its results
+  to `docs/dev/windows-report.md`.
 - Toolchain: rustup stable with the MSVC target (`x86_64-pc-windows-msvc`), which needs
   the Visual Studio Build Tools (the "Desktop development with C++" workload).
   Rust 1.95 or newer (required by egui_plot 0.38).
