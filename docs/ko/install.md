@@ -58,6 +58,10 @@ curl -fsSL https://github.com/geniuskey/ic-studio/releases/latest/download/insta
 | `ICS_EXAMPLES=0` | 예제 프로젝트를 쓰지 않음 |
 | `ICS_UNINSTALL=1` | 폴더, `PATH` 항목 또는 링크, 실행 아이콘, MCP 등록을 제거 (프로젝트와 예제 프로젝트는 유지) |
 
+앱도 업데이트 뒤 예제를 추가할 때 `ICS_EXAMPLES_DIR`를 따르고, `ICS_SETTINGS_PATH`는 앱이 설정과
+창 배치를 저장하는 파일을 지정합니다(기본값: 사용자 데이터 폴더의 파일). 내 설정을 건드리지 않는
+시험용 실행에 씁니다.
+
 ```powershell
 $env:ICS_VERSION="v0.2.0"; irm https://github.com/geniuskey/ic-studio/releases/latest/download/install.ps1 | iex
 ```

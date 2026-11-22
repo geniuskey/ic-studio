@@ -62,6 +62,11 @@ Options are environment variables:
 | `ICS_EXAMPLES=0` | Do not write the example projects |
 | `ICS_UNINSTALL=1` | Remove the folder, the `PATH` entry or links, the launcher and the MCP registration (projects and example projects stay) |
 
+The app reads `ICS_EXAMPLES_DIR` as well, for the examples it adds after an update, and
+`ICS_SETTINGS_PATH` names the file it keeps its settings and window layout in (by default a
+file in the per-user data folder). Both are useful for a scratch copy that must leave your
+own setup alone.
+
 ```powershell
 $env:ICS_VERSION="v0.2.0"; irm https://github.com/geniuskey/ic-studio/releases/latest/download/install.ps1 | iex
 ```
