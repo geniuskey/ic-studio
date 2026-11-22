@@ -57,6 +57,10 @@ pub fn parse_args() -> LaunchArgs {
             "--run" => a.run = true,
             "--workspace" | "-w" => a.workspace = it.next(),
             "--cell" | "-c" => a.cell = it.next(),
+            "--version" | "-V" => {
+                println!("ic-studio {}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
             "--help" | "-h" => {
                 println!("ic-studio [PROJECT_DIR] [--demo] [--cell NAME] [--workspace home|schematic|simulation|layout] [--run]");
                 std::process::exit(0);
