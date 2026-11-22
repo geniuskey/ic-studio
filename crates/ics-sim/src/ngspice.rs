@@ -313,11 +313,42 @@ pub fn default_exe() -> String {
             return c.to_string();
         }
     }
+    // On Windows a bare `ngspice` on the PATH is the GUI build, which writes nothing to stdout:
+    // look for the console build in the PATH folders instead.
+    if cfg!(windows)
+        && let Some(paths) = std::env::var_os("PATH")
+        && let Some(p) = find_in_dirs(&std::env::split_paths(&paths).collect::<Vec<_>>(), &["ngspice_con.exe", "ngspice.exe"])
+    {
+        return p.display().to_string();
+    }
     "ngspice".to_string()
+}
+
+/// The first of `names` found in `dirs`: every folder is searched for the first name before
+/// the next name is tried.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn find_in_dirs(dirs: &[PathBuf], names: &[&str]) -> Option<PathBuf> {
+    names.iter().find_map(|n| dirs.iter().map(|d| d.join(n)).find(|p| p.is_file()))
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn console_build_is_preferred_on_the_path() {
+        let root = ics_core::tmp::private_dir("ics-ngspice-path").unwrap();
+        let (gui, con) = (root.join("a"), root.join("b"));
+        std::fs::create_dir_all(&gui).unwrap();
+        std::fs::create_dir_all(&con).unwrap();
+        std::fs::write(gui.join("ngspice.exe"), "").unwrap();
+        std::fs::write(con.join("ngspice_con.exe"), "").unwrap();
+        let dirs = vec![root.join("missing"), gui.clone(), con.clone()];
+        let names = ["ngspice_con.exe", "ngspice.exe"];
+        assert_eq!(super::find_in_dirs(&dirs, &names), Some(con.join("ngspice_con.exe")));
+        assert_eq!(super::find_in_dirs(&dirs[..2], &names), Some(gui.join("ngspice.exe")));
+        assert_eq!(super::find_in_dirs(&dirs[..1], &names), None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     use super::*;
 
     #[test]
