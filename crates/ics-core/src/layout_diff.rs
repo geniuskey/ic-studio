@@ -154,6 +154,21 @@ pub fn diff(old: &Layout, old_src: &dyn LayoutSource, new: &Layout, new_src: &dy
 
 /// The git work tree root containing `dir`, and `dir` relative to it.
 fn git_root(dir: &Path) -> Result<(PathBuf, PathBuf), String> {
+    #[cfg(windows)]
+    let absolute = std::path::absolute(dir).map_err(|e| e.to_string())?;
+    #[cfg(windows)]
+    let (dir, project_suffix) = {
+        use std::os::windows::ffi::OsStrExt;
+        // Git for Windows cannot chdir to a long path, even with core.longpaths.
+        // Discover the repository from its worktree root when the project is deeper.
+        if absolute.as_os_str().encode_wide().count() >= 260
+            && let Some(root) = absolute.ancestors().find(|path| path.join(".git").exists())
+        {
+            (root, absolute.strip_prefix(root).map_err(|e| e.to_string())?)
+        } else {
+            (dir, Path::new(""))
+        }
+    };
     let out = Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -167,6 +182,8 @@ fn git_root(dir: &Path) -> Result<(PathBuf, PathBuf), String> {
     let mut lines = text.lines();
     let top = PathBuf::from(lines.next().unwrap_or_default().trim());
     let prefix = PathBuf::from(lines.next().unwrap_or_default().trim());
+    #[cfg(windows)]
+    let prefix = prefix.join(project_suffix);
     Ok((top, prefix))
 }
 
@@ -179,20 +196,23 @@ pub fn open_revision(dir: &Path, rev: &str) -> Result<Project, String> {
     let ls = Command::new("git")
         .arg("-C")
         .arg(&top)
-        .args(["ls-tree", "-r", "--name-only", rev, "--", if spec.is_empty() { "." } else { &spec }])
+        .args(["ls-tree", "-rz", "--name-only", rev, "--", if spec.is_empty() { "." } else { &spec }])
         .output()
         .map_err(|e| format!("cannot run git: {e}"))?;
     if !ls.status.success() {
         return Err(String::from_utf8_lossy(&ls.stderr).trim().to_string());
     }
-    let files: Vec<String> = String::from_utf8_lossy(&ls.stdout).lines().map(str::to_string).collect();
-    if files.is_empty() {
+    if ls.stdout.is_empty() {
         return Err(format!("the project is not in revision {rev}"));
     }
+    let files = String::from_utf8_lossy(&ls.stdout);
     let scratch = crate::tmp::private_dir("ics-rev").map_err(|e| format!("cannot create a scratch folder: {e}"))?;
     let res = (|| {
-        for f in &files {
-            let rel = f.strip_prefix(&spec).unwrap_or(f);
+        for f in files.split_terminator('\0') {
+            let rel = Path::new(f).strip_prefix(&prefix).map_err(|e| e.to_string())?;
+            if !rel.components().all(|part| matches!(part, std::path::Component::Normal(_))) {
+                return Err(format!("invalid project path in revision: {f}"));
+            }
             let show = Command::new("git")
                 .arg("-C")
                 .arg(&top)
@@ -292,6 +312,28 @@ mod tests {
         assert_eq!(d.layers[0].added.bbox(), Some(IRect::new(0, -5000, 1000, -4000)));
         assert!(open_revision(&proj, "no-such-rev").is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn project_at_git_revision_in_long_korean_path() {
+        let repo = crate::tmp::private_dir("ics-diff-long-path").unwrap();
+        let git = |args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(&repo).args(args).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        git(&["init", "-q"]);
+        git(&["config", "core.longpaths", "true"]);
+        git(&["config", "core.quotepath", "true"]);
+
+        let project = repo.join("경로 테스트").join("long-directory-name".repeat(6)).join("nested-part".repeat(12));
+        crate::examples::demo_project().save_as(&project).unwrap();
+        git(&["add", "-A"]);
+        let tree = git(&["write-tree"]);
+        let old = open_revision(&project, &tree).unwrap();
+        assert!(old.all_cells().any(|(_, cell)| cell.name == "cmos_inverter"));
+        std::fs::remove_dir_all(&repo).unwrap();
     }
 
     #[test]
