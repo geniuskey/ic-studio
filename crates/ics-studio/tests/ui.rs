@@ -2602,6 +2602,9 @@ fn copilot_answers_from_the_manual() {
     assert!(read.contains("GDSII"), "{read}");
     let req = seen.lock().unwrap()[0].to_string();
     assert!(req.contains("answer from the user") && req.contains("docs_search"), "system prompt");
+    if std::env::var_os("ICS_SHOT_DIR").is_some() {
+        shot(&mut h, "copilot_korean");
+    }
 }
 
 /// A scripted model that also records the requests it gets.
