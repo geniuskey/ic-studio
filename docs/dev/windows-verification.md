@@ -28,13 +28,40 @@ clippy with zero warnings, and the UI test rules (glyph coverage, labelled input
 - **Use a scratch folder for everything you create:**
   `$env:TEMP\ics-win` and a test profile folder. Don't touch the user's real projects,
   and run uninstall at the end.
+- **No separate Windows account or "isolated session" is needed.** Run every phase,
+  4–6 included, in the session you are in, on the user's machine. These rules make that
+  safe:
+  - Projects go in the scratch folder.
+  - The installer goes into a scratch `ICS_INSTALL_DIR` and is uninstalled at the end.
+    Record the user `PATH` and the Start Menu folder before you install, and compare them
+    after you uninstall.
+  - Register MCP servers only for the scratch folder (`claude mcp add --scope local`, run
+    in that folder) and remove them afterwards. Don't change the user-scope Claude Code
+    configuration.
+  - Close every app window and process you started.
+  - When an item can't be checked from a shell (you must see a window), check it as far
+    as you can first: the process starts and runs, `live.json` appears, MCP calls answer,
+    and a screenshot (below) shows the window. Then list what is left under **Needs a
+    human**. "Skipped" is only for items that truly can't run here, and the note says why.
+- **Screenshots of the desktop:** capture the screen from PowerShell and look at the PNG:
+  `Add-Type -AssemblyName System.Windows.Forms,System.Drawing;
+  $b=[Windows.Forms.Screen]::PrimaryScreen.Bounds; $i=New-Object Drawing.Bitmap $b.Width,$b.Height;
+  [Drawing.Graphics]::FromImage($i).CopyFromScreen($b.Location,[Drawing.Point]::Empty,$b.Size);
+  $i.Save("$env:TEMP\ics-win\screen.png")`.
+  The same capture taken right after a simulation starts shows whether a console window
+  opened.
 - **Things only the user can do** (look at a window, type with the Korean IME, click
   through SmartScreen): list exact steps in the report under **Needs a human**. Don't
   guess the outcome.
 
 ## The report
 
-Write results to `docs/dev/windows-report.md`. It is committed so that sessions on other
+Write results to `docs/dev/windows-report.md`. If the report already exists, this is a
+follow-up run:
+1. `git pull` first.
+2. Run only the rows that are skipped or FAIL, and the items the fixes since then touch.
+3. Update those rows in place.
+4. Add a line under the header giving the follow-up's date and commit. It is committed so that sessions on other
 machines can read it. Use this layout:
 
 ```markdown
@@ -123,7 +150,7 @@ $ics = "$PWD\target\release\ics.exe"
 & $ics gds --out $dir\inv.gds $dir\getting_started cmos_inverter
 & $ics import-gds $dir\getting_started $dir\inv.gds
 & $ics xsection $dir\getting_started cmos_inverter --svg $dir\x.svg
-& $ics pixel pixels\bayer_fdti.toml
+& $ics pixel --project $dir\memory_and_pixels pixels\bayer_fdti.toml   # the stack reads a layout
 & $ics verify <a project with specs>
 ```
 
@@ -141,7 +168,11 @@ Cell names differ between topics. Run `ics info` to find them. For each command,
 ## Phase 3: simulation with ngspice
 
 - With no `ICS_NGSPICE` set, detection must find `C:\Spice64\bin\ngspice_con.exe`
-  (`ics_sim::ngspice::default_exe`).
+  (`ics_sim::ngspice::default_exe`). If ngspice is installed somewhere else, check this
+  only when you may write to `C:\Spice64`; otherwise record it as skipped with the reason.
+- With no `ICS_NGSPICE` set and ngspice's `bin` folder put on `PATH` for the process
+  (`$env:PATH="D:\...\Spice64\bin;$env:PATH"`), detection must pick `ngspice_con.exe`
+  from the `PATH` and not the GUI build `ngspice.exe`.
 - Setting `ICS_NGSPICE=C:\Spice64\bin\ngspice.exe` (the GUI build) must still run
   `ngspice_con.exe` without opening a window (`console_exe`).
 - Run the same deck on the built-in engine and on ngspice. Results should agree as they
@@ -162,12 +193,15 @@ cargo run --release -- --demo
 cargo run --release -- --demo --cell cmos_inverter --workspace layout
 ```
 
-The app can be driven without a person through **MCP live mode**:
+Start the app with `Start-Process` so the shell stays free, and stop it with
+`Stop-Process` when done. The app can be driven without a person through **MCP live
+mode**:
 
 1. Start the app.
 2. Check that `%LOCALAPPDATA%\ic-studio\live.json` appears.
-3. Call tools through `ics mcp` (register it with
-   `claude mcp add ic-studio -- <path>\ics.exe mcp`). Edits show in the window, and the
+3. Call tools through `ics mcp`. Either pipe JSON-RPC into `ics.exe mcp` straight from
+   PowerShell, or register it for the scratch folder only
+   (`claude mcp add --scope local ic-studio -- <path>\ics.exe mcp`). Edits show in the window, and the
    status bar shows **MCP live**.
 
 Cover:
@@ -188,7 +222,11 @@ Cover:
   - Test it with a local fake release only if that is possible without the network.
     Otherwise put it under Needs a human.
 - **Settings > Add to Claude Code**: finds `claude.exe` or `claude.cmd` and registers
-  `ics mcp` without a console window flashing up.
+  `ics mcp` without a console window flashing up. This writes the user-scope
+  configuration:
+  1. Save the output of `claude mcp get ic-studio` (or the fact that it is absent).
+  2. Run the command and check the registration.
+  3. Restore the saved state.
 - Process Emulation window: run, cancel, the step editor, Load… with a Windows path.
 
 Under **Needs a human**, list: Korean IME input in text fields (cell names, search, the
