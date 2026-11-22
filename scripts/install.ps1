@@ -207,11 +207,12 @@ public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wP
     $entries = @($userPath -split ';' | Where-Object { $_ -ne '' })
     $pathAdded = $false
     if (-not ($entries | Where-Object { Test-SameDir $_ $Dir })) {
-        Set-UserPath ((@($entries) + $Dir) -join ';')
+        # Prefer this install over older copies on the user's PATH.
+        Set-UserPath ((@($Dir) + $entries) -join ';')
         $pathAdded = $true
     }
     if (-not (($env:Path -split ';') | Where-Object { $_ -and (Test-SameDir $_ $Dir) })) {
-        $env:Path = ($env:Path.TrimEnd(';') + ';' + $Dir)
+        $env:Path = "$Dir;$env:Path"
     }
 
     Write-Step 'Creating the Start Menu shortcut'
