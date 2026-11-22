@@ -221,7 +221,7 @@ impl Client {
         let pong = match c.exchange(json!({"token": c.token, "ping": true})) {
             Ok(v) => v,
             Err(e) => {
-                if e.kind() == io::ErrorKind::InvalidData {
+                if matches!(e.kind(), io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof) {
                     stale();
                 }
                 return None;
@@ -354,6 +354,17 @@ mod tests {
         assert!(Client::discover().is_none());
         echo.join().unwrap();
         assert!(!dir.join(LIVE_FILE).exists(), "a file pointing at a foreign program is cleaned up");
+
+        let foreign = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = foreign.local_addr().unwrap().port();
+        let close = std::thread::spawn(move || {
+            let (s, _) = foreign.accept().unwrap();
+            BufReader::new(s).read_line(&mut String::new()).unwrap();
+        });
+        std::fs::write(dir.join(LIVE_FILE), json!({"port": port, "token": "x", "pid": 1}).to_string()).unwrap();
+        assert!(Client::discover().is_none());
+        close.join().unwrap();
+        assert!(!dir.join(LIVE_FILE).exists(), "a foreign listener that closes without replying is stale");
 
         let (first, _rx1) = Server::start(|| {}).unwrap();
         let (second, _rx2) = Server::start(|| {}).unwrap();
