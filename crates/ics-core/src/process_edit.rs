@@ -217,6 +217,17 @@ fn parse(text: &str) -> Result<DocumentMut, String> {
     text.parse::<DocumentMut>().map_err(|e| e.to_string())
 }
 
+fn render(doc: &DocumentMut, original: &str) -> String {
+    let edited = doc.to_string();
+    // toml_edit emits LF line endings, including for preserved comments and spacing.
+    // Follow the first line ending in the input when writing the edited document.
+    if original.split_once('\n').is_some_and(|(first_line, _)| first_line.ends_with('\r')) {
+        edited.replace('\n', "\r\n")
+    } else {
+        edited
+    }
+}
+
 /// The steps of `doc`, created when missing.
 fn steps(doc: &mut DocumentMut) -> Result<&mut toml_edit::ArrayOfTables, String> {
     if doc.get("step").is_none() {
@@ -247,7 +258,7 @@ pub fn set_step(text: &str, k: usize, step: &Step) -> Result<String, String> {
     let a = steps(&mut doc)?;
     let t = a.get_mut(k).ok_or_else(|| format!("no step {}", k + 1))?;
     set_fields(t, &step_fields(step), &STEP_KEYS);
-    Ok(doc.to_string())
+    Ok(render(&doc, text))
 }
 
 /// Insert `step` as step `k` (from 0; the number of steps appends it).
@@ -259,7 +270,7 @@ pub fn insert_step(text: &str, k: usize, step: &Step) -> Result<String, String> 
     }
     a.insert(k, step_table(step));
     renumber(&mut doc);
-    Ok(doc.to_string())
+    Ok(render(&doc, text))
 }
 
 /// Remove step `k` (from 0) with the comments above it.
@@ -271,7 +282,7 @@ pub fn remove_step(text: &str, k: usize) -> Result<String, String> {
     }
     a.remove(k);
     renumber(&mut doc);
-    Ok(doc.to_string())
+    Ok(render(&doc, text))
 }
 
 /// Move step `from` to index `to` (from 0), with the comments above it.
@@ -284,7 +295,7 @@ pub fn move_step(text: &str, from: usize, to: usize) -> Result<String, String> {
     let t = a.remove(from);
     a.insert(to, t);
     renumber(&mut doc);
-    Ok(doc.to_string())
+    Ok(render(&doc, text))
 }
 
 /// Set the settings of the flow file `text` (name, substrate and its doping, depth,
@@ -311,7 +322,7 @@ pub fn set_header(text: &str, flow: &ProcessFlow) -> Result<String, String> {
     let root = doc.as_table_mut();
     // New keys go before the tables: toml_edit prints root values first anyway.
     set_fields(root, &f, &["name", "substrate", "substrate_depth", "resolution", "substrate_doping", "semiconductors"]);
-    Ok(doc.to_string())
+    Ok(render(&doc, text))
 }
 
 #[cfg(test)]
@@ -365,6 +376,31 @@ mod tests {
         let t = set_header(GENERIC180, &g).unwrap();
         assert_eq!(flow(&t), g);
         assert!(t.contains("concentration = 2e15"), "{t}");
+    }
+
+    #[test]
+    fn edits_preserve_crlf_line_endings() {
+        let lf = GENERIC180.replace("\r\n", "\n");
+        let crlf = lf.replace('\n', "\r\n");
+        let mut settings = flow(&lf);
+        let unchanged_step = &settings.steps[3];
+        assert_eq!(set_step(&crlf, 3, unchanged_step).unwrap(), crlf);
+        assert_eq!(set_header(&crlf, &settings).unwrap(), crlf);
+
+        settings.resolution = 0.01;
+        let anneal = new_step("anneal").unwrap();
+        for (lf_edit, crlf_edit) in [
+            (set_header(&lf, &settings), set_header(&crlf, &settings)),
+            (set_step(&lf, 0, &anneal), set_step(&crlf, 0, &anneal)),
+            (insert_step(&lf, 0, &anneal), insert_step(&crlf, 0, &anneal)),
+            (move_step(&lf, 0, 2), move_step(&crlf, 0, 2)),
+            (remove_step(&lf, 0), remove_step(&crlf, 0)),
+        ] {
+            let lf_edit = lf_edit.unwrap();
+            let crlf_edit = crlf_edit.unwrap();
+            assert_eq!(crlf_edit, lf_edit.replace('\n', "\r\n"));
+            assert_eq!(flow(&crlf_edit), flow(&lf_edit));
+        }
     }
 
     #[test]
