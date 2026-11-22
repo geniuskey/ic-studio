@@ -127,29 +127,15 @@ pub fn resolve_backend(deck: &str, opts: &SimOptions) -> (Backend, Option<String
 fn absolute_includes(deck: &str, dir: &Path) -> String {
     let mut out = String::with_capacity(deck.len());
     for line in deck.lines() {
-        let t = line.trim_start();
-        let lower = t.to_ascii_lowercase();
-        let cmd = lower.split_whitespace().next().unwrap_or("");
-        let args: Vec<&str> = t.split_whitespace().collect();
-        let file_arg = match cmd {
-            ".include" | ".inc" if args.len() >= 2 => Some(1),
-            ".lib" if args.len() >= 3 => Some(1),
-            _ => None,
-        };
-        match file_arg {
-            Some(k) => {
-                let file = args[k].trim_matches(['"', '\'']);
-                let path = Path::new(file);
-                // A rooted path (`/abs`, `\abs`) is absolute for this purpose on Windows too.
-                if path.is_relative() && !path.has_root() {
-                    let mut a: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-                    a[k] = format!("\"{}\"", dir.join(path).display());
-                    out += &a.join(" ");
-                } else {
-                    out += line;
-                }
-            }
-            None => out += line,
+        // A rooted path (`/abs`, `\abs`) is absolute for this purpose on Windows too.
+        if let Some((directive, file, suffix)) = ngspice::include_arg(line)
+            && Path::new(file).is_relative()
+            && !Path::new(file).has_root()
+        {
+            use std::fmt::Write as _;
+            let _ = write!(out, "{directive} \"{}\"{suffix}", dir.join(file).display());
+        } else {
+            out += line;
         }
         out.push('\n');
     }
@@ -214,10 +200,8 @@ pub fn simulate(deck: &str, analyses: &[Analysis], opts: &SimOptions) -> Result<
         _ => {
             res.backend = ngspice::detect(&opts.ngspice_exe).unwrap_or_else(|| "ngspice".into());
             // ngspice runs in a work folder: relative library paths are taken from the deck's.
-            let deck = match &opts.deck_dir {
-                Some(dir) => absolute_includes(deck, dir),
-                None => deck.to_string(),
-            };
+            let base = ngspice_deck_dir(opts.deck_dir.as_deref())?;
+            let deck = absolute_includes(deck, &base);
             let (ds, log) = ngspice::run(&opts.ngspice_exe, &deck, &analyses)?;
             res.datasets = ds;
             res.log = res.warnings.iter().map(|w| format!("{w}\n")).collect::<String>() + &log;
@@ -225,6 +209,11 @@ pub fn simulate(deck: &str, analyses: &[Analysis], opts: &SimOptions) -> Result<
     }
     res.elapsed_ms = start.elapsed().as_secs_f64() * 1e3;
     Ok(res)
+}
+
+fn ngspice_deck_dir(dir: Option<&Path>) -> Result<PathBuf, SimError> {
+    let dir = dir.filter(|dir| !dir.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    std::path::absolute(dir).map_err(|e| SimError::Backend(format!("cannot resolve deck directory: {e}")))
 }
 
 #[cfg(test)]
@@ -238,6 +227,18 @@ mod tests {
         let (m, x) = (Path::new("/w").join("models.sp"), Path::new("/w").join("lib/x.lib"));
         let want = format!("* t\n.include \"{}\"\n.lib \"{}\" tt\n.inc /abs/y.sp\nR1 a 0 1\n", m.display(), x.display());
         assert_eq!(d, want);
+    }
+
+    #[test]
+    fn relative_ngspice_deck_directory_resolves_from_cwd() {
+        let cwd = std::env::current_dir().unwrap();
+        for dir in [None, Some(Path::new("")), Some(Path::new("."))] {
+            assert_eq!(ngspice_deck_dir(dir).unwrap(), cwd);
+        }
+        let base = ngspice_deck_dir(Some(Path::new("deck folder"))).unwrap();
+        let deck = absolute_includes("* t\r\n.include \"model file.inc\"\r\n.op\r\n", &base);
+        let model = cwd.join("deck folder").join("model file.inc");
+        assert!(deck.contains(&format!(".include \"{}\"", model.display())), "{deck}");
     }
 
     #[test]

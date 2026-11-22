@@ -57,6 +57,27 @@ fn strip_analyses(deck: &str) -> (String, Vec<String>) {
     (out, pre)
 }
 
+/// Split an include directive around its file argument, which may be quoted.
+pub(crate) fn include_arg(line: &str) -> Option<(&str, &str, &str)> {
+    let directive = line.split_whitespace().next()?;
+    let rest = line.trim_start().get(directive.len()..)?.trim_start();
+    let (file, suffix) = match rest.chars().next()? {
+        quote @ ('"' | '\'') => {
+            let (file, suffix) = rest[1..].split_once(quote)?;
+            (file, suffix)
+        }
+        _ => {
+            let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+            rest.split_at(end)
+        }
+    };
+    match directive.to_ascii_lowercase().as_str() {
+        ".include" | ".inc" => Some((directive, file, suffix)),
+        ".lib" if !suffix.trim().is_empty() => Some((directive, file, suffix)),
+        _ => None,
+    }
+}
+
 /// The files a deck `.include`s or `.lib`s, and theirs, relative to the including file's
 /// folder (as ngspice resolves them) or to `base`. ngspice runs the `.control` blocks of
 /// included files as its own, so one there is refused: only the deck's own blocks are replaced.
@@ -75,14 +96,7 @@ fn check_includes(deck: &str, base: &Path) -> Result<(), SimError> {
                     f.display()
                 )));
             }
-            let mut words = t.split_whitespace();
-            let path = match words.next().map(str::to_ascii_lowercase).as_deref() {
-                Some(".include" | ".inc") => words.next(),
-                // `.lib file section`; `.lib section` alone opens a section of this file.
-                Some(".lib") => words.next().filter(|_| words.next().is_some()),
-                _ => None,
-            };
-            let Some(path) = path.map(|w| w.trim_matches(|c| c == '"' || c == '\'')) else { continue };
+            let Some((_, path, _)) = include_arg(t) else { continue };
             let p = Path::new(path);
             let full = if p.is_absolute() { p.to_path_buf() } else { dir.join(p) };
             let full = if full.exists() || p.is_absolute() { full } else { base.join(p) };
@@ -309,10 +323,10 @@ mod tests {
     #[test]
     fn control_blocks_in_included_files_are_refused() {
         let dir = ics_core::tmp::private_dir("ics-inc-test").unwrap();
-        std::fs::write(dir.join("models.lib"), ".lib tt\n.include sub/nested.sp\n.endl tt\n").unwrap();
+        std::fs::write(dir.join("models with spaces.lib"), ".lib tt\n.include sub/nested.sp\n.endl tt\n").unwrap();
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         std::fs::write(dir.join("sub/nested.sp"), ".model n nmos level=1\n").unwrap();
-        let deck = format!("* t\n.lib \"{}\" tt\nR1 a 0 1k\n.end\n", dir.join("models.lib").display());
+        let deck = format!("* t\n.lib \"{}\" tt\nR1 a 0 1k\n.end\n", dir.join("models with spaces.lib").display());
         assert!(check_includes(&deck, &dir).is_ok());
         std::fs::write(dir.join("sub/nested.sp"), ".model n nmos level=1\n.control\nshell touch x\n.endc\n").unwrap();
         let e = check_includes(&deck, &dir).unwrap_err().to_string();
