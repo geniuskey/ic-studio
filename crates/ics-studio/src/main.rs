@@ -16,6 +16,7 @@ fn main() -> eframe::Result {
             .with_inner_size([1440.0, 900.0])
             .with_min_inner_size([960.0, 600.0]),
         renderer: eframe::Renderer::Wgpu,
+        persistence_path: std::env::var_os("ICS_SETTINGS_PATH").filter(|path| !path.is_empty()).map(Into::into),
         ..Default::default()
     };
     let ctx: Arc<OnceLock<eframe::egui::Context>> = Arc::default();

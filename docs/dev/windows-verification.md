@@ -194,11 +194,15 @@ cargo run --release -- --demo --cell cmos_inverter --workspace layout
 ```
 
 Start the app with `Start-Process` so the shell stays free, and stop it with
-`Stop-Process` when done. The app can be driven without a person through **MCP live
+`Stop-Process` when done. Set `ICS_SETTINGS_PATH` to a scratch `app.ron` file,
+`ICS_EXAMPLES_DIR` to a scratch examples folder, and `ICS_RECOVERY_DIR` and
+`ICS_LIVE_DIR` to scratch folders in the app's process environment. Use the same
+`ICS_LIVE_DIR` for the MCP client. The app can be driven through **MCP live
 mode**:
 
 1. Start the app.
-2. Check that `%LOCALAPPDATA%\ic-studio\live.json` appears.
+2. Check that `live.json` appears under `ICS_LIVE_DIR` (defaults to
+   `%LOCALAPPDATA%\ic-studio` on Windows).
 3. Call tools through `ics mcp`. Either pipe JSON-RPC into `ics.exe mcp` straight from
    PowerShell, or register it for the scratch folder only
    (`claude mcp add --scope local ic-studio -- <path>\ics.exe mcp`). Edits show in the window, and the

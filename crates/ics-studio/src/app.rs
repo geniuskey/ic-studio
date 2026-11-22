@@ -856,6 +856,9 @@ const SETTINGS_KEY: &str = "ic-studio-settings";
 /// Where the installer and the app put the example projects: `Documents/IC Studio/Examples`
 /// (or `~/IC Studio/Examples` without a documents folder).
 fn examples_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("ICS_EXAMPLES_DIR").filter(|dir| !dir.is_empty()) {
+        return Some(dir.into());
+    }
     dirs::document_dir().or_else(dirs::home_dir).map(|d| d.join("IC Studio").join("Examples"))
 }
 
