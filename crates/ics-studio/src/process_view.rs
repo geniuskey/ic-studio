@@ -640,10 +640,10 @@ impl ProcessView {
             ui.horizontal(|ui| {
                 ui.add(egui::Spinner::new());
                 ui.add(egui::ProgressBar::new(f).desired_width(220.0).show_percentage());
-                ui.label(RichText::new(text).color(pal.text_weak));
                 if ui.button("Cancel").on_hover_text("Stop the run, keeping the last section").clicked() {
                     job.cancel.store(true, Ordering::Relaxed);
                 }
+                ui.label(RichText::new(text).color(pal.text_weak));
             });
             if self.section.is_some() {
                 ui.label(RichText::new("Showing the previous section until the run ends").small().color(pal.text_weak));
