@@ -1,9 +1,9 @@
 //! Built-in Modified Nodal Analysis engine: OP, DC sweep, AC, noise and transient.
 //!
-//! Devices: R C L V I, diodes, MOS (level 1 and BSIM4), Gummel-Poon BJTs and linear
-//! controlled sources, on a dense solver for small circuits and a sparse one for large ones
-//! ([`crate::linalg`]). Decks needing other models (BSIM-CMG, PSP, behavioural sources) go to
-//! ngspice through the Auto backend.
+//! Devices include MOS (level 1 and BSIM4), Gummel-Poon BJTs, level-1 JFETs, lossless
+//! transmission lines and controlled sources. Unsupported models go to ngspice through Auto.
+
+use std::collections::VecDeque;
 
 use num_complex::Complex64;
 
@@ -11,7 +11,7 @@ use ics_core::Analysis;
 use ics_core::units::parse_spice;
 
 use crate::SimError;
-use crate::circuit::{BjtModel, Circuit, CtrlKind, DiodeModel, Element, MosModel, Node, Ref};
+use crate::circuit::{BjtModel, Circuit, CtrlKind, DiodeModel, Element, JfetModel, MosModel, Node, Ref};
 use crate::linalg::{Matrix, solve};
 use crate::results::{Dataset, DeviceOp, VecKind, Vector};
 
@@ -88,6 +88,77 @@ struct TranState {
     /// Terminal charges and currents of the charge-based devices.
     qdev_q: Vec<[f64; 4]>,
     qdev_i: Vec<[f64; 4]>,
+    /// Incoming transmission line waves at the proposed step end.
+    line_in: Vec<[f64; 2]>,
+}
+
+struct TransmissionLine {
+    ports: [[Node; 2]; 2],
+    branch: usize,
+    impedance: f64,
+    delay: f64,
+    initial: Option<[f64; 4]>,
+}
+
+impl TransmissionLine {
+    fn stamp<T: crate::linalg::Scalar + From<f64>>(&self, m: &mut Matrix<T>, propagation: Option<T>) {
+        let z = T::from(self.impedance);
+        for (port, terminals) in self.ports.iter().enumerate() {
+            let row = self.branch + port;
+            let peer = self.branch + 1 - port;
+            for (&node, sign) in terminals.iter().zip([1.0, -1.0]) {
+                if node != 0 {
+                    let sign = T::from(sign);
+                    m.add(node - 1, row, sign);
+                    m.add(row, node - 1, sign);
+                    if let Some(p) = propagation {
+                        m.add(peer, node - 1, T::zero() - p * sign);
+                    }
+                }
+            }
+            m.add(row, row, T::zero() - z);
+            if let Some(p) = propagation {
+                m.add(row, peer, T::zero() - p * z);
+            }
+        }
+    }
+
+    fn outgoing(&self, x: &[f64]) -> [f64; 2] {
+        let v = |n: Node| if n == 0 { 0.0 } else { x[n - 1] };
+        std::array::from_fn(|i| {
+            let [p, n] = self.ports[i];
+            v(p) - v(n) + self.impedance * x[self.branch + i]
+        })
+    }
+}
+
+/// Delayed waves use accepted points only. Keep the samples that bracket the next query.
+struct LineHistory {
+    prior: [f64; 2],
+    samples: VecDeque<(f64, [f64; 2])>,
+}
+
+impl LineHistory {
+    fn at(&self, time: f64) -> [f64; 2] {
+        if time < 0.0 {
+            return self.prior;
+        }
+        let i = self.samples.partition_point(|(t, _)| *t <= time);
+        if i == 0 {
+            return self.samples[0].1;
+        }
+        let (t0, v0) = self.samples[i - 1];
+        let Some(&(t1, v1)) = self.samples.get(i) else { return v0 };
+        let f = (time - t0) / (t1 - t0);
+        std::array::from_fn(|k| v0[k] + f * (v1[k] - v0[k]))
+    }
+
+    fn push(&mut self, time: f64, delay: f64, value: [f64; 2]) {
+        self.samples.push_back((time, value));
+        while self.samples.len() > 2 && self.samples[1].0 <= time - delay {
+            self.samples.pop_front();
+        }
+    }
 }
 
 /// An accepted transient point: time, solution and reactive values (see `Engine::reactive`).
@@ -109,6 +180,8 @@ enum Mode<'s> {
     Dc {
         src_scale: f64,
         force: &'s [(Node, f64)],
+        /// Initial incoming waves for transient UIC. Ordinary DC uses zero phase delay.
+        line_in: Option<&'s [[f64; 2]]>,
     },
     Tran {
         t: f64,
@@ -135,6 +208,7 @@ pub struct Engine {
     mutual: Vec<(usize, usize, usize, usize, f64)>,
     /// Charge-based MOS devices (BSIM4): element index and (d, g, s, b) nodes.
     qdevs: Vec<(usize, [Node; 4])>,
+    lines: Vec<TransmissionLine>,
     vt: f64,
     pub log: Vec<String>,
     /// Set for the first Newton iteration of a cold operating point: junctions are linearised
@@ -457,6 +531,41 @@ fn diode_eval(m: &DiodeModel, vd: f64, vt: f64) -> (f64, f64) {
     (id, gd)
 }
 
+/// Channel current and its derivatives by drain, gate and source terminal voltage.
+fn jfet_channel(model: &JfetModel, area: f64, [vd, vg, vs]: [f64; 3]) -> (f64, [f64; 3]) {
+    let sign = if model.p_channel { -1.0 } else { 1.0 };
+    let raw = sign * (vd - vs);
+    let reverse = raw < 0.0;
+    let vds = raw.abs();
+    let u = sign * (vg - if reverse { vd } else { vs }) - model.threshold;
+    if u <= 0.0 {
+        return (0.0, [0.0; 3]);
+    }
+    let tail = if model.doping == 1.0 { 0.0 } else { (1.0 - model.doping) / (model.potential - model.threshold) };
+    let q = (u - vds).max(0.0);
+    let beta = area * model.beta;
+    let betap = beta * (1.0 + model.lambda * vds);
+    // Difference of the channel potential primitive at its two ends.
+    let primitive = vds.min(u) * (model.doping * (u + q) + tail * (u * u + u * q + q * q));
+    let slope = |x| x * (2.0 * model.doping + 3.0 * tail * x);
+    let gm = betap * (slope(u) - slope(q));
+    let gd = beta * model.lambda * primitive + betap * slope(q);
+    let ids = sign * betap * primitive;
+    if reverse { (-ids, [gd + gm, -gm, -gd]) } else { (ids, [gd, gm, -gd - gm]) }
+}
+
+fn stamp_channel<T: crate::linalg::Scalar + From<f64>>(m: &mut Matrix<T>, nodes: [Node; 3], j: [f64; 3]) {
+    for (n, g) in nodes.into_iter().zip(j) {
+        if n != 0 {
+            for (terminal, sign) in [(nodes[0], 1.0), (nodes[2], -1.0)] {
+                if terminal != 0 {
+                    m.add(terminal - 1, n - 1, T::from(sign * g));
+                }
+            }
+        }
+    }
+}
+
 /// Bulk junction diodes of a MOS: (anode, cathode, saturation current) for the drain and source
 /// sides that are not tied to the bulk.
 fn bulk_diodes(model: &MosModel, d: Node, s: Node, b: Node, m: f64, j: &crate::circuit::Junctions) -> Vec<(Node, Node, f64)> {
@@ -552,11 +661,23 @@ impl Engine {
         let mut caps = vec![];
         let mut inductors = vec![];
         let mut qdevs = vec![];
+        let mut lines = vec![];
         for (i, e) in c.elements.iter().enumerate() {
             match e {
                 Element::V { .. } => {
                     branch[i] = Some(size);
                     size += 1;
+                }
+                Element::T { ports, impedance, delay, initial, .. } => {
+                    branch[i] = Some(size);
+                    lines.push(TransmissionLine {
+                        ports: *ports,
+                        branch: size,
+                        impedance: *impedance,
+                        delay: *delay,
+                        initial: *initial,
+                    });
+                    size += 2;
                 }
                 Element::L { .. } => {
                     branch[i] = Some(size);
@@ -722,6 +843,7 @@ impl Engine {
             lin,
             mutual,
             qdevs,
+            lines,
             vt,
             log: vec![],
             init_jct: std::cell::Cell::new(false),
@@ -1087,6 +1209,14 @@ impl Engine {
                     cond(&mut m, *a, *k, gd);
                     cur(&mut rhs, *a, *k, id - gd * vd);
                 }
+                Element::J { d, g, s, model, area, .. } => {
+                    let nodes = [*d, *g, *s];
+                    let v = nodes.map(|n| self.v(x, n));
+                    let (id, j) = jfet_channel(model, *area, v);
+                    stamp_channel(&mut m, nodes, j);
+                    cur(&mut rhs, *d, *s, id - j.iter().zip(v).map(|(g, v)| g * v).sum::<f64>());
+                }
+                Element::T { .. } => {}
                 Element::M { d, g, s, b, model, w, l, m: mult, junctions, .. } => {
                     for (an, ca, id, gd) in self.mos_junctions(model, *d, *s, *b, *mult, junctions, x) {
                         let vd = self.v(x, an) - self.v(x, ca);
@@ -1126,6 +1256,20 @@ impl Engine {
                     cond(&mut m, *d, *b, gmin);
                     cond(&mut m, *s, *b, gmin);
                 }
+            }
+        }
+        for (i, line) in self.lines.iter().enumerate() {
+            let incoming = match mode {
+                Mode::Dc { line_in, .. } => line_in,
+                Mode::Tran { state, .. } => Some(state.line_in.as_slice()),
+            };
+            if let Some(incoming) = incoming {
+                line.stamp(&mut m, None);
+                let [wave1, wave2] = incoming[i];
+                rhs[line.branch] += wave2;
+                rhs[line.branch + 1] += wave1;
+            } else {
+                line.stamp(&mut m, Some(1.0));
             }
         }
         if let Mode::Tran { h, method, state, .. } = mode {
@@ -1244,30 +1388,31 @@ impl Engine {
                 x = xs;
             }
         }
-        self.op_forced_from(x, &[])
+        self.op_forced_from(x, &[], None)
     }
 
     /// Operating point with `force` nodes held at their voltages.
     fn op_forced(&mut self, force: &[(Node, f64)]) -> Result<Vec<f64>, SimError> {
-        self.op_forced_from(vec![0.0; self.size], force)
+        self.op_forced_from(vec![0.0; self.size], force, None)
     }
 
-    fn op_forced_from(&mut self, x: Vec<f64>, force: &[(Node, f64)]) -> Result<Vec<f64>, SimError> {
+    fn op_forced_from(&mut self, x: Vec<f64>, force: &[(Node, f64)], line_in: Option<&[[f64; 2]]>) -> Result<Vec<f64>, SimError> {
         // Solve again while switches change state at the solution.
-        let mut x = self.op_solve(x, force)?;
+        let mut x = self.op_solve(x, force, line_in)?;
         for _ in 0..20 {
             if !self.settle_switches(&x) {
                 break;
             }
-            x = self.op_solve(x, force)?;
+            x = self.op_solve(x, force, line_in)?;
         }
         Ok(x)
     }
 
-    fn op_solve(&mut self, mut x: Vec<f64>, force: &[(Node, f64)]) -> Result<Vec<f64>, SimError> {
+    fn op_solve(&mut self, mut x: Vec<f64>, force: &[(Node, f64)], line_in: Option<&[[f64; 2]]>) -> Result<Vec<f64>, SimError> {
         let (gmin0, itl) = (self.c.options.gmin, self.c.options.itl1);
         let start = x.clone();
-        if self.newton(&mut x, Mode::Dc { src_scale: 1.0, force }, gmin0, itl).is_ok() {
+        let mode = |src_scale| Mode::Dc { src_scale, force, line_in };
+        if self.newton(&mut x, mode(1.0), gmin0, itl).is_ok() {
             return Ok(x);
         }
         self.log.push("OP: direct Newton failed, trying gmin stepping".into());
@@ -1279,7 +1424,7 @@ impl Engine {
             let mut ok = true;
             for k in (0..=10).rev() {
                 let g = gmin0 * 10f64.powi(k);
-                if self.newton(&mut x, Mode::Dc { src_scale: 1.0, force }, g, itl).is_err() {
+                if self.newton(&mut x, mode(1.0), g, itl).is_err() {
                     ok = false;
                     break;
                 }
@@ -1292,7 +1437,7 @@ impl Engine {
         let mut x = vec![0.0; self.size];
         for k in 0..=20 {
             let s = k as f64 / 20.0;
-            self.newton(&mut x, Mode::Dc { src_scale: s, force }, gmin0, itl.max(200))?;
+            self.newton(&mut x, mode(s), gmin0, itl.max(200))?;
         }
         Ok(x)
     }
@@ -1300,7 +1445,10 @@ impl Engine {
     fn vector_names(&self) -> Vec<(String, VecKind)> {
         let mut v: Vec<(String, VecKind)> = self.c.nodes.iter().skip(1).map(|n| (format!("v({n})"), VecKind::Voltage)).collect();
         for (i, e) in self.c.elements.iter().enumerate() {
-            if self.branch[i].is_some() {
+            if matches!(e, Element::T { .. }) {
+                v.push((format!("i({}:1)", e.name()), VecKind::Current));
+                v.push((format!("i({}:2)", e.name()), VecKind::Current));
+            } else if self.branch[i].is_some() {
                 v.push((format!("i({})", e.name()), VecKind::Current));
             }
         }
@@ -1387,6 +1535,21 @@ impl Engine {
                             ("vce".into(), vce),
                             ("gm".into(), gc[1]),
                             ("beta".into(), if ib.abs() > 0.0 { ic / ib } else { f64::NAN }),
+                        ],
+                    });
+                }
+                Element::J { name, d, g, s, model, area } => {
+                    let v = [*d, *g, *s].map(|n| self.v(x, n));
+                    let (id, [gds, gm, _]) = jfet_channel(model, *area, v);
+                    out.push(DeviceOp {
+                        name: name.clone(),
+                        region: None,
+                        values: vec![
+                            ("id".into(), id),
+                            ("vgs".into(), v[1] - v[2]),
+                            ("vds".into(), v[0] - v[2]),
+                            ("gm".into(), gm),
+                            ("gds".into(), gds),
                         ],
                     });
                 }
@@ -1583,6 +1746,12 @@ impl Engine {
                     let (_, gd) = diode_eval(model, vd, self.vt);
                     y(&mut m, *a, *k, Complex64::new(gd, 0.0));
                 }
+                Element::J { d, g, s, model, area, .. } => {
+                    let nodes = [*d, *g, *s];
+                    let (_, j) = jfet_channel(model, *area, nodes.map(|n| self.v(x0, n)));
+                    stamp_channel(&mut m, nodes, j);
+                }
+                Element::T { .. } => {}
                 Element::M { d, g, s, b, model, w: wd, l, m: mult, junctions, .. } => {
                     for (an, ca, _, gd) in self.mos_junctions(model, *d, *s, *b, *mult, junctions, x0) {
                         y(&mut m, an, ca, Complex64::new(gd, 0.0));
@@ -1614,6 +1783,9 @@ impl Engine {
                     y(&mut m, *s, *b, Complex64::new(self.c.options.gmin, 0.0));
                 }
             }
+        }
+        for line in &self.lines {
+            line.stamp(&mut m, Some(Complex64::from_polar(1.0, -w * line.delay)));
         }
         for (cp, c) in self.caps.iter().zip(caps_at_op) {
             y(&mut m, cp.a, cp.b, Complex64::new(0.0, w * c));
@@ -1692,6 +1864,10 @@ impl Engine {
                     let (id, _) = diode_eval(model, self.v(x0, *a) - self.v(x0, *k), self.vt);
                     let flicker = model.kf * id.abs().powf(model.af) / f;
                     out.push((*a, *k, 2.0 * CHARGE * id.abs() + flicker));
+                }
+                Element::J { d, g, s, model, area, .. } => {
+                    let (id, [_, gm, _]) = jfet_channel(model, *area, [*d, *g, *s].map(|n| self.v(x0, n)));
+                    out.push((*d, *s, (8.0 / 3.0) * kt * gm.abs() + model.kf * id.abs().powf(model.af) / f));
                 }
                 Element::M { d, g, s, b, model, m, .. } if model.bsim4.as_ref().is_some_and(|b4| b4.inst.is_some()) => {
                     let inst = model.bsim4.as_ref().and_then(|b4| b4.inst.as_deref()).unwrap();
@@ -1789,9 +1965,10 @@ impl Engine {
 
     /// Transient analysis whose time step stays below `tmax` when given.
     pub fn run_tran_limited(&mut self, tstep: f64, tstop: f64, tmax: Option<f64>) -> Result<Dataset, SimError> {
-        let hmax = tstep.min(tstop / 100.0).min(tmax.filter(|t| *t > 0.0).unwrap_or(f64::INFINITY));
+        let line_limit = self.lines.iter().map(|line| 0.5 * line.delay).fold(f64::INFINITY, f64::min);
+        let hmax = tstep.min(tstop / 100.0).min(tmax.filter(|t| *t > 0.0).unwrap_or(f64::INFINITY)).min(line_limit);
         if tstop / hmax > 2.0e6 {
-            return Err(SimError::Engine("transient would need more than 2M points; increase tstep".into()));
+            return Err(SimError::Engine("transient would need more than 2M points; check tstep, tmax and line delays".into()));
         }
         // Breakpoints from source waveforms.
         let mut bps: Vec<f64> = vec![];
@@ -1805,6 +1982,14 @@ impl Engine {
         bps.push(tstop);
         bps.sort_by(|a, b| a.partial_cmp(b).unwrap());
         bps.dedup_by(|a, b| (*a - *b).abs() < hmax * 1e-6);
+        let initial_waves: Vec<_> = self
+            .lines
+            .iter()
+            .map(|line| {
+                let [v1, i1, v2, i2] = line.initial.unwrap_or_default();
+                [v1 + i1 * line.impedance, v2 + i2 * line.impedance]
+            })
+            .collect();
 
         // Initial condition: DC operating point with sources evaluated at t=0.
         let x = {
@@ -1845,7 +2030,7 @@ impl Engine {
                         None => force.push((n, v)),
                     }
                 }
-                self.op_forced(&force)
+                self.op_forced_from(vec![0.0; self.size], &force, Some(&initial_waves))
             } else if self.c.ic.is_empty() {
                 self.op(None)
             } else {
@@ -1867,7 +2052,18 @@ impl Engine {
             ind_i: self.inductors.iter().map(|&i| x[self.branch[i].unwrap()]).collect(),
             qdev_q: (0..self.qdevs.len()).map(|k| self.qdev_qc(k, &x).0).collect(),
             qdev_i: vec![[0.0; 4]; self.qdevs.len()],
+            line_in: vec![[0.0; 2]; self.lines.len()],
         };
+        let mut line_history: Vec<_> = self
+            .lines
+            .iter()
+            .zip(initial_waves)
+            .map(|(line, initial)| {
+                let start = line.outgoing(&x);
+                let prior = if self.c.uic { initial } else { start };
+                LineHistory { prior, samples: VecDeque::from([(0.0, start)]) }
+            })
+            .collect();
         let mut ds = self.new_dataset("tran", "Transient", Some(("time", VecKind::Time)));
         self.push_point(&mut ds, Some(0.0), &x);
 
@@ -1907,6 +2103,9 @@ impl Engine {
                     }
                 }
                 let mut xt = x.clone();
+                for ((wave, history), line) in state.line_in.iter_mut().zip(&line_history).zip(&self.lines) {
+                    *wave = history.at(t + hs - line.delay);
+                }
                 let mode = Mode::Tran { t: t + hs, h: hs, method, state: &state };
                 match self.newton(&mut xt, mode, self.c.options.gmin, self.c.options.itl4) {
                     Ok(it) => {
@@ -1960,6 +2159,9 @@ impl Engine {
             }
             t += hs;
             x = xn;
+            for (history, line) in line_history.iter_mut().zip(&self.lines) {
+                history.push(t, line.delay, line.outgoing(&x));
+            }
             self.settle_switches(&x);
             self.push_point(&mut ds, Some(t), &x);
             steps += 1;
@@ -2224,8 +2426,84 @@ mod tests {
         assert!((v("v(h)") - 0.5).abs() < 1e-6, "CCVS 500 ohm x 1 mA");
         let ac = engine(deck).run_ac(1, 1e3, 1e3).unwrap();
         assert!((ac.get("v(f)").unwrap().re[0] - 3.0).abs() < 1e-6, "the same in AC");
-        assert!(parse_deck("* t\nE1 a 0 POLY(1) b 0 0 1\nR1 a 0 1\n.end").is_err());
+        assert!(parse_deck("* t\nE1 a 0 TABLE {v(b)} (0,0) (1,1)\nR1 a 0 1\n.end").is_err());
         assert!(Engine::new(parse_deck("* t\nF1 a 0 Vx 1\nR1 a 0 1\n.end").unwrap()).is_err(), "no Vx");
+    }
+
+    #[test]
+    fn nonlinear_controlled_sources_in_a_subcircuit() {
+        let deck = "* nonlinear sources
+.param gain=3
+V1 in 0 dc 2 ac 1
+Vs in b 0
+Rs b 0 1k
+X1 b e vv cell
+.subckt cell p out value
+V2 q 0 1
+E1 out 0 POLY ( 2 ) p 0 q 0 1 2 3 4 5 6
+E2 value 0 VALUE={gain*v(p)+v(q)}
+.ends
+F1 0 f POLY(1) Vs 0 3
+Rf f 0 1k
+H1 h 0 POLY(1) Vs 0 500
+Rh h 0 1k
+.end";
+        let flat = crate::frontend::expand(deck, None).unwrap();
+        let mut engine = engine(&flat.deck);
+        let op = engine.run_op().unwrap();
+        for (node, expected) in [("v(e)", 40.0), ("v(vv)", 7.0), ("v(f)", 6.0), ("v(h)", 1.0)] {
+            let actual = op.get(node).unwrap().re[0];
+            assert!((actual - expected).abs() < 1e-6, "{node}: {actual}");
+        }
+        let ac = engine.run_ac(1, 1e3, 1e3).unwrap();
+        assert!((ac.get("v(e)").unwrap().re[0] - 23.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn jfet_channel_bias_and_small_signal_both_polarities() {
+        let deck = "* jfet
+Vdn dn 0 3
+Vgn gn 0 dc -1 ac 1
+Jn dn gn 0 nch
+.model nch njf(vto=-2 beta=1m lambda=0.1)
+Vdp dp 0 -3
+Vgp gp 0 dc 1 ac 1
+Jp dp gp 0 pch
+.model pch pjf(vto=-2 beta=1m lambda=0.1)
+.end";
+        let mut engine = engine(deck);
+        let op = engine.run_op().unwrap();
+        for (name, expected) in [("i(vdn)", -1.3e-3), ("i(vdp)", 1.3e-3)] {
+            assert!((op.get(name).unwrap().re[0] - expected).abs() < 1e-9, "{name}");
+        }
+        let ac = engine.run_ac(1, 1e3, 1e3).unwrap();
+        for name in ["i(vdn)", "i(vdp)"] {
+            assert!((ac.get(name).unwrap().re[0] + 2.6e-3).abs() < 1e-9, "{name}");
+        }
+    }
+
+    #[test]
+    fn lossless_line_dc_phase_and_delayed_pulse() {
+        let deck = "* line
+V1 in 0 dc 1 ac 1 pulse(0 1 1n 10p 10p 10n 20n)
+Rs in a 50
+T1 a 0 out 0 Z0=50 F=250meg
+Rl out 0 50
+.end";
+        let mut engine = engine(deck);
+        let op = engine.run_op().unwrap();
+        assert!((op.get("v(out)").unwrap().re[0] - 0.5).abs() < 1e-8);
+        assert!((op.get("i(t1:2)").unwrap().re[0] + 0.01).abs() < 1e-8);
+        let ac = engine.run_ac(1, 250e6, 250e6).unwrap();
+        let out = ac.get("v(out)").unwrap();
+        assert!(out.re[0].abs() < 1e-8 && (out.im.as_ref().unwrap()[0] + 0.5).abs() < 1e-8);
+        let tran = engine.run_tran(10e-12, 4e-9).unwrap();
+        let at = |time| {
+            let i = tran.scale_vector().unwrap().re.partition_point(|&t| t < time);
+            tran.get("v(out)").unwrap().re[i]
+        };
+        assert!(at(1.9e-9).abs() < 1e-8);
+        assert!((at(2.1e-9) - 0.5).abs() < 1e-8);
     }
 
     #[test]

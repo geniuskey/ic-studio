@@ -210,12 +210,17 @@ Calibre xRC, StarRC, Quantus가 만든 DSPF 넷리스트는 그대로 시뮬레�
 Rust로 작성한 수정 절점 해석(MNA) 엔진입니다. 다음을 지원합니다.
 
 - 소자 `R C L V I D M`, 바이폴라 트랜지스터 `Q`(Gummel-Poon: Early 전압, knee 전류, 비이상
-  베이스 전류, 접합·확산 전하, 직렬 저항, `eg xti xtb` 온도 특성), 선형 제어 전원 `E F G H`,
+  베이스 전류, 접합·확산 전하, 직렬 저항, `eg xti xtb` 온도 특성), 레벨 1 JFET `J`
+  (`NJF` / `PJF`, 게이트 접합과 커패시턴스, 직렬 저항, `area`와 `m`),
+  제어 전원 `E F G H`(선형, `POLY(n)`, `VALUE={expression}`),
   동작 모델 소스 `B`(`v(a)`, `v(a, b)`, `i(vname)`, `time`으로 쓴 `V=` 또는 `I=` 수식), 상호
   인덕턴스 `K`, 전압·전류 스위치 `S` / `W`(`vt vh ron roff` / `it ih ron roff`를 쓰는
   `.model sw` / `csw`와 초기 상태 `on` / `off`. 히스테리시스가 있으면 `vt + vh` 위에서 닫히고
   `vt − vh` 아래에서 열리며, 한 스텝이 아니라 `vt`의 1 % 폭에 걸쳐 바뀜), 서브서킷 인스턴스
-  `X`(`POLY` / `VALUE` 형식은 미지원: 이런 덱은 **Auto**에서 ngspice로 실행),
+  `X`,
+- 무손실 전송선 `T`(`Z0`, `TD` 또는 `F`와 선택 항목 `NL`, 과도 해석의 `UIC`에서
+  적용하는 포트 초기 조건 `IC=v1,i1,v2,i2`). 과도 해석에서는 계산이 끝난 시점 사이의 값을
+  보간해 지연 파형을 구합니다. 빠른 에지를 보려면 최대 시간 스텝을 줄이세요.
 - 소스: `DC`, `AC mag [phase]`, `PULSE(v1 v2 td tr tf pw per)`,
   `SIN(vo va freq td theta phase)`, `r=` / `td=`가 있는 `PWL(t v ...)`,
 - `m`이 있는 `R` / `C` / `L`(저항은 `tc1` / `tc2`도), `area`와 `m`이 있는 다이오드와 `Q`,

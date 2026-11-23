@@ -22,6 +22,7 @@ pub const KO: &[(&str, &str)] = &[
         "현재 셀에서 새 설계를 시작합니다: 모든 뷰, 스펙, 노트를 복사",
     ),
     ("Import", "가져오기"),
+    ("Import GDSII / OASIS", "GDSII / OASIS 가져오기"),
     ("GDSII / OASIS…", "GDSII / OASIS…"),
     ("PDK…", "PDK…"),
     ("GDSII / OASIS with Layer Map…", "레이어 맵으로 GDSII / OASIS…"),

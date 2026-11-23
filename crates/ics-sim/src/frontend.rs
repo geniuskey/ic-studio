@@ -507,7 +507,8 @@ fn node_count(first: char, toks: &[String]) -> usize {
     match first {
         'r' | 'c' | 'l' | 'v' | 'i' | 'd' | 'f' | 'h' => 2,
         'q' | 'j' => 3,
-        'm' | 'e' | 'g' => 4,
+        'm' | 't' | 'e' | 'g' => 4,
+        'b' => 2,
         // Subcircuit: every positional token but the last (the subcircuit name).
         'x' => toks[1..].iter().take_while(|t| !t.contains('=') && !t.eq_ignore_ascii_case("params:")).count().saturating_sub(1),
         _ => 0,
@@ -669,7 +670,56 @@ fn expand_element(l: &Line, scope: &mut Scope, ctx: &mut Ctx, depth: usize) -> R
     } else {
         l
     };
-    let text = subst_groups(&tight_equals(&l.text), &scope.params, &l.origin)?;
+    let raw = tight_equals(&l.text);
+    let header: Vec<_> = raw.split_whitespace().take(4).collect();
+    let first = raw.chars().next().unwrap_or(' ').to_ascii_lowercase();
+    if header.len() == 4 && matches!(first, 'b' | 'e' | 'f' | 'g' | 'h') {
+        let body = header[..3].iter().fold(raw.as_str(), |s, token| s.trim_start().strip_prefix(token).unwrap()).trim_start();
+        let keyword = crate::circuit::source_keyword(body);
+        if (first == 'b' && matches!(keyword.as_str(), "v" | "i")) || keyword == "value" {
+            let body = body[keyword.len()..].trim_start();
+            let body = body.strip_prefix('=').unwrap_or(body).trim();
+            let body = body.trim_matches(|c| matches!(c, '{' | '}' | '\'' | '"'));
+            let expr = crate::circuit::map_signal_refs(
+                body,
+                |kind, args| {
+                    let args = args
+                        .iter()
+                        .map(|n| if kind == 'v' { scope.node(n, ctx) } else { scope.element_name(n) })
+                        .collect::<Vec<_>>();
+                    format!("{kind}({})", args.join(","))
+                },
+                |s| behavioral_params(s, &scope.params),
+            )
+            .map_err(|e| err_at(&l.origin, e))?;
+            let (name, a, b) = element_terminals(&header, scope, ctx);
+            ctx.out.push(Line { origin: l.origin.clone(), text: format!("{name} {a} {b} {keyword}={{{expr}}}") });
+            return Ok(());
+        }
+        if keyword == "poly" {
+            let expanded = subst_groups(body, &scope.params, &l.origin)?;
+            let (n, fields) = crate::circuit::poly_fields(&expanded).map_err(|e| err_at(&l.origin, e))?;
+            let voltage_control = matches!(first, 'e' | 'g');
+            let count = n
+                .checked_mul(if voltage_control { 2 } else { 1 })
+                .filter(|k| *k < fields.len())
+                .ok_or_else(|| err_at(&l.origin, "missing POLY controls or coefficients"))?;
+            let controls = fields[..count]
+                .iter()
+                .map(|s| if voltage_control { scope.node(s, ctx) } else { scope.element_name(s) })
+                .collect::<Vec<_>>()
+                .join(" ");
+            let coeff = fields[count..]
+                .iter()
+                .map(|s| value_token(s, &scope.params).unwrap_or_else(|| (*s).to_owned()))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let (name, a, b) = element_terminals(&header, scope, ctx);
+            ctx.out.push(Line { origin: l.origin.clone(), text: format!("{name} {a} {b} POLY({n}) {controls} {coeff}") });
+            return Ok(());
+        }
+    }
+    let text = subst_groups(&raw, &scope.params, &l.origin)?;
     let first = text.chars().next().unwrap_or(' ').to_ascii_lowercase();
     let text = if matches!(first, 'v' | 'i') { text.replace('(', " ( ").replace(')', " ) ").replace(',', " ") } else { text };
     let mut toks = split_tokens(&text);
@@ -692,6 +742,9 @@ fn expand_element(l: &Line, scope: &mut Scope, ctx: &mut Ctx, depth: usize) -> R
     for i in 1..=nodes {
         toks[i] = scope.node(&toks[i], ctx);
     }
+    if matches!(first, 'f' | 'h') && toks.len() == 5 {
+        toks[3] = scope.element_name(&toks[3]);
+    }
     // Model reference (diodes, MOS, BJTs, JFETs) with binning.
     let model_at = match first {
         'd' | 'q' | 'j' | 'm' => Some(nodes + 1),
@@ -707,6 +760,37 @@ fn expand_element(l: &Line, scope: &mut Scope, ctx: &mut Ctx, depth: usize) -> R
     toks[0] = scope.element_name(&toks[0]);
     ctx.out.push(Line { origin: l.origin.clone(), text: toks.join(" ") });
     Ok(())
+}
+
+fn element_terminals(header: &[&str], scope: &Scope, ctx: &Ctx) -> (String, String, String) {
+    (scope.element_name(header[0]), scope.node(header[1], ctx), scope.node(header[2], ctx))
+}
+
+/// Substitute bare parameter names while leaving function names and number suffixes alone.
+fn behavioral_params(text: &str, params: &Params) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while !rest.is_empty() {
+        let end = rest.find(|c: char| !c.is_ascii_alphanumeric() && !matches!(c, '_' | '.')).unwrap_or(rest.len());
+        if end == 0 {
+            let c = rest.chars().next().unwrap();
+            out.push(c);
+            rest = &rest[c.len_utf8()..];
+            continue;
+        }
+        let (word, next) = rest.split_at(end);
+        if word.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+            && !word.eq_ignore_ascii_case("time")
+            && !next.trim_start().starts_with('(')
+            && let Some(value) = params.get(&word.to_ascii_lowercase())
+        {
+            out.push_str(&format!("({})", fmt_num(*value)));
+        } else {
+            out.push_str(word);
+        }
+        rest = next;
+    }
+    out
 }
 
 /// The `.option scale` value of `lines` (the last one), if any.

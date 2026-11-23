@@ -220,13 +220,18 @@ A modified nodal analysis engine written in Rust. It supports:
 
 - elements `R C L V I D M`, bipolar transistors `Q` (Gummel-Poon: Early voltages, knee
   currents, non-ideal base currents, junction and diffusion charges, series resistances,
-  temperature through `eg xti xtb`), linear controlled sources `E F G H`, behavioural sources
+  temperature through `eg xti xtb`), level-1 JFETs `J` (`NJF` / `PJF`, gate junctions,
+  capacitances, series resistances, `area` and `m`),
+  controlled sources `E F G H` with linear, `POLY(n)` and `VALUE={expression}` forms, behavioural sources
   `B` (`V=` or `I=` expressions of `v(a)`, `v(a, b)`, `i(vname)` and `time`), mutual inductance
   `K`, voltage and current switches `S` / `W` (`.model sw` / `csw` with `vt vh ron roff` /
   `it ih ron roff`, and an `on` / `off` initial state; with hysteresis a switch closes
   above `vt + vh` and opens below `vt − vh`, changing over 1 % of `vt` rather than in one
-  step), and subcircuit instances `X` (no `POLY` / `VALUE` forms: those decks go to
-  ngspice under **Auto**),
+  step), and subcircuit instances `X`,
+- lossless transmission lines `T` with `Z0`, either `TD` or `F` with optional `NL`, and
+  optional port conditions `IC=v1,i1,v2,i2` for transient `UIC`. Transient analysis
+  interpolates the delayed port waves from accepted time points. Use a smaller maximum
+  step to resolve fast edges,
 - sources: `DC`, `AC mag [phase]`, `PULSE(v1 v2 td tr tf pw per)`,
   `SIN(vo va freq td theta phase)`, `PWL(t v ...)` with `r=` and `td=`,
 - `R` / `C` / `L` with `m` (and `tc1` / `tc2` for resistors), diodes and `Q` with `area` and

@@ -197,15 +197,35 @@ impl DeriveWizard {
         let mut action = None;
         let title = t("Derive New Design");
         crate::float::tool_window(ctx, "derive", title, [560.0, 640.0], &mut open, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| action = self.ui(ui));
+            if let Some(from) = self.from.clone().filter(|_| !self.is_running() && self.outcome.is_none()) {
+                ui.horizontal_wrapped(|ui| {
+                    let ready = self.knobs.iter().any(|k| k.on);
+                    if ui.add_enabled(ready, egui::Button::new(RichText::new(t("Create and size")).strong())).clicked() {
+                        let plan = Plan {
+                            lib: self.lib.clone(),
+                            name: self.name.trim().to_string(),
+                            specs: self.targets.iter().filter(|t| t.on).map(|t| t.spec.clone()).collect(),
+                            vars: self.knobs.iter().filter(|k| k.on).map(|k| k.s.var.clone()).collect(),
+                            max_evals: self.max_evals,
+                        };
+                        self.error.clear();
+                        action = Some(DeriveAction::Start(from, plan, self.layout, self.keep_power));
+                    }
+                    if !self.error.is_empty() {
+                        ui.colored_label(theme::palette(ui.ctx()).danger, &self.error);
+                    }
+                });
+                ui.separator();
+            }
+            egui::ScrollArea::vertical().show(ui, |ui| self.ui(ui));
         });
-        self.open = open;
+        self.open &= open;
         action
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui) -> Option<DeriveAction> {
+    fn ui(&mut self, ui: &mut egui::Ui) {
         let pal = theme::palette(ui.ctx());
-        let from = self.from.clone()?;
+        let Some(from) = self.from.clone() else { return };
         if let Some((cell, o)) = &self.outcome {
             return self.result_ui(ui, &from, cell.clone(), o.clone());
         }
@@ -222,7 +242,7 @@ impl DeriveWizard {
             if ui.button(t("Stop")).clicked() {
                 self.stop.store(true, Ordering::Relaxed);
             }
-            return None;
+            return;
         }
         ui.label(
             RichText::new(tf(
@@ -256,7 +276,7 @@ impl DeriveWizard {
                 ui.label(&tg.spec.name).on_hover_text(tf("{} on the {} analysis", &[&tg.spec.expr, &tg.spec.analysis]));
                 let name = tg.spec.name.clone();
                 for (v, what) in [(&mut tg.spec.min, "minimum"), (&mut tg.spec.max, "maximum")] {
-                    ui.add(egui::TextEdit::singleline(v).desired_width(80.0))
+                    ui.add(egui::TextEdit::singleline(v).min_size(egui::vec2(88.0, 0.0)).desired_width(88.0))
                         .on_hover_text(format!("{name} {}", t(what)))
                         .widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, format!("{name} {what} {k}")));
                 }
@@ -321,30 +341,13 @@ impl DeriveWizard {
             let l = ui.label(t("Simulations at most"));
             ui.add(egui::DragValue::new(&mut self.max_evals).range(10..=1000)).labelled_by(l.id);
         });
-        if !self.error.is_empty() {
-            ui.colored_label(pal.danger, &self.error);
-        }
-        ui.add_space(8.0);
-        let ready = self.knobs.iter().any(|k| k.on);
-        if ui.add_enabled(ready, egui::Button::new(RichText::new(t("Create and size")).strong())).clicked() {
-            let plan = Plan {
-                lib: self.lib.clone(),
-                name: self.name.trim().to_string(),
-                specs: self.targets.iter().filter(|t| t.on).map(|t| t.spec.clone()).collect(),
-                vars: self.knobs.iter().filter(|k| k.on).map(|k| k.s.var.clone()).collect(),
-                max_evals: self.max_evals,
-            };
-            self.error.clear();
-            return Some(DeriveAction::Start(from, plan, self.layout, self.keep_power));
-        }
-        None
     }
 
     pub fn set_error(&mut self, e: String) {
         self.error = e;
     }
 
-    fn result_ui(&mut self, ui: &mut egui::Ui, from: &CellRef, cell: CellRef, o: Outcome) -> Option<DeriveAction> {
+    fn result_ui(&mut self, ui: &mut egui::Ui, from: &CellRef, cell: CellRef, o: Outcome) {
         let pal = theme::palette(ui.ctx());
         let (text, color) = if o.passed {
             (tf("{} meets every target.", &[&cell.to_string()]), pal.ok)
@@ -417,7 +420,6 @@ impl DeriveWizard {
                 self.open = false;
             }
         });
-        None
     }
 }
 

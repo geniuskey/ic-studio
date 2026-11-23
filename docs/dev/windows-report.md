@@ -226,3 +226,32 @@ versions and passed the Python tests. Lockfile refreshed in `930800e`.
   use an empty test Documents location, unset `ICS_EXAMPLES_DIR`, install with
   a scratch `ICS_INSTALL_DIR`, and verify the examples appear under
   `Documents\IC Studio\Examples` before uninstalling.
+
+## OTA trial follow-up
+
+The [participant task](ota5t-trial-task.ko.md) and [observation sheet](ota5t-trial-observations.ko.md)
+use a scratch copy of the analog example with an AC stop frequency of 30 GHz. The CLI
+preflight measured 5.43 GHz for the original and 11.40 GHz for the derived cell at 27 °C.
+The derived cell passed the three-temperature gain, UGF and phase-margin checks, DRC and LVS.
+The original schematic's hash matched that of a fresh fixture.
+
+Three scratch decks also ran on both the built-in engine and ngspice 47. The JFET
+deck used series resistances, gate capacitances and a non-default doping parameter.
+Its largest drain-voltage difference was 9.22 nV in AC. The matched line differed by
+at most 1.13 mV on its delayed 0.5 V pulse. The `POLY` and `VALUE` output voltages
+agreed within 1.23 nV in OP and AC. **Auto** selected the built-in engine for all
+three decks.
+
+The four-thread workspace run passed 827 tests with 9 ignored, including all 106 active
+UI tests. In the first workspace run, `layout_compare_saved` did not reach its compare
+view in the three frames the test allows. It passed by itself, in the four-thread UI
+run, and in the four-thread workspace run.
+
+| Check | Evidence | Status |
+| --- | --- | --- |
+| Desktop OTA task | Native Windows automation found the wizard action clipped below the visible scroll area. The action now sits above that area, and the target inputs have a minimum width. The UI regression test starts the action without scrolling. One novice participant then used the revised app to derive the new cell with step-by-step guidance. The live API assisted with saving. | Automated test passed. Participant result verified on disk at 11.402 GHz against 5.430 GHz. |
+| GDS/OASIS drop | The application lacked a handler for native file-drop events. It now shows an import dialog for supported extensions and uses the existing importer after confirmation. The UI test sent a drop event, confirmed import, and checked the resulting cell layouts. | Automated test passed. Native Explorer drag pending. |
+| IME, HiDPI and clipboard | The Windows profile had a Korean IME installed and the isolated Korean UI rendering test passed. Computer Use stopped on physical Escape before native input and scaling interactions. | Pending native input and display checks. |
+| SmartScreen | Verified the official v0.2.11 Windows executable against the published SHA-256. Windows reported `NotSigned`. The scratch file has an Internet-zone marker. | Explorer launch and prompt observation pending. |
+
+[Published v0.2.11 assets and hashes](https://github.com/geniuskey/ic-studio/releases/expanded_assets/v0.2.11)

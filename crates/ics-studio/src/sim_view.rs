@@ -291,7 +291,9 @@ pub fn setup_panel(
             ui.label(RichText::new("✖ This PDK's models may need ngspice (Auto picks it)").small().color(pal.danger));
         }
         _ => {
-            ui.label(RichText::new("MNA engine · R C L V I D, MOS (L1, BSIM4), BJT, E F G H").small().color(pal.text_weak));
+            ui.label(
+                RichText::new("MNA engine · R C L V I D, MOS (L1, BSIM4), BJT, JFET, T, E F G H").small().color(pal.text_weak),
+            );
         }
     }
     if let Some(m) = models.filter(|m| !m.corners.is_empty()) {

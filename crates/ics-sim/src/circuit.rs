@@ -414,6 +414,23 @@ pub enum Element {
         model: BjtModel,
         area: f64,
     },
+    /// Level-1 JFET channel. Gate junctions and ohmic resistances use separate device stamps.
+    J {
+        name: String,
+        d: Node,
+        g: Node,
+        s: Node,
+        model: JfetModel,
+        area: f64,
+    },
+    /// One lossless propagation mode between two differential ports.
+    T {
+        name: String,
+        ports: [[Node; 2]; 2],
+        impedance: f64,
+        delay: f64,
+        initial: Option<[f64; 4]>,
+    },
     /// A behavioural source between `a` (+) and `b`: a voltage (`v`) or a current from `a` to
     /// `b` given by `expr`, whose variables `__x0`, `__x1`, ... are `refs` (and `time`).
     B {
@@ -455,6 +472,29 @@ pub enum Ref {
     /// `i(vname)`: the current through a voltage source.
     I(String),
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct JfetModel {
+    pub p_channel: bool,
+    pub threshold: f64,
+    pub beta: f64,
+    pub lambda: f64,
+    pub doping: f64,
+    pub potential: f64,
+    pub kf: f64,
+    pub af: f64,
+}
+
+struct JfetCard {
+    channel: JfetModel,
+    gate: DiodeModel,
+    capacitance: [f64; 2],
+    rd: f64,
+    rs: f64,
+}
+
+const JFET_PARAMS: &[&str] =
+    &["level", "vto", "beta", "lambda", "b", "pb", "rd", "rs", "is", "cgd", "cgs", "fc", "tnom", "xti", "eg", "kf", "af"];
 
 /// Voltage- (`sw`) or current-controlled (`csw`) switch model.
 #[derive(Debug, Clone, PartialEq)]
@@ -596,6 +636,8 @@ impl Element {
             | Element::M { name, .. }
             | Element::Ctrl { name, .. }
             | Element::Q { name, .. }
+            | Element::J { name, .. }
+            | Element::T { name, .. }
             | Element::B { name, .. }
             | Element::K { name, .. }
             | Element::S { name, .. } => name,
@@ -717,44 +759,114 @@ fn series(c: &mut Circuit, node: &mut impl FnMut(&str, &mut Circuit) -> Node, de
 
 /// `expr` with each `v(a)`, `v(a, b)` and `i(vname)` replaced by a variable `__x<k>`, and the
 /// references in that order. `node` resolves node names.
-fn behavioural_refs(expr: &str, node: &mut dyn FnMut(&str) -> Node) -> Result<(String, Vec<Ref>), String> {
+/// Rewrite voltage and current references without interpreting the rest of the expression.
+pub(crate) fn map_signal_refs(
+    expr: &str,
+    mut map: impl FnMut(char, &[&str]) -> String,
+    mut text: impl FnMut(&str) -> String,
+) -> Result<String, String> {
     let mut out = String::new();
-    let mut refs: Vec<Ref> = vec![];
-    let b = expr.as_bytes();
     let mut i = 0;
-    while i < b.len() {
-        let ch = b[i] as char;
-        let prev_ident = i > 0 && ((b[i - 1] as char).is_ascii_alphanumeric() || b[i - 1] == b'_');
+    let mut start = 0;
+    while i < expr.len() {
+        let ch = expr[i..].chars().next().unwrap();
+        let prev_ident = expr[..i].chars().next_back().is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
         let head = ch.to_ascii_lowercase();
         if (head == 'v' || head == 'i') && !prev_ident && expr[i + 1..].trim_start().starts_with('(') {
             let open = i + 1 + expr[i + 1..].find('(').expect("checked");
             let close = open + expr[open..].find(')').ok_or("missing ')'")?;
             let args: Vec<&str> = expr[open + 1..close].split(',').map(str::trim).collect();
-            let r = match (head, args.as_slice()) {
-                ('v', [p]) => Ref::V(node(p), 0),
-                ('v', [p, n]) => Ref::V(node(p), node(n)),
-                ('i', [v]) => Ref::I(v.to_ascii_lowercase()),
-                _ => return Err(format!("cannot read '{}'", &expr[i..=close])),
-            };
-            let k = match refs.iter().position(|q| *q == r) {
-                Some(k) => k,
-                None => {
-                    refs.push(r);
-                    refs.len() - 1
-                }
-            };
-            out += &format!("__x{k}");
+            if args.iter().any(|a| a.is_empty()) || !(args.len() == 1 || head == 'v' && args.len() == 2) {
+                return Err(format!("cannot read '{}'", &expr[i..=close]));
+            }
+            out.push_str(&text(&expr[start..i]));
+            out.push_str(&map(head, &args));
             i = close + 1;
+            start = i;
             continue;
         }
-        out.push(ch);
-        i += 1;
+        i += ch.len_utf8();
     }
+    out.push_str(&text(&expr[start..]));
+    Ok(out)
+}
+
+fn behavioural_refs(expr: &str, node: &mut dyn FnMut(&str) -> Node) -> Result<(String, Vec<Ref>), String> {
+    let mut refs = vec![];
+    let out = map_signal_refs(
+        expr,
+        |head, args| {
+            let r = if head == 'v' {
+                Ref::V(node(args[0]), args.get(1).map_or(0, |n| node(n)))
+            } else {
+                Ref::I(args[0].to_ascii_lowercase())
+            };
+            let k = refs.iter().position(|q| *q == r).unwrap_or_else(|| {
+                refs.push(r);
+                refs.len() - 1
+            });
+            format!("__x{k}")
+        },
+        str::to_owned,
+    )?;
     // Check that the expression evaluates (unknown names, syntax).
     let mut probe: crate::expr::Params = (0..refs.len()).map(|k| (format!("__x{k}"), 0.5)).collect();
     probe.insert("time".into(), 0.0);
     crate::expr::eval(&out, &probe).map_err(|e| e.to_string())?;
     Ok((out, refs))
+}
+
+/// The dimension and remaining fields of a legacy POLY declaration.
+pub(crate) fn poly_fields(body: &str) -> Result<(usize, Vec<&str>), String> {
+    let body = body[4..].trim_start();
+    let body = body.strip_prefix('(').ok_or("expected POLY(dimension)")?;
+    let (dimension, fields) = body.split_once(')').ok_or("expected POLY(dimension)")?;
+    let n = dimension.trim().parse::<usize>().ok().filter(|n| *n > 0).ok_or("invalid POLY dimension")?;
+    let fields = fields.split(|c: char| c.is_whitespace() || matches!(c, ',' | '(' | ')')).filter(|s| !s.is_empty()).collect();
+    Ok((n, fields))
+}
+
+pub(crate) fn source_keyword(body: &str) -> String {
+    body.split(|c: char| c.is_whitespace() || c == '(' || c == '=').next().unwrap_or_default().to_ascii_lowercase()
+}
+
+fn polynomial(body: &str, current: bool) -> Result<String, String> {
+    let (n, fields) = poly_fields(body)?;
+    let controls = n
+        .checked_mul(if current { 1 } else { 2 })
+        .filter(|k| *k < fields.len())
+        .ok_or("missing POLY controls or coefficients")?;
+    let inputs: Vec<_> = if current {
+        fields[..controls].iter().map(|v| format!("i({v})")).collect()
+    } else {
+        fields[..controls].chunks_exact(2).map(|ns| format!("v({},{})", ns[0], ns[1])).collect()
+    };
+    let mut powers = vec![];
+    let mut terms = vec![];
+    for field in &fields[controls..] {
+        let coefficient =
+            parse_spice(field).filter(|v| v.is_finite()).ok_or_else(|| format!("bad POLY coefficient '{field}'"))?;
+        if coefficient != 0.0 {
+            let mut term = format!("({coefficient:e})");
+            let mut start = 0;
+            while start < powers.len() {
+                let input: usize = powers[start];
+                let count = powers[start..].iter().take_while(|&&v| v == input).count();
+                term += &format!("*{}^{count}", inputs[input]);
+                start += count;
+            }
+            terms.push(term);
+        }
+        // Graded order: x1^2, x1*x2, ..., x2^2, ... then the next degree.
+        if let Some(i) = powers.iter().rposition(|&v| v + 1 < n) {
+            let next = powers[i] + 1;
+            powers[i..].fill(next);
+        } else {
+            powers.push(0);
+            powers.fill(0);
+        }
+    }
+    Ok(if terms.is_empty() { "0".into() } else { terms.join("+") })
 }
 
 fn ignored_params(p: &HashMap<String, f64>, known: &[&str]) -> Vec<String> {
@@ -780,6 +892,45 @@ fn kv_params(toks: &[String]) -> HashMap<String, f64> {
         }
     }
     m
+}
+
+fn transmission_line(fields: &[&str]) -> Result<(f64, f64, Option<[f64; 4]>), String> {
+    let fields = tokens(&fields.join(" "));
+    let mut impedance = None;
+    let mut delay = None;
+    let mut frequency = None;
+    let mut length = 0.25;
+    let mut initial = None;
+    let mut i = 0;
+    while let Some(key) = fields.get(i) {
+        i += 1;
+        let key = key.to_ascii_lowercase();
+        let number = |i| {
+            fields
+                .get(i)
+                .and_then(|s: &String| parse_spice(s))
+                .filter(|v| v.is_finite())
+                .ok_or_else(|| format!("invalid {key} value"))
+        };
+        match key.as_str() {
+            "z0" => impedance = Some(number(i)?),
+            "td" => delay = Some(number(i)?),
+            "f" => frequency = Some(number(i)?),
+            "nl" => length = number(i)?,
+            "ic" => {
+                initial = Some([number(i)?, number(i + 1)?, number(i + 2)?, number(i + 3)?]);
+                i += 3;
+            }
+            _ => return Err(format!("unsupported transmission line parameter '{key}'")),
+        }
+        i += 1;
+    }
+    let impedance = impedance.filter(|v| *v > 0.0).ok_or("Z0 must be positive")?;
+    let delay = delay
+        .or_else(|| frequency.filter(|f| *f > 0.0).map(|f| length / f))
+        .filter(|t| t.is_finite() && *t > 0.0)
+        .ok_or("specify a positive TD or F and NL")?;
+    Ok((impedance, delay, initial))
 }
 
 fn parse_source(rest: &str) -> Result<Source, String> {
@@ -957,6 +1108,7 @@ pub fn deck_analyses(deck: &str) -> Vec<Analysis> {
 }
 
 pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
+    let err = |line: usize, msg: String| SimError::Parse { line, msg };
     let mut c = Circuit { nodes: vec!["0".into()], temp: 27.0, ..Default::default() };
     c.title = deck.lines().next().unwrap_or("").trim_start_matches('*').trim().to_string();
     let mut node_map: HashMap<String, usize> = HashMap::new();
@@ -981,6 +1133,7 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
     // First pass: models.
     let mut diode_models: HashMap<String, DiodeModel> = HashMap::new();
     let mut bjt_models: HashMap<String, BjtModel> = HashMap::new();
+    let mut jfet_models: HashMap<String, JfetCard> = HashMap::new();
     let mut switch_models: HashMap<String, (SwitchModel, bool)> = HashMap::new();
     let mut mos_models: HashMap<String, MosModel> = HashMap::new();
     let mut in_control = false;
@@ -1008,6 +1161,7 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
             "d" => Some(DIODE_PARAMS),
             "nmos" | "pmos" => Some(MOS_PARAMS),
             "npn" | "pnp" => Some(BJT_PARAMS),
+            "njf" | "pjf" => Some(JFET_PARAMS),
             "sw" => Some(&["vt", "vh", "ron", "roff"][..]),
             "csw" => Some(&["it", "ih", "ron", "roff"][..]),
             _ => None,
@@ -1122,6 +1276,52 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
                 };
                 bjt_models.insert(name, q);
             }
+            "njf" | "pjf" => {
+                if g("level", 1.0) != 1.0 {
+                    return Err(err(*model_line, format!("model {name}: JFET level={} requires ngspice", g("level", 1.0))));
+                }
+                let vj = g("pb", 1.0);
+                let threshold = g("vto", -2.0);
+                let doping = g("b", 1.0);
+                if vj <= 0.0 || (doping != 1.0 && vj == threshold) {
+                    return Err(err(*model_line, format!("model {name}: invalid JFET junction potential")));
+                }
+                jfet_models.insert(
+                    name,
+                    JfetCard {
+                        channel: JfetModel {
+                            p_channel: ty == "pjf",
+                            threshold,
+                            beta: g("beta", 1e-4),
+                            lambda: g("lambda", 0.0),
+                            doping,
+                            potential: vj,
+                            kf: g("kf", 0.0),
+                            af: g("af", 1.0),
+                        },
+                        gate: DiodeModel {
+                            is: g("is", 1e-14),
+                            n: 1.0,
+                            cjo: 0.0,
+                            vj,
+                            m: 0.5,
+                            fc: g("fc", 0.5).clamp(0.0, 0.95),
+                            tt: 0.0,
+                            rs: 0.0,
+                            bv: f64::INFINITY,
+                            ibv: 0.0,
+                            kf: 0.0,
+                            af: 1.0,
+                            eg: g("eg", 1.11),
+                            xti: g("xti", 3.0),
+                            tnom: g("tnom", 27.0),
+                        },
+                        capacitance: [g("cgd", 0.0), g("cgs", 0.0)],
+                        rd: g("rd", 0.0),
+                        rs: g("rs", 0.0),
+                    },
+                );
+            }
             "d" => {
                 let d = DiodeModel {
                     is: g("is", 1e-14),
@@ -1186,7 +1386,6 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
         }
     }
 
-    let err = |line: usize, msg: String| SimError::Parse { line, msg };
     in_control = false;
     for (ln, l) in &lines {
         let ln = *ln;
@@ -1437,6 +1636,52 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
                 let en = series(&mut c, &mut node, &name, "e", en, model.re / area);
                 Element::Q { name, c: cn, b: bn, e: en, model, area }
             }
+            'j' => {
+                need(5)?;
+                let card = jfet_models
+                    .get(&t[4].to_ascii_lowercase())
+                    .ok_or_else(|| err(ln, format!("unknown JFET model '{}'", t[4])))?;
+                let rest = tokens(&t[5..].join(" "));
+                let positional = rest.first().and_then(|s| parse_spice(s));
+                let p = kv_params(&rest[usize::from(positional.is_some())..]);
+                let scale = p.get("area").copied().or(positional).unwrap_or(1.0);
+                let mult = p.get("m").copied().unwrap_or(1.0);
+                let area = scale * mult;
+                if !area.is_finite() || scale <= 0.0 || mult <= 0.0 || area == 0.0 {
+                    return Err(err(ln, format!("{name}: area and m must be positive")));
+                }
+                if let Some(parameter) = rest
+                    .iter()
+                    .skip(usize::from(positional.is_some()))
+                    .step_by(2)
+                    .find(|p| !matches!(p.to_ascii_lowercase().as_str(), "area" | "m"))
+                {
+                    c.warnings.push(format!("{name}: instance parameter '{parameter}' is not evaluated by the built-in engine"));
+                }
+                let (d, g, s) = (node(t[1], &mut c), node(t[2], &mut c), node(t[3], &mut c));
+                let d = series(&mut c, &mut node, &name, "d", d, card.rd / area);
+                let s = series(&mut c, &mut node, &name, "s", s, card.rs / area);
+                for ((terminal, suffix), cjo) in [(d, "gd"), (s, "gs")].into_iter().zip(card.capacitance) {
+                    if terminal == g {
+                        continue;
+                    }
+                    let (a, k) = if card.channel.p_channel { (terminal, g) } else { (g, terminal) };
+                    let mut model = card.gate.clone();
+                    model.is *= area;
+                    model.cjo = cjo * area;
+                    c.elements.push(Element::D { name: format!("{name}#{suffix}"), a, k, model });
+                }
+                Element::J { name, d, g, s, model: card.channel.clone(), area }
+            }
+            't' => {
+                need(6)?;
+                let (impedance, delay, initial) = transmission_line(&t[5..]).map_err(|m| err(ln, format!("{name}: {m}")))?;
+                let ports = [[node(t[1], &mut c), node(t[2], &mut c)], [node(t[3], &mut c), node(t[4], &mut c)]];
+                if ports.iter().any(|[p, n]| p == n) {
+                    return Err(err(ln, format!("{name}: each port requires two distinct nodes")));
+                }
+                Element::T { name, ports, impedance, delay, initial }
+            }
             'b' => {
                 // B n+ n- V=expr | I=expr
                 need(4)?;
@@ -1479,17 +1724,25 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
                 }
             }
             'e' | 'f' | 'g' | 'h' => {
-                // Linear forms only: E/G n+ n- nc+ nc- gain, F/H n+ n- vname gain.
-                if t.iter().skip(3).any(|w| {
-                    let w = w.to_ascii_lowercase();
-                    w.starts_with("poly") || w.starts_with("value") || w.starts_with("table") || w.starts_with("laplace")
-                }) {
-                    return Err(err(
-                        ln,
-                        format!("{name}: POLY / VALUE / TABLE sources are not supported by the built-in engine"),
-                    ));
-                }
+                need(4)?;
                 let (a, b) = (node(t[1], &mut c), node(t[2], &mut c));
+                let body = t[3..].join(" ");
+                let keyword = source_keyword(&body);
+                if matches!(keyword.as_str(), "table" | "laplace") {
+                    return Err(err(ln, format!("{name}: {keyword} sources are not supported by the built-in engine")));
+                }
+                if matches!(keyword.as_str(), "poly" | "value") {
+                    let invalid = |m| err(ln, format!("{name}: {m}"));
+                    let expression = if keyword == "poly" {
+                        polynomial(&body, matches!(first, 'f' | 'h')).map_err(invalid)?
+                    } else {
+                        body[5..].trim_start().strip_prefix('=').unwrap_or(&body[5..]).trim().to_owned()
+                    };
+                    let expression = expression.trim_matches(|ch| matches!(ch, '{' | '}' | '\'' | '"'));
+                    let (expr, refs) = behavioural_refs(expression, &mut |n| node(n, &mut c)).map_err(invalid)?;
+                    c.elements.push(Element::B { name, a, b, voltage: matches!(first, 'e' | 'h'), expr, refs });
+                    continue;
+                }
                 let kind = match first {
                     'e' => CtrlKind::E,
                     'f' => CtrlKind::F,
@@ -1508,7 +1761,7 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
             _ => {
                 return Err(err(
                     ln,
-                    format!("unsupported element '{}' (built-in engine supports R C L V I D M Q E F G H B K S W)", t[0]),
+                    format!("unsupported element '{}' (built-in engine supports R C L V I D M Q J T E F G H B K S W)", t[0]),
                 ));
             }
         };

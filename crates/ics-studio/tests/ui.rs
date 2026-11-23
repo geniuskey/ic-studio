@@ -1971,6 +1971,18 @@ fn import_gds_with_virtuoso_layer_map() {
 
 #[test]
 fn import_oasis() {
+    use egui_kittest::kittest::Queryable as _;
+
+    #[derive(Debug)]
+    struct LayoutDrop(std::path::PathBuf);
+    impl egui::DroppedFile for LayoutDrop {
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+        fn bytes(&self) -> Result<Vec<u8>, String> {
+            std::fs::read(&self.0).map_err(|err| err.to_string())
+        }
+    }
     let src = ics_core::examples::demo_project();
     let (top, _) = src.all_cells().find(|(_, c)| c.name == "pixel_array").unwrap();
     let dir = std::env::temp_dir().join(format!("ics-ui-oasis-{}", std::process::id()));
@@ -1985,7 +1997,10 @@ fn import_oasis() {
         .wgpu()
         .build_eframe(|cc| IcStudio::new(cc, args));
     h.run_steps(4);
-    h.state_mut().command(Command::ImportGds(Some(file)));
+    h.input_mut().dropped_files.push(std::sync::Arc::new(LayoutDrop(file)));
+    h.run_steps(3);
+    assert!(!h.state().project().unwrap().libraries.iter().any(|l| l.name == "pixels"));
+    h.get_by_label("Import").click();
     h.run_steps(6);
     settle(&mut h, "17_import_oasis");
 
@@ -3646,8 +3661,6 @@ fn derive_new_design() {
     h.run_steps(4);
     h.get_by_label("W of M1, M2 (input pair)");
     shot(&mut h, "51_derive_wizard");
-    h.get_by_label("Create and size").scroll_to_me();
-    h.run_steps(6);
     h.get_by_label("Create and size").click();
     let target = CellRef::new("work", "ota5t_v2");
     let mut done = false;

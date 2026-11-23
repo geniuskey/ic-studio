@@ -428,6 +428,7 @@ enum Dialog {
         error: String,
     },
     ConfirmDeleteLibrary(String),
+    ImportDroppedLayout(Vec<PathBuf>),
     Unsaved {
         then: Box<Command>,
     },
@@ -5485,6 +5486,23 @@ impl IcStudio {
         let modal = egui::Modal::new(egui::Id::unique("dialog")).show(ctx, |ui| {
             ui.set_min_width(380.0);
             match &mut dlg {
+                Dialog::ImportDroppedLayout(paths) => {
+                    ui.heading(t("Import GDSII / OASIS"));
+                    egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
+                        for path in paths.iter() {
+                            ui.label(path.file_name().unwrap_or_default().to_string_lossy());
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button(t("Import")).clicked() {
+                            self.queue.extend(paths.drain(..).map(|path| Command::ImportGds(Some(path))));
+                            close = true;
+                        }
+                        if ui.button(t("Cancel")).clicked() {
+                            close = true;
+                        }
+                    });
+                }
                 Dialog::NewProject { name, dir, demo, error } => {
                     ui.heading(t("New project"));
                     ui.add_space(8.0);
@@ -7454,6 +7472,22 @@ impl eframe::App for IcStudio {
         if ctx.input(|i| i.viewport().close_requested()) && self.dirty && !self.allow_close {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.dialog = Some(Dialog::Unsaved { then: Box::new(Command::Quit) });
+        }
+        if self.project.is_some() && self.dialog.is_none() && self.palette.is_none() {
+            let paths: Vec<_> = ctx.input(|i| {
+                i.raw
+                    .dropped_files
+                    .iter()
+                    .filter_map(|file| {
+                        let path = file.path();
+                        let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+                        matches!(ext.as_str(), "gds" | "gds2" | "gdsii" | "oas" | "oasis").then(|| path.to_owned())
+                    })
+                    .collect()
+            });
+            if !paths.is_empty() {
+                self.dialog = Some(Dialog::ImportDroppedLayout(paths));
+            }
         }
         if let Some(ev) = self.updater.poll() {
             let verbose = self.updater.verbose;
