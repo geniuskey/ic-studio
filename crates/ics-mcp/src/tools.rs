@@ -1046,7 +1046,8 @@ pub fn definitions() -> Vec<Value> {
                 }, "required": ["name"]}},
                 "layout": {"type": "boolean", "description": "Build and check the layout (default true)."},
                 "max_evals": {"type": "integer", "minimum": 10, "description": "Simulation budget (default 80)."},
-                "dry_run": {"type": "boolean"}
+                "dry_run": {"type": "boolean"},
+                "keep_power": {"type": "boolean", "description": "Keep the supply current within 0.5x to 2x of the original's (default true) unless a target names idd."}
             }),
             &["cell"],
         ),
@@ -2664,7 +2665,8 @@ impl State {
         }
         let layout = a.opt_bool("layout")?.unwrap_or(true);
         let p = self.project_mut()?;
-        let (to, out) = ics_sim::derive::derive(p, &from, &plan, layout, &opts)?;
+        let keep_power = a.opt_bool("keep_power")?.unwrap_or(true);
+        let (to, out) = ics_sim::derive::derive(p, &from, &plan, layout, keep_power, &opts)?;
         self.dirty = true;
         let num = |r: &Result<f64, String>| match r {
             Ok(v) => json!(v),
@@ -2680,6 +2682,7 @@ impl State {
             "cell": to.to_string(), "from": from.to_string(), "passed": out.passed, "simulations": out.evals,
             "specs": specs, "sizes": out.values.iter().map(|(t, v)| json!({"target": t, "value": v})).collect::<Vec<_>>(),
             "parameters": params, "layout": out.layout, "layout_clean": out.layout_clean,
+            "health": out.health.iter().map(|f| json!({"level": if f.warn { "check" } else { "note" }, "text": f.text})).collect::<Vec<_>>(),
         }))
     }
 

@@ -7314,8 +7314,14 @@ impl IcStudio {
 
     fn derive_window(&mut self, ctx: &egui::Context) {
         use crate::derive_view::DeriveAction;
-        if let Some(DeriveAction::Start(from, plan, _layout)) = self.derive.window(ctx) {
+        if let Some(DeriveAction::Start(from, mut plan, _layout, keep_power)) = self.derive.window(ctx) {
             let Some(p) = self.project.as_mut() else { return };
+            if keep_power
+                && !plan.specs.iter().any(|s| s.name == "idd")
+                && let Some(g) = ics_sim::derive::power_guard(p, &from)
+            {
+                plan.specs.push(g);
+            }
             match ics_core::derive::create(p, &from, &plan) {
                 Ok(to) => {
                     self.mark_dirty();

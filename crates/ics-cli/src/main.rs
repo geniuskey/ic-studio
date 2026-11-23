@@ -623,6 +623,10 @@ enum Cmd {
         /// Only print the suggested parameters and specs.
         #[arg(long)]
         dry_run: bool,
+        /// Let the supply current change freely (by default it stays within 0.5x to 2x of the
+        /// original's, so a target is not met by starving or flooding the circuit).
+        #[arg(long)]
+        free_power: bool,
     },
     /// Copy a cell as a new cell (schematic, layout, simulation setup, specs and notes) to start
     /// a new design from a finished one, and save.
@@ -2906,7 +2910,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 return Err("no evaluated point meets every spec".into());
             }
         }
-        Cmd::Derive { project, cell, name, targets, no_layout, max_evals, dry_run } => {
+        Cmd::Derive { project, cell, name, targets, no_layout, max_evals, dry_run, free_power } => {
             let mut p = Project::open(&project).map_err(|e| e.to_string())?;
             let from = resolve(&p, &cell)?;
             let c = p.cell(&from).ok_or("no such cell")?;
@@ -2965,7 +2969,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 max_evals,
             };
             let opts = SimOptions { deck_dir: Some(project.clone()), ..Default::default() };
-            let (to, out) = ics_sim::derive::derive(&mut p, &from, &plan, !no_layout, &opts)?;
+            let (to, out) = ics_sim::derive::derive(&mut p, &from, &plan, !no_layout, !free_power, &opts)?;
             p.save().map_err(|e| e.to_string())?;
             print!("{}", out.text(&to));
             if !out.passed {

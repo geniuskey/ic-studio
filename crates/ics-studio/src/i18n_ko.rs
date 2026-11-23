@@ -503,6 +503,12 @@ pub const KO: &[(&str, &str)] = &[
     ("Filter", "필터"),
     ("cell name", "셀 이름"),
     ("Search commands…", "명령 검색…"),
+    ("Keep the supply current near the original (0.5x to 2x)", "공급 전류를 원본 근처로 유지 (0.5~2배)"),
+    (
+        "Without it the optimizer may meet a target by starving the circuit of current (slow) or flooding it (power). An idd target replaces it.",
+        "이 옵션이 없으면 최적화기가 회로에 전류를 거의 주지 않거나(느려짐) 너무 많이 줘서(전력 증가) 목표를 맞출 수 있습니다. idd 목표를 직접 넣으면 그것이 대신합니다.",
+    ),
+    ("What else changed", "그 밖에 달라진 것"),
 ];
 
 /// Sentences translated inside longer texts (assembled advice).
@@ -518,6 +524,10 @@ pub const SENTENCES: &[(&str, &str)] = &[
     (
         "Too little phase margin: in feedback the circuit will ring or oscillate. Add or enlarge the compensation capacitor (a Miller capacitor between the stages of a two-stage amplifier), reduce the load capacitance, or lower the gain-bandwidth (less input-pair current).",
         "위상 여유가 너무 작습니다: 피드백을 걸면 회로가 울리거나 발진합니다. 보상 커패시터를 추가하거나 키우고(2단 증폭기라면 단 사이의 밀러 커패시터), 부하 커패시턴스를 줄이거나, 이득-대역폭을 낮추세요(입력쌍 전류 감소).",
+    ),
+    (
+        "channel lengths changed, and the generic 180 nm models are SPICE level 1, whose output resistance does not depend on L: in silicon a longer L gives more gain and a shorter one less. Confirm with a PDK model.",
+        "채널 길이가 바뀌었습니다. 범용 180 nm 모델은 SPICE level 1이라 출력 저항이 L에 따라 변하지 않습니다: 실제 실리콘에서는 L이 길면 이득이 커지고 짧으면 작아집니다. PDK 모델로 확인하세요.",
     ),
     (
         "Too slow: raise the bias current (e.g. the tail current source of a differential pair), widen the input transistors for more transconductance gm, or reduce the load capacitance. Speed costs power or gain.",
@@ -620,6 +630,28 @@ pub const TEMPLATES: &[(&str, &str)] = &[
     ("{} DRC violation(s) left (Ctrl+. in the layout offers fixes)", "DRC 위반 {}건 남음 (레이아웃에서 Ctrl+.로 수정안 보기)"),
     ("LVS: {} difference(s) (Verify > Run LVS lists them)", "LVS: 차이 {}건 (검증 > LVS 실행에서 목록 확인)"),
     ("routing failed: {}", "배선 실패: {}"),
+    (
+        "{} left saturation (now {}): as an amplifier, load or current source it no longer works as intended",
+        "{}이(가) 포화 영역을 벗어났습니다(현재 {}): 증폭기, 부하, 전류원이라면 더 이상 의도대로 동작하지 않습니다",
+    ),
+    ("{} is now only {} mV from leaving saturation", "{}이(가) 이제 포화 영역 경계까지 {} mV밖에 남지 않았습니다"),
+    (
+        "supply power {} -> {} W ({}x less): lower current usually also means a slower circuit",
+        "전원 전력 {} -> {} W ({}배 감소): 전류가 줄면 보통 회로도 느려집니다",
+    ),
+    ("supply power {} -> {} W ({}x)", "전원 전력 {} -> {} W ({}배)"),
+    (
+        "{} ({}) have {}x less gate area: random mismatch (offset) about {}x larger",
+        "{} ({})의 게이트 면적이 {}배 줄었습니다: 랜덤 부정합(오프셋)이 약 {}배 커집니다",
+    ),
+    (
+        "{} ({}) got a shorter L ({} -> {}): lower output resistance and worse matching than the original",
+        "{} ({})의 L이 짧아졌습니다({} -> {}): 원본보다 출력 저항이 낮고 정합이 나빠집니다",
+    ),
+    (
+        "bias current of {}: {} -> {} A; speed and power follow it",
+        "{}의 바이어스 전류: {} -> {} A. 속도와 전력이 이를 따라갑니다",
+    ),
 ];
 
 /// Korean design notes of the demo cells (see `ics_core::examples::design_notes`).

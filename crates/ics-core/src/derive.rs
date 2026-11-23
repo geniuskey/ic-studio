@@ -99,7 +99,7 @@ fn why(role: Role, param: &str) -> &'static str {
 /// The parameters to size for a new target: one W per group of matched transistors (devices of
 /// the same type and size sharing source and either gate or source with an equal partner), and
 /// an L for groups drawn longer than the minimum (they were made long on purpose: gain,
-/// matching). Matched devices share one variable (`M1.w,M2.w`), so they stay equal.
+/// matching; the L may grow from the original but not shrink). Matched devices share one variable (`M1.w,M2.w`), so they stay equal.
 ///
 /// When a spec measures a current, the output side of a current mirror gets a W of its own:
 /// the mirror ratio sets the copied current, so it must be free to change.
@@ -161,7 +161,9 @@ pub fn suggest(sch: &Schematic, tech: &Tech, specs: &[Spec]) -> Vec<Suggestion> 
             if long_only && cur < lmin * 1.2 {
                 continue;
             }
-            let (lo, hi) = if param == "w" { (cur / 4.0, cur * 4.0) } else { (cur / 2.0, cur * 4.0) };
+            // A device drawn longer than the minimum was made long on purpose (gain, matching,
+            // a steady current): its L may grow but not shrink below the original.
+            let (lo, hi) = if param == "w" { (cur / 4.0, cur * 4.0) } else { (cur, cur * 4.0) };
             let var = OptVar {
                 target: names.iter().map(|n| format!("{n}.{param}")).collect::<Vec<_>>().join(","),
                 min: crate::units::format_eng(lo.max(lo_min), ""),
@@ -196,6 +198,15 @@ pub fn spec_presets(sch: &Schematic, sim: &SimSetup, specs: &[Spec]) -> Vec<Spec
         max: String::new(),
     };
     let mut v = vec![];
+    // Supply current: the DC source driving the supply net, so power can be capped.
+    let conn = connectivity::extract(sch);
+    if enabled("op")
+        && let Some(src) = sch.instances.iter().find(|i| {
+            i.kind == DeviceKind::VSource && conn.net_of(i.id, "p").is_some_and(|n| n.to_ascii_lowercase().starts_with("vdd"))
+        })
+    {
+        v.push(mk("op", "idd", &format!("-i({})", src.name.to_ascii_lowercase())));
+    }
     if enabled("ac") && has_net("out") {
         v.push(mk("ac", "gain_db", "max(db(v(out)))"));
         v.push(mk("ac", "ugf", "ugf(v(out))"));
@@ -246,6 +257,9 @@ pub fn create(p: &mut crate::Project, from: &crate::CellRef, plan: &Plan) -> Res
     let to = p.copy_cell(from, &plan.lib, plan.name.trim())?;
     let c = p.cell_mut(&to).expect("copied");
     c.sim.sweep.specs = plan.specs.clone();
+    for s in &plan.specs {
+        c.sim.set_enabled(&s.analysis, true);
+    }
     c.sim.optimize.vars = plan.vars.clone();
     c.sim.optimize.max_evals = plan.max_evals;
     let note = derived_note(&from.to_string(), &plan.specs);
@@ -277,6 +291,7 @@ mod tests {
         assert!(s.iter().all(|s| s.var.log && !s.var.min.is_empty()));
         let presets = spec_presets(&sch, &sim, &specs);
         assert!(presets.iter().any(|p| p.name == "bw"));
+        assert!(presets.iter().any(|p| p.name == "idd" && p.analysis == "op"), "{presets:?}");
         assert!(!presets.iter().any(|p| p.name == "gain_db"), "already a spec");
     }
 

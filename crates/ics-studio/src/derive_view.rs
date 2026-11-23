@@ -41,8 +41,9 @@ fn knob_title(s: &Suggestion) -> String {
 }
 
 pub enum DeriveAction {
-    /// Create the copy and start sizing it.
-    Start(CellRef, Plan, bool),
+    /// Create the copy and start sizing it: (reference, plan, build the layout, keep the
+    /// supply current near the reference's).
+    Start(CellRef, Plan, bool, bool),
 }
 
 #[derive(Default)]
@@ -56,6 +57,7 @@ pub struct DeriveWizard {
     knobs: Vec<Knob>,
     has_layout: bool,
     layout: bool,
+    keep_power: bool,
     max_evals: usize,
     error: String,
     /// The copy being sized.
@@ -98,6 +100,7 @@ impl DeriveWizard {
                 .collect(),
             has_layout: c.layout.is_some(),
             layout: c.layout.is_some(),
+            keep_power: true,
             max_evals: 80,
             ..Default::default()
         };
@@ -271,6 +274,11 @@ impl DeriveWizard {
             .on_hover_text(t(
                 "Place like the original (or generate from the schematic if the new sizes do not fit), route, fix DRC, run LVS",
             ));
+        let has_idd = self.targets.iter().any(|tg| tg.on && tg.spec.name == "idd");
+        ui.add_enabled(!has_idd, egui::Checkbox::new(&mut self.keep_power, t("Keep the supply current near the original (0.5x to 2x)")))
+            .on_hover_text(t(
+                "Without it the optimizer may meet a target by starving the circuit of current (slow) or flooding it (power). An idd target replaces it.",
+            ));
         ui.horizontal(|ui| {
             let l = ui.label(t("Simulations at most"));
             ui.add(egui::DragValue::new(&mut self.max_evals).range(10..=1000)).labelled_by(l.id);
@@ -289,7 +297,7 @@ impl DeriveWizard {
                 max_evals: self.max_evals,
             };
             self.error.clear();
-            return Some(DeriveAction::Start(from, plan, self.layout));
+            return Some(DeriveAction::Start(from, plan, self.layout, self.keep_power));
         }
         None
     }
@@ -339,6 +347,17 @@ impl DeriveWizard {
             theme::section(ui, t("Layout"));
             for l in &o.layout {
                 ui.label(crate::i18n::t_text(l));
+            }
+        }
+        if !o.health.is_empty() {
+            ui.add_space(8.0);
+            theme::section(ui, t("What else changed"));
+            for f in &o.health {
+                let (mark, color) = if f.warn { ("!", pal.warning) } else { ("i", pal.text_weak) };
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new(mark).strong().color(color));
+                    ui.add(egui::Label::new(RichText::new(crate::i18n::t_text(&f.text)).color(color)).wrap());
+                });
             }
         }
         if !o.passed {

@@ -33,10 +33,14 @@ Design...**). The wizard has four parts:
    phase margin, bandwidth, delays) with the **+** buttons.
 3. **What IC Studio may change**: parameters suggested from the circuit. Each group of
    matched transistors (an input pair, a current mirror) gets one W that all of them share,
-   so they stay equal; devices drawn longer than the minimum also get an L. When a spec
+   so they stay equal; devices drawn longer than the minimum also get an L, which may grow
+   but not shrink below the original (they were made long on purpose). When a spec
    measures a current, the output side of a current mirror gets a W of its own, because the
    mirror ratio sets the current. Each line says, in plain words, what the parameter does.
-4. **Options**: build the layout like the original's, and the simulation budget.
+4. **Options**: build the layout like the original's, keep the supply current near the
+   original's (0.5x to 2x, on by default), and the simulation budget. Without the current
+   guard the optimizer may meet a target by starving the circuit (slow) or flooding it
+   (power); an `idd` target of your own replaces the guard.
 
 **Create and size** copies the cell with its specs and notes, runs the
 [optimizer](tools.md) on the suggested parameters, writes the best sizes into the copy and,
@@ -45,6 +49,13 @@ when asked, lays it out: placed like the original
 new sizes no longer fit the original placement, then routed, DRC errors fixed automatically
 and LVS run. The result lists every spec on the original and the new sizes, the chosen
 values and the layout checks. The copy's notes record where it came from and its new sizes.
+
+Specs only measure what they name, so the result also lists **What else changed**: comparing
+the operating points of the original and the new sizes, it flags transistors that left
+saturation or sit close to its edge, a large change in supply power or bias current, matched
+pairs with less gate area (more random offset) and channel lengths made shorter. With the
+generic 180 nm models (SPICE level 1, whose output resistance does not depend on L) it also
+says that a changed L behaves differently in silicon, so confirm with a PDK model.
 
 **File > Copy Cell as New...** (or **Copy as New Cell...** on a cell in the Explorer) only
 copies a cell, with every view, specs and notes, when you want to change it by hand.
@@ -86,7 +97,8 @@ ics derive my_project ota5t --target bw>=10meg --dry-run   # show what it would 
 `ics derive` prints the suggested parameters and targets, then each spec before and after,
 the new sizes and the layout checks, and saves. It exits with 1 when a target is missed.
 Targets name a spec of the cell or a common one (`gain_db`, `ugf`, `pm`, `bw`, `tphl`,
-`tplh`); `--no-layout` skips the layout.
+`tplh`, `idd`); `--no-layout` skips the layout and `--free-power` drops the supply current
+guard. The health findings are printed as `Check:` and `Note:` lines.
 
 The MCP tools are `copy_cell` and `derive_design` (see [MCP server](mcp.md)); `get_netlist`
 also returns a cell's notes and specs.

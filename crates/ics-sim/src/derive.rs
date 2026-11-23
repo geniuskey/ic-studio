@@ -8,6 +8,7 @@ use ics_core::lvs::{LvsOptions, compare};
 use ics_core::units::format_eng;
 use ics_core::{CellRef, Project};
 
+use crate::SimResults;
 use crate::optimize::{OptReport, apply_values};
 
 /// What deriving achieved.
@@ -27,6 +28,16 @@ pub struct Outcome {
     pub layout: Vec<String>,
     /// The layout is DRC clean and matches the schematic.
     pub layout_clean: Option<bool>,
+    /// What the new sizes changed that the specs do not cover (see [`health`]).
+    pub health: Vec<Finding>,
+}
+
+/// One result of the health check.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Finding {
+    /// Likely a problem (`true`) or worth knowing.
+    pub warn: bool,
+    pub text: String,
 }
 
 impl Outcome {
@@ -50,6 +61,9 @@ impl Outcome {
         }
         for l in &self.layout {
             s += &format!("Layout: {l}\n");
+        }
+        for f in &self.health {
+            s += &format!("{}: {}\n", if f.warn { "Check" } else { "Note" }, f.text);
         }
         s
     }
@@ -78,8 +92,9 @@ pub fn finish(
         evals: report.evals.len(),
         ..Default::default()
     };
-    let sch = c.schematic.as_ref().ok_or("the cell has no schematic")?;
-    let sch = apply_values(sch, &setup, &best.values);
+    let original = c.schematic.clone().ok_or("the cell has no schematic")?;
+    let sch = apply_values(&original, &setup, &best.values);
+    out.health = health(p, target, &original, &sch);
     let sizes: Vec<String> = out.values.iter().map(|(t, v)| format!("{t} = {}", format_eng(*v, ""))).collect();
     let c = p.cell_mut(target).expect("checked");
     c.schematic = Some(sch.clone());
@@ -118,6 +133,149 @@ pub fn finish(
         }
     }
     Ok(out)
+}
+
+/// A guard spec keeping the supply current of the new design within 0.5x to 2x of `cell`'s
+/// (the `idd` preset, measured on the cell as it is), so the optimizer cannot buy a target by
+/// starving or flooding the circuit. `None` without an operating point or a supply source.
+pub fn power_guard(p: &Project, cell: &CellRef) -> Option<ics_core::sweep::Spec> {
+    let c = p.cell(cell)?;
+    let sch = c.schematic.as_ref()?;
+    let mut sim = c.sim.clone();
+    sim.set_enabled("op", true);
+    let mut spec = ics_core::derive::spec_presets(sch, &sim, &[]).into_iter().find(|s| s.name == "idd")?;
+    let d = op(p, cell, sch)?;
+    let res = SimResults { backend: String::new(), datasets: vec![d], log: String::new(), elapsed_ms: 0.0, warnings: vec![] };
+    let i = crate::optimize::measure(&spec, &res).ok().filter(|i| *i > 0.0)?;
+    let round3 = |x: f64| {
+        let e = 10f64.powf(x.log10().floor() - 2.0);
+        (x / e).round() * e
+    };
+    spec.min = ics_core::optimize::spice_number(round3(i * 0.5));
+    spec.max = ics_core::optimize::spice_number(round3(i * 2.0));
+    Some(spec)
+}
+
+/// The operating point of `sch` simulated with `cell`'s setup.
+fn op(p: &Project, cell: &CellRef, sch: &ics_core::Schematic) -> Option<crate::Dataset> {
+    let c = p.cell(cell)?;
+    let deck = ics_core::netlist::netlist_for(sch, &p.tech, &c.sim.corner).deck(&cell.to_string(), &c.sim);
+    let opts = crate::SimOptions { backend: ics_core::Backend::Builtin, ..Default::default() };
+    let res = crate::simulate(&deck, &[ics_core::Analysis::Op], &opts).ok()?;
+    res.datasets.into_iter().find(|d| d.analysis == "op")
+}
+
+/// Power delivered by the DC voltage sources (W).
+fn supply_power(sch: &ics_core::Schematic, d: &crate::Dataset) -> f64 {
+    let conn = ics_core::connectivity::extract(sch);
+    let v = |net: &str| if net == "0" { Some(0.0) } else { d.get(&format!("v({net})")).and_then(|x| x.re.first().copied()) };
+    sch.instances
+        .iter()
+        .filter(|i| i.kind == ics_core::schematic::DeviceKind::VSource)
+        .filter_map(|i| {
+            let (np, nn) = (conn.net_of(i.id, "p")?, conn.net_of(i.id, "n")?);
+            let cur = d.get(&format!("i({})", i.name))?.re.first().copied()?;
+            Some(-(v(np)? - v(nn)?) * cur)
+        })
+        .filter(|w| *w > 0.0)
+        .sum()
+}
+
+/// What the new sizes changed that the specs do not measure, comparing the operating points
+/// and sizes of `before` and `after`: transistors that left saturation or sit at its edge,
+/// supply power, the gate area of matched pairs (random mismatch grows as 1/sqrt(W L)), bias
+/// currents and channel lengths made shorter than the original's.
+pub fn health(p: &Project, cell: &CellRef, before: &ics_core::Schematic, after: &ics_core::Schematic) -> Vec<Finding> {
+    let mut out = vec![];
+    let warn = |text: String| Finding { warn: true, text };
+    let note = |text: String| Finding { warn: false, text };
+    let (Some(b), Some(a)) = (op(p, cell, before), op(p, cell, after)) else { return out };
+    let dev = |d: &crate::Dataset, name: &str| d.devices.iter().find(|x| x.name.eq_ignore_ascii_case(name)).cloned();
+    let val = |x: &crate::results::DeviceOp, k: &str| x.values.iter().find(|(n, _)| n == k).map(|(_, v)| v.abs());
+    let spare = |x: &crate::results::DeviceOp| Some(val(x, "vds")? - (val(x, "vgs")? - val(x, "vth")?));
+    for i in after.instances.iter().filter(|i| i.kind.is_mos()) {
+        let (Some(x0), Some(x1)) = (dev(&b, &i.name), dev(&a, &i.name)) else { continue };
+        let (r0, r1) = (x0.region.as_deref().unwrap_or(""), x1.region.as_deref().unwrap_or(""));
+        if r0 == "saturation" && r1 != "saturation" {
+            out.push(warn(format!(
+                "{} left saturation (now {r1}): as an amplifier, load or current source it no longer works as intended",
+                i.name
+            )));
+        } else if r1 == "saturation"
+            && let (Some(s0), Some(s1)) = (spare(&x0), spare(&x1))
+            && s1 < 0.1
+            && s0 >= 0.1
+        {
+            out.push(warn(format!("{} is now only {:.0} mV from leaving saturation", i.name, s1 * 1e3)));
+        }
+    }
+    let (p0, p1) = (supply_power(before, &b), supply_power(after, &a));
+    if p0 > 0.0 && p1 > 0.0 {
+        let k = p1 / p0;
+        if k > 1.5 {
+            out.push(warn(format!("supply power {} -> {} W ({k:.1}x)", format_eng(p0, ""), format_eng(p1, ""))));
+        } else if k < 0.5 {
+            out.push(note(format!(
+                "supply power {} -> {} W ({:.1}x less): lower current usually also means a slower circuit",
+                format_eng(p0, ""),
+                format_eng(p1, ""),
+                1.0 / k
+            )));
+        }
+    }
+    let num = |i: &ics_core::schematic::Instance, k: &str| ics_core::units::parse_spice(i.param(k)).filter(|x| *x > 0.0);
+    let find = |s: &ics_core::Schematic, n: &str| s.instances.iter().find(|i| i.name == n).cloned();
+    for g in ics_core::derive::suggest(before, &p.tech, &[]).iter().filter(|g| g.param == "w") {
+        let (Some(i0), Some(i1)) = (find(before, &g.devices[0]), find(after, &g.devices[0])) else { continue };
+        let (Some(w0), Some(l0), Some(w1), Some(l1)) = (num(&i0, "w"), num(&i0, "l"), num(&i1, "w"), num(&i1, "l")) else {
+            continue;
+        };
+        let names = g.devices.join(", ");
+        use ics_core::derive::Role;
+        if g.devices.len() >= 2 && matches!(g.role, Role::InputPair | Role::Mirror) {
+            let k = ((w0 * l0) / (w1 * l1)).sqrt();
+            if k > 1.2 {
+                out.push(warn(format!(
+                    "{names} ({}) have {:.1}x less gate area: random mismatch (offset) about {k:.1}x larger",
+                    g.role.label(),
+                    (w0 * l0) / (w1 * l1)
+                )));
+            }
+        }
+        if l1 < l0 * 0.9 && matches!(g.role, Role::InputPair | Role::Mirror | Role::CurrentSource | Role::MirrorOutput) {
+            out.push(note(format!(
+                "{names} ({}) got a shorter L ({} -> {}): lower output resistance and worse matching than the original",
+                g.role.label(),
+                format_eng(l0, ""),
+                format_eng(l1, "")
+            )));
+        }
+        if g.role == Role::CurrentSource
+            && let (Some(x0), Some(x1)) = (dev(&b, &g.devices[0]), dev(&a, &g.devices[0]))
+            && let (Some(c0), Some(c1)) = (val(&x0, "id"), val(&x1, "id"))
+            && c0 > 0.0
+            && !(0.5..=2.0).contains(&(c1 / c0))
+        {
+            out.push(note(format!(
+                "bias current of {names}: {} -> {} A; speed and power follow it",
+                format_eng(c0, ""),
+                format_eng(c1, "")
+            )));
+        }
+    }
+    let l_changed = after
+        .instances
+        .iter()
+        .filter(|i| i.kind.is_mos())
+        .any(|i| find(before, &i.name).is_some_and(|o| num(&o, "l") != num(i, "l")));
+    if l_changed && p.tech.models.is_none() {
+        out.push(note(
+            "channel lengths changed, and the generic 180 nm models are SPICE level 1, whose output resistance does not \
+             depend on L: in silicon a longer L gives more gain and a shorter one less. Confirm with a PDK model."
+                .into(),
+        ));
+    }
+    out
 }
 
 /// A routed and checked layout candidate.
@@ -174,15 +332,24 @@ fn limits(s: &ics_core::sweep::Spec) -> String {
     }
 }
 
-/// Derive in one call (for the CLI and MCP): create the copy, size it, finish it.
+/// Derive in one call (for the CLI and MCP): create the copy, size it, finish it. With
+/// `keep_power`, the [`power_guard`] spec is added unless the plan has an `idd` spec.
 pub fn derive(
     p: &mut Project,
     reference: &CellRef,
     plan: &Plan,
     layout: bool,
+    keep_power: bool,
     opts: &crate::SimOptions,
 ) -> Result<(CellRef, Outcome), String> {
-    let target = ics_core::derive::create(p, reference, plan)?;
+    let mut plan = plan.clone();
+    if keep_power
+        && !plan.specs.iter().any(|s| s.name == "idd")
+        && let Some(g) = power_guard(p, reference)
+    {
+        plan.specs.push(g);
+    }
+    let target = ics_core::derive::create(p, reference, &plan)?;
     let report = crate::optimize::run(p, &target, opts, &mut |_, _| true)?;
     let out = finish(p, reference, &target, &report, layout)?;
     Ok((target, out))
@@ -213,7 +380,7 @@ mod tests {
             vars,
             max_evals: 80,
         };
-        let (to, out) = derive(&mut p, &from, &plan, true, &crate::SimOptions::default()).unwrap();
+        let (to, out) = derive(&mut p, &from, &plan, true, true, &crate::SimOptions::default()).unwrap();
         assert!(out.passed, "{}", out.text(&to));
         assert!(*out.after[0].as_ref().unwrap() >= 50.0);
         assert!(*out.before[0].as_ref().unwrap() < 50.0, "the reference misses the new target");
@@ -222,6 +389,9 @@ mod tests {
         assert!(c.notes.contains("Derived from work/ota5t for: gain_db >= 50"));
         assert!(c.layout.is_some());
         assert_eq!(out.layout_clean, Some(true), "{:?}", out.layout);
+        // The optimizer bought the gain with a tiny tail current and short channels: the health
+        // check says what the specs do not.
+        assert!(!out.health.is_empty(), "{}", out.text(&to));
         // The reference is untouched.
         assert_eq!(p.cell(&from).unwrap().schematic.as_ref(), Some(&sch));
     }
