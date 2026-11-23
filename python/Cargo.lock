@@ -505,7 +505,7 @@ checksum = "e17592d60ebacc7d5e169f4663c5f84f9161cc90328abcfe8456f41e4dfcb284"
 
 [[package]]
 name = "ics-core"
-version = "0.2.12"
+version = "0.2.13"
 dependencies = [
  "miniz_oxide",
  "rstar",
@@ -518,7 +518,7 @@ dependencies = [
 
 [[package]]
 name = "ics-mcp"
-version = "0.2.12"
+version = "0.2.13"
 dependencies = [
  "ics-core",
  "ics-sim",
@@ -529,7 +529,7 @@ dependencies = [
 
 [[package]]
 name = "ics-sim"
-version = "0.2.12"
+version = "0.2.13"
 dependencies = [
  "faer",
  "ics-core",
@@ -539,7 +539,7 @@ dependencies = [
 
 [[package]]
 name = "icstudio-py"
-version = "0.2.12"
+version = "0.2.13"
 dependencies = [
  "ics-core",
  "ics-mcp",

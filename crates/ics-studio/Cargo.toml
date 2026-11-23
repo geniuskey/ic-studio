@@ -1,6 +1,6 @@
 [package]
 name = "ics-studio"
-version = "0.2.12"
+version = "0.2.13"
 edition = "2024"
 license.workspace = true
 
@@ -13,10 +13,10 @@ dirs = "6"
 eframe = { version = "0.37.0", features = ["persistence"] }
 egui = { version = "0.37.0", features = ["monochrome_emoji_fonts"] }
 egui_plot = "0.38.0"
-ics-core = { version = "0.2.12", path = "../ics-core" }
-ics-mcp = { version = "0.2.12", path = "../ics-mcp" }
-ics-sim = { version = "0.2.12", path = "../ics-sim" }
-ics-optics = { version = "0.2.12", path = "../ics-optics" }
+ics-core = { version = "0.2.13", path = "../ics-core" }
+ics-mcp = { version = "0.2.13", path = "../ics-mcp" }
+ics-sim = { version = "0.2.13", path = "../ics-sim" }
+ics-optics = { version = "0.2.13", path = "../ics-optics" }
 rfd = "0.18.0"
 # SHA-256 of downloaded updates (already used by rustls).
 ring = "0.17"
