@@ -55,6 +55,13 @@ pub struct DeriveWizard {
     targets: Vec<Target>,
     presets: Vec<Spec>,
     knobs: Vec<Knob>,
+    /// The reference schematic and technology, to suggest the knobs again when the targets change.
+    sch: ics_core::Schematic,
+    tech: Option<ics_core::Tech>,
+    /// The targets the knobs were suggested for.
+    knobs_for: Vec<String>,
+    /// Derivations finished in this session.
+    pub derived: usize,
     has_layout: bool,
     layout: bool,
     keep_power: bool,
@@ -98,6 +105,10 @@ impl DeriveWizard {
                 .into_iter()
                 .map(|s| Knob { on: true, s })
                 .collect(),
+            knobs_for: c.sim.sweep.specs.iter().map(|s| s.expr.clone()).collect(),
+            sch: sch.clone(),
+            tech: Some(p.tech.clone()),
+            derived: self.derived,
             has_layout: c.layout.is_some(),
             layout: c.layout.is_some(),
             keep_power: true,
@@ -148,9 +159,35 @@ impl DeriveWizard {
         Some((self.from.clone()?, self.target.clone()?, res, self.layout))
     }
 
+    /// Suggest the knobs again for the enabled targets (a current target frees mirror ratios),
+    /// keeping the user's choices for knobs that stay.
+    fn resuggest(&mut self) {
+        let specs: Vec<Spec> = self.targets.iter().filter(|t| t.on).map(|t| t.spec.clone()).collect();
+        let key: Vec<String> = specs.iter().map(|s| s.expr.clone()).collect();
+        if key == self.knobs_for {
+            return;
+        }
+        let Some(tech) = &self.tech else { return };
+        // A knob stays off when one the user turned off changed the same parameter of one of its
+        // devices (groups split or merge when mirror ratios are freed or tied).
+        let off: Vec<(&'static str, Vec<String>)> =
+            self.knobs.iter().filter(|k| !k.on).map(|k| (k.s.param, k.s.devices.clone())).collect();
+        self.knobs = ics_core::derive::suggest(&self.sch, tech, &specs)
+            .into_iter()
+            .map(|s| {
+                let on = !off.iter().any(|(p, ds)| *p == s.param && ds.iter().any(|d| s.devices.contains(d)));
+                Knob { on, s }
+            })
+            .collect();
+        self.knobs_for = key;
+    }
+
     pub fn finished(&mut self, cell: CellRef, res: Result<Outcome, String>) {
         match res {
-            Ok(o) => self.outcome = Some((cell, o)),
+            Ok(o) => {
+                self.derived += 1;
+                self.outcome = Some((cell, o));
+            }
             Err(e) => self.error = e,
         }
     }
@@ -250,6 +287,7 @@ impl DeriveWizard {
             });
         }
         ui.add_space(8.0);
+        self.resuggest();
         theme::section(ui, t("3. What IC Studio may change"));
         ui.label(
             RichText::new(t("Suggested from the circuit. Matched transistors share one value so they stay equal."))
@@ -380,5 +418,24 @@ impl DeriveWizard {
             }
         });
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn knobs_follow_the_targets() {
+        let p = ics_core::examples::demo_project();
+        let mut w = DeriveWizard::default();
+        w.show(&p, &CellRef::new("work", "current_mirror"));
+        let ratio = |w: &DeriveWizard| w.knobs.iter().any(|k| k.s.role == ics_core::derive::Role::MirrorOutput);
+        assert!(ratio(&w), "the iout spec frees the mirror ratio");
+        w.knobs.iter_mut().filter(|k| k.s.param == "l").for_each(|k| k.on = false);
+        w.targets[0].on = false;
+        w.resuggest();
+        assert!(!ratio(&w), "without a current target the mirror stays matched");
+        assert!(w.knobs.iter().filter(|k| k.s.param == "l").all(|k| !k.on), "choices are kept");
     }
 }

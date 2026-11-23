@@ -641,6 +641,9 @@ pub const TEMPLATES: &[(&str, &str)] = &[
     ("{} DRC violation(s) left (Ctrl+. in the layout offers fixes)", "DRC 위반 {}건 남음 (레이아웃에서 Ctrl+.로 수정안 보기)"),
     ("LVS: {} difference(s) (Verify > Run LVS lists them)", "LVS: 차이 {}건 (검증 > LVS 실행에서 목록 확인)"),
     ("routing failed: {}", "배선 실패: {}"),
+    ("Derived from {} for: {}.", "{}에서 파생, 목표: {}."),
+    ("Derived from {}.", "{}에서 파생."),
+    ("Sized by the optimizer: {}.", "최적화기가 정한 크기: {}."),
     (
         "{} resistor(s) / capacitor(s) still to draw by hand (Create > PCell: poly resistor, MOM capacitor): the generator places transistors only",
         "저항 / 커패시터 {}개는 직접 그려야 합니다(만들기 > PCell: poly 저항, MOM 커패시터): 생성기는 트랜지스터만 배치합니다",

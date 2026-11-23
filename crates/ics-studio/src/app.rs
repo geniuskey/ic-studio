@@ -367,7 +367,9 @@ struct Settings {
     /// on the source (3-terminal).
     mos_body_pin: bool,
     /// Beginner mode: menus show the everyday design flow and hide specialist tools (process,
-    /// pixel optics, sign-off, SKILL, rule decks, ...), which stay in the command palette.
+    /// pixel optics, sign-off, SKILL, rule decks, ...), which stay in the command palette. On
+    /// for a first start; settings saved before it existed keep the full menus.
+    #[serde(default)]
     beginner: bool,
     /// UI language (Korean needs a system font with Hangul).
     lang: crate::i18n::Lang,
@@ -6341,10 +6343,7 @@ impl IcStudio {
             calculator: self.calc.open,
             drc: lay.is_some_and(|v| v.drc.is_some()),
             lvs: lay.is_some_and(|v| v.lvs.is_some()),
-            derived: self
-                .project
-                .as_ref()
-                .is_some_and(|p| p.all_cells().any(|(_, c)| c.notes.starts_with("Sized by the optimizer"))),
+            derived: self.derive.derived > 0,
             palette: self.palette.is_some(),
             workspace: Some(self.workspace),
             inverter,
@@ -7531,6 +7530,11 @@ impl eframe::App for IcStudio {
                 }
                 Err(e) => self.warn(format!("Derive: {e}")),
             }
+            if crate::i18n::current() == crate::i18n::Lang::Ko
+                && let Some(c) = self.project.as_mut().and_then(|p| p.cell_mut(&to))
+            {
+                c.notes = c.notes.lines().map(crate::i18n::t_text).collect::<Vec<_>>().join("\n");
+            }
             self.derive.finished(to, out);
         }
         if let Some((ok, m)) = self.monte_carlo.poll() {
@@ -7736,4 +7740,17 @@ fn place_like(p: &mut Project, reference: &CellRef, target: &CellRef, route: boo
         msg += &format!("; {}", res?.summary());
     }
     Ok(msg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Settings;
+
+    #[test]
+    fn beginner_mode_is_on_for_a_first_start_only() {
+        assert!(Settings::default().beginner, "a first start shows the beginner menus");
+        let old: Settings = serde_json::from_str(r#"{"dark": false}"#).unwrap();
+        assert!(!old.beginner, "settings saved before beginner mode keep the full menus");
+        assert!(!old.dark, "the other saved settings are read");
+    }
 }

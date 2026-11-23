@@ -81,7 +81,8 @@ tool does what the wizard does in one call.
 
 ## Beginner mode and language
 
-Beginner mode, on by default, keeps the menus to the everyday flow and hides specialist
+Beginner mode, on for a first start (an installation that saved its settings before keeps the
+full menus), keeps the menus to the everyday flow and hides specialist
 tools (process emulation, pixel optics, sign-off runsets, SKILL, rule decks, extensions).
 Every command stays in the command palette (**Ctrl+K** / **⌘K**). Turn it off with
 **Help > Beginner Mode**.
