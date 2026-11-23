@@ -839,7 +839,7 @@ fn polynomial(body: &str, current: bool) -> Result<String, String> {
     let inputs: Vec<_> = if current {
         fields[..controls].iter().map(|v| format!("i({v})")).collect()
     } else {
-        fields[..controls].chunks_exact(2).map(|ns| format!("v({},{})", ns[0], ns[1])).collect()
+        fields[..controls].as_chunks::<2>().0.iter().map(|ns| format!("v({},{})", ns[0], ns[1])).collect()
     };
     let mut powers = vec![];
     let mut terms = vec![];
