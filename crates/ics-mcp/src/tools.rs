@@ -916,7 +916,7 @@ pub fn definitions() -> Vec<Value> {
                 }, "required": ["name", "analysis", "expr"]}},
                 "max_evals": {"type": "integer", "minimum": 4, "description": "Simulation budget (default 60)."},
                 "post_layout": {"type": "boolean", "description": "Evaluate every candidate after layout and extraction."},
-                "goal": {"type": "string", "enum": ["margin", "min_area"], "description": "Once all specs pass: widest margin (default) or least gate area."},
+                "goal": {"type": "string", "enum": ["margin", "min_area", "least_change"], "description": "Once all specs pass: widest margin (default), least gate area, or least change from the current sizes."},
                 "apply": {"type": "boolean", "description": "Write the best values into the schematic (default false)."}
             }),
             &["cell"],
@@ -2258,6 +2258,7 @@ impl State {
         match a.0.get("goal").and_then(Value::as_str) {
             Some("min_area") => c.sim.optimize.goal = Goal::MinArea,
             Some("margin") => c.sim.optimize.goal = Goal::Margin,
+            Some("least_change") => c.sim.optimize.goal = Goal::LeastChange,
             _ => {}
         }
         self.dirty = true;

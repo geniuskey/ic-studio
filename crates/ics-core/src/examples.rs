@@ -2428,11 +2428,136 @@ VB vb 0 dc 0.65
     auto_pnr_cell(p, "ota2s", "Two-stage OTA, matched placement and automatic routing (DRC / LVS clean)", DECK)
 }
 
+/// A schematic-only cell from a SPICE deck (with its analyses), for circuits whose passives the
+/// layout generator does not draw.
+fn deck_cell(name: &str, description: &str, deck: &str) -> Cell {
+    let imp = crate::spice_import::import(deck, &Tech::generic()).expect("demo deck imports");
+    let mut sim = SimSetup::default();
+    imp.apply_to(&mut sim);
+    Cell { description: description.into(), schematic: Some(imp.schematic), sim, ..Cell::new(name) }
+}
+
+/// Mark test bench loads (instances named `CL...`) so LVS leaves them out.
+fn tb_loads(c: &mut Cell) {
+    if let Some(s) = c.schematic.as_mut() {
+        for i in s.instances.iter_mut().filter(|i| i.name.to_ascii_uppercase().starts_with("CL")) {
+            i.params.insert(crate::schematic::LVS_IGNORE.into(), "t".into());
+        }
+    }
+}
+
+/// Two-stage OTA with Miller compensation (Cc with a nulling resistor Rz between the stages)
+/// driving a 1 pF load: the stable version of `ota2s`. Schematic only: the generator does not
+/// draw Rz and Cc.
+pub fn ota_miller() -> Cell {
+    const DECK: &str = "\
+M1 x inp tail 0 nmos w=4u l=500n
+M2 o1 inn tail 0 nmos w=4u l=500n
+M3 x x vdd vdd pmos w=8u l=500n
+M4 o1 x vdd vdd pmos w=8u l=500n
+M5 tail vb 0 0 nmos w=4u l=1u
+M6 out o1 vdd vdd pmos w=32u l=500n
+M7 out vb 0 0 nmos w=8u l=1u
+RZ o1 cz 3k
+CC cz out 1p
+CL out 0 1p
+VDD vdd 0 dc 1.8
+VINP inp 0 dc 0.9
+VINN inn 0 dc 0.9 ac 1
+VB vb 0 dc 0.65
+.op
+.ac dec 20 1k 10g
+";
+    let mut c = deck_cell("ota_miller", "Two-stage Miller-compensated OTA with a 1 pF load", DECK);
+    tb_loads(&mut c);
+    c
+}
+
+/// Telescopic cascode OTA: cascodes on the input pair and on a self-biased PMOS mirror for a
+/// high gain in one stage, placed and routed automatically.
+pub fn ota_cascode(p: &mut Project) -> Cell {
+    const DECK: &str = "\
+M1 a inp tail 0 nmos w=4u l=500n
+M2 b inn tail 0 nmos w=4u l=500n
+M3 x vbn a 0 nmos w=4u l=500n
+M4 out vbn b 0 nmos w=4u l=500n
+M5 x vbp c vdd pmos w=8u l=500n
+M6 out vbp d vdd pmos w=8u l=500n
+M7 c x vdd vdd pmos w=8u l=500n
+M8 d x vdd vdd pmos w=8u l=500n
+M9 tail vb 0 0 nmos w=4u l=1u
+CL out 0 1p
+VDD vdd 0 dc 1.8
+VINP inp 0 dc 0.8 ac 1
+VINN inn 0 dc 0.8
+VB vb 0 dc 0.6
+VBN vbn 0 dc 1.1
+VBP vbp 0 dc 0.9
+.op
+.ac dec 20 1k 10g
+";
+    let mut c = auto_pnr_cell(p, "ota_cascode", "Telescopic cascode OTA, placed and routed automatically", DECK);
+    tb_loads(&mut c);
+    c
+}
+
+/// Open-loop comparator: the five-transistor OTA, a PMOS common-source stage and an inverter
+/// that squares the edge, placed and routed automatically.
+pub fn comparator(p: &mut Project) -> Cell {
+    const DECK: &str = "\
+M1 x inp tail 0 nmos w=4u l=500n
+M2 o1 inn tail 0 nmos w=4u l=500n
+M3 x x vdd vdd pmos w=8u l=500n
+M4 o1 x vdd vdd pmos w=8u l=500n
+M5 tail vb 0 0 nmos w=4u l=1u
+M6 o2 o1 vdd vdd pmos w=16u l=180n
+M7 o2 vb 0 0 nmos w=4u l=1u
+M8 out o2 vdd vdd pmos w=2u l=180n
+M9 out o2 0 0 nmos w=1u l=180n
+CL out 0 20f
+VDD vdd 0 dc 1.8
+VINP inp 0 dc 0.85 pulse(0.85 0.95 1n 100p 100p 10n 20n)
+VINN inn 0 dc 0.9
+VB vb 0 dc 0.65
+.tran 10p 20n
+";
+    let mut c = auto_pnr_cell(p, "comparator", "Open-loop comparator: OTA, gain stage and inverter (placed and routed)", DECK);
+    tb_loads(&mut c);
+    c
+}
+
+/// Low-dropout regulator: a five-transistor error amplifier drives a large PMOS pass device;
+/// R1 / R2 feed back 3/4 of the output, so 0.9 V in gives 1.2 V out, with a 1 mA load. The AC
+/// source on the supply measures the power supply rejection. Schematic only.
+pub fn ldo() -> Cell {
+    const DECK: &str = "\
+M1 x fb tail 0 nmos w=4u l=1u
+M2 g vref tail 0 nmos w=4u l=1u
+M3 x x vdd vdd pmos w=8u l=1u
+M4 g x vdd vdd pmos w=8u l=1u
+M5 tail vb 0 0 nmos w=4u l=1u
+MP out g vdd vdd pmos w=400u l=180n
+R1 out fb 50k
+R2 fb 0 150k
+CL out 0 100p
+ILOAD out 0 dc 1m
+VDD vdd 0 dc 1.8 ac 1
+VREF vref 0 dc 0.9
+VB vb 0 dc 0.65
+.op
+.ac dec 20 1 10g
+";
+    deck_cell("ldo", "Low-dropout regulator, 1.8 V to 1.2 V at 1 mA", DECK)
+}
+
 pub fn demo_project() -> Project {
     let mut p = Project::new("demo");
     p.description = "Example designs shipped with IC Studio".into();
     let hier = hierarchy_cells(&p.tech, "work");
-    for c in [cmos_inverter(), rc_lowpass(), diode_clipper(), inv(), buffer_tb(), bandgap()].into_iter().chain(hier) {
+    for c in [cmos_inverter(), rc_lowpass(), diode_clipper(), inv(), buffer_tb(), bandgap(), ota_miller(), ldo()]
+        .into_iter()
+        .chain(hier)
+    {
         p.add_cell("work", c).expect("unique");
     }
     for make in [
@@ -2450,6 +2575,8 @@ pub fn demo_project() -> Project {
         bayer_fdti_ctx,
         full_adder,
         ota2s,
+        ota_cascode,
+        comparator,
     ] {
         let c = make(&mut p);
         p.add_cell("work", c).expect("unique");
@@ -2489,6 +2616,25 @@ fn guide_specs(cell: &str) -> Vec<crate::sweep::Spec> {
         ],
         "current_mirror" => vec![spec("op", "iout", "-i(v1)", "19u", "21u")],
         "ring_osc5" => vec![spec("tran", "period", "cross(v(n1), 0.9, 3, rise) - cross(v(n1), 0.9, 2, rise)", "120p", "170p")],
+        "ota_miller" => vec![
+            spec("ac", "gain_db", "max(db(v(out)))", "70", ""),
+            spec("ac", "ugf", "ugf(v(out))", "25meg", ""),
+            spec("ac", "pm", "phasemargin(v(out))", "60", ""),
+        ],
+        "ota_cascode" => vec![
+            spec("ac", "gain_db", "max(db(v(out)))", "80", ""),
+            spec("ac", "ugf", "ugf(v(out))", "20meg", ""),
+            spec("ac", "pm", "phasemargin(v(out))", "60", ""),
+        ],
+        "comparator" => vec![
+            spec("tran", "tpd_rise", "delay(v(inp), 0.9, v(out), 0.9, rise, rise)", "", "6n"),
+            spec("tran", "tpd_fall", "delay(v(inp), 0.9, v(out), 0.9, fall, fall)", "", "4n"),
+        ],
+        "ldo" => vec![
+            spec("op", "vout", "v(out)", "1.17", "1.23"),
+            spec("ac", "psrr_1meg", "-value(db(v(out)), 1meg)", "40", ""),
+            spec("op", "idd", "-i(vdd)", "", "1.1m"),
+        ],
         "nand2" | "nor2" => vec![spec(
             "tran",
             "tpd",
@@ -2548,8 +2694,51 @@ pub fn design_notes(cell: &str) -> &'static str {
         "ota2s" => {
             "What it is: a two-stage OTA. The first stage (M1-M5) is the five-transistor OTA; the second stage M6 with the current source M7 adds more gain.\n\
              Specs: gain >= 70 dB.\n\
-             Caution: there is no compensation capacitor, so in feedback this amplifier would oscillate. A good first derived design: copy it and add a Miller capacitor Cc (about 1p) from o1 to out, then add a phase margin spec (phasemargin(v(out)) >= 60).\n\
+             Caution: there is no compensation capacitor, so in feedback this amplifier would oscillate. A good first derived design: copy it and add a Miller capacitor Cc (about 1p) from o1 to out, then add a phase margin spec (phasemargin(v(out)) >= 60). ota_miller is the finished version.\n\
              To derive a new design: the gain is about the product of the two stage gains, so longer L raises it. M6 width and M7 current set how fast out can move."
+        }
+        "ota_miller" => {
+            "What it is: the two-stage OTA made stable for feedback. The second stage (M6, M7) adds gain, and the Miller \
+             capacitor Cc between the stages makes the first stage's output the slow, dominant pole, so the loop has \
+             enough phase margin. Rz in series with Cc cancels the zero Cc would otherwise add.\n\
+             Why these sizes: M6 is wide (32u) so the output pole sits well above the unity-gain frequency; Cc = 1p \
+             sets ugf = gm1 / (2 pi Cc).\n\
+             Specs: gain >= 70 dB, ugf >= 25 MHz, phase margin >= 60 deg, with a 1 pF load (CL, test bench only).\n\
+             To derive a new design: for more bandwidth raise the input pair's gm (current, width) or lower Cc, then \
+             check the phase margin: the output pole (gm6 / CL) must stay about 2 to 3 times above ugf, so a larger \
+             load needs a stronger M6 / M7. Rz near 1 / gm6, or a little larger, gives the best margin."
+        }
+        "ota_cascode" => {
+            "What it is: a telescopic cascode OTA. Cascode transistors (M3, M4 and M5, M6, biased by vbn and vbp) stack \
+             on the input pair and the mirror; they shield them from the output, raising the output resistance and \
+             so the gain of a single stage, with the speed and low power of one stage.\n\
+             Why these sizes: as in ota5t, L = 500n and a long tail (M9, L = 1u). The bias voltages keep every device in \
+             saturation; the price is a narrow output range (every transistor in the stack needs its vds).\n\
+             Specs: gain >= 80 dB, ugf >= 20 MHz, phase margin >= 60 deg, with a 1 pF load.\n\
+             To derive a new design: keep vbn and vbp so every device stays saturated (the derive health check warns \
+             when one leaves). More gain: longer L; more bandwidth: more tail current or wider input pair."
+        }
+        "comparator" => {
+            "What it is: an open-loop comparator: out goes high when inp rises above inn (0.9 V). The five-transistor \
+             OTA amplifies the difference, the PMOS stage M6 / M7 adds gain and the inverter M8 / M9 makes a clean \
+             logic edge.\n\
+             Why these sizes: the gain stage is current-limited by M7 (gate on vb), which mostly sets the delay.\n\
+             Specs: delay from the input crossing to the output crossing <= 6 ns rising, <= 4 ns falling, for a 50 mV \
+             overdrive.\n\
+             To derive a new design: for a faster comparator raise the bias current (vb, or wider M5 and M7) or widen \
+             M6; a smaller overdrive makes it slower. Keep M1 = M2 and M3 = M4 for a low offset."
+        }
+        "ldo" => {
+            "What it is: a low-dropout regulator: a steady 1.2 V from the 1.8 V supply for a 1 mA load. The error \
+             amplifier (M1 to M5) compares the divided output fb with vref = 0.9 V and drives the gate of the large \
+             PMOS pass device MP until they are equal: vout = vref (1 + R1 / R2).\n\
+             Why these sizes: MP is very wide (400u) so it passes the load current with little voltage across it (the \
+             dropout). R1 / R2 = 1/3 sets 1.2 V. CL and ILOAD are the load (test bench).\n\
+             Specs: vout 1.17 to 1.23 V, supply rejection at 1 MHz >= 40 dB (the supply source has ac 1), supply \
+             current <= 1.1 mA including the load.\n\
+             To derive a new design: another output voltage: change R1 / R2 (or vref). More load current: widen MP. \
+             Better supply rejection: more error amplifier gain (longer L) or bandwidth. A larger load step needs a \
+             stability check (phase margin of the loop)."
         }
         "nand2" => {
             "What it is: 2-input NAND: the output is low only when a and b are both high. Two PMOS in parallel pull up, two NMOS in series pull down.\n\
@@ -2627,7 +2816,7 @@ pub const TOPICS: [Topic; 5] = [
         title: "Analog",
         summary: "Current mirror and OTAs",
         description: "Current mirror and OTAs: AC gain, matched placement with dummies, DRC, LVS and post-layout simulation",
-        cells: &["current_mirror", "ota5t", "ota2s", "bandgap"],
+        cells: &["current_mirror", "ota5t", "ota2s", "ota_miller", "ota_cascode", "comparator", "ldo", "bandgap"],
     },
     Topic {
         name: "digital",

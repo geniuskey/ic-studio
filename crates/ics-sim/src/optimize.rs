@@ -223,7 +223,16 @@ pub fn evaluate(project: &Project, cell: &CellRef, setup: &OptSetup, values: &[f
     };
     let area_ref = start_values(base, setup).map_or(0.0, |s| optimize::area(base, setup, &s));
     let area = optimize::area(&sch, setup, values);
-    let objective = optimize::objective(setup.goal, specs, &measured, area, area_ref);
+    let change = start_values(base, setup).map_or(0.0, |start| {
+        let d: f64 = setup
+            .vars
+            .iter()
+            .zip(start.iter().zip(values))
+            .filter_map(|(v, (a, b))| optimize::Bounds::of(v).ok().map(|bd| (bd.to_unit(*a) - bd.to_unit(*b)).abs()))
+            .sum();
+        d / setup.vars.len().max(1) as f64
+    });
+    let objective = optimize::objective_with_change(setup.goal, specs, &measured, area, area_ref, change);
     let passed = specs.iter().any(optimize::has_limit) && optimize::score(specs, &measured) == 0.0;
     OptEval { values: values.to_vec(), specs: measured, objective, passed, note }
 }

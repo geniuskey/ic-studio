@@ -177,10 +177,18 @@ impl Optimizer {
                     }
                     let l = ui.label("Goal");
                     egui::ComboBox::from_id_salt("opt_goal")
-                        .selected_text(if self.setup.goal == Goal::Margin { "Best margin" } else { "Least area" })
+                        .selected_text(match self.setup.goal {
+                            Goal::Margin => "Best margin",
+                            Goal::MinArea => "Least area",
+                            Goal::LeastChange => "Least change",
+                        })
                         .show_ui(ui, |ui| {
                             changed |= ui.selectable_value(&mut self.setup.goal, Goal::Margin, "Best margin").changed();
                             changed |= ui.selectable_value(&mut self.setup.goal, Goal::MinArea, "Least area").changed();
+                            changed |= ui
+                                .selectable_value(&mut self.setup.goal, Goal::LeastChange, "Least change")
+                                .on_hover_text("Stay as close to the current sizes as the specs allow")
+                                .changed();
                         })
                         .response
                         .labelled_by(l.id);

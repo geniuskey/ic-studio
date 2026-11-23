@@ -56,6 +56,9 @@ pub enum Goal {
     Margin,
     /// Minimise the MOS gate area (sum of W*L*m*nf), or the sum of the varied `.w` targets.
     MinArea,
+    /// Change the starting point as little as possible (with up to 5 % spec margin): for a new
+    /// design derived from a proven one, whose other qualities the specs do not measure.
+    LeastChange,
 }
 
 impl OptSetup {
@@ -206,6 +209,19 @@ pub fn margin(specs: &[Spec], values: &[Result<f64, String>]) -> f64 {
 /// The combined objective (lower is better; see the module docs). `area_ref` is the area of
 /// the starting point (only used for [`Goal::MinArea`]).
 pub fn objective(goal: Goal, specs: &[Spec], values: &[Result<f64, String>], area: f64, area_ref: f64) -> f64 {
+    objective_with_change(goal, specs, values, area, area_ref, 0.0)
+}
+
+/// [`objective`] with `change`, the mean distance of the candidate from the starting point in
+/// the unit cube of the variables (used by [`Goal::LeastChange`]).
+pub fn objective_with_change(
+    goal: Goal,
+    specs: &[Spec],
+    values: &[Result<f64, String>],
+    area: f64,
+    area_ref: f64,
+    change: f64,
+) -> f64 {
     let s = score(specs, values);
     if s > 0.0 {
         return s;
@@ -215,6 +231,10 @@ pub fn objective(goal: Goal, specs: &[Spec], values: &[Result<f64, String>], are
         Goal::MinArea => {
             let r = if area_ref > 0.0 && area.is_finite() { (area / area_ref).max(0.0) } else { 1.0 };
             -1.0 / (1.0 + r)
+        }
+        Goal::LeastChange => {
+            let m = (margin(specs, values) / 0.05).clamp(0.0, 1.0);
+            -(0.5 + 0.5 * m) / (1.0 + 5.0 * change.max(0.0))
         }
     }
 }
@@ -454,6 +474,9 @@ mod tests {
         let fail = objective(Goal::Margin, &specs, &[Ok(0.999)], 0.0, 0.0);
         assert!(pass_wide < pass_thin && pass_thin <= 0.0 && fail > 0.0);
         assert_eq!(pass_wide, -1.0);
+        let near = objective_with_change(Goal::LeastChange, &specs, &[Ok(1.1)], 0.0, 0.0, 0.05);
+        let far = objective_with_change(Goal::LeastChange, &specs, &[Ok(1.1)], 0.0, 0.0, 0.5);
+        assert!(near < far && far < 0.0, "a smaller change wins among passing points");
         let small = objective(Goal::MinArea, &specs, &[Ok(1.0)], 1.0, 2.0);
         let large = objective(Goal::MinArea, &specs, &[Ok(9.0)], 4.0, 2.0);
         assert!(small < large && large < 0.0 && small > -1.0);

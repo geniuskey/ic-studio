@@ -25,7 +25,7 @@ unless `--force`) and `ics examples` lists them.
 | Topic | Cells |
 |---|---|
 | `getting_started` | `cmos_inverter`, `rc_lowpass`, `diode_clipper`, `devices` |
-| `analog` | `current_mirror`, `ota5t`, `ota2s` |
+| `analog` | `current_mirror`, `ota5t`, `ota2s`, `ota_miller`, `ota_cascode`, `comparator`, `ldo`, `bandgap` |
 | `digital` | `nand2`, `nor2`, `ring_osc5`, `full_adder` |
 | `memory_and_pixels` | `sram6t`, `sram_array`, `dram1t1c`, `dram_array`, `nand_string`, `nand_array`, `aps4t`, `pixel_array`, `aps2s`, `bayer_fdti`, `bayer_fdti_pc`, `bayer_fdti_ctx`, `bayer_fdti_ctx_pc` |
 | `hierarchy` | `inv_chain`, `inv_array`, `inv_tiles` |
@@ -157,6 +157,10 @@ rendering keeps pan and zoom smooth.
 | `ring_osc5` | 5-stage ring oscillator, fully routed; slows down visibly with layout parasitics |
 | `current_mirror` | NMOS current mirror with a 20 µA reference: DC sweep of the output |
 | `ota5t` | 5-transistor OTA: about 42 dB open-loop gain in AC |
+| `ota_miller` | Two-stage Miller-compensated OTA (Cc with nulling resistor Rz, 1 pF load): 80 dB, 36 MHz, 84° phase margin; schematic only |
+| `ota_cascode` | Telescopic cascode OTA, auto P&R: 87 dB in one stage, every device in saturation |
+| `comparator` | Open-loop comparator (OTA, gain stage, inverter), auto P&R: 4.1 ns / 2.3 ns delay at 50 mV overdrive |
+| `ldo` | Low-dropout regulator, 1.8 V to 1.2 V at 1 mA: error amplifier, 400 µm PMOS pass device, R1 / R2 divider; 45 dB supply rejection at 1 MHz; schematic only |
 | `sram6t` | 6T SRAM bit cell, DRC and LVS clean: transient write and hold |
 | `sram_array` | 8 × 8 array of `sram6t` |
 | `dram1t1c` | Planar 1T1C DRAM cell with a MOS storage capacitor, DRC and LVS clean: write, precharge and charge-sharing read of a 1 and a 0 |

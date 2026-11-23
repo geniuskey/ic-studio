@@ -158,8 +158,11 @@ min / mean / max / σ and yield), the predicted yield of each condition and the 
   **Min**, **Max**, an optional **Step** and **Log** for a log-scale search; **+ Variable**
   adds one.
 - **Evaluations**: the number of candidates to simulate.
-- **Goal**: **Best margin** (the largest worst-case margin to the limits) or **Least area**
-  (the smallest MOS gate area once every spec passes).
+- **Goal**: **Best margin** (the largest worst-case margin to the limits), **Least area**
+  (the smallest MOS gate area once every spec passes) or **Least change** (the point closest
+  to the current sizes that passes, with up to 5 % margin: what
+  [Derive New Design](derive.md) uses, so a proven design changes only as much as the new
+  targets need).
 - **Post-layout**: place, route and extract every candidate and simulate it with its
   parasitics, so the specs hold after layout.
 

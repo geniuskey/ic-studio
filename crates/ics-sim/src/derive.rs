@@ -313,9 +313,30 @@ fn build(p: &Project, sch: &ics_core::Schematic, mut lay: ics_core::Layout, how:
         });
     }
     let x = ics_core::extract::extract(&lay, p, &p.tech);
-    let lvs = compare(sch, &x, &LvsOptions::for_tech(&p.tech));
+    // The generator draws transistors only: compare them, and list the passives still to draw.
+    use ics_core::schematic::DeviceKind;
+    let passives = sch
+        .instances
+        .iter()
+        .filter(|i| matches!(i.kind, DeviceKind::Resistor | DeviceKind::Capacitor | DeviceKind::Inductor) && !i.lvs_ignore())
+        .count();
+    let mut opts = LvsOptions::for_tech(&p.tech);
+    if passives > 0 {
+        opts.ignore_kinds.extend([DeviceKind::Resistor, DeviceKind::Capacitor, DeviceKind::Inductor]);
+    }
+    let lvs = compare(sch, &x, &opts);
+    issues += passives;
+    if passives > 0 {
+        lines.push(format!(
+            "{passives} resistor(s) / capacitor(s) still to draw by hand (Create > PCell: poly resistor, MOM capacitor): \
+             the generator places transistors only"
+        ));
+    }
     if lvs.matched {
-        lines.push("LVS: the layout matches the schematic".into());
+        lines.push(
+            if passives > 0 { "LVS: the transistors match the schematic" } else { "LVS: the layout matches the schematic" }
+                .into(),
+        );
     } else {
         issues += lvs.errors.len().max(1);
         lines.push(format!("LVS: {} difference(s) (Verify > Run LVS lists them)", lvs.errors.len()));
@@ -389,9 +410,22 @@ mod tests {
         assert!(c.notes.contains("Derived from work/ota5t for: gain_db >= 50"));
         assert!(c.layout.is_some());
         assert_eq!(out.layout_clean, Some(true), "{:?}", out.layout);
-        // The optimizer bought the gain with a tiny tail current and short channels: the health
-        // check says what the specs do not.
-        assert!(!out.health.is_empty(), "{}", out.text(&to));
+        // Least change, the current guard and the L floor keep the design sound: no warnings, the
+        // long channels stay long.
+        assert!(out.health.iter().all(|f| !f.warn), "{}", out.text(&to));
+        assert!(out.values.iter().filter(|(t, _)| t.contains(".l")).all(|(_, l)| *l >= 500e-9 - 1e-12), "{:?}", out.values);
+        // A starved tail and short channels are what the health check is for.
+        let mut bad = sch.clone();
+        for i in bad.instances.iter_mut() {
+            match i.name.as_str() {
+                "M5" => _ = i.params.insert("w".into(), "500n".into()),
+                "M1" | "M2" => _ = i.params.insert("l".into(), "250n".into()),
+                _ => {}
+            }
+        }
+        let h = health(&p, &from, &sch, &bad);
+        assert!(h.iter().any(|f| f.text.starts_with("supply power")), "{h:?}");
+        assert!(h.iter().any(|f| f.text.contains("got a shorter L")), "{h:?}");
         // The reference is untouched.
         assert_eq!(p.cell(&from).unwrap().schematic.as_ref(), Some(&sch));
     }

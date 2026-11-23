@@ -26,6 +26,8 @@ pub enum Role {
     CurrentSource,
     /// Anything else: logic, switches, followers.
     Device,
+    Resistor,
+    Capacitor,
 }
 
 impl Role {
@@ -36,6 +38,8 @@ impl Role {
             Role::MirrorOutput => "mirror output",
             Role::CurrentSource => "current source",
             Role::Device => "transistor",
+            Role::Resistor => "resistor",
+            Role::Capacitor => "capacitor",
         }
     }
 }
@@ -91,6 +95,14 @@ fn why(role: Role, param: &str) -> &'static str {
             "With the same gate voltage, a wider current source passes more current: faster, more power."
         }
         (Role::CurrentSource, _) => "A longer current source keeps its current steadier when its drain voltage moves.",
+        (Role::Resistor, _) => {
+            "A resistor sets a current, a gain or, with its partner in a divider, a voltage ratio: an output set by \
+             R1 / R2 changes with that ratio."
+        }
+        (Role::Capacitor, _) => {
+            "A capacitor sets a pole: larger is slower and, for a compensation capacitor, more stable; smaller is \
+             faster and less stable. On chip, capacitors cost a lot of area."
+        }
         (_, "w") => "A wider transistor is stronger: faster edges and more current, more area and capacitance.",
         _ => "A longer transistor is weaker but has a higher output resistance.",
     }
@@ -104,9 +116,19 @@ fn why(role: Role, param: &str) -> &'static str {
 /// When a spec measures a current, the output side of a current mirror gets a W of its own:
 /// the mirror ratio sets the copied current, so it must be free to change.
 pub fn suggest(sch: &Schematic, tech: &Tech, specs: &[Spec]) -> Vec<Suggestion> {
-    let ratio = specs.iter().any(|s| crate::advice::measures_current(&s.expr));
     let conn = connectivity::extract(sch);
     let net = |id: u64, pin: &str| conn.net_of(id, pin).unwrap_or("").to_string();
+    // A current spec frees mirror ratios, unless it measures the supply (its source drives a
+    // rail): the supply current is not set by a mirror ratio.
+    let supply_source = |expr: &str| {
+        let e = expr.to_ascii_lowercase();
+        sch.instances.iter().any(|i| {
+            i.kind == DeviceKind::VSource
+                && e.contains(&format!("i({})", i.name.to_ascii_lowercase()))
+                && is_rail(&net(i.id, "p"))
+        })
+    };
+    let ratio = specs.iter().any(|s| crate::advice::measures_current(&s.expr) && !supply_source(&s.expr));
     let lmin = layer_min(tech, &["poly", "po"], 180e-9);
     let wmin = layer_min(tech, &["active", "diff", "od"], 220e-9);
     let num = |s: &str| parse_spice(s).filter(|x| x.is_finite() && *x > 0.0);
@@ -173,6 +195,29 @@ pub fn suggest(sch: &Schematic, tech: &Tech, specs: &[Spec]) -> Vec<Suggestion> 
             };
             out.push(Suggestion { var, devices: names.clone(), role, param, why: why(role, param) });
         }
+    }
+    // Resistors and capacitors of the circuit (not test bench loads) set ratios, currents and
+    // poles: often the right knob (an output voltage set by a divider, a compensation capacitor).
+    for i in sch.instances.iter().filter(|i| !i.lvs_ignore()) {
+        let (param, role) = match i.kind {
+            DeviceKind::Resistor => ("r", Role::Resistor),
+            DeviceKind::Capacitor => ("c", Role::Capacitor),
+            _ => continue,
+        };
+        // A capacitor to ground is a load or a filter, not a knob (a compensation capacitor
+        // sits between two signal nets).
+        if role == Role::Capacitor && ["p", "n"].iter().any(|pin| net(i.id, pin) == "0") {
+            continue;
+        }
+        let Some(cur) = num(i.param(param)) else { continue };
+        let var = OptVar {
+            target: format!("{}.{param}", i.name),
+            min: crate::units::format_eng(cur / 4.0, ""),
+            max: crate::units::format_eng(cur * 4.0, ""),
+            log: true,
+            step: String::new(),
+        };
+        out.push(Suggestion { var, devices: vec![i.name.clone()], role, param, why: why(role, param) });
     }
     out
 }
@@ -262,6 +307,7 @@ pub fn create(p: &mut crate::Project, from: &crate::CellRef, plan: &Plan) -> Res
     }
     c.sim.optimize.vars = plan.vars.clone();
     c.sim.optimize.max_evals = plan.max_evals;
+    c.sim.optimize.goal = crate::optimize::Goal::LeastChange;
     let note = derived_note(&from.to_string(), &plan.specs);
     c.notes = if c.notes.is_empty() { note } else { format!("{note}\n\n{}", c.notes) };
     c.description = format!("{} (derived from {})", c.description, from.cell).trim_start_matches(' ').to_string();
@@ -301,6 +347,11 @@ mod tests {
         let s = suggest(&sch, &Tech::generic(), &specs);
         assert_eq!(s.len(), 2, "{s:?}");
         assert!(s.iter().all(|s| s.param == "w" && s.role == Role::Device));
+        let (sch, _, specs) = cell("ldo");
+        let s = suggest(&sch, &Tech::generic(), &specs);
+        assert!(s.iter().any(|s| s.var.target == "R1.r" && s.role == Role::Resistor), "{s:?}");
+        assert!(!s.iter().any(|s| s.var.target.starts_with("CL")), "test bench loads are not knobs");
+        assert!(!s.iter().any(|s| s.role == Role::MirrorOutput), "the supply current does not free mirror ratios");
         let (sch, _, specs) = cell("current_mirror");
         let s = suggest(&sch, &Tech::generic(), &specs);
         assert!(

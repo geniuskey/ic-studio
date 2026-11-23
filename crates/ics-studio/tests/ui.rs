@@ -86,7 +86,7 @@ fn open_example_from_welcome() {
     let p = h.state().project().expect("example opened");
     assert_eq!(p.name, "analog");
     let cells: Vec<String> = p.all_cells().filter(|(r, _)| r.lib == "work").map(|(r, _)| r.cell).collect();
-    assert_eq!(cells, ["bandgap", "current_mirror", "ota2s", "ota5t"]);
+    assert_eq!(cells, ["bandgap", "comparator", "current_mirror", "ldo", "ota2s", "ota5t", "ota_cascode", "ota_miller"]);
     assert!(p.root.is_none(), "opened unsaved");
 }
 

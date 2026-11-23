@@ -24,7 +24,7 @@ cargo run --release -- --demo
 | 주제 | 셀 |
 |---|---|
 | `getting_started` | `cmos_inverter`, `rc_lowpass`, `diode_clipper`, `devices` |
-| `analog` | `current_mirror`, `ota5t`, `ota2s` |
+| `analog` | `current_mirror`, `ota5t`, `ota2s`, `ota_miller`, `ota_cascode`, `comparator`, `ldo`, `bandgap` |
 | `digital` | `nand2`, `nor2`, `ring_osc5`, `full_adder` |
 | `memory_and_pixels` | `sram6t`, `sram_array`, `dram1t1c`, `dram_array`, `nand_string`, `nand_array`, `aps4t`, `pixel_array`, `aps2s`, `bayer_fdti`, `bayer_fdti_pc`, `bayer_fdti_ctx`, `bayer_fdti_ctx_pc` |
 | `hierarchy` | `inv_chain`, `inv_array`, `inv_tiles` |
@@ -150,6 +150,10 @@ common-centroid 순서로 배치한 뒤 배선합니다. 개루프 이득은 약
 | `ring_osc5` | 완전히 배선된 5단 링 발진기, 레이아웃 기생 성분을 넣으면 눈에 띄게 느려짐 |
 | `current_mirror` | 20 µA 기준 전류의 NMOS 전류 미러: 출력의 DC 스윕 |
 | `ota5t` | 5 트랜지스터 OTA: AC 개루프 이득 약 42 dB |
+| `ota_miller` | 밀러 보상 2단 OTA(Cc와 영점 상쇄 저항 Rz, 1 pF 부하): 80 dB, 36 MHz, 위상 여유 84°. 회로도만 |
+| `ota_cascode` | 텔레스코픽 캐스코드 OTA, 자동 P&R: 한 단으로 87 dB, 모든 소자가 포화 영역 |
+| `comparator` | 개방 루프 비교기(OTA, 이득 단, 인버터), 자동 P&R: 50 mV 오버드라이브에서 지연 4.1 ns / 2.3 ns |
+| `ldo` | LDO 레귤레이터, 1 mA에서 1.8 V → 1.2 V: 오차 증폭기, 400 µm PMOS 패스 소자, R1 / R2 분압기. 1 MHz에서 전원 제거비 45 dB. 회로도만 |
 | `sram6t` | DRC와 LVS를 통과한 6T SRAM 비트 셀: 과도 해석으로 쓰기와 유지 |
 | `sram_array` | `sram6t`의 8 × 8 어레이 |
 | `dram1t1c` | MOS 저장 커패시터를 쓴 평면 1T1C DRAM 셀, DRC와 LVS 통과: 1과 0의 쓰기, 프리차지, 전하 공유 읽기 |

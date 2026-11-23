@@ -36,18 +36,23 @@ Design...**). The wizard has four parts:
    so they stay equal; devices drawn longer than the minimum also get an L, which may grow
    but not shrink below the original (they were made long on purpose). When a spec
    measures a current, the output side of a current mirror gets a W of its own, because the
-   mirror ratio sets the current. Each line says, in plain words, what the parameter does.
+   mirror ratio sets the current (a supply current spec does not count). Resistors and
+   capacitors between signal nets are knobs too (an output set by a divider, a compensation
+   capacitor); capacitors to ground are loads and stay as they are. Each line says, in plain
+   words, what the parameter does.
 4. **Options**: build the layout like the original's, keep the supply current near the
    original's (0.5x to 2x, on by default), and the simulation budget. Without the current
    guard the optimizer may meet a target by starving the circuit (slow) or flooding it
    (power); an `idd` target of your own replaces the guard.
 
 **Create and size** copies the cell with its specs and notes, runs the
-[optimizer](tools.md) on the suggested parameters, writes the best sizes into the copy and,
+[optimizer](tools.md) on the suggested parameters with the **Least change** goal (the passing
+point closest to the original sizes, so only what the new targets need changes), writes the best sizes into the copy and,
 when asked, lays it out: placed like the original
 ([layout by example](schematic-driven-layout.md)), or generated from the schematic when the
 new sizes no longer fit the original placement, then routed, DRC errors fixed automatically
-and LVS run. The result lists every spec on the original and the new sizes, the chosen
+and LVS run. The generator places transistors only: resistors and capacitors are listed to be
+drawn by hand, and LVS then compares the transistors. The result lists every spec on the original and the new sizes, the chosen
 values and the layout checks. The copy's notes record where it came from and its new sizes.
 
 Specs only measure what they name, so the result also lists **What else changed**: comparing

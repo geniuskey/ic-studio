@@ -509,6 +509,16 @@ pub const KO: &[(&str, &str)] = &[
         "이 옵션이 없으면 최적화기가 회로에 전류를 거의 주지 않거나(느려짐) 너무 많이 줘서(전력 증가) 목표를 맞출 수 있습니다. idd 목표를 직접 넣으면 그것이 대신합니다.",
     ),
     ("What else changed", "그 밖에 달라진 것"),
+    ("resistor", "저항"),
+    ("capacitor", "커패시터"),
+    (
+        "A resistor sets a current, a gain or, with its partner in a divider, a voltage ratio: an output set by R1 / R2 changes with that ratio.",
+        "저항은 전류나 이득을 정하고, 분압기에서 짝 저항과 함께 전압 비율을 정합니다: R1 / R2로 정해지는 출력은 그 비율에 따라 바뀝니다.",
+    ),
+    (
+        "A capacitor sets a pole: larger is slower and, for a compensation capacitor, more stable; smaller is faster and less stable. On chip, capacitors cost a lot of area.",
+        "커패시터는 극점을 정합니다: 크면 느려지고 보상 커패시터라면 더 안정해지며, 작으면 빨라지고 덜 안정해집니다. 칩에서 커패시터는 면적을 많이 차지합니다.",
+    ),
 ];
 
 /// Sentences translated inside longer texts (assembled advice).
@@ -609,6 +619,7 @@ pub const SENTENCES: &[(&str, &str)] = &[
         "Gain margin out of range: change the compensation capacitor, as for phase margin.",
         "이득 여유가 범위를 벗어났습니다: 위상 여유와 마찬가지로 보상 커패시터를 조정하세요.",
     ),
+    ("LVS: the transistors match the schematic", "LVS: 트랜지스터가 회로도와 일치"),
     ("LVS: the layout matches the schematic", "LVS: 레이아웃이 회로도와 일치"),
     ("DRC clean", "DRC 통과"),
 ];
@@ -630,6 +641,10 @@ pub const TEMPLATES: &[(&str, &str)] = &[
     ("{} DRC violation(s) left (Ctrl+. in the layout offers fixes)", "DRC 위반 {}건 남음 (레이아웃에서 Ctrl+.로 수정안 보기)"),
     ("LVS: {} difference(s) (Verify > Run LVS lists them)", "LVS: 차이 {}건 (검증 > LVS 실행에서 목록 확인)"),
     ("routing failed: {}", "배선 실패: {}"),
+    (
+        "{} resistor(s) / capacitor(s) still to draw by hand (Create > PCell: poly resistor, MOM capacitor): the generator places transistors only",
+        "저항 / 커패시터 {}개는 직접 그려야 합니다(만들기 > PCell: poly 저항, MOM 커패시터): 생성기는 트랜지스터만 배치합니다",
+    ),
     (
         "{} left saturation (now {}): as an amplifier, load or current source it no longer works as intended",
         "{}이(가) 포화 영역을 벗어났습니다(현재 {}): 증폭기, 부하, 전류원이라면 더 이상 의도대로 동작하지 않습니다",
@@ -700,8 +715,32 @@ pub fn design_notes(cell: &str) -> Option<&'static str> {
         "ota2s" => {
             "무엇인가: 2단 OTA입니다. 첫 단(M1~M5)은 5-트랜지스터 OTA이고, 전류원 M7을 단 두 번째 단 M6이 이득을 더합니다.\n\
              스펙: 이득 >= 70 dB.\n\
-             주의: 보상 커패시터가 없어서 피드백을 걸면 이 증폭기는 발진합니다. 첫 파생 설계로 좋은 연습: 복사해서 o1과 out 사이에 밀러 커패시터 Cc(약 1p)를 추가하고, 위상 여유 스펙(phasemargin(v(out)) >= 60)을 더하세요.\n\
+             주의: 보상 커패시터가 없어서 피드백을 걸면 이 증폭기는 발진합니다. 첫 파생 설계로 좋은 연습: 복사해서 o1과 out 사이에 밀러 커패시터 Cc(약 1p)를 추가하고, 위상 여유 스펙(phasemargin(v(out)) >= 60)을 더하세요. 완성된 버전이 ota_miller입니다.\n\
              새 설계로 파생하려면: 이득은 대략 두 단 이득의 곱이므로 L을 늘리면 커집니다. M6의 폭과 M7의 전류가 out의 속도를 정합니다."
+        }
+        "ota_miller" => {
+            "무엇인가: 피드백에서 안정하도록 만든 2단 OTA입니다. 두 번째 단(M6, M7)이 이득을 더하고, 두 단 사이의 밀러 커패시터 Cc가 첫 단 출력을 느린 주극점(dominant pole)으로 만들어 루프에 충분한 위상 여유를 줍니다. Cc와 직렬인 Rz는 Cc가 만드는 영점을 상쇄합니다.\n\
+             왜 이 크기인가: 출력 극점이 단위 이득 주파수보다 충분히 높도록 M6를 넓게(32u) 했습니다. Cc = 1p가 ugf = gm1 / (2 pi Cc)를 정합니다.\n\
+             스펙: 1 pF 부하(CL, 테스트벤치 전용)에서 이득 >= 70 dB, ugf >= 25 MHz, 위상 여유 >= 60도.\n\
+             새 설계로 파생하려면: 대역폭을 늘리려면 입력쌍의 gm(전류, 폭)을 키우거나 Cc를 줄인 뒤 위상 여유를 확인하세요. 출력 극점(gm6 / CL)이 ugf보다 2~3배 위에 있어야 하므로, 부하가 커지면 M6 / M7을 강하게 해야 합니다. Rz는 1 / gm6 근처나 조금 크게 할 때 여유가 가장 좋습니다."
+        }
+        "ota_cascode" => {
+            "무엇인가: 텔레스코픽 캐스코드 OTA입니다. 캐스코드 트랜지스터(M3, M4와 M5, M6, vbn과 vbp로 바이어스)가 입력쌍과 미러 위에 쌓여 출력으로부터 이들을 차폐합니다. 그래서 출력 저항, 곧 단일 단의 이득이 높아지면서도 한 단의 속도와 낮은 전력을 유지합니다.\n\
+             왜 이 크기인가: ota5t처럼 L = 500n, 꼬리(M9)는 L = 1u입니다. 바이어스 전압은 모든 소자를 포화 영역에 둡니다. 대가는 좁은 출력 범위입니다(쌓인 트랜지스터마다 vds가 필요).\n\
+             스펙: 1 pF 부하에서 이득 >= 80 dB, ugf >= 20 MHz, 위상 여유 >= 60도.\n\
+             새 설계로 파생하려면: 모든 소자가 포화 영역에 남도록 vbn, vbp를 유지하세요(파생 점검이 벗어난 소자를 경고합니다). 이득을 높이려면 L을 늘리고, 대역폭을 늘리려면 꼬리 전류를 늘리거나 입력쌍을 넓히세요."
+        }
+        "comparator" => {
+            "무엇인가: 개방 루프 비교기입니다. inp가 inn(0.9 V)보다 높아지면 out이 높아집니다. 5-트랜지스터 OTA가 차이를 증폭하고, PMOS 단 M6 / M7이 이득을 더하고, 인버터 M8 / M9가 깨끗한 논리 엣지를 만듭니다.\n\
+             왜 이 크기인가: 이득 단은 M7(게이트가 vb)의 전류로 제한되고, 이것이 지연을 주로 정합니다.\n\
+             스펙: 50 mV 오버드라이브에서 입력 교차부터 출력 교차까지의 지연이 상승 <= 6 ns, 하강 <= 4 ns.\n\
+             새 설계로 파생하려면: 더 빠르게 하려면 바이어스 전류를 늘리거나(vb, 또는 M5와 M7을 넓힘) M6를 넓히세요. 오버드라이브가 작을수록 느려집니다. 오프셋을 낮게 유지하려면 M1 = M2, M3 = M4를 지키세요."
+        }
+        "ldo" => {
+            "무엇인가: 저전압 강하(LDO) 레귤레이터입니다. 1.8 V 전원에서 1 mA 부하에 일정한 1.2 V를 공급합니다. 오차 증폭기(M1~M5)가 분압된 출력 fb를 vref = 0.9 V와 비교하고, 둘이 같아질 때까지 큰 PMOS 패스 소자 MP의 게이트를 구동합니다: vout = vref (1 + R1 / R2).\n\
+             왜 이 크기인가: MP를 아주 넓게(400u) 해서 부하 전류를 작은 전압 강하(드롭아웃)로 흘립니다. R1 / R2 = 1/3이 1.2 V를 정합니다. CL과 ILOAD는 부하(테스트벤치)입니다.\n\
+             스펙: vout 1.17~1.23 V, 1 MHz에서 전원 제거비 >= 40 dB(전원 소스에 ac 1), 부하 포함 공급 전류 <= 1.1 mA.\n\
+             새 설계로 파생하려면: 다른 출력 전압은 R1 / R2(또는 vref)를 바꾸세요. 부하 전류를 늘리려면 MP를 넓히세요. 전원 제거비를 높이려면 오차 증폭기의 이득(긴 L)이나 대역폭을 키우세요. 부하 변화가 크면 루프의 안정도(위상 여유)를 확인해야 합니다."
         }
         "nand2" => {
             "무엇인가: 2입력 NAND: a와 b가 모두 높을 때만 출력이 낮아집니다. PMOS 두 개는 병렬로 끌어올리고, NMOS 두 개는 직렬로 끌어내립니다.\n\
