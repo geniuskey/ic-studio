@@ -592,7 +592,10 @@ mod tests {
         assert_eq!(w["devices"], 4);
         assert_eq!(w["nets"], json!(["0", "in", "out", "vdd"]));
         assert_eq!(w["analyses"], json!(["dc"]));
-        assert!(w["deck"].as_str().unwrap().contains("M2 out in 0 0 nmos w=1u l=180n"));
+        let deck = w["deck"].as_str().unwrap();
+        // The generic models get a card per channel length (lambda scaled by 0.5u / L).
+        assert!(deck.contains("M2 out in 0 0 nmos__l180 w=1u l=180n"), "{deck}");
+        assert!(deck.contains(".model nmos__l180 nmos (level=1"), "{deck}");
         let again = call(&mut s, "write_schematic", json!({"cell": "inv", "netlist": netlist})).unwrap_err();
         assert!(again.contains("overwrite"), "{again}");
         let bad = call(&mut s, "write_schematic", json!({"cell": "inv2", "netlist": "J1 d g s jmod"})).unwrap_err();

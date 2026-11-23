@@ -2615,7 +2615,7 @@ fn guide_specs(cell: &str) -> Vec<crate::sweep::Spec> {
             spec("tran", "tplh", "delay(v(in), 0.9, v(out), 0.9, fall, rise)", "", "70p"),
         ],
         "current_mirror" => vec![spec("op", "iout", "-i(v1)", "19u", "21u")],
-        "ring_osc5" => vec![spec("tran", "period", "cross(v(n1), 0.9, 3, rise) - cross(v(n1), 0.9, 2, rise)", "120p", "170p")],
+        "ring_osc5" => vec![spec("tran", "period", "cross(v(n1), 0.9, 3, rise) - cross(v(n1), 0.9, 2, rise)", "105p", "170p")],
         "ota_miller" => vec![
             spec("ac", "gain_db", "max(db(v(out)))", "70", ""),
             spec("ac", "ugf", "ugf(v(out))", "25meg", ""),
@@ -2753,7 +2753,7 @@ pub fn design_notes(cell: &str) -> &'static str {
         }
         "ring_osc5" => {
             "What it is: five inverters in a ring. An odd number of inversions never settles, so the ring oscillates; the period is twice the sum of the stage delays. Rings are used to measure how fast a process is.\n\
-             Specs: period between 120 and 170 ps.\n\
+             Specs: period between 105 and 170 ps.\n\
              To derive a new design: more stages (always odd) or longer L give a slower ring; wider transistors without extra load give about the same speed."
         }
         "full_adder" => {

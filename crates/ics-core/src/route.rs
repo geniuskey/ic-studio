@@ -183,6 +183,24 @@ fn grow(r: IRect, d: i64) -> IRect {
     IRect::new(r.x0 - d, r.y0 - d, r.x1 + d, r.y1 + d)
 }
 
+/// The rectangle closing the gap between `a` and `b` when they face each other closer than
+/// `space` (side by side in x or y, overlapping in the other direction), else `None`.
+fn notch_fill(a: &IRect, b: &IRect, space: i64) -> Option<IRect> {
+    let (lo, hi) = if a.x1 <= b.x0 { (a, b) } else { (b, a) };
+    let gap_x = hi.x0 - lo.x1;
+    let (y0, y1) = (a.y0.max(b.y0), a.y1.min(b.y1));
+    if gap_x > 0 && gap_x < space && y1 > y0 {
+        return Some(IRect::new(lo.x1, y0, hi.x0, y1));
+    }
+    let (lo, hi) = if a.y1 <= b.y0 { (a, b) } else { (b, a) };
+    let gap_y = hi.y0 - lo.y1;
+    let (x0, x1) = (a.x0.max(b.x0), a.x1.min(b.x1));
+    if gap_y > 0 && gap_y < space && x1 > x0 {
+        return Some(IRect::new(x0, lo.y1, x1, hi.y0));
+    }
+    None
+}
+
 /// State of a wire shape: free, owned by the only net it touches (`net + 1`), or blocked when it
 /// would come within `space` of another net or of its own net without touching it.
 fn classify(tree: &RTree<Item>, shape: IRect, space: i64) -> u32 {
@@ -511,6 +529,8 @@ impl Router<'_> {
             if job.groups.len() < 2 {
                 continue;
             }
+            // This net's metal per routing layer, to close the narrow gaps it leaves.
+            let mut own: Vec<Vec<IRect>> = vec![vec![]; st.layers.len()];
             for path in &self.paths[j] {
                 report.connections += 1;
                 for w in path.windows(2) {
@@ -542,7 +562,20 @@ impl Router<'_> {
                         .filter_map(|m| path.get(m))
                         .any(|&o| grid.pos(o).0 != k);
                     let half = if via { st.pads[k] } else { st.widths[k] } / 2;
-                    wires.entry(st.layers[k]).or_default().push(IRect::new(x - half, y - half, x + half, y + half));
+                    let r = IRect::new(x - half, y - half, x + half, y + half);
+                    own[k].push(r);
+                    wires.entry(st.layers[k]).or_default().push(r);
+                }
+            }
+            // Two pieces of the same net closer than the spacing (via plates on pin-aligned
+            // tracks less than a pitch apart) leave a notch DRC flags: fill it.
+            for (k, rects) in own.iter().enumerate() {
+                for (a, ra) in rects.iter().enumerate() {
+                    for rb in &rects[a + 1..] {
+                        if let Some(f) = notch_fill(ra, rb, st.spacing[k]) {
+                            wires.entry(st.layers[k]).or_default().push(f);
+                        }
+                    }
                 }
             }
             let missing = self.connected[j].iter().filter(|c| !**c).count();
@@ -696,6 +729,17 @@ pub(crate) fn pin_text(net: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::drc::run_tech_deck;
+
+    #[test]
+    fn notches_between_same_net_pieces_are_filled() {
+        let a = IRect::new(4840, 6290, 5220, 6670);
+        let b = IRect::new(5370, 6290, 5750, 6670);
+        assert_eq!(notch_fill(&a, &b, 230), Some(IRect::new(5220, 6290, 5370, 6670)));
+        assert_eq!(notch_fill(&b, &a, 230), Some(IRect::new(5220, 6290, 5370, 6670)));
+        assert_eq!(notch_fill(&a, &IRect::new(5500, 6290, 5880, 6670), 230), None, "far enough apart");
+        assert_eq!(notch_fill(&a, &IRect::new(5300, 7000, 5680, 7380), 230), None, "not facing each other");
+        assert_eq!(notch_fill(&a, &IRect::new(4840, 6800, 5220, 7180), 230), Some(IRect::new(4840, 6670, 5220, 6800)));
+    }
     use crate::lvs::{LvsOptions, compare};
     use crate::project::Project;
     use crate::schematic::DeviceKind;

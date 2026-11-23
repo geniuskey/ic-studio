@@ -151,9 +151,9 @@ In the schematic editor, a placed MOSFET (`N` for NMOS, `P` for PMOS) has the pa
 | Inspector field | SPICE parameter | Default | Meaning |
 |---|---|---|---|
 | **Model** | `model` | `nmos` / `pmos` | Which device model (a PDK can offer several) |
-| **Width** | `w` | `1u` / `2u` | Channel width W |
-| **Inductance / L** | `l` | `180n` | Channel length L |
-| **Multiplier** | `m` | `1` | Number of identical devices in parallel |
+| **Width (W)** | `w` | `1u` / `2u` | Channel width W |
+| **Length (L)** | `l` | `180n` | Channel length L |
+| **Multiplier (M)** | `m` | `1` | Number of identical devices in parallel |
 
 The netlist line is `M1 d g s b nmos w=1u l=180n`. The generic models behind it are SPICE
 level-1 (square-law) models:
@@ -162,6 +162,13 @@ level-1 (square-law) models:
 .model nmos nmos (level=1 vto=0.45 kp=280u lambda=0.08 ...)
 .model pmos pmos (level=1 vto=-0.45 kp=70u lambda=0.1 ...)
 ```
+
+Level 1 on its own gives every transistor the same channel-length modulation `lambda`,
+whatever its L. In silicon a longer channel modulates less: that is why long transistors
+make better current sources and more gain. So the `lambda` above holds at L = 0.5 µm, and
+the simulation deck gets a copy of the card per drawn length with `lambda` scaled by
+0.5 µm / L (`nmos__l180` for 180 nm, `lambda` about 0.22; `nmos__l1000` for 1 µm, 0.04).
+Lengthening L therefore raises the output resistance and the gain, as on a real chip.
 
 After an **operating point** simulation, the **Operating Point** results tab shows every
 MOSFET's region (cutoff, triode, saturation), I<sub>D</sub>, V<sub>GS</sub>,

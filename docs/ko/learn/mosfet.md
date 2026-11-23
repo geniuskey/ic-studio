@@ -145,9 +145,9 @@ I_D  = ½ · 280µ · (2/1) · 0.25² = 17.5 µA      (simulator: 18.7 µA, with
 | 인스펙터 필드 | SPICE 파라미터 | 기본값 | 의미 |
 |---|---|---|---|
 | **Model** | `model` | `nmos` / `pmos` | 소자 모델(PDK가 여러 개를 제공할 수 있음) |
-| **Width** | `w` | `1u` / `2u` | 채널 폭 W |
-| **Inductance / L** | `l` | `180n` | 채널 길이 L |
-| **Multiplier** | `m` | `1` | 병렬로 연결된 동일 소자의 개수 |
+| **Width (W)** | `w` | `1u` / `2u` | 채널 폭 W |
+| **Length (L)** | `l` | `180n` | 채널 길이 L |
+| **Multiplier (M)** | `m` | `1` | 병렬로 연결된 동일 소자의 개수 |
 
 넷리스트 줄은 `M1 d g s b nmos w=1u l=180n`입니다. 그 뒤에 있는 범용 모델은 SPICE level-1(제곱
 법칙) 모델입니다.
@@ -156,6 +156,12 @@ I_D  = ½ · 280µ · (2/1) · 0.25² = 17.5 µA      (simulator: 18.7 µA, with
 .model nmos nmos (level=1 vto=0.45 kp=280u lambda=0.08 ...)
 .model pmos pmos (level=1 vto=-0.45 kp=70u lambda=0.1 ...)
 ```
+
+level 1만으로는 L과 관계없이 모든 트랜지스터가 같은 채널 길이 변조 `lambda`를 갖습니다. 실제
+실리콘에서는 채널이 길수록 변조가 작습니다. 긴 트랜지스터가 더 좋은 전류원이 되고 이득이 큰 이유가
+이것입니다. 그래서 위의 `lambda`는 L = 0.5 µm에서의 값이고, 시뮬레이션 덱에는 그린 길이마다 카드
+복사본이 들어가며 `lambda`가 0.5 µm / L배로 조정됩니다(180 nm는 `nmos__l180`, `lambda` 약 0.22;
+1 µm는 `nmos__l1000`, 0.04). 따라서 L을 늘리면 실제 칩처럼 출력 저항과 이득이 커집니다.
 
 **동작점** 시뮬레이션 후 **Operating Point** 결과 탭에는 MOSFET마다 동작 영역(cutoff, triode,
 saturation), I<sub>D</sub>, V<sub>GS</sub>, V<sub>DS</sub>, V<sub>th</sub>, g<sub>m</sub>,

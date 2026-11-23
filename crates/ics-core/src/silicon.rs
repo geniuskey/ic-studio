@@ -143,6 +143,8 @@ pub fn parse_bias(s: &str) -> Result<Vec<(String, String)>, String> {
 /// Whether the card name `card` is model `name` or one of its bins (`name.1`).
 fn card_matches(card: &str, name: &str) -> bool {
     card.eq_ignore_ascii_case(name)
+        // The netlister's per-L copies of a generic card (`nmos__l180`) follow it.
+        || card.get(..name.len()).is_some_and(|p| p.eq_ignore_ascii_case(name)) && card[name.len()..].starts_with("__l")
         || card
             .get(..name.len())
             .is_some_and(|p| p.eq_ignore_ascii_case(name) && card[name.len()..].strip_prefix('.').is_some_and(|b| !b.is_empty()))
@@ -197,7 +199,13 @@ pub fn set_model_param_text(deck: &str, model: &str, param: &str, value: &str) -
         match model_tokens(&l) {
             Some((name, kind, mut params)) if card_matches(&name, model) => {
                 hit = true;
-                let v = value.to_string();
+                // A per-L generic card keeps its lambda scaled for its length.
+                let v = match (crate::netlist::generic_card_length(&name), parse_spice(value)) {
+                    (Some(l), Some(x)) if param.eq_ignore_ascii_case("lambda") && !name.eq_ignore_ascii_case(model) => {
+                        format!("{:.6e}", x * crate::netlist::LAMBDA_REF_L / l)
+                    }
+                    _ => value.to_string(),
+                };
                 match params.iter_mut().find(|(k, _)| k.eq_ignore_ascii_case(param)) {
                     Some(p) => p.1 = v,
                     None => params.push((param.to_ascii_lowercase(), v)),

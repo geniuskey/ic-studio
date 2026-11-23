@@ -58,9 +58,10 @@ values and the layout checks. The copy's notes record where it came from and its
 Specs only measure what they name, so the result also lists **What else changed**: comparing
 the operating points of the original and the new sizes, it flags transistors that left
 saturation or sit close to its edge, a large change in supply power or bias current, matched
-pairs with less gate area (more random offset) and channel lengths made shorter. With the
-generic 180 nm models (SPICE level 1, whose output resistance does not depend on L) it also
-says that a changed L behaves differently in silicon, so confirm with a PDK model.
+pairs with less gate area (more random offset) and channel lengths made shorter. The generic
+180 nm models scale the channel-length modulation with L (see
+[The MOSFET](learn/mosfet.md#w-l-and-the-parameters-in-ic-studio)), so a longer L gives more
+gain as in silicon; for sign-off numbers, use the foundry PDK.
 
 **File > Copy Cell as New...** (or **Copy as New Cell...** on a cell in the Explorer) only
 copies a cell, with every view, specs and notes, when you want to change it by hand.

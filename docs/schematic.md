@@ -169,7 +169,9 @@ as you edit. Export it with **File > Export > SPICE netlist...**. The netlister 
 - `V1 p n DC <dc> [AC <ac>] [<tran>]`, likewise for current sources
 - `D1 a k dmod`
 - `M1 d g s b <model> w=... l=... [m=...]`; an unconnected bulk pin is tied to the source
-- default level-1 models `nmos`, `pmos` and `dmod` when they are used. With a PDK model
+- default level-1 models `nmos`, `pmos` and `dmod` when they are used, with a copy of the
+  MOS card per channel length whose `lambda` is scaled by 0.5 µm / L (`nmos__l180`), so
+  longer devices have a higher output resistance as in silicon. With a PDK model
   library, MOS models map to the PDK devices (subcircuit devices get an `X` prefix) and the
   library is loaded at the chosen corner.
 

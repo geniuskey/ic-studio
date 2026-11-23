@@ -263,18 +263,6 @@ pub fn health(p: &Project, cell: &CellRef, before: &ics_core::Schematic, after: 
             )));
         }
     }
-    let l_changed = after
-        .instances
-        .iter()
-        .filter(|i| i.kind.is_mos())
-        .any(|i| find(before, &i.name).is_some_and(|o| num(&o, "l") != num(i, "l")));
-    if l_changed && p.tech.models.is_none() {
-        out.push(note(
-            "channel lengths changed, and the generic 180 nm models are SPICE level 1, whose output resistance does not \
-             depend on L: in silicon a longer L gives more gain and a shorter one less. Confirm with a PDK model."
-                .into(),
-        ));
-    }
     out
 }
 
@@ -287,10 +275,27 @@ struct Built {
 }
 
 /// Route a placed layout, fix what DRC can fix automatically and run LVS.
-fn build(p: &Project, sch: &ics_core::Schematic, mut lay: ics_core::Layout, how: String) -> Built {
+fn build(p: &Project, sch: &ics_core::Schematic, lay: ics_core::Layout, how: String) -> Built {
+    // The router's rip-up budget changes the wiring: when the default leaves a DRC problem the
+    // automatic fixes cannot repair, another budget often routes it clean.
+    let mut best: Option<Built> = None;
+    for rips in [ics_core::route::MAX_RIPS, 0, 8] {
+        let b = build_once(p, sch, lay.clone(), how.clone(), rips);
+        if best.as_ref().is_none_or(|old| b.issues < old.issues) {
+            let clean = b.issues == 0;
+            best = Some(b);
+            if clean {
+                break;
+            }
+        }
+    }
+    best.expect("one candidate at least")
+}
+
+fn build_once(p: &Project, sch: &ics_core::Schematic, mut lay: ics_core::Layout, how: String, rips: u32) -> Built {
     let mut lines = vec![how];
     let mut issues = 0;
-    match ics_core::route::route(sch, &mut lay, p, &p.tech) {
+    match ics_core::route::route_with(sch, &mut lay, p, &p.tech, rips) {
         Ok(r) => {
             issues += r.failed.len();
             lines.push(r.summary());
