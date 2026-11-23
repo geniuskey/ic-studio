@@ -55,7 +55,7 @@
 | 4 | Autosave and crash recovery | pass | Waited for `recovery.json`, forcibly stopped the app, and reopened the project. Recovered and saved the 41 °C edit, then verified the copy was cleared. |
 | 4 | Crash log | skipped | No normal app command triggered a panic. Forced termination exercised recovery. |
 | 4 | Updater replacement and cleanup | pass | Windows swap tests covered replacement and a locked `.old` file requiring `.old1`. Native startup removed seeded `.old1` and `.new` files. |
-| 4 | End-to-end updater and relaunch | skipped | Release discovery uses a fixed GitHub URL. End-to-end verification, including preservation of launch arguments, needs a newer test release. |
+| 4 | End-to-end updater and relaunch | pass | 2026-11-23, by the user: an installed v0.2.11 updated itself to the v0.2.12 release through Help > Check for Updates. It relaunched on the same cell and workspace, `ics` was replaced with 0.2.12 too, and the leftover `.old` files were gone on the next start. |
 | 4 | Claude Code registration | pass | Local-scope registration connected and was removed. Settings > Add to Claude Code also connected through the installed `claude.exe` in a scratch `CLAUDE_CONFIG_DIR`. Removed the scratch-profile entry and verified the default config file hash. |
 | 4 | Process Emulation commands | pass | Completed the generic flow, opened the step editor and loaded a TOML file with Korean text and spaces in its path. After the fix, Cancel stopped the higher-resolution run and retained the previous section. |
 | 5 | MCP stdio JSON-RPC | pass | Parsed every stdout line as JSON-RPC for initialize, tools/list and tools/call. The server announced 60 built-in tools. |
@@ -219,10 +219,6 @@ versions and passed the Python tests. Lockfile refreshed in `930800e`.
   exercised during the follow-up.
 - Launch an unsigned downloaded build from Explorer and record the SmartScreen
   behavior.
-- When a newer release is available, copy the older app and CLI into a scratch
-  directory and launch it with `--demo --cell cmos_inverter --workspace layout`.
-  Select Help > Check for Updates, install the update and relaunch. Verify the
-  new version opens the same cell and workspace and removes leftover binaries.
 - To check for a brief console flash, run the scratch inverter with ngspice
   using F5, launch a Python extension, and select Settings > Add to Claude
   Code with a scratch Claude profile. Observe the desktop during each launch.
