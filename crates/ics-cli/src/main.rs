@@ -600,6 +600,41 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Derive a new design from a cell: copy it with new targets, size the suggested parameters
+    /// (matched devices kept equal) with the optimizer, lay it out like the original, check it
+    /// and save. Non-zero exit when a target is missed.
+    Derive {
+        project: PathBuf,
+        cell: String,
+        /// Name of the new cell (default: <cell>_v2, _v3, ...).
+        #[arg(long)]
+        name: Option<String>,
+        /// A target, `name>=value`, `name<=value` or `name=lo..hi` (repeatable). The name is a
+        /// spec of the cell or a common one (gain_db, ugf, pm, bw, tphl, tplh); other specs keep
+        /// their limits.
+        #[arg(long = "target")]
+        targets: Vec<String>,
+        /// Do not build a layout.
+        #[arg(long)]
+        no_layout: bool,
+        /// Simulation budget.
+        #[arg(long, default_value_t = 80)]
+        max_evals: usize,
+        /// Only print the suggested parameters and specs.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Copy a cell as a new cell (schematic, layout, simulation setup, specs and notes) to start
+    /// a new design from a finished one, and save.
+    CopyCell {
+        project: PathBuf,
+        cell: String,
+        /// Name of the new cell (default: <cell>_copy).
+        new_name: Option<String>,
+        /// Library of the new cell (default: the original's).
+        #[arg(long)]
+        lib: Option<String>,
+    },
     /// Place a cell's devices like another cell's layout with the same circuit topology (layout
     /// by example), optionally route it, and save.
     PlaceLike {
@@ -2059,6 +2094,9 @@ fn run(cli: Cli) -> Result<(), String> {
                             line += &format!(", {} not measured", s.errors);
                         }
                         println!("{line}");
+                        if let Some(a) = s.advice() {
+                            println!("        try: {a}");
+                        }
                     }
                 }
                 if let Some((f, _)) = &before {
@@ -2867,6 +2905,81 @@ fn run(cli: Cli) -> Result<(), String> {
             if !best.passed {
                 return Err("no evaluated point meets every spec".into());
             }
+        }
+        Cmd::Derive { project, cell, name, targets, no_layout, max_evals, dry_run } => {
+            let mut p = Project::open(&project).map_err(|e| e.to_string())?;
+            let from = resolve(&p, &cell)?;
+            let c = p.cell(&from).ok_or("no such cell")?;
+            let sch = c.schematic.clone().ok_or("the cell has no schematic")?;
+            let mut specs = c.sim.sweep.specs.clone();
+            let presets = ics_core::derive::spec_presets(&sch, &c.sim, &specs);
+            for t in &targets {
+                let (name, lo, hi) = if let Some((n, v)) = t.split_once(">=") {
+                    (n, v.to_string(), String::new())
+                } else if let Some((n, v)) = t.split_once("<=") {
+                    (n, String::new(), v.to_string())
+                } else if let Some((n, v)) = t.split_once('=') {
+                    let (lo, hi) =
+                        v.split_once("..").ok_or_else(|| format!("target '{t}': use name>=v, name<=v or name=lo..hi"))?;
+                    (n, lo.to_string(), hi.to_string())
+                } else {
+                    return Err(format!("target '{t}': use name>=v, name<=v or name=lo..hi"));
+                };
+                let name = name.trim();
+                if !specs.iter().any(|s| s.name == name) {
+                    let pre = presets
+                        .iter()
+                        .find(|s| s.name == name)
+                        .ok_or_else(|| format!("no spec or common spec named '{name}'"))?;
+                    specs.push(pre.clone());
+                }
+                let s = specs.iter_mut().find(|s| s.name == name).expect("added");
+                (s.min, s.max) = (lo.trim().to_string(), hi.trim().to_string());
+            }
+            let suggestions = ics_core::derive::suggest(&sch, &p.tech, &specs);
+            for s in &suggestions {
+                println!("change {}: {} .. {}  ({})", s.title(), s.var.min, s.var.max, s.var.target);
+            }
+            for s in &specs {
+                println!(
+                    "target {} = {}: {}",
+                    s.name,
+                    s.expr,
+                    if s.min.is_empty() && s.max.is_empty() { "measured".into() } else { format!("min {} max {}", s.min, s.max) }
+                );
+            }
+            if dry_run {
+                return Ok(());
+            }
+            let name = name.unwrap_or_else(|| {
+                (2..)
+                    .map(|k| format!("{}_v{k}", from.cell))
+                    .find(|n| p.cell(&CellRef::new(&from.lib, n)).is_none())
+                    .unwrap_or_default()
+            });
+            let plan = ics_core::derive::Plan {
+                lib: from.lib.clone(),
+                name,
+                specs,
+                vars: suggestions.into_iter().map(|s| s.var).collect(),
+                max_evals,
+            };
+            let opts = SimOptions { deck_dir: Some(project.clone()), ..Default::default() };
+            let (to, out) = ics_sim::derive::derive(&mut p, &from, &plan, !no_layout, &opts)?;
+            p.save().map_err(|e| e.to_string())?;
+            print!("{}", out.text(&to));
+            if !out.passed {
+                std::process::exit(1);
+            }
+        }
+        Cmd::CopyCell { project, cell, new_name, lib } => {
+            let mut p = Project::open(&project).map_err(|e| e.to_string())?;
+            let from = resolve(&p, &cell)?;
+            let lib = lib.unwrap_or_else(|| from.lib.clone());
+            let name = new_name.unwrap_or_else(|| p.unused_cell_name(&lib, &from.cell));
+            let to = p.copy_cell(&from, &lib, &name)?;
+            p.save().map_err(|e| e.to_string())?;
+            println!("copied {from} to {to}");
         }
         Cmd::PlaceLike { project, cell, from, route } => {
             let mut p = Project::open(&project).map_err(|e| e.to_string())?;

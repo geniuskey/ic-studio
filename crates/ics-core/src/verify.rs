@@ -145,6 +145,19 @@ impl SpecResult {
         self.status.unwrap_or(Status::Error)
     }
 
+    /// What to try, in plain words: for a spec that misses its limit at its worst point, or
+    /// for a measurement error a beginner meets often. `None` otherwise.
+    pub fn advice(&self) -> Option<String> {
+        if !self.first_error.is_empty() && self.worst.is_none() {
+            return crate::advice::error_advice(&self.first_error).map(str::to_string);
+        }
+        if self.status() != Status::Fail {
+            return None;
+        }
+        let miss = crate::advice::spec_miss(&self.min, &self.max, self.worst?)?;
+        Some(crate::advice::spec_advice(&self.expr, miss))
+    }
+
     /// The limits as text (`>= 60`, `<= 1m`, `1 .. 2`, `-`).
     pub fn limits(&self) -> String {
         match (self.min.trim(), self.max.trim()) {

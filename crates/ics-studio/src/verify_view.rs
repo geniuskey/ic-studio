@@ -317,6 +317,8 @@ fn results_ui(ui: &mut egui::Ui, run: &VerifyRun, before: Option<&VerifyRun>, hi
                     let r = ui.label(RichText::new(st.label()).strong().color(status_color(st, pal)));
                     if !s.first_error.is_empty() {
                         r.on_hover_text(format!("{} point(s) not measured: {}", s.errors, s.first_error));
+                    } else if let Some(a) = s.advice() {
+                        r.on_hover_text(crate::i18n::t_text(&a));
                     }
                     match ch {
                         Some(c) if c.is_regression() => {
@@ -336,5 +338,28 @@ fn results_ui(ui: &mut egui::Ui, run: &VerifyRun, before: Option<&VerifyRun>, hi
                 }
             }
         });
+        let tips: Vec<(String, String)> = run
+            .tests
+            .iter()
+            .flat_map(|t| t.specs.iter().map(move |s| (t, s)))
+            .filter_map(|(t, s)| {
+                let tip = s.advice()?;
+                let at = s.worst_point.and_then(|k| t.points.get(k)).filter(|p| !p.is_empty());
+                let head = match at {
+                    Some(p) => crate::i18n::tf("{} / {} (worst at {})", &[&t.name, &s.name, p]),
+                    None => format!("{} / {}", t.name, s.name),
+                };
+                Some((head, tip))
+            })
+            .collect();
+        if !tips.is_empty() {
+            ui.add_space(10.0);
+            theme::section(ui, crate::i18n::t("What to try"));
+            for (head, tip) in tips {
+                ui.label(RichText::new(head).strong());
+                ui.add(egui::Label::new(RichText::new(crate::i18n::t_text(&tip)).color(pal.text_weak)).wrap());
+                ui.add_space(4.0);
+            }
+        }
     });
 }

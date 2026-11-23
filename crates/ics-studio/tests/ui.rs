@@ -1279,6 +1279,10 @@ fn glyph_coverage() {
         include_str!("../src/net_view.rs"),
         include_str!("../src/hier_view.rs"),
         include_str!("../src/gen_view.rs"),
+        include_str!("../src/guide_view.rs"),
+        include_str!("../src/derive_view.rs"),
+        include_str!("../../ics-core/src/advice.rs"),
+        include_str!("../../ics-core/src/derive.rs"),
         include_str!("../../ics-core/src/sweep.rs"),
         include_str!("../src/theme.rs"),
         include_str!("../../ics-core/src/units.rs"),
@@ -2907,7 +2911,10 @@ fn tutorial_walkthrough() {
     expect(&mut h, Some(Command::OpenCell(inv.clone(), Some(Workspace::Layout))), 6);
     expect(&mut h, Some(Command::RunDrc), 7);
     expect(&mut h, Some(Command::RunLvs), 8);
-    expect(&mut h, Some(Command::CommandPalette), 9);
+    // The calculator window from step 5 covers the guide here; press Skip through accesskit.
+    h.get_by_label("Skip").click_accesskit();
+    expect(&mut h, None, 9);
+    expect(&mut h, Some(Command::CommandPalette), 10);
     assert!(h.state().tutorial().finished());
     assert_eq!(h.state().tutorial().completed(), 8);
     h.state_mut().command(Command::SetWorkspace(Workspace::Home));
@@ -3612,4 +3619,80 @@ fn extensions_run_in_the_app() {
     shot(&mut h, "15_extensions");
     h.state().extensions().stop_all();
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A beginner's path: the design notes and specs beside the schematic, Copy as New Cell, and
+/// the Derive New Design wizard sizing a copy of the OTA for more gain and laying it out.
+#[test]
+fn derive_new_design() {
+    use egui_kittest::kittest::Queryable;
+    let args =
+        LaunchArgs { project: None, demo: true, workspace: Some("schematic".into()), cell: Some("ota5t".into()), run: false };
+    let mut h = Harness::builder().with_size(egui::vec2(1440.0, 900.0)).wgpu().build_eframe(|cc| IcStudio::new(cc, args));
+    h.run_steps(4);
+    h.get_by_label("Derive a new design from this…");
+    shot(&mut h, "50_design_notes");
+    let ota = CellRef::new("work", "ota5t");
+    h.state_mut().command(Command::CopyCellDialog(ota.clone()));
+    h.run_steps(3);
+    h.get_by_label("Copy").click();
+    h.run_steps(4);
+    let p = h.state().project().unwrap();
+    let copy = p.cell(&CellRef::new("work", "ota5t_copy")).expect("copied");
+    assert_eq!(copy.schematic, p.cell(&ota).unwrap().schematic);
+    assert!(!copy.notes.is_empty(), "the notes come along");
+
+    h.state_mut().command(Command::DeriveDialog(ota.clone()));
+    h.run_steps(4);
+    h.get_by_label("W of M1, M2 (input pair)");
+    shot(&mut h, "51_derive_wizard");
+    h.get_by_label("Create and size").scroll_to_me();
+    h.run_steps(6);
+    h.get_by_label("Create and size").click();
+    let target = CellRef::new("work", "ota5t_v2");
+    let mut done = false;
+    for _ in 0..600 {
+        h.run_steps(2);
+        std::thread::sleep(Duration::from_millis(20));
+        if h.state().project().and_then(|p| p.cell(&target)).is_some_and(|c| c.notes.starts_with("Sized by the optimizer")) {
+            done = true;
+            break;
+        }
+    }
+    assert!(done, "the derived cell was sized: {:?}", h.state().console_lines().collect::<Vec<_>>());
+    h.run_steps(4);
+    let c = h.state().project().unwrap().cell(&target).unwrap();
+    assert!(c.layout.is_some(), "laid out like the original");
+    assert!(c.notes.contains("Derived from work/ota5t"));
+    shot(&mut h, "52_derive_result");
+}
+
+/// The Korean UI (welcome, schematic design panel, derive wizard, tutorial). The language is
+/// process-wide, so this runs on its own: `cargo test -p ics-studio --test ui -- --ignored korean`.
+#[test]
+#[ignore = "switches the process-wide UI language; run alone"]
+fn korean_ui_screens() {
+    if !ics_studio::i18n::korean_available() {
+        let mut h = app(LaunchArgs { project: None, demo: false, workspace: Some("home".into()), cell: None, run: false });
+        h.run_steps(2);
+        if !ics_studio::i18n::korean_available() {
+            eprintln!("no system font with Hangul: skipped");
+            return;
+        }
+    }
+    let mut h = app(LaunchArgs { project: None, demo: false, workspace: Some("home".into()), cell: None, run: false });
+    h.state_mut().command(Command::SetLanguage(ics_studio::i18n::Lang::Ko));
+    h.run_steps(4);
+    shot(&mut h, "60_ko_welcome");
+    let mut h = app(demo_args("ota5t", "schematic", false));
+    h.state_mut().command(Command::SetLanguage(ics_studio::i18n::Lang::Ko));
+    h.run_steps(4);
+    shot(&mut h, "61_ko_design_panel");
+    h.state_mut().command(Command::DeriveDialog(CellRef::new("work", "ota5t")));
+    h.run_steps(4);
+    shot(&mut h, "62_ko_derive");
+    h.state_mut().command(Command::Tutorial);
+    h.run_steps(4);
+    shot(&mut h, "63_ko_tutorial");
+    ics_studio::i18n::set(ics_studio::i18n::Lang::En);
 }

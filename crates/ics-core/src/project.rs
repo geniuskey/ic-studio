@@ -237,6 +237,8 @@ impl LibEntry {
 struct CellMeta {
     #[serde(default)]
     description: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    notes: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pcell: Option<PCell>,
 }
@@ -252,6 +254,8 @@ struct GdsLibraryFile {
 struct GdsCellMeta {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     description: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    notes: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pcell: Option<PCell>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -282,6 +286,10 @@ pub enum LibStorage {
 pub struct Cell {
     pub name: String,
     pub description: String,
+    /// Design notes: what the cell is for, why it is sized the way it is and which parameters
+    /// to change for a different target. They travel with [`Project::copy_cell`], so a design
+    /// started from this one keeps the reasoning behind it.
+    pub notes: String,
     pub schematic: Option<Schematic>,
     pub layout: Option<Layout>,
     pub sim: SimSetup,
@@ -294,6 +302,7 @@ impl Cell {
         Self {
             name: name.into(),
             description: String::new(),
+            notes: String::new(),
             schematic: None,
             layout: None,
             sim: SimSetup::default(),
@@ -688,6 +697,31 @@ impl Project {
         Ok(to)
     }
 
+    /// Copy cell `from` as `new_name` in library `to_lib`: every view (schematic, layout,
+    /// simulation setup with its sweeps, specs and optimizer setup) and the description and
+    /// design notes, so a finished design can be the starting point of a new one. Layout
+    /// instances keep pointing at the same subcells. A copy of a generated PCell variant is an
+    /// ordinary cell.
+    pub fn copy_cell(&mut self, from: &CellRef, to_lib: &str, new_name: &str) -> std::result::Result<CellRef, String> {
+        if to_lib == PCELL_LIB {
+            return Err(format!("'{PCELL_LIB}' holds generated PCell variants; copy into another library"));
+        }
+        let mut cell = self.cell(from).ok_or_else(|| format!("no cell '{from}'"))?.clone();
+        cell.name = new_name.to_string();
+        cell.pcell = None;
+        self.add_cell(to_lib, cell)
+    }
+
+    /// A cell name in `lib` not taken yet, derived from `base`: `base_copy`, `base_copy2`, ...
+    pub fn unused_cell_name(&self, lib: &str, base: &str) -> String {
+        let taken = |n: &str| self.cell(&CellRef::new(lib, n)).is_some();
+        let first = format!("{base}_copy");
+        if !taken(&first) {
+            return first;
+        }
+        (2..).map(|k| format!("{first}{k}")).find(|n| !taken(n)).unwrap_or(first)
+    }
+
     /// Rename library `old` to `new_name`, updating every layout instance that refers to its
     /// cells. The files on disk follow with the next [`Project::save`].
     pub fn rename_library(&mut self, old: &str, new_name: &str) -> std::result::Result<(), String> {
@@ -806,7 +840,11 @@ impl Project {
                     for cell in &lib.cells {
                         let dir = lib_dir.join(&cell.name);
                         keep_dirs.insert(dir.clone());
-                        let meta = CellMeta { description: cell.description.clone(), pcell: cell.pcell.clone() };
+                        let meta = CellMeta {
+                            description: cell.description.clone(),
+                            notes: cell.notes.clone(),
+                            pcell: cell.pcell.clone(),
+                        };
                         ops.push(SaveOp::Write(dir.join("cell.json"), json_bytes(&meta)));
                         ops.push(SaveOp::Write(dir.join("sim.json"), json_bytes(&cell.sim)));
                         for (f, view) in [
@@ -992,7 +1030,15 @@ impl Project {
                     let schematic = opt("schematic.json")?.map(|p| read_json(&p)).transpose()?;
                     let layout = opt("layout.json")?.map(|p| read_json(&p)).transpose()?;
                     let sim = opt("sim.json")?.map(|p| read_json(&p)).transpose()?.unwrap_or_default();
-                    cells.push(Cell { name, description: meta.description, schematic, layout, sim, pcell: meta.pcell });
+                    cells.push(Cell {
+                        name,
+                        description: meta.description,
+                        notes: meta.notes,
+                        schematic,
+                        layout,
+                        sim,
+                        pcell: meta.pcell,
+                    });
                 }
             }
             cells.sort_by(|a, b| a.name.cmp(&b.name));
@@ -1167,6 +1213,7 @@ fn gds_library_files(lib: &Library, tech: &Tech) -> (Vec<u8>, Vec<u8>) {
                 let lay = c.layout.as_ref();
                 let meta = GdsCellMeta {
                     description: c.description.clone(),
+                    notes: c.notes.clone(),
                     pcell: c.pcell.clone(),
                     schematic: c.schematic.clone(),
                     sim: (c.sim != default_sim).then(|| c.sim.clone()),
@@ -1179,6 +1226,7 @@ fn gds_library_files(lib: &Library, tech: &Tech) -> (Vec<u8>, Vec<u8>) {
             .filter(|(c, m)| {
                 c.layout.is_none()
                     || !m.description.is_empty()
+                    || !m.notes.is_empty()
                     || m.pcell.is_some()
                     || m.schematic.is_some()
                     || m.sim.is_some()
@@ -1227,6 +1275,7 @@ fn open_gds_library(dir: &Path, lib: &str, tech: &mut Tech) -> Result<Vec<Cell>>
         cells.push(Cell {
             name,
             description: m.description,
+            notes: m.notes,
             schematic: m.schematic,
             layout: Some(layout),
             sim: m.sim.unwrap_or_default(),
@@ -1236,6 +1285,7 @@ fn open_gds_library(dir: &Path, lib: &str, tech: &mut Tech) -> Result<Vec<Cell>>
     for (name, m) in meta.cells {
         cells.push(Cell {
             description: m.description,
+            notes: m.notes,
             schematic: m.schematic,
             sim: m.sim.unwrap_or_default(),
             pcell: m.pcell,
@@ -1372,6 +1422,23 @@ mod tests {
         assert!(!dir.join(&r2.lib).join(&r2.cell).exists());
         assert!(foreign.join("cell.json").is_file());
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn copy_cell_keeps_every_view() {
+        let mut p = crate::examples::demo_project();
+        let (from, _) = p.all_cells().find(|(r, c)| r.cell == "ota5t" && c.layout.is_some()).expect("ota5t");
+        let name = p.unused_cell_name(&from.lib, "ota5t");
+        assert_eq!(name, "ota5t_copy");
+        let to = p.copy_cell(&from, &from.lib, &name).unwrap();
+        let (a, b) = (p.cell(&from).unwrap().clone(), p.cell(&to).unwrap().clone());
+        assert_eq!(a.schematic, b.schematic);
+        assert_eq!(a.layout, b.layout);
+        assert_eq!(a.sim, b.sim);
+        assert!(!b.sim.sweep.specs.is_empty(), "specs come along");
+        assert_eq!(p.unused_cell_name(&from.lib, "ota5t"), "ota5t_copy2");
+        assert!(p.copy_cell(&from, &from.lib, &name).is_err(), "names stay unique");
+        assert!(p.copy_cell(&from, PCELL_LIB, "x").is_err());
     }
 
     #[test]

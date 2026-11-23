@@ -117,7 +117,9 @@ pub fn setup_fonts(ctx: &egui::Context) {
             }
         }
     }
-    if let Some(bytes) = CJK_FONTS.iter().find_map(|p| std::fs::read(p).ok()) {
+    let cjk = CJK_FONTS.iter().find_map(|p| std::fs::read(p).ok());
+    crate::i18n::set_cjk_font(cjk.is_some());
+    if let Some(bytes) = cjk {
         fonts.font_data.insert("system-cjk".into(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
         for fam in [FontFamily::Proportional, FontFamily::Monospace] {
             fonts.families.entry(fam).or_default().push("system-cjk".into());

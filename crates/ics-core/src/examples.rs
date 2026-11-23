@@ -189,6 +189,7 @@ pub fn rc_lowpass() -> Cell {
     Cell {
         name: "rc_lowpass".into(),
         description: "First-order RC low-pass filter (fc ≈ 159 kHz)".into(),
+        notes: String::new(),
         schematic: Some(s),
         layout: None,
         sim,
@@ -244,6 +245,7 @@ pub fn cmos_inverter() -> Cell {
     Cell {
         name: "cmos_inverter".into(),
         description: "Static CMOS inverter with 20 fF load".into(),
+        notes: String::new(),
         schematic: Some(s),
         layout: Some(inverter_layout(&Tech::generic())),
         sim,
@@ -281,6 +283,7 @@ pub fn diode_clipper() -> Cell {
     Cell {
         name: "diode_clipper".into(),
         description: "Series resistor + shunt diode clipper".into(),
+        notes: String::new(),
         schematic: Some(s),
         layout: None,
         sim,
@@ -333,6 +336,7 @@ fn layout_cell(name: &str, description: &str, layout: Layout) -> Cell {
     Cell {
         name: name.into(),
         description: description.into(),
+        notes: String::new(),
         schematic: None,
         layout: Some(layout),
         sim: SimSetup::default(),
@@ -444,6 +448,7 @@ fn full_flow_cell(name: &str, description: &str, schematic: Schematic, layout: L
     Cell {
         name: name.into(),
         description: description.into(),
+        notes: String::new(),
         schematic: Some(schematic),
         layout: Some(layout),
         sim,
@@ -2453,6 +2458,7 @@ pub fn demo_project() -> Project {
     {
         p.add_cell("work", c).expect("unique");
     }
+    apply_design_guides(&mut p);
     let mut devices = Layout::default();
     let mut x = 0;
     for pc in crate::pcell::PCell::defaults() {
@@ -2467,6 +2473,134 @@ pub fn demo_project() -> Project {
     let ctx = p.cell(&CellRef::new("work", "bayer_fdti_ctx")).and_then(|c| c.layout.clone()).expect("bayer_fdti_ctx layout");
     p.publish_template("work", bayer_fdti_ctx_template(&ctx, &p.tech)).expect("bayer_fdti_ctx_pc generates");
     p
+}
+
+fn spec(analysis: &str, name: &str, expr: &str, min: &str, max: &str) -> crate::sweep::Spec {
+    crate::sweep::Spec { name: name.into(), analysis: analysis.into(), expr: expr.into(), min: min.into(), max: max.into() }
+}
+
+/// Specs for demo cells that do not set their own, so every example has a target to meet
+/// (and to change when a new design starts from it).
+fn guide_specs(cell: &str) -> Vec<crate::sweep::Spec> {
+    match cell {
+        "cmos_inverter" => vec![
+            spec("tran", "tphl", "delay(v(in), 0.9, v(out), 0.9, rise, fall)", "", "50p"),
+            spec("tran", "tplh", "delay(v(in), 0.9, v(out), 0.9, fall, rise)", "", "70p"),
+        ],
+        "current_mirror" => vec![spec("op", "iout", "-i(v1)", "19u", "21u")],
+        "ring_osc5" => vec![spec("tran", "period", "cross(v(n1), 0.9, 3, rise) - cross(v(n1), 0.9, 2, rise)", "120p", "170p")],
+        "nand2" | "nor2" => vec![spec(
+            "tran",
+            "tpd",
+            "delay(v(a), 0.9, v(out), 0.9, rise, fall)",
+            "",
+            if cell == "nand2" { "40p" } else { "20p" },
+        )],
+        "ota2s" => vec![spec("ac", "gain_db", "max(db(v(out)))", "70", ""), spec("ac", "ugf", "ugf(v(out))", "", "")],
+        _ => vec![],
+    }
+}
+
+/// Design notes of the demo cells: what each is for, why it is sized as it is and what to
+/// change for a different target. Shown in the Design Notes panel and read by the copilot.
+pub fn design_notes(cell: &str) -> &'static str {
+    match cell {
+        "cmos_inverter" => {
+            "What it is: the basic CMOS logic gate. The PMOS pulls out up to vdd when in is low, the NMOS pulls it down when in is high; C1 (20 fF) stands for the gates the output drives.\n\
+             Why these sizes: L is the process minimum (180n) for speed. The PMOS is twice as wide (2u vs 1u) because holes are slower than electrons, so rise and fall times come out similar.\n\
+             Specs: tphl (output falling) <= 50 ps and tplh (output rising) <= 70 ps, measured on the transient.\n\
+             To derive a new design: for a faster or stronger gate (bigger load), scale both W by the same factor and keep the 2:1 ratio. If the rise is slower than the fall, widen the PMOS. Change C1 to the load your design drives and re-check tphl / tplh."
+        }
+        "inv" => {
+            "What it is: the inverter as a reusable block with pins a (input) and y (output), placed twice by buffer_tb.\n\
+             To derive a new design: copy it, resize the transistors, then run Tools > Update Cell Instance Pins in the schematics that place it."
+        }
+        "buffer_tb" => {
+            "What it is: a test bench (tb) that places two inv cells in series; a buffer restores a weak signal without inverting it.\n\
+             To derive a new design: make the second inverter 3 to 4 times larger than the first to drive a big load fast (tapered buffer)."
+        }
+        "rc_lowpass" => {
+            "What it is: a first-order low-pass filter. Frequencies above fc = 1 / (2 pi R C), about 159 kHz with 1k and 1n, are attenuated by 20 dB per decade.\n\
+             Specs: bandwidth 120 to 200 kHz and rise time <= 1.5 us, swept over +-10 % of R and C to show the effect of process spread.\n\
+             To derive a new design: pick C first (on chip, capacitors are large: keep C small), then R = 1 / (2 pi fc C). Halving R or C doubles fc and halves the rise time."
+        }
+        "diode_clipper" => {
+            "What it is: a series resistor and a diode to ground limit the positive half of the output to about one diode drop (0.7 V); the negative half passes, since the diode is reversed.\n\
+             To derive a new design: a larger R draws less current when clipping; two diodes in series clip at about 1.4 V; a second diode the other way round clips the negative half too."
+        }
+        "bandgap" => {
+            "What it is: a voltage reference of about 1.2 V that hardly changes with temperature. Q2 is 8 times larger than Q1; the difference of their base-emitter voltages rises with temperature and cancels the falling Vbe.\n\
+             Specs: vref between 1.15 and 1.25 V from 0 to 100 C.\n\
+             To derive a new design: the ratio R2 / R3 sets how much of the rising part is added. If vref rises with temperature, lower R2 / R3; if it falls, raise it. The area ratio (8) can stay."
+        }
+        "current_mirror" => {
+            "What it is: copies the 20 uA reference current from M1 into the output M2. M1 is diode connected (gate tied to drain) so its gate voltage is whatever carries the reference current; M2 with the same gate voltage carries the same current.\n\
+             Why these sizes: L = 1u (longer than the minimum) makes the output current depend less on the output voltage and makes M1 and M2 match better.\n\
+             Specs: iout between 19 and 21 uA at vout = 0.9 V.\n\
+             To derive a new design: iout / iref = (W/L of M2) / (W/L of M1), so a 2:1 mirror needs M2 twice as wide (or m = 2). Longer L for a better copy, larger W for less voltage headroom. The DC sweep shows how low vout can go before the copy fails."
+        }
+        "ota5t" => {
+            "What it is: the five-transistor operational transconductance amplifier (OTA), the simplest amplifier of two inputs. M1 / M2 are the differential input pair, M3 / M4 a PMOS current mirror load, M5 the tail current source set by vb.\n\
+             Why these sizes: L = 500n for more gain than the minimum length, and a longer L = 1u for the tail M5 so its current stays constant. The PMOS loads are twice as wide as the inputs (holes are slower).\n\
+             Specs: gain >= 30 dB, unity-gain frequency (ugf) >= 100 MHz and phase margin >= 45 deg, from -40 to 125 C. There is no load capacitor, so ugf comes out very high: add a capacitor on out (e.g. 1p) for a realistic number.\n\
+             To derive a new design: for more gain, lengthen L of M1-M4. For more bandwidth, raise the tail current (higher vb or wider M5) or widen M1 / M2. Keep M1 = M2 and M3 = M4 (matched pairs). Then let Simulation > Optimizer size it against your specs, and build the layout with Layout Generators > By Example from this cell."
+        }
+        "ota2s" => {
+            "What it is: a two-stage OTA. The first stage (M1-M5) is the five-transistor OTA; the second stage M6 with the current source M7 adds more gain.\n\
+             Specs: gain >= 70 dB.\n\
+             Caution: there is no compensation capacitor, so in feedback this amplifier would oscillate. A good first derived design: copy it and add a Miller capacitor Cc (about 1p) from o1 to out, then add a phase margin spec (phasemargin(v(out)) >= 60).\n\
+             To derive a new design: the gain is about the product of the two stage gains, so longer L raises it. M6 width and M7 current set how fast out can move."
+        }
+        "nand2" => {
+            "What it is: 2-input NAND: the output is low only when a and b are both high. Two PMOS in parallel pull up, two NMOS in series pull down.\n\
+             Why these sizes: the two series NMOS each have the full 1u width, so pulling down is slower than in an inverter; for equal rise and fall, widen the NMOS to 2u.\n\
+             Specs: tpd (a rising to out falling) <= 40 ps.\n\
+             To derive a new design: a 3-input NAND adds one PMOS in parallel and one NMOS in series; widen the series NMOS by the number of inputs."
+        }
+        "nor2" => {
+            "What it is: 2-input NOR: the output is high only when a and b are both low. Two PMOS in series pull up, two NMOS in parallel pull down.\n\
+             Why these sizes: series PMOS are slow, so in a real library the PMOS are made 2 to 4 times wider; NAND is usually preferred over NOR for this reason.\n\
+             Specs: tpd (a rising to out falling) <= 20 ps."
+        }
+        "ring_osc5" => {
+            "What it is: five inverters in a ring. An odd number of inversions never settles, so the ring oscillates; the period is twice the sum of the stage delays. Rings are used to measure how fast a process is.\n\
+             Specs: period between 120 and 170 ps.\n\
+             To derive a new design: more stages (always odd) or longer L give a slower ring; wider transistors without extra load give about the same speed."
+        }
+        "full_adder" => {
+            "What it is: a 28-transistor mirror full adder (s = a xor b xor ci, co = majority of a, b, ci), placed and routed automatically from its netlist.\n\
+             To derive a new design: edit the netlist sizes, then Verify > Generate Layout from Schematic and Route Flylines rebuild the layout."
+        }
+        "sram6t" => {
+            "What it is: a 6-transistor static memory bit. Two cross-coupled inverters (P1/N1, P2/N2) hold the bit; the access transistors A1 / A2 connect it to the bit lines when the word line is high.\n\
+             Why these sizes: the pull-down NMOS must be stronger than the access NMOS (cell ratio) so a read does not flip the bit, and the access NMOS stronger than the PMOS (pull-up ratio) so a write can."
+        }
+        "dram1t1c" => {
+            "What it is: a one-transistor one-capacitor dynamic memory bit: the charge on the capacitor is the bit, and it leaks, so it must be refreshed.\n\
+             To derive a new design: a larger storage capacitor gives a larger read signal on the bit line and a longer time between refreshes, at the cost of area."
+        }
+        "nand_string" => {
+            "What it is: a NAND flash string: memory transistors in series between a bit-line contact and a source-line contact, with select transistors at both ends."
+        }
+        "aps4t" | "aps2s" => {
+            "What it is: an image sensor pixel. The photodiode collects charge from light; the transfer gate (TG) moves it to the floating diffusion (FD); the source follower (SF) reads FD out through the row select (SEL); RST resets FD. aps2s shares one readout between two photodiodes.\n\
+             To derive a new design: Verify > Pixel Circuit reports conversion gain, full well, lag and noise. A smaller FD capacitance gives more conversion gain (less noise) but a smaller voltage range."
+        }
+        _ => "",
+    }
+}
+
+fn apply_design_guides(p: &mut Project) {
+    for lib in &mut p.libraries {
+        for c in &mut lib.cells {
+            if c.notes.is_empty() {
+                c.notes = design_notes(&c.name).to_string();
+            }
+            if c.sim.sweep.specs.is_empty() {
+                c.sim.sweep.specs = guide_specs(&c.name);
+            }
+        }
+    }
 }
 
 /// A themed example project: a subset of the demo cells (with the cells they place).

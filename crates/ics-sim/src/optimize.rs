@@ -53,8 +53,15 @@ pub fn measure(s: &Spec, res: &SimResults) -> Result<f64, String> {
 }
 
 /// `INST.param` of a target, the parameter lower case; `None` for a design variable.
+/// The first `INST.param` of a target (`None` for a design variable).
 fn inst_param(target: &str) -> Option<(&str, String)> {
-    target.trim().split_once('.').map(|(i, p)| (i, p.to_ascii_lowercase()))
+    inst_params(target).into_iter().next()
+}
+
+/// Every `INST.param` of a target: one, or several separated by commas (`M1.w,M2.w`) that
+/// take the same value, so matched devices stay equal. Empty for a design variable.
+fn inst_params(target: &str) -> Vec<(&str, String)> {
+    target.split(',').filter_map(|t| t.trim().split_once('.').map(|(i, p)| (i.trim(), p.trim().to_ascii_lowercase()))).collect()
 }
 
 /// The schematic with the values written into the instance parameters of `INST.param`
@@ -62,9 +69,10 @@ fn inst_param(target: &str) -> Option<(&str, String)> {
 pub fn apply_values(sch: &Schematic, setup: &OptSetup, values: &[f64]) -> Schematic {
     let mut sch = sch.clone();
     for (v, x) in setup.vars.iter().zip(values) {
-        let Some((inst, param)) = inst_param(&v.target) else { continue };
-        if let Some(i) = sch.instances.iter_mut().find(|i| i.name.eq_ignore_ascii_case(inst)) {
-            i.params.insert(param, spice_number(*x));
+        for (inst, param) in inst_params(&v.target) {
+            if let Some(i) = sch.instances.iter_mut().find(|i| i.name.eq_ignore_ascii_case(inst)) {
+                i.params.insert(param, spice_number(*x));
+            }
         }
     }
     sch
@@ -111,10 +119,10 @@ fn check_setup<'a>(project: &'a Project, cell: &CellRef) -> Result<(&'a Cell, &'
     }
     for v in &setup.vars {
         Bounds::of(v)?;
-        if let Some((inst, _)) = inst_param(&v.target)
-            && !sch.instances.iter().any(|i| i.name.eq_ignore_ascii_case(inst))
-        {
-            return Err(format!("{}: no instance '{inst}' in the schematic", v.target.trim()));
+        for (inst, _) in inst_params(&v.target) {
+            if !sch.instances.iter().any(|i| i.name.eq_ignore_ascii_case(inst)) {
+                return Err(format!("{}: no instance '{inst}' in the schematic", v.target.trim()));
+            }
         }
     }
     Ok((c, sch))

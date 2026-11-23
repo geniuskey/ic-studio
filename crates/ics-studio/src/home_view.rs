@@ -8,6 +8,7 @@ use ics_core::{CellRef, Project, ViewKind};
 
 use crate::app::{Command, Workspace};
 use crate::canvas::View2D;
+use crate::i18n::t;
 use crate::icons::{self, Icon};
 use crate::layout_view::{LayoutDrawOpts, draw_layout};
 use crate::schematic_view::{DrawOpts, draw_schematic, schematic_bounds};
@@ -37,40 +38,51 @@ pub fn welcome(ui: &mut egui::Ui, recent: &[PathBuf], q: &mut Vec<Command>) {
         ui.horizontal(|ui| {
             ui.add_space(48.0);
             ui.vertical(|ui| {
-                ui.label(RichText::new("IC Studio").size(38.0).strong().color(pal.text));
+                ui.label(RichText::new(t("IC Studio")).size(38.0).strong().color(pal.text));
                 ui.label(
-                    RichText::new("Full-custom IC design — schematic, simulation and layout in one place.")
+                    RichText::new(t("Full-custom IC design — schematic, simulation and layout in one place."))
                         .size(16.0)
                         .color(pal.text_weak),
                 );
+                if crate::i18n::korean_available() {
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        use crate::i18n::Lang;
+                        for lang in [Lang::En, Lang::Ko] {
+                            if ui.selectable_label(crate::i18n::current() == lang, lang.label()).clicked() {
+                                q.push(Command::SetLanguage(lang));
+                            }
+                        }
+                    });
+                }
                 ui.add_space(28.0);
-                theme::section(ui, "Start");
+                theme::section(ui, t("Start"));
                 ui.horizontal_wrapped(|ui| {
-                    if action_card(ui, Icon::Simulation, "Take the tutorial", "New here? 9 guided steps", pal.ok) {
+                    if action_card(ui, Icon::Simulation, t("Take the tutorial"), t("New here? 10 guided steps"), pal.ok) {
                         q.push(Command::Tutorial);
                     }
-                    if action_card(ui, Icon::Library, "Open demo project", "Auto P&R, OTA, SRAM, pixels", pal.accent) {
+                    if action_card(ui, Icon::Library, t("Open demo project"), t("Auto P&R, OTA, SRAM, pixels"), pal.accent) {
                         q.push(Command::NewDemoProject);
                     }
-                    if action_card(ui, Icon::Cell, "New project…", "Empty, generic 180 nm PDK", pal.schematic) {
+                    if action_card(ui, Icon::Cell, t("New project…"), t("Empty, generic 180 nm PDK"), pal.schematic) {
                         q.push(Command::NewProjectDialog);
                     }
-                    if action_card(ui, Icon::Home, "Open project…", "Browse for a project folder", pal.layout) {
+                    if action_card(ui, Icon::Home, t("Open project…"), t("Browse for a project folder"), pal.layout) {
                         q.push(Command::OpenProjectDialog);
                     }
                 });
                 ui.add_space(24.0);
-                theme::section(ui, "Examples");
+                theme::section(ui, t("Examples"));
                 ui.horizontal_wrapped(|ui| {
                     for t in &ics_core::examples::TOPICS {
-                        if action_card(ui, Icon::Library, t.title, t.summary, pal.simulation) {
+                        if action_card(ui, Icon::Library, crate::i18n::t(t.title), crate::i18n::t(t.summary), pal.simulation) {
                             q.push(Command::OpenExample(t.name.into()));
                         }
                     }
                 });
                 ui.add_space(24.0);
                 if !recent.is_empty() {
-                    theme::section(ui, "Recent projects");
+                    theme::section(ui, t("Recent projects"));
                     for p in recent.iter().take(8) {
                         let name = p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
                         ui.horizontal(|ui| {
@@ -82,7 +94,7 @@ pub fn welcome(ui: &mut egui::Ui, recent: &[PathBuf], q: &mut Vec<Command>) {
                     }
                     ui.add_space(24.0);
                 }
-                theme::section(ui, "Workflow");
+                theme::section(ui, t("Workflow"));
                 ui.horizontal_wrapped(|ui| {
                     for (icon, title, text, color) in [
                         (
@@ -111,9 +123,9 @@ pub fn welcome(ui: &mut egui::Ui, recent: &[PathBuf], q: &mut Vec<Command>) {
                                 ui.horizontal(|ui| {
                                     let (r, p) = ui.allocate_painter(Vec2::splat(22.0), Sense::hover());
                                     icons::paint(&p, r.rect, icon, color);
-                                    ui.label(RichText::new(title).strong().size(14.0));
+                                    ui.label(RichText::new(t(title)).strong().size(14.0));
                                 });
-                                ui.add(egui::Label::new(RichText::new(text).color(pal.text_weak)).wrap());
+                                ui.add(egui::Label::new(RichText::new(t(text)).color(pal.text_weak)).wrap());
                             });
                         });
                     }
@@ -131,30 +143,30 @@ pub fn project_overview(ui: &mut egui::Ui, project: &Project, hier: &mut Hier, q
             ui.add_space(32.0);
             ui.vertical(|ui| {
                 ui.label(RichText::new(&project.name).size(30.0).strong());
-                let loc = project.root.as_ref().map(|r| r.display().to_string()).unwrap_or("not saved yet".into());
+                let loc = project.root.as_ref().map(|r| r.display().to_string()).unwrap_or(t("not saved yet").into());
                 ui.label(
                     RichText::new(format!("{}  ·  {}  ·  {}", project.description, project.tech.name, loc)).color(pal.text_weak),
                 );
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
-                    if ui.button("+ New cell").clicked() {
+                    if ui.button(t("+ New cell")).clicked() {
                         q.push(Command::NewCellDialog);
                     }
-                    if ui.button("⬆ Import GDS / OASIS…").clicked() {
+                    if ui.button(t("⬆ Import GDS / OASIS…")).clicked() {
                         q.push(Command::ImportGds(None));
                     }
-                    if ui.button("⬇ Export library GDS…").clicked() {
+                    if ui.button(t("⬇ Export library GDS…")).clicked() {
                         q.push(Command::ExportLibraryGds);
                     }
-                    if ui.button("Tutorial").on_hover_text("Learn the design flow step by step").clicked() {
+                    if ui.button(t("Tutorial")).on_hover_text(t("Learn the design flow step by step")).clicked() {
                         q.push(Command::Tutorial);
                     }
                 });
                 ui.add_space(18.0);
                 for lib in &project.libraries {
-                    theme::section(ui, &format!("Library · {} ({} cells)", lib.name, lib.cells.len()));
+                    theme::section(ui, &crate::i18n::tf("Library · {} ({} cells)", &[&lib.name, &lib.cells.len().to_string()]));
                     if lib.cells.is_empty() {
-                        ui.label(RichText::new("No cells yet. Create one to start designing.").color(pal.text_weak));
+                        ui.label(RichText::new(t("No cells yet. Create one to start designing.")).color(pal.text_weak));
                     }
                     ui.horizontal_wrapped(|ui| {
                         ui.spacing_mut().item_spacing = Vec2::new(14.0, 14.0);

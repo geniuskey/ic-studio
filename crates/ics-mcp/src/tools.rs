@@ -79,6 +79,7 @@ pub fn snapshot(p: &Project, cell: Option<&CellRef>, layout: Option<&Layout>) ->
                         Some(l) => Cell {
                             name: c.name.clone(),
                             description: c.description.clone(),
+                            notes: c.notes.clone(),
                             schematic: c.schematic.clone(),
                             layout: Some(l.clone()),
                             sim: c.sim.clone(),
@@ -648,7 +649,7 @@ pub fn definitions() -> Vec<Value> {
         ),
         tool(
             "get_netlist",
-            "Netlist generated from a cell's schematic: a SPICE deck including the analyses of its saved simulation setup (default), the same deck in Spectre, or CDL for LVS.",
+            "Netlist generated from a cell's schematic: a SPICE deck including the analyses of its saved simulation setup (default), the same deck in Spectre, or CDL for LVS. Also returns the cell's design notes (what it is for, why it is sized so, what to change for another target) and its specs (name, analysis, waveform-calculator expression, min / max).",
             json!({"cell": cell(), "format": {"type": "string", "enum": ["spice", "spectre", "cdl"], "description": "Netlist language (default spice)."}}),
             &["cell"],
         ),
@@ -1032,6 +1033,32 @@ pub fn definitions() -> Vec<Value> {
             &[],
         ),
         tool(
+            "derive_design",
+            &format!(
+                "Start a new design from a finished cell in one step: copy it with new targets, size the parameters suggested from the circuit (one W per group of matched transistors, L for devices drawn longer than the minimum; matched devices stay equal; a current spec frees mirror ratios) with the optimizer, build the layout like the original's (or from the schematic when the new sizes do not fit), fix DRC and run LVS. The original is left untouched. Targets name a spec of the cell or a common one (gain_db, ugf, pm, bw, tphl, tplh), or give a full spec with analysis and expr; the cell's other specs keep their limits. dry_run returns the suggested parameters and specs without changing anything. Returns each spec before and after, the new sizes and the layout checks. {NOT_SAVED}"
+            ),
+            json!({
+                "cell": cell(),
+                "name": {"type": "string", "description": "Name of the new cell (default <cell>_v2, _v3, ...)."},
+                "targets": {"type": "array", "items": {"type": "object", "properties": {
+                    "name": {"type": "string"}, "min": {"type": "string"}, "max": {"type": "string"},
+                    "analysis": {"type": "string", "enum": ["op", "dc", "ac", "tran", "noise"]}, "expr": {"type": "string"}
+                }, "required": ["name"]}},
+                "layout": {"type": "boolean", "description": "Build and check the layout (default true)."},
+                "max_evals": {"type": "integer", "minimum": 10, "description": "Simulation budget (default 80)."},
+                "dry_run": {"type": "boolean"}
+            }),
+            &["cell"],
+        ),
+        tool(
+            "copy_cell",
+            &format!(
+                "Copy a cell as a new cell: the schematic, layout, simulation setup (analyses, sweeps, specs, optimizer setup), description and design notes. Use it to start a new design from a finished one (then change the copy: sizes, specs, optimize, place_like the original for its layout) and leave the original untouched. Returns the new cell. {NOT_SAVED}"
+            ),
+            json!({"cell": cell(), "name": {"type": "string", "description": "Name of the new cell (letters, digits, _ and -). Default: <cell>_copy."}, "lib": {"type": "string", "description": "Library of the new cell (default: the original's)."}, "note": {"type": "string", "description": "A line added to the top of the copy's design notes, e.g. what it is derived for."}}),
+            &["cell"],
+        ),
+        tool(
             "place_like",
             &format!(
                 "Layout by example: place a cell's devices like a finished reference cell with the same circuit topology. Devices and nets are matched by topology (names and sizes may differ); every MOS device goes where its counterpart is in the reference, sized from this cell's schematic, with the reference's wells, implants and taps. The cell's layout is replaced. Optionally route afterwards. {NOT_SAVED}"
@@ -1303,6 +1330,8 @@ impl State {
             "compact" => self.compact(a),
             "diff_layout" => self.diff_layout(a),
             "optimize" => self.optimize(a),
+            "copy_cell" => self.copy_cell(a),
+            "derive_design" => self.derive_design(a),
             "place_like" => self.place_like(a),
             "extract_corners" => self.extract_corners(a),
             "extract_mismatch" => self.extract_mismatch(a),
@@ -1499,7 +1528,18 @@ impl State {
         let sch = c.schematic.as_ref().ok_or("cell has no schematic view")?;
         let format: ics_core::netlist::Format = a.opt_str("format")?.unwrap_or("spice").parse()?;
         let (deck, warnings) = ics_core::netlist::write(sch, &p.tech, &c.sim, &r.to_string(), format);
-        Ok(json!({"cell": r.to_string(), "deck": deck, "warnings": warnings}))
+        let specs: Vec<Value> = c
+            .sim
+            .sweep
+            .specs
+            .iter()
+            .map(|s| json!({"name": s.name, "analysis": s.analysis, "expr": s.expr, "min": s.min, "max": s.max}))
+            .collect();
+        let mut out = json!({"cell": r.to_string(), "deck": deck, "warnings": warnings, "specs": specs});
+        if !c.notes.is_empty() {
+            out["notes"] = json!(c.notes);
+        }
+        Ok(out)
     }
 
     fn import_cdl(&mut self, a: &Args) -> Result<Value, String> {
@@ -1613,7 +1653,7 @@ impl State {
                         json!({"name": s.name, "limits": s.limits(), "status": s.status().label(), "worst": s.worst,
                                "at": s.worst_point.and_then(|k| t.points.get(k)), "margin": s.margin, "range": s.range,
                                "passed": s.passed, "points": s.values.len(), "errors": s.errors,
-                               "first_error": (!s.first_error.is_empty()).then_some(&s.first_error)})
+                               "first_error": (!s.first_error.is_empty()).then_some(&s.first_error), "advice": s.advice()})
                     })
                     .collect();
                 json!({"name": t.name, "cell": t.cell, "status": t.status().label(), "points": t.points.len(),
@@ -2564,6 +2604,100 @@ impl State {
         Ok(
             json!({"spec": spec.name, "corners": corners, "variation": variation, "variation_error": var_error, "applied": apply, "library": library}),
         )
+    }
+
+    fn derive_design(&mut self, a: &Args) -> Result<Value, String> {
+        let (p, from) = self.cell_arg(a)?;
+        let c = p.cell(&from).expect("resolved");
+        let sch = c.schematic.clone().ok_or("the cell has no schematic")?;
+        let mut specs = c.sim.sweep.specs.clone();
+        let presets = ics_core::derive::spec_presets(&sch, &c.sim, &specs);
+        let get = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
+        for t in a.0.get("targets").and_then(Value::as_array).into_iter().flatten() {
+            let name = get(t, "name").ok_or("every target needs a name")?;
+            if !specs.iter().any(|s| s.name == name) {
+                let spec = match (get(t, "analysis"), get(t, "expr")) {
+                    (Some(analysis), Some(expr)) => {
+                        ics_core::sweep::Spec { name: name.clone(), analysis, expr, ..Default::default() }
+                    }
+                    _ => presets
+                        .iter()
+                        .find(|s| s.name == name)
+                        .cloned()
+                        .ok_or_else(|| format!("'{name}' is not a spec of {from}: give analysis and expr"))?,
+                };
+                specs.push(spec);
+            }
+            let s = specs.iter_mut().find(|s| s.name == name).expect("added");
+            s.min = get(t, "min").unwrap_or_default();
+            s.max = get(t, "max").unwrap_or_default();
+        }
+        let suggestions = ics_core::derive::suggest(&sch, &p.tech, &specs);
+        let params: Vec<Value> = suggestions
+            .iter()
+            .map(|s| json!({"parameter": s.title(), "target": s.var.target, "min": s.var.min, "max": s.var.max, "why": s.why}))
+            .collect();
+        let spec_json: Vec<Value> = specs
+            .iter()
+            .map(|s| json!({"name": s.name, "analysis": s.analysis, "expr": s.expr, "min": s.min, "max": s.max}))
+            .collect();
+        if a.opt_bool("dry_run")?.unwrap_or(false) {
+            return Ok(json!({"cell": from.to_string(), "parameters": params, "specs": spec_json}));
+        }
+        let name = match a.opt_str("name")? {
+            Some(n) => n.to_string(),
+            None => (2..)
+                .map(|k| format!("{}_v{k}", from.cell))
+                .find(|n| p.cell(&CellRef::new(&from.lib, n)).is_none())
+                .unwrap_or_default(),
+        };
+        let plan = ics_core::derive::Plan {
+            lib: from.lib.clone(),
+            name,
+            specs,
+            vars: suggestions.into_iter().map(|s| s.var).collect(),
+            max_evals: a.0.get("max_evals").and_then(Value::as_u64).map_or(80, |n| n as usize),
+        };
+        let mut opts = ics_sim::SimOptions::default();
+        if let Some(exe) = &p.trusted_ngspice() {
+            opts.ngspice_exe = exe.clone();
+        }
+        let layout = a.opt_bool("layout")?.unwrap_or(true);
+        let p = self.project_mut()?;
+        let (to, out) = ics_sim::derive::derive(p, &from, &plan, layout, &opts)?;
+        self.dirty = true;
+        let num = |r: &Result<f64, String>| match r {
+            Ok(v) => json!(v),
+            Err(e) => json!({"error": e}),
+        };
+        let specs: Vec<Value> = out
+            .specs
+            .iter()
+            .enumerate()
+            .map(|(k, (n, l))| json!({"name": n, "limits": l, "original": out.before.get(k).map(num), "new": out.after.get(k).map(num)}))
+            .collect();
+        Ok(json!({
+            "cell": to.to_string(), "from": from.to_string(), "passed": out.passed, "simulations": out.evals,
+            "specs": specs, "sizes": out.values.iter().map(|(t, v)| json!({"target": t, "value": v})).collect::<Vec<_>>(),
+            "parameters": params, "layout": out.layout, "layout_clean": out.layout_clean,
+        }))
+    }
+
+    fn copy_cell(&mut self, a: &Args) -> Result<Value, String> {
+        let (p, from) = self.cell_arg(a)?;
+        let lib = a.0.get("lib").and_then(Value::as_str).map_or_else(|| from.lib.clone(), str::to_string);
+        let name = a.0.get("name").and_then(Value::as_str).map_or_else(|| p.unused_cell_name(&lib, &from.cell), str::to_string);
+        let p = self.project_mut()?;
+        let to = p.copy_cell(&from, &lib, &name)?;
+        if let Some(note) = a.opt_str("note")?.map(str::trim).filter(|n| !n.is_empty()) {
+            let c = p.cell_mut(&to).expect("copied");
+            c.notes = if c.notes.is_empty() { note.to_string() } else { format!("{note}\n\n{}", c.notes) };
+        }
+        let c = p.cell(&to).expect("copied");
+        let specs: Vec<&str> = c.sim.sweep.specs.iter().map(|s| s.name.as_str()).collect();
+        let out = json!({"cell": to.to_string(), "from": from.to_string(), "schematic": c.schematic.is_some(), "layout": c.layout.is_some(), "specs": specs});
+        self.dirty = true;
+        Ok(out)
     }
 
     fn place_like(&mut self, a: &Args) -> Result<Value, String> {

@@ -96,6 +96,8 @@ The server has 59 tools:
 | `extract_corners` | Corner models from WAT data: tt / ff / ss / fs / sf model cards, the process variation for Monte Carlo (`apply` stores it in the technology) and the corner library |
 | `optimize` | Size device parameters to meet specs (optionally after layout); `apply` writes the best values |
 | `place_like` | Layout by example: place a cell like a finished cell with the same circuit topology, optionally route |
+| `copy_cell` | Copy a cell as a new cell with every view, specs and design notes (and an optional note line) |
+| `derive_design` | Start a new design from a finished cell in one call: copy with new targets, size the suggested parameters, lay out like the original, fix DRC, run LVS (`dry_run` shows the plan); see [Start from an earlier design](derive.md) |
 | `diff_layout` | XOR a cell's layout per layer against a git revision (default `HEAD`) or the saved files |
 | `extract` | Extracted nets and devices, photodiodes and the pixels around them (TG / FD / RST / SF / SEL), plus SPICE |
 | `schematic_from_layout` | Schematic drawn from the layout extraction (pixels in the textbook arrangement), optionally with a test bench |

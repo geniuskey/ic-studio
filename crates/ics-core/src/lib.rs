@@ -4,11 +4,13 @@
 //! Python / MCP automation interfaces.
 
 pub mod abut;
+pub mod advice;
 pub mod by_example;
 pub mod cadence;
 pub mod compact;
 pub mod connectivity;
 pub mod constraints;
+pub mod derive;
 pub mod dopants;
 pub mod drc;
 pub mod drc_fix;

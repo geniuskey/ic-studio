@@ -5,6 +5,7 @@ use eframe::egui::{self, Align2, RichText, Sense, Stroke, Vec2};
 use ics_core::CellRef;
 
 use crate::app::{Command, Workspace};
+use crate::i18n::{t, tf};
 use crate::theme;
 
 /// What the user has done so far, sampled from the app every frame.
@@ -20,6 +21,8 @@ pub struct Progress {
     pub calculator: bool,
     pub drc: bool,
     pub lvs: bool,
+    /// A cell derived from another exists (Derive New Design).
+    pub derived: bool,
     pub palette: bool,
 }
 
@@ -113,6 +116,17 @@ const STEPS: &[Step] = &[
         show: |r| vec![Command::OpenCell(r.clone(), Some(Workspace::Layout)), Command::RunLvs],
     },
     Step {
+        title: "Start a new design from this one",
+        body: "Most designs begin as a copy of an earlier one. With nothing selected, the right panel of a \
+               schematic shows the cell's targets (specs) and design notes. Click \"Derive a new design from \
+               this\", make a target stricter (for example tplh <= 40p), and IC Studio copies the cell, \
+               sizes the copy to meet it and lays it out. The original stays as it was.",
+        hint: "Schematic › right panel › Derive a new design from this…",
+        spot: Some(Workspace::Schematic),
+        done: |p| p.derived,
+        show: |r| vec![Command::OpenCell(r.clone(), Some(Workspace::Schematic)), Command::DeriveDialog(r.clone())],
+    },
+    Step {
         title: "Find any command",
         body: "Every action is in the command palette. Type a few letters, for example \
                \"export gds\", and press Enter.",
@@ -186,13 +200,18 @@ impl Tutorial {
         let pal = theme::palette(ui.ctx());
         let n = STEPS.len();
         let frac = self.completed() as f32 / n as f32;
-        let bar = if self.finished() { "Complete".to_string() } else { format!("Step {} of {n}", self.step + 1) };
-        ui.add(egui::ProgressBar::new(frac).desired_height(6.0)).on_hover_text(format!("{} of {n} done", self.completed()));
+        let bar = if self.finished() {
+            t("Complete").to_string()
+        } else {
+            tf("Step {} of {}", &[&(self.step + 1).to_string(), &n.to_string()])
+        };
+        ui.add(egui::ProgressBar::new(frac).desired_height(6.0))
+            .on_hover_text(tf("{} of {} done", &[&self.completed().to_string(), &n.to_string()]));
         ui.label(RichText::new(bar).small().color(pal.text_weak));
         ui.add_space(4.0);
 
         let Some(step) = STEPS.get(self.step) else {
-            ui.label(RichText::new("You're ready to design").size(16.0).strong());
+            ui.label(RichText::new(t("You're ready to design")).size(16.0).strong());
             ui.label(
                 RichText::new(
                     "That's the whole flow: schematic, simulation, layout and verification. \
@@ -202,45 +221,45 @@ impl Tutorial {
             );
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui.button("Keyboard shortcuts").clicked() {
+                if ui.button(t("Keyboard shortcuts")).clicked() {
                     q.push(Command::Shortcuts);
                 }
-                if ui.button("User guide").clicked() {
+                if ui.button(t("User guide")).clicked() {
                     q.push(Command::UserGuide);
                 }
-                if ui.button("Start over").clicked() {
+                if ui.button(t("Start over")).clicked() {
                     self.start();
                 }
-                if ui.button("Close").clicked() {
+                if ui.button(t("Close")).clicked() {
                     self.open = false;
                 }
             });
             return;
         };
 
-        ui.label(RichText::new(step.title).size(16.0).strong());
-        ui.label(RichText::new(step.body).color(pal.text_weak));
+        ui.label(RichText::new(t(step.title)).size(16.0).strong());
+        ui.label(RichText::new(t(step.body)).color(pal.text_weak));
         ui.add_space(6.0);
         egui::Frame::new().fill(pal.bg_widget).corner_radius(6).inner_margin(egui::Margin::symmetric(8, 5)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("Try").strong().color(pal.accent));
-                ui.label(theme::kbd(step.hint));
+                ui.label(RichText::new(t("Try")).strong().color(pal.accent));
+                ui.label(theme::kbd(t(step.hint)));
             });
         });
         ui.add_space(4.0);
         let done = self.done[self.step];
         ui.horizontal(|ui| {
             if done {
-                ui.label(RichText::new("Done").color(pal.ok));
+                ui.label(RichText::new(t("Done")).color(pal.ok));
             } else {
                 ui.add(egui::Spinner::new().size(12.0).color(pal.text_weak));
-                ui.label(RichText::new("Waiting for you to do it").small().color(pal.text_weak));
+                ui.label(RichText::new(t("Waiting for you to do it")).small().color(pal.text_weak));
             }
         });
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            if ui.add_enabled(self.step > 0, egui::Button::new("Back")).clicked() {
+            if ui.add_enabled(self.step > 0, egui::Button::new(t("Back"))).clicked() {
                 self.step -= 1;
             }
             let shown = match &p.inverter {
@@ -249,26 +268,26 @@ impl Tutorial {
                 None => vec![],
             };
             if ui
-                .add_enabled(!shown.is_empty() && !done, egui::Button::new("Show me"))
-                .on_hover_text("Do this step for me")
-                .on_disabled_hover_text("Do this step yourself, or skip it")
+                .add_enabled(!shown.is_empty() && !done, egui::Button::new(t("Show me")))
+                .on_hover_text(t("Do this step for me"))
+                .on_disabled_hover_text(t("Do this step yourself, or skip it"))
                 .clicked()
             {
                 q.extend(shown);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let next = if done { "Next" } else { "Skip" };
-                if ui.button(next).clicked() {
+                if ui.button(t(next)).clicked() {
                     self.step += 1;
                 }
             });
         });
         if p.inverter.is_none() && self.step > 0 {
-            ui.label(RichText::new("These steps use the demo project's cmos_inverter cell.").small().color(pal.warning));
+            ui.label(RichText::new(t("These steps use the demo project's cmos_inverter cell.")).small().color(pal.warning));
         }
 
         ui.add_space(4.0);
-        egui::CollapsingHeader::new("All steps").id_salt("tutorial_steps").show(ui, |ui| {
+        egui::CollapsingHeader::new(t("All steps")).id_salt("tutorial_steps").show(ui, |ui| {
             for (i, s) in STEPS.iter().enumerate() {
                 ui.horizontal(|ui| {
                     let (r, painter) = ui.allocate_painter(Vec2::splat(12.0), Sense::hover());
@@ -279,7 +298,7 @@ impl Tutorial {
                         let col = if i == self.step { pal.accent } else { pal.border };
                         painter.circle_stroke(c, 4.5, Stroke::new(1.5, col));
                     }
-                    let text = RichText::new(format!("{}. {}", i + 1, s.title));
+                    let text = RichText::new(format!("{}. {}", i + 1, t(s.title)));
                     let text = if i == self.step { text.strong() } else { text.color(pal.text_weak) };
                     if ui.add(egui::Label::new(text).sense(Sense::click())).clicked() {
                         self.step = i;

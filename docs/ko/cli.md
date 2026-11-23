@@ -63,6 +63,8 @@
 | `ics corners <CSV> [--spec FILE] [--project P] [--lib FILE] [--variation FILE] [--apply] [--json]` | WAT 데이터로 코너 모델 생성: tt와 ff / ss / fs / sf 모델 카드를 피팅하고 코너 라이브러리와 Monte Carlo용 공정 변동 작성([코너 모델](process.md#실리콘에서-코너-모델-만들기) 참고) |
 | `ics optimize <PROJECT> <CELL> [--post-layout] [--apply] [--json]` | 셀의 스펙을 만족하도록 소자 사이징. 모든 스펙을 만족하는 포인트가 없으면 1로 종료 |
 | `ics place-like <PROJECT> <CELL> --from <CELL> [--route]` | 같은 회로를 가진 완성된 셀처럼 배치하고 저장 |
+| `ics copy-cell <PROJECT> <CELL> [NEW_NAME] [--lib LIB]` | 셀을 새 셀로 복사(회로도, 레이아웃, 시뮬레이션 설정, 스펙, 노트)하고 저장 |
+| `ics derive <PROJECT> <CELL> [--name N] [--target SPEC>=V\|SPEC<=V\|SPEC=LO..HI]... [--no-layout] [--max-evals N] [--dry-run]` | 새 설계 파생: 새 목표로 복사하고, 제안된 파라미터로 크기를 정하고, 원본처럼 레이아웃하고, 검사한 뒤 저장. 목표를 못 맞추면 1로 종료([이전 설계에서 시작하기](derive.md) 참고) |
 | `ics skill <PROJECT> <FILE.il> [--no-save] [--json]` | 프로젝트에 Cadence SKILL 스크립트를 실행하고 저장. SKILL 오류가 나면 1로 종료 |
 | `ics pcell-skill <PROJECT> <CELL> [--lib L] [-o FILE]` | [PCell Designer](pcells.md#pcell-designer) 마스터를 Virtuoso용 SKILL `pcDefinePCell`로 내보내기 |
 

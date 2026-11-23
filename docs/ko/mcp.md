@@ -93,6 +93,8 @@ npx skills add geniuskey/ic-studio
 | `extract_corners` | WAT 데이터로 코너 모델 생성: tt / ff / ss / fs / sf 모델 카드, Monte Carlo용 공정 변동(`apply`는 테크놀로지에 저장), 코너 라이브러리 |
 | `optimize` | 스펙을 만족하도록 소자 파라미터 사이징(선택적으로 레이아웃 이후). `apply`는 최적 값을 씀 |
 | `place_like` | 예제 기반 레이아웃: 같은 회로 토폴로지를 가진 완성된 셀처럼 배치, 선택적으로 배선 |
+| `copy_cell` | 셀을 모든 뷰, 스펙, 설계 노트와 함께 새 셀로 복사(노트 한 줄 추가 가능) |
+| `derive_design` | 완성된 셀에서 새 설계를 한 번에 시작: 새 목표로 복사, 제안된 파라미터로 크기 조정, 원본처럼 레이아웃, DRC 수정, LVS 실행(`dry_run`은 계획만 보여 줌). [이전 설계에서 시작하기](derive.md) 참고 |
 | `diff_layout` | 셀의 레이아웃을 레이어별로 git 리비전(기본 `HEAD`) 또는 저장된 파일과 XOR |
 | `extract` | 추출된 넷과 소자, 포토다이오드와 그 주변 픽셀(TG / FD / RST / SF / SEL), 그리고 SPICE |
 | `schematic_from_layout` | 레이아웃 추출 결과로 그린 회로도(픽셀은 교과서 배치), 선택적으로 테스트벤치 포함 |

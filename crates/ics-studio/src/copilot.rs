@@ -136,6 +136,47 @@ pub struct Copilot {
     factory: LlmFactory,
     /// Installed extensions, whose tools the agent may call too.
     pub ext: ics_mcp::ext::Registry,
+    /// Name of the active cell, for the starter suggestions.
+    pub active_cell: Option<String>,
+}
+
+/// Starter requests shown while the conversation is empty: (button text, request sent), in
+/// the UI language (the copilot answers in the language of the request).
+pub fn suggestions(cell: Option<&str>) -> Vec<(String, String)> {
+    use crate::i18n::{t, tf};
+    match cell {
+        Some(c) => vec![
+            (tf("Explain how {} works", &[c]), tf("Explain in simple terms how {} works and what each device does.", &[c])),
+            (
+                tf("Derive a new design from {}", &[c]),
+                tf(
+                    "Start a new design from {}: copy it, ask me for the new targets, size the copy to meet them and \
+                     build its layout like the original.",
+                    &[c],
+                ),
+            ),
+            (
+                tf("Why does {} miss its specs?", &[c]),
+                tf("Simulate {}, check its specs and explain which ones fail, why, and what I should change.", &[c]),
+            ),
+            (
+                t("Check the operating points").to_string(),
+                tf("Simulate {} and tell me whether every transistor is in the region it should be in, and why.", &[c]),
+            ),
+        ],
+        None => vec![
+            (
+                t("Which example should I start from?").to_string(),
+                t("I am new to IC design. Which example cell should I start from for an amplifier, a logic gate or a \
+                   reference, and why?")
+                .to_string(),
+            ),
+            (
+                t("How do I start a new design?").to_string(),
+                t("How do I start a new design from one of the examples in IC Studio?").to_string(),
+            ),
+        ],
+    }
 }
 
 impl Default for Copilot {
@@ -148,6 +189,7 @@ impl Default for Copilot {
             streaming: String::new(),
             open_settings: false,
             plan_mode: false,
+            active_cell: None,
             history: vec![],
             wait: None,
             events: None,
@@ -250,6 +292,21 @@ fn system_prompt(context: &str, plan_mode: bool) -> String {
          ...**), buttons and shortcuts, naming the page and section you used. Never invent a menu, button or \
          shortcut the manual does not describe: say it is not documented. A pure question needs no task list and no \
          edits; offer to do the task with the tools when that helps.\n\n\
+         Starting a new design from an existing one (the way most users, many of them new to IC design, work): \
+         derive_design does the whole job in one call once the targets are known (dry_run first shows which \
+         parameters it would change); use the steps below when the user wants control over them. \
+         1. get_netlist the reference cell and read its notes and specs. \
+         2. Ask (ask_user) for the new targets if the request does not give them, as numbers with units. \
+         3. copy_cell to a new name with a note saying what it is derived from and for which targets; never edit the \
+         reference itself. \
+         4. Simulate the copy and compare with the targets. Choose a few parameters that move the failing specs (the \
+         notes and the spec advice say which way), keep matched devices equal by giving them the same design variable, \
+         and call optimize with the new specs and those vars; apply the best point. \
+         5. If the reference has a layout, place_like it into the copy (route true), then fix_drc and run_lvs. \
+         6. Report the new numbers next to the reference's, in plain words. \
+         Explain the circuit in beginner terms when you mention a device's role (input pair, current mirror, tail \
+         source, load) and when a spec fails say why and what the change does; do not assume the user knows the \
+         jargon.\n\n\
          Parametric cells (PCell Designer): pcell_design_create makes one from a drawn layout (source, plus suggest \
          [contacts, fingers, width, length] for a MOS) or from nothing (add_shapes, set_params, add_ops); inspect the \
          drawing with pcell_design_check list_source before placing stretch lines and regions, refine with \
@@ -809,13 +866,19 @@ impl Copilot {
                 .resizable(false)
                 .frame(egui::Frame::new().inner_margin(egui::Margin { top: 6, ..Default::default() }))
                 .show(ui, |ui| send = self.composer(ui, busy, waiting));
-            egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| self.log_view(ui, busy, &pal));
+            egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| {
+                if let Some(t) = self.log_view(ui, busy, &pal) {
+                    send = Some(Reply::Text(t));
+                }
+            });
         });
         self.open = open;
         send
     }
 
-    fn log_view(&self, ui: &mut egui::Ui, busy: bool, pal: &crate::theme::Palette) {
+    /// The conversation; returns a starter request the user clicked.
+    fn log_view(&self, ui: &mut egui::Ui, busy: bool, pal: &crate::theme::Palette) -> Option<String> {
+        let mut picked = None;
         egui::ScrollArea::vertical().id_salt("copilot_log").auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
             // Drags on the gaps between messages select nothing, but must not move the window.
             let _ = ui.interact(ui.clip_rect(), ui.scope_id().with("log_bg"), egui::Sense::drag());
@@ -823,16 +886,23 @@ impl Copilot {
             if self.log.is_empty() {
                 ui.add(
                     egui::Label::new(
-                        egui::RichText::new(
+                        egui::RichText::new(crate::i18n::t(
                             "Ask for a design task, e.g. \"place and route nand2, then fix DRC and run LVS\" or \
                              \"size the OTA for 60 dB gain and check the phase margin\", or ask how to use IC Studio, \
                              e.g. \"how do I import a GDS file?\": answers come from the user manual. Turn on Plan mode \
                              to review a plan before anything is edited.",
-                        )
+                        ))
                         .weak(),
                     )
                     .wrap(),
                 );
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new(crate::i18n::t("Try:")).weak());
+                for (label, request) in suggestions(self.active_cell.as_deref()) {
+                    if ui.add_enabled(!busy, egui::Button::new(label)).on_hover_text(&request).clicked() {
+                        picked = Some(request);
+                    }
+                }
             }
             for (k, e) in self.log.iter().enumerate() {
                 self.entry(ui, k, e, pal);
@@ -852,6 +922,7 @@ impl Copilot {
             }
             crate::chat::drag_autoscroll(ui);
         });
+        picked
     }
 }
 

@@ -305,6 +305,8 @@ mod tests {
             "process_data",
             "extract_mismatch",
             "extract_corners",
+            "derive_design",
+            "copy_cell",
             "place_like",
             "diff_layout",
             "extract",

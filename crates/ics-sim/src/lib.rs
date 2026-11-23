@@ -12,6 +12,7 @@ pub mod calc;
 pub mod circuit;
 pub mod corners;
 pub mod correlate;
+pub mod derive;
 pub mod engine;
 pub mod expr;
 pub mod frontend;

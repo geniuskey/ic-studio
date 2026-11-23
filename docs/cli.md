@@ -63,6 +63,8 @@ it with `cargo build --release -p ics-cli` (binary `target/release/ics`) or run 
 | `ics corners <CSV> [--spec FILE] [--project P] [--lib FILE] [--variation FILE] [--apply] [--json]` | Corner models from WAT data: fit tt and ff / ss / fs / sf model cards to the data and write a corner library, with the process variation for Monte Carlo (see [Corner models](process.md#corner-models-from-silicon)) |
 | `ics optimize <PROJECT> <CELL> [--post-layout] [--apply] [--json]` | Size devices to meet the cell's specs; exit 1 if no point meets every spec |
 | `ics place-like <PROJECT> <CELL> --from <CELL> [--route]` | Place the cell like a finished cell with the same circuit and save |
+| `ics copy-cell <PROJECT> <CELL> [NEW_NAME] [--lib LIB]` | Copy a cell as a new cell (schematic, layout, simulation setup, specs and notes) and save |
+| `ics derive <PROJECT> <CELL> [--name N] [--target SPEC>=V\|SPEC<=V\|SPEC=LO..HI]... [--no-layout] [--max-evals N] [--dry-run]` | Derive a new design: copy with new targets, size the suggested parameters, lay out like the original, check and save; exit 1 when a target is missed (see [Start from an earlier design](derive.md)) |
 | `ics skill <PROJECT> <FILE.il> [--no-save] [--json]` | Run a Cadence SKILL script on the project and save; exit 1 on a SKILL error |
 | `ics pcell-skill <PROJECT> <CELL> [--lib L] [-o FILE]` | Export a [PCell Designer](pcells.md#pcell-designer) master as a SKILL `pcDefinePCell` for Virtuoso |
 

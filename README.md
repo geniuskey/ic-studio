@@ -120,6 +120,12 @@ Linux needs the usual windowing libraries:
 - GDSII and OASIS import and export with full hierarchy; unknown GDS layers are kept
 
 **Design assistance**
+- Start from an earlier design ([guide](https://pages.euiyun.com/ic-studio/derive.html)): the
+  Derive New Design wizard copies a finished cell with new targets, sizes the parameters it
+  suggests from the circuit (matched devices kept equal) with the optimizer, lays the copy out
+  like the original and checks it (`ics derive`, MCP `derive_design`); demo cells carry design
+  notes and specs shown beside the schematic, failing specs come with advice in plain words,
+  beginner mode keeps the menus to the everyday flow, and the interface is also in Korean
 - Live DRC: the rule deck re-runs around every edit on a worker thread (only the geometry
   within the deck's reach of the change is read), violations appear on the canvas as you draw
 - Quick fixes (Ctrl+.): widen, grow, extend, move apart, shrink, fill a notch or add an

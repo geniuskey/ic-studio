@@ -1372,6 +1372,10 @@ impl SchematicEditor {
                     }
                 }
                 if before.kind.is_mos() {
+                    ui.hyperlink_to(
+                        egui::RichText::new(crate::i18n::t("What do W, L and M do? (beginner course)")).small(),
+                        "https://pages.euiyun.com/ic-studio/learn/mosfet.html#w-l-and-the-parameters-in-ic-studio",
+                    );
                     ui.add_space(4.0);
                 }
                 let mut inst = before.clone();
@@ -1382,11 +1386,18 @@ impl SchematicEditor {
                     focus_gained |= r.gained_focus();
                     ui.end_row();
                     for (k, _) in inst.kind.default_params() {
-                        let l = ui.label(param_label(k));
+                        let help = crate::i18n::t(param_help(inst.kind, k));
+                        let mut l = ui.label(crate::i18n::t(param_label(inst.kind, k)));
+                        if !help.is_empty() {
+                            l = l.on_hover_text(help);
+                        }
                         let mut v = inst.params.get(k).cloned().unwrap_or_default();
-                        let r = ui
+                        let mut r = ui
                             .add(egui::TextEdit::singleline(&mut v).desired_width(140.0).hint_text(param_hint(inst.kind, k)))
                             .labelled_by(l.id);
+                        if !help.is_empty() {
+                            r = r.on_hover_text(help);
+                        }
                         focus_gained |= r.gained_focus();
                         if r.changed() {
                             inst.params.insert(k.to_string(), v);
@@ -1493,19 +1504,59 @@ fn bump_name(name: &str) -> String {
     format!("{base}{}", digits.parse::<u64>().unwrap_or(0) + 1)
 }
 
-fn param_label(k: &str) -> &str {
-    match k {
-        "r" => "Resistance",
-        "c" => "Capacitance",
-        "l" => "Inductance / L",
-        "dc" => "DC value",
-        "ac" => "AC magnitude",
-        "tran" => "Transient",
-        "model" => "Model",
-        "w" => "Width",
-        "m" => "Multiplier",
-        "net" => "Net name",
+fn param_label(kind: DeviceKind, k: &str) -> &str {
+    match (kind, k) {
+        (DeviceKind::Inductor, "l") => "Inductance",
+        (_, "l") if kind.is_mos() => "Length (L)",
+        (_, "w") if kind.is_mos() => "Width (W)",
+        (_, "w") => "Width",
+        (DeviceKind::Ccvs, "r") => "Transresistance",
+        (_, "r") => "Resistance",
+        (_, "c") => "Capacitance",
+        (_, "dc") => "DC value",
+        (_, "ac") => "AC magnitude",
+        (_, "tran") => "Transient",
+        (_, "model") => "Model",
+        (_, "m") => "Multiplier (M)",
+        (_, "bulk") => "Body net",
+        (_, "net") => "Net name",
+        (_, "area") => "Area factor",
+        (_, "gain") => "Gain",
+        (_, "gm") => "Transconductance",
+        (_, "vctl") => "Controlling source",
         _ => k,
+    }
+}
+
+/// What a parameter means and what changing it does, in words a beginner can act on.
+pub fn param_help(kind: DeviceKind, k: &str) -> &'static str {
+    match (kind, k) {
+        (_, "w") if kind.is_mos() => {
+            "Channel width. A wider transistor passes more current at the same voltages: faster \
+             and higher transconductance (gm), but larger, with more capacitance and power. \
+             Current scales about with W / L."
+        }
+        (_, "l") if kind.is_mos() => {
+            "Channel length (the process minimum is 180n). A longer transistor passes less current \
+             but behaves more like an ideal current source (higher output resistance, more gain) \
+             and matches better. Short L is fast; long L is for gain, mirrors and matching."
+        }
+        (_, "m") if kind.is_mos() => {
+            "Number of identical transistors in parallel. M = 2 acts like twice the width, and \
+             copies of the same size match better than one wide device."
+        }
+        (_, "model") if kind.is_mos() => "The device model of the PDK (nmos / pmos, or a PDK model name).",
+        (_, "bulk") => "The net the transistor body connects to: ground (0) for NMOS, the supply (vdd) for PMOS.",
+        (DeviceKind::Resistor, "r") => "Resistance in ohms, e.g. 10k. Larger R gives less current and a slower RC.",
+        (DeviceKind::Capacitor, "c") => "Capacitance in farads, e.g. 1p. Larger C stores more charge and slows the node down.",
+        (DeviceKind::Inductor, "l") => "Inductance in henries, e.g. 1n.",
+        (_, "dc") => "The constant value used by the operating point and DC sweep.",
+        (_, "ac") => "Amplitude of the small signal for AC analysis. Set 1 on the input source to read gain directly.",
+        (_, "tran") => {
+            "The waveform for transient analysis, e.g. PULSE(low high delay rise fall width period) or SIN(offset amp freq)."
+        }
+        (_, "m") => "Number of identical devices in parallel.",
+        _ => "",
     }
 }
 
@@ -1513,7 +1564,7 @@ fn param_hint(kind: DeviceKind, k: &str) -> &'static str {
     match (kind, k) {
         (_, "tran") => "PULSE(0 1 0 1n 1n 5n 10n)",
         (_, "ac") => "e.g. 1",
-        (DeviceKind::Nmos | DeviceKind::Pmos | DeviceKind::Nmos3 | DeviceKind::Pmos3, "l") => "180n",
+        (_, "l") if kind.is_mos() => "180n",
         _ => "",
     }
 }

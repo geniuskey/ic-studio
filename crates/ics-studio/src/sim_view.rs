@@ -630,6 +630,23 @@ fn op_table(ui: &mut egui::Ui, d: &Dataset) {
                 }
             });
             theme::section(&mut cols[1], "Device operating points");
+            let count = |r: &str| d.devices.iter().filter(|x| x.region.as_deref() == Some(r)).count();
+            let (sat, tri, off) = (count("saturation"), count("triode"), count("cutoff") + count("subthreshold"));
+            if sat + tri + off > 0 {
+                cols[1]
+                    .label(
+                        RichText::new(crate::i18n::tf(
+                            "{} in saturation · {} in triode · {} off",
+                            &[&sat.to_string(), &tri.to_string(), &off.to_string()],
+                        ))
+                        .small()
+                        .color(pal.text_weak),
+                    )
+                    .on_hover_text(crate::i18n::t(
+                        "Saturation: the transistor works as a current source (amplifiers, loads, mirrors). Triode: it works \
+                         as a resistor or closed switch (logic, switches). Off: no current. Hover a device's region for advice.",
+                    ));
+            }
             if d.devices.is_empty() {
                 cols[1].label(
                     RichText::new("Device OP details are available with the built-in engine.").small().color(pal.text_weak),
@@ -645,9 +662,18 @@ fn op_table(ui: &mut egui::Ui, d: &Dataset) {
                             "triode" => pal.warning,
                             _ => pal.text_weak,
                         };
-                        ui.label(RichText::new(r).small().color(c));
+                        let l = ui.label(RichText::new(r).small().color(c));
+                        if let Some(a) = ics_core::advice::mos_advice(r, &dev.values) {
+                            l.on_hover_text(crate::i18n::t_text(&a));
+                        }
                     }
                 });
+                if let Some(r) = &dev.region
+                    && r == "saturation"
+                    && let Some(a) = ics_core::advice::mos_advice(r, &dev.values)
+                {
+                    ui.label(RichText::new(crate::i18n::t_text(&a)).small().color(pal.warning));
+                }
                 ui.horizontal_wrapped(|ui| {
                     for (k, v) in &dev.values {
                         let unit = match k.as_str() {
