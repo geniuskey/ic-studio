@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "icstudio"
-version = "0.2.13"
+version = "0.2.14"
 description = "Python API for IC Studio: projects, schematics, simulation, layout, DRC / LVS and verification"
 readme = "README.md"
 license = { text = "GPL-3.0-or-later" }

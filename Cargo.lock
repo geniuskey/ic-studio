@@ -2147,7 +2147,7 @@ checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
 name = "ics-cli"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "clap",
  "ics-core",
@@ -2159,7 +2159,7 @@ dependencies = [
 
 [[package]]
 name = "ics-core"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "miniz_oxide 0.8.9",
  "rstar",
@@ -2172,7 +2172,7 @@ dependencies = [
 
 [[package]]
 name = "ics-mcp"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "ics-core",
  "ics-sim",
@@ -2183,7 +2183,7 @@ dependencies = [
 
 [[package]]
 name = "ics-optics"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "faer",
  "num-complex",
@@ -2194,7 +2194,7 @@ dependencies = [
 
 [[package]]
 name = "ics-sim"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "faer",
  "ics-core",
@@ -2204,7 +2204,7 @@ dependencies = [
 
 [[package]]
 name = "ics-studio"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "dirs",
  "eframe",
