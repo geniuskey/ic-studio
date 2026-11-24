@@ -43,17 +43,23 @@ generic technology, NMOS 1 µm, PMOS 2 µm, both 180 nm long).
 
 - The output stays at 1.8 V for low inputs and at 0 V for high inputs: logic levels are
   **restored**, so noise does not accumulate through a chain of gates.
-- In the middle the curve is very steep (a gain of about −55): small changes of the input
+- In the middle the curve is very steep (a gain of about −22): small changes of the input
   around the threshold give large changes of the output.
 - The **switching threshold V<sub>M</sub>** is where out = in. Here it is about
-  **0.82 V**, a little below the middle (0.9 V), because the NMOS is stronger than the
+  **0.83 V**, a little below the middle (0.9 V), because the NMOS is stronger than the
   PMOS.
-- **Noise margins**: inputs below V<sub>IL</sub> ≈ 0.67 V are read as 0 and inputs above
-  V<sub>IH</sub> ≈ 0.92 V as 1 (the points where the slope is −1).
+- **Noise margins**: inputs below V<sub>IL</sub> ≈ 0.65 V are read as 0 and inputs above
+  V<sub>IH</sub> ≈ 0.96 V as 1 (the points where the slope is −1).
 
 Only while the input passes through the middle region are both transistors partly on,
-and a short-circuit current flows from V<sub>DD</sub> to ground (about 118 µA at the peak
+and a short-circuit current flows from V<sub>DD</sub> to ground (about 135 µA at the peak
 for this inverter).
+
+<!-- quiz
+? The inverter reads inputs above V<sub>IH</sub> ≈ 0.96 V as 1, and its output high is 1.8 V. What is the high noise margin NM<sub>H</sub> = V<sub>OH</sub> − V<sub>IH</sub>, in volts?
+= 0.84 ±0.02 V
+> NM<sub>H</sub> = 1.8 − 0.96 = 0.84 V. A 1 from a previous gate can pick up 0.84 V of noise before it is misread. The low margin is V<sub>IL</sub> − 0 ≈ 0.65 V.
+-->
 
 ## NAND and NOR
 
@@ -84,6 +90,15 @@ PMOS to be fast. NAND puts the NMOS in series, which costs less.
 
 </div>
 
+<!-- quiz
+? What is the pull-up network of a two-input NOR?
+- Two PMOS in parallel
++ Two PMOS in series
+- Two NMOS in parallel
+- One PMOS
+> The NOR pull-down is two NMOS in parallel (OR); the pull-up is its dual, two PMOS in series. That puts the weaker PMOS in series, why NAND is preferred.
+-->
+
 ## Delay: why gates take time
 
 A gate's output drives a **load capacitance** C<sub>L</sub>: the gates of the next stages,
@@ -100,12 +115,18 @@ The **propagation delay** t<sub>p</sub> is measured from the input crossing 50 %
 swing to the output crossing 50 %. There are two of them: **t<sub>pHL</sub>** (output
 falling, through the NMOS) and **t<sub>pLH</sub>** (output rising, through the PMOS).
 
-For the inverter above with a 20 fF load, IC Studio simulates **t<sub>pHL</sub> ≈ 36 ps**
-and **t<sub>pLH</sub> ≈ 52 ps**: rising is slower because the PMOS is weaker.
+For the inverter above with a 20 fF load, IC Studio simulates **t<sub>pHL</sub> ≈ 33 ps**
+and **t<sub>pLH</sub> ≈ 47 ps**: rising is slower because the PMOS is weaker.
 
 To make a gate faster, lower R<sub>on</sub> (wider transistors) or lower C<sub>L</sub>
 (fewer or smaller gates to drive, shorter wires). But wider transistors also have larger
 gates, which load the stage *before*. Sizing is a balance.
+
+<!-- quiz
+? A gate with R<sub>on</sub> = 5 kΩ drives C<sub>L</sub> = 20 fF. Estimate t<sub>p</sub>, in ps.
+= 69 ±3 ps
+> t<sub>p</sub> ≈ 0.69 · 5 kΩ · 20 fF = 0.69 · 100 ps = 69 ps.
+-->
 
 ## Power
 
@@ -121,6 +142,12 @@ A CMOS chip burns power in three ways:
 V<sub>DD</sub>², lowering the supply voltage is the most effective way to save power, which
 is why supplies have dropped from 5 V to below 1 V over the decades.
 
+<!-- quiz
+? A node with C<sub>L</sub> = 20 fF at V<sub>DD</sub> = 1.8 V switches in 10 % of the cycles of a 1 GHz clock. What is its dynamic power, in µW?
+= 6.48 ±0.2 µW
+> P = α · C<sub>L</sub> · V<sub>DD</sub>² · f = 0.1 · 20 fF · 3.24 V² · 1 GHz = 6.48 µW. At 0.9 V it would be a quarter of that.
+-->
+
 ## Sizing the transistors
 
 The PMOS of the generic technology has k' = 70 µA/V² against 280 µA/V² for the NMOS: it
@@ -128,8 +155,8 @@ is four times weaker for the same W/L. Two common choices:
 
 | PMOS width | V<sub>M</sub> | t<sub>pHL</sub> / t<sub>pLH</sub> | Comment |
 |---|---|---|---|
-| W<sub>p</sub> = 2·W<sub>n</sub> (2 µm) | 0.82 V | 36 / 52 ps | A common compromise: smaller, a bit unbalanced |
-| W<sub>p</sub> = 4·W<sub>n</sub> (4 µm) | 0.90 V | 39 / 37 ps | Balanced: symmetric threshold and delays |
+| W<sub>p</sub> = 2·W<sub>n</sub> (2 µm) | 0.83 V | 33 / 47 ps | A common compromise: smaller, a bit unbalanced |
+| W<sub>p</sub> = 4·W<sub>n</sub> (4 µm) | 0.90 V | 35 / 33 ps | Balanced: symmetric threshold and delays |
 
 (Simulated with a 20 fF load. The balanced version has equal rise and fall delays, but
 its bigger PMOS also loads the stage driving it, so a 2:1 ratio is often the better
@@ -143,6 +170,15 @@ V_M = (V_th,n + r · (V_DD − |V_th,p|)) / (1 + r),   r = √(k'_p·W_p/L_p / (
 ```
 
 With W<sub>p</sub> = 4·W<sub>n</sub>, r = 1 and V<sub>M</sub> = V<sub>DD</sub>/2 exactly.
+
+<!-- quiz
+? Which PMOS width puts V<sub>M</sub> at V<sub>DD</sub>/2 with a 1 µm NMOS?
+- 1 µm
+- 2 µm
++ 4 µm
+- 8 µm
+> k'<sub>p</sub> is a quarter of k'<sub>n</sub>, so W<sub>p</sub> = 4·W<sub>n</sub> makes r = 1 and V<sub>M</sub> = 0.9 V. The common 2 µm gives 0.83 V.
+-->
 
 <div class="callout say">
 
@@ -158,5 +194,19 @@ oscillates because each stage's delay keeps the loop from ever settling. Its per
 2 × 5 × t<sub>p</sub>.
 
 </div>
+
+<!-- try: Simulate cmos_inverter | simulate cmos_inverter -->
+
+<!-- try: Open the nand2 schematic | open nand2 schematic -->
+
+<!-- try: Open the nor2 schematic | open nor2 schematic -->
+
+<!-- try: Simulate ring_osc5 | simulate ring_osc5 -->
+
+<!-- quiz
+? Each stage of a five-stage ring oscillator has t<sub>p</sub> = 14 ps. What is the period, in ps?
+= 140 ±5 ps
+> Period = 2 × 5 × t<sub>p</sub> = 140 ps: the edge goes round the loop twice (once rising, once falling) per period.
+-->
 
 Now build one yourself: [Hands-on: design an inverter](tutorial-inverter.md).

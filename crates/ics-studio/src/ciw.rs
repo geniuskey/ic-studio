@@ -4,6 +4,7 @@
 use eframe::egui::{self, Key, RichText};
 use ics_core::skill::{self, RunResult, Session, SkillError};
 
+use crate::i18n::tf;
 use crate::theme;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -124,7 +125,7 @@ impl Ciw {
             let edit = egui::TextEdit::singleline(&mut self.input)
                 .id(id)
                 .font(egui::TextStyle::Monospace)
-                .hint_text("SKILL, e.g. dbCreateRect(geGetEditCellView() \"metal1\" list(0:0 1:1))")
+                .hint_text(tf("SKILL, e.g. {}", &["dbCreateRect(geGetEditCellView() \"metal1\" list(0:0 1:1))"]))
                 .desired_width(f32::INFINITY);
             let resp = ui.add(edit).labelled_by(prompt.id);
             if self.focus {

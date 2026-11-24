@@ -15,6 +15,7 @@ use ics_core::{Analysis, CellRef, Project};
 use ics_sim::calc::{self, CalcValue};
 use ics_sim::{SimOptions, SimResults};
 
+use crate::i18n::{t, tf};
 use crate::theme::{self, Palette};
 
 pub struct PointResult {
@@ -202,7 +203,7 @@ impl SweepManager {
             return None;
         };
         let mut open = true;
-        let r = crate::float::tool_window(ctx, "sweep_manager", "Corner / Sweep Manager", [1240.0, 780.0], &mut open, |ui| {
+        let r = crate::float::tool_window(ctx, "sweep_manager", t("Corner / Sweep Manager"), [1240.0, 780.0], &mut open, |ui| {
             self.ui(ui, project)
         });
         self.open &= open;
@@ -223,18 +224,18 @@ impl SweepManager {
             .frame(egui::Frame::new().fill(pal.bg_sidebar).inner_margin(egui::Margin::symmetric(10, 6)))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Corner / Sweep Manager").strong().color(pal.text_strong));
+                    ui.label(RichText::new(t("Corner / Sweep Manager")).strong().color(pal.text_strong));
                     if let Some(c) = &self.cell {
                         ui.label(RichText::new(format!("· {c}")).color(pal.text_weak));
                     }
                     ui.separator();
                     match &points {
-                        Ok(n) => ui.label(format!("{n} point(s)")),
-                        Err(e) => ui.label(RichText::new(e).color(pal.danger)),
+                        Ok(n) => ui.label(tf("{} point(s)", &[&n.to_string()])),
+                        Err(e) => ui.label(RichText::new(crate::i18n::t_text(e)).color(pal.danger)),
                     };
                     let running = self.job.is_some();
                     if running {
-                        if ui.button("Stop").clicked()
+                        if ui.button(t("Stop")).clicked()
                             && let Some(j) = &self.job
                         {
                             j.cancel.store(true, Ordering::SeqCst);
@@ -244,15 +245,19 @@ impl SweepManager {
                             ui.label(format!("{}/{}", j.done, j.total));
                         }
                     } else {
-                        let b = egui::Button::new(RichText::new("▶  Run Sweep").strong().color(theme::on_fill(pal.simulation)))
-                            .fill(pal.simulation);
+                        let b =
+                            egui::Button::new(RichText::new(t("▶  Run Sweep")).strong().color(theme::on_fill(pal.simulation)))
+                                .fill(pal.simulation);
                         if ui.add_enabled(points.is_ok() && self.cell.is_some(), b).clicked() {
                             action = Some(SweepAction::Run);
                         }
                     }
                     if !running
                         && !self.results.is_empty()
-                        && ui.button("Export datasheet…").on_hover_text("Specs, statistics and every point as HTML").clicked()
+                        && ui
+                            .button(t("Export datasheet…"))
+                            .on_hover_text(t("Specs, statistics and every point as HTML"))
+                            .clicked()
                     {
                         let name = self.cell.as_ref().map_or("sweep".into(), |c| c.cell.clone());
                         if let Some(path) = rfd::FileDialog::new()
@@ -261,8 +266,8 @@ impl SweepManager {
                             .save_file()
                         {
                             self.status = Some(match std::fs::write(&path, self.datasheet()) {
-                                Ok(()) => (true, format!("Wrote {}", path.display())),
-                                Err(e) => (false, format!("Cannot write {}: {e}", path.display())),
+                                Ok(()) => (true, tf("Wrote {}", &[&path.display().to_string()])),
+                                Err(e) => (false, tf("Cannot write {}: {}", &[&path.display().to_string(), &e.to_string()])),
                             });
                         }
                     }
@@ -286,8 +291,10 @@ impl SweepManager {
             if self.results.is_empty() {
                 ui.centered_and_justified(|ui| {
                     ui.label(
-                        RichText::new("Pick corners, temperatures and variables on the left, add specs, then press ▶ Run Sweep.")
-                            .color(pal.text_weak),
+                        RichText::new(t(
+                            "Pick corners, temperatures and variables on the left, add specs, then press ▶ Run Sweep.",
+                        ))
+                        .color(pal.text_weak),
                     );
                 });
                 return;
@@ -314,7 +321,7 @@ impl SweepManager {
     }
 
     fn setup_ui(&mut self, ui: &mut egui::Ui, project: &Project, base: &ics_core::SimSetup, pal: &Palette) {
-        theme::section(ui, "Model corners");
+        theme::section(ui, t("Model corners"));
         match project.tech.models.as_ref().filter(|m| !m.corners.is_empty()) {
             Some(m) => {
                 ui.horizontal_wrapped(|ui| {
@@ -330,32 +337,32 @@ impl SweepManager {
                     }
                 });
                 if self.setup.corners.is_empty() {
-                    let shown = if base.corner.is_empty() { "default" } else { base.corner.as_str() };
+                    let shown = if base.corner.is_empty() { t("default") } else { base.corner.as_str() };
                     ui.label(
-                        RichText::new(format!("None checked: runs the setup's corner ({shown})")).small().color(pal.text_weak),
+                        RichText::new(tf("None checked: runs the setup's corner ({})", &[shown])).small().color(pal.text_weak),
                     );
                 }
             }
             None => {
-                ui.label(RichText::new("The technology has no PDK model corners").small().color(pal.text_weak));
+                ui.label(RichText::new(t("The technology has no PDK model corners")).small().color(pal.text_weak));
             }
         }
-        theme::section(ui, "Temperatures");
-        let l = ui.label(RichText::new("°C, e.g. -40 27 125 or -40:55:125 (empty = setup)").small().color(pal.text_weak));
+        theme::section(ui, t("Temperatures"));
+        let l = ui.label(RichText::new(t("°C, e.g. -40 27 125 or -40:55:125 (empty = setup)")).small().color(pal.text_weak));
         ui.add(
             egui::TextEdit::singleline(&mut self.setup.temps).hint_text(format!("{}", base.temp)).desired_width(f32::INFINITY),
         )
         .labelled_by(l.id);
-        theme::section(ui, "Variables");
+        theme::section(ui, t("Variables"));
         ui.label(
-            RichText::new("INST.param sets an instance parameter (R1.r, M1.w); other names replace {name} in the deck")
+            RichText::new(t("INST.param sets an instance parameter (R1.r, M1.w); other names replace {name} in the deck"))
                 .small()
                 .color(pal.text_weak),
         );
         let mut remove = None;
         egui::Grid::new("sw_vars").num_columns(3).spacing([6.0, 4.0]).show(ui, |ui| {
-            let hn = ui.label(RichText::new("NAME").small().strong().color(pal.text_weak));
-            let hv = ui.label(RichText::new("VALUES").small().strong().color(pal.text_weak));
+            let hn = ui.label(RichText::new(t("NAME")).small().strong().color(pal.text_weak));
+            let hv = ui.label(RichText::new(t("VALUES")).small().strong().color(pal.text_weak));
             ui.label("");
             ui.end_row();
             for (i, v) in self.setup.vars.iter_mut().enumerate() {
@@ -366,7 +373,7 @@ impl SweepManager {
                     te = te.text_color(pal.danger);
                 }
                 ui.add_sized([200.0, 20.0], te).labelled_by(hv.id);
-                if ui.small_button("Remove").clicked() {
+                if ui.small_button(t("Remove")).clicked() {
                     remove = Some(i);
                 }
                 ui.end_row();
@@ -375,20 +382,20 @@ impl SweepManager {
         if let Some(i) = remove {
             self.setup.vars.remove(i);
         }
-        if ui.button("+ Variable").clicked() {
+        if ui.button(t("+ Variable")).clicked() {
             self.setup.vars.push(SweepVar::default());
         }
-        theme::section(ui, "Specs");
-        ui.label(RichText::new("Waveform calculator expressions measured on each point").small().color(pal.text_weak));
+        theme::section(ui, t("Specs"));
+        ui.label(RichText::new(t("Waveform calculator expressions measured on each point")).small().color(pal.text_weak));
         let analyses: Vec<&str> = base.enabled().map(|a| a.kind_name()).collect();
         let mut remove = None;
         for (i, s) in self.setup.specs.iter_mut().enumerate() {
             egui::Frame::new().fill(pal.bg_widget).corner_radius(6).inner_margin(6).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 egui::Grid::new(("sw_spec", i)).num_columns(4).spacing([6.0, 4.0]).show(ui, |ui| {
-                    let l = ui.label("Name");
-                    ui.add_sized([140.0, 20.0], egui::TextEdit::singleline(&mut s.name).hint_text("gain")).labelled_by(l.id);
-                    let l = ui.label("Dataset");
+                    let l = ui.label(t("Name"));
+                    ui.add_sized([140.0, 20.0], egui::TextEdit::singleline(&mut s.name).hint_text(t("gain"))).labelled_by(l.id);
+                    let l = ui.label(t("Dataset"));
                     if s.analysis.is_empty() {
                         s.analysis =
                             analyses.iter().find(|a| **a != "op").or(analyses.first()).map_or(String::new(), |a| a.to_string());
@@ -403,16 +410,16 @@ impl SweepManager {
                         .response
                         .labelled_by(l.id);
                     ui.end_row();
-                    let l = ui.label("Expr");
-                    ui.add_sized([140.0, 20.0], egui::TextEdit::singleline(&mut s.expr).code_editor().hint_text("max(v(out))"))
+                    let l = ui.label(t("Expr"));
+                    ui.add_sized([140.0, 20.0], egui::TextEdit::singleline(&mut s.expr).code_editor().hint_text("max(v(out))")) // i18n: ignore
                         .labelled_by(l.id);
-                    if ui.small_button("Remove").clicked() {
+                    if ui.small_button(t("Remove")).clicked() {
                         remove = Some(i);
                     }
                     ui.end_row();
-                    let l = ui.label("Min");
+                    let l = ui.label(t("Min"));
                     ui.add_sized([140.0, 20.0], egui::TextEdit::singleline(&mut s.min)).labelled_by(l.id);
-                    let l = ui.label("Max");
+                    let l = ui.label(t("Max"));
                     ui.add_sized([100.0, 20.0], egui::TextEdit::singleline(&mut s.max)).labelled_by(l.id);
                     ui.end_row();
                 });
@@ -422,41 +429,40 @@ impl SweepManager {
         if let Some(i) = remove {
             self.setup.specs.remove(i);
         }
-        if ui.button("+ Spec").clicked() {
+        if ui.button(t("+ Spec")).clicked() {
             self.setup.specs.push(Spec { name: format!("spec{}", self.setup.specs.len() + 1), ..Default::default() });
         }
         self.monte_carlo_ui(ui, pal, project.tech.variation.as_ref());
     }
 
     fn monte_carlo_ui(&mut self, ui: &mut egui::Ui, pal: &Palette, measured: Option<&ics_core::process_data::ProcessVariation>) {
-        theme::section(ui, "Monte Carlo");
+        theme::section(ui, t("Monte Carlo"));
         let mc = &mut self.setup.monte_carlo;
         ui.horizontal(|ui| {
-            let l = ui.label("Runs");
+            let l = ui.label(t("Runs"));
             ui.add(egui::DragValue::new(&mut mc.runs).range(0..=1000)).labelled_by(l.id);
-            let l = ui.label("Seed");
+            let l = ui.label(t("Seed"));
             ui.add(egui::DragValue::new(&mut mc.seed)).labelled_by(l.id);
         });
         ui.label(
-            RichText::new(
+            RichText::new(t(
                 "0 runs = off. Targets: INST.param with wildcards (M*.w, R?.r) or a design variable. Sigma: 5% or a value.",
-            )
+            ))
             .small()
             .color(pal.text_weak),
         );
         let hint = match measured {
-            Some(v) => format!(
+            Some(v) => tf(
                 "Draw the technology's measured process variation ({}): {}, correlated, one draw per run shared by every device",
-                if v.source.is_empty() { "silicon" } else { v.source.as_str() },
-                v.params.join(", ")
+                &[if v.source.is_empty() { t("silicon") } else { v.source.as_str() }, &v.params.join(", ")],
             ),
             None => {
-                "The technology has no measured process variation: Process Data > Extract corners > Use for Monte Carlo".into()
+                t("The technology has no measured process variation: Process Data > Extract corners > Use for Monte Carlo").into()
             }
         };
-        let r =
-            ui.add_enabled(measured.is_some() || mc.process, egui::Checkbox::new(&mut mc.process, "Measured process variation"));
-        if r.on_hover_text(hint).on_disabled_hover_text("Process Data > Extract corners > Use for Monte Carlo").changed()
+        let r = ui
+            .add_enabled(measured.is_some() || mc.process, egui::Checkbox::new(&mut mc.process, t("Measured process variation")));
+        if r.on_hover_text(hint).on_disabled_hover_text(t("Process Data > Extract corners > Use for Monte Carlo")).changed()
             && mc.process
             && mc.runs == 0
         {
@@ -467,30 +473,30 @@ impl SweepManager {
             egui::Frame::new().fill(pal.bg_widget).corner_radius(6).inner_margin(6).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 egui::Grid::new(("sw_mc", i)).num_columns(4).spacing([6.0, 4.0]).show(ui, |ui| {
-                    let l = ui.label("Target");
+                    let l = ui.label(t("Target"));
                     ui.add_sized([140.0, 20.0], egui::TextEdit::singleline(&mut v.target).hint_text("R*.r")).labelled_by(l.id);
-                    let l = ui.label("Sigma");
+                    let l = ui.label(t("Sigma"));
                     ui.add_sized([90.0, 20.0], egui::TextEdit::singleline(&mut v.sigma).hint_text("5%")).labelled_by(l.id);
                     ui.end_row();
-                    let l = ui.label("Nominal");
+                    let l = ui.label(t("Nominal"));
                     ui.add_enabled(
                         !v.target.contains('.'),
-                        egui::TextEdit::singleline(&mut v.nominal).desired_width(140.0).hint_text("design variables only"),
+                        egui::TextEdit::singleline(&mut v.nominal).desired_width(140.0).hint_text(t("design variables only")),
                     )
                     .labelled_by(l.id);
-                    let l = ui.label("Dist");
+                    let l = ui.label(t("Dist"));
                     egui::ComboBox::from_id_salt(("sw_mc_dist", i))
-                        .selected_text(if v.dist == Dist::Gauss { "Gauss" } else { "Uniform" })
+                        .selected_text(if v.dist == Dist::Gauss { t("Gauss") } else { t("Uniform") })
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut v.dist, Dist::Gauss, "Gauss");
-                            ui.selectable_value(&mut v.dist, Dist::Uniform, "Uniform");
+                            ui.selectable_value(&mut v.dist, Dist::Gauss, t("Gauss"));
+                            ui.selectable_value(&mut v.dist, Dist::Uniform, t("Uniform"));
                         })
                         .response
                         .labelled_by(l.id);
                     ui.end_row();
-                    ui.checkbox(&mut v.mismatch, "Mismatch")
-                        .on_hover_text("Independent draw per instance (else shared: process)");
-                    if ui.small_button("Remove").clicked() {
+                    ui.checkbox(&mut v.mismatch, t("Mismatch"))
+                        .on_hover_text(t("Independent draw per instance (else shared: process)"));
+                    if ui.small_button(t("Remove")).clicked() {
                         remove = Some(i);
                     }
                     ui.end_row();
@@ -501,7 +507,7 @@ impl SweepManager {
         if let Some(i) = remove {
             mc.vars.remove(i);
         }
-        if ui.button("+ Varied parameter").clicked() {
+        if ui.button(t("+ Varied parameter")).clicked() {
             mc.vars.push(McVar { sigma: "5%".into(), ..Default::default() });
             if mc.runs == 0 {
                 mc.runs = 50;
@@ -539,10 +545,10 @@ impl SweepManager {
     fn statistics(&mut self, ui: &mut egui::Ui, pal: &Palette) {
         ui.columns(2, |cols| {
             let ui = &mut cols[0];
-            theme::section(ui, "Statistics");
+            theme::section(ui, t("Statistics"));
             egui::Grid::new("sw_stats_grid").striped(true).num_columns(7).spacing([14.0, 4.0]).show(ui, |ui| {
                 for h in ["SPEC", "MEAN", "σ", "MIN", "MAX", "N", "YIELD"] {
-                    ui.label(RichText::new(h).small().strong().color(pal.text_weak));
+                    ui.label(RichText::new(t(h)).small().strong().color(pal.text_weak));
                 }
                 ui.end_row();
                 for k in 0..self.run_specs.len() {
@@ -571,7 +577,7 @@ impl SweepManager {
             let ui = &mut cols[1];
             let k = self.hist_spec.min(self.run_specs.len() - 1);
             let spec = &self.run_specs[k];
-            theme::section(ui, &format!("Histogram · {}", spec.name));
+            theme::section(ui, &tf("Histogram · {}", &[&spec.name]));
             let vals = self.spec_values(k);
             let st = stats(&vals);
             let bins = 24usize;
@@ -597,7 +603,7 @@ impl SweepManager {
             Plot::new("sw_hist").x_axis_formatter(|m, _| format_eng(m.value, "")).allow_scroll(false).show(ui, |pu| {
                 pu.bar_chart(BarChart::new(spec.name.clone(), bars));
                 for l in limits {
-                    pu.vline(VLine::new("limit", l).color(pal.danger).width(1.5));
+                    pu.vline(VLine::new(t("limit"), l).color(pal.danger).width(1.5));
                 }
             });
         });
@@ -605,21 +611,23 @@ impl SweepManager {
 
     /// Predicted yield per condition and the sensitivity of the selected spec.
     fn prediction_ui(&self, ui: &mut egui::Ui, pal: &Palette) {
-        theme::section(ui, "Predicted yield");
+        theme::section(ui, t("Predicted yield"));
         egui::Grid::new("sw_pred_grid").striped(true).num_columns(3).spacing([14.0, 4.0]).show(ui, |ui| {
             for h in ["CONDITION", "SIMULATED (95% CI)", "PREDICTED"] {
-                ui.label(RichText::new(h).small().strong().color(pal.text_weak));
+                ui.label(RichText::new(t(h)).small().strong().color(pal.text_weak));
             }
             ui.end_row();
             for c in &self.prediction {
                 ui.label(&c.condition);
                 let (lo, hi) = wilson(c.passed, c.runs);
                 ui.label(
-                    RichText::new(format!(
-                        "{:.1}% ({:.0} to {:.0}%)",
-                        c.passed as f64 / c.runs.max(1) as f64 * 100.0,
-                        lo * 100.0,
-                        hi * 100.0
+                    RichText::new(tf(
+                        "{}% ({} to {}%)",
+                        &[
+                            &format!("{:.1}", c.passed as f64 / c.runs.max(1) as f64 * 100.0),
+                            &format!("{:.0}", lo * 100.0),
+                            &format!("{:.0}", hi * 100.0),
+                        ],
                     ))
                     .monospace(),
                 );
@@ -645,38 +653,35 @@ impl SweepManager {
         ui.add_space(6.0);
         match worst {
             Some((c, sp)) => {
-                theme::section(ui, &format!("Sensitivity · {} · {}", spec.name, c.condition));
+                theme::section(ui, &tf("Sensitivity · {} · {}", &[&spec.name, &c.condition]));
                 let mut order: Vec<usize> = (0..sp.sensitivity.len()).collect();
                 order.sort_by(|a, b| sp.sensitivity[*b].total_cmp(&sp.sensitivity[*a]));
                 for i in order.into_iter().take(8) {
                     let v = sp.sensitivity[i] as f32;
-                    let dir = if sp.model.slope(i) >= 0.0 { "rises" } else { "falls" };
+                    let rises = sp.model.slope(i) >= 0.0;
                     ui.horizontal(|ui| {
                         let l =
                             ui.add_sized([90.0, 16.0], egui::Label::new(RichText::new(&plan.inputs[i]).monospace()).truncate());
-                        ui.add(egui::ProgressBar::new(v).desired_width(140.0).text(format!(
-                            "{:.0}% · {} {dir}",
-                            v * 100.0,
-                            spec.name
+                        ui.add(egui::ProgressBar::new(v).desired_width(140.0).text(tf(
+                            if rises { "{}% · {} rises" } else { "{}% · {} falls" },
+                            &[&format!("{:.0}", v * 100.0), &spec.name],
                         )))
                         .labelled_by(l.id);
                     });
                 }
-                let fit = if sp.model.quadratic { "quadratic" } else { "linear" };
+                let fit = if sp.model.quadratic { t("quadratic") } else { t("linear") };
                 let col = if sp.model.q2 >= 0.9 { pal.text_weak } else { pal.warning };
                 ui.label(
-                    RichText::new(format!(
-                        "{fit} model of {} runs, Q² {:.3}, error {}",
-                        sp.model.samples,
-                        sp.model.q2,
-                        format_eng(sp.model.rmse, "")
+                    RichText::new(tf(
+                        "{} model of {} runs, Q² {}, error {}",
+                        &[fit, &sp.model.samples.to_string(), &format!("{:.3}", sp.model.q2), &format_eng(sp.model.rmse, "")],
                     ))
                     .small()
                     .color(col),
                 );
             }
             None => {
-                ui.label(RichText::new(format!("No model of {}", spec.name)).color(pal.text_weak));
+                ui.label(RichText::new(tf("No model of {}", &[&spec.name])).color(pal.text_weak));
             }
         }
     }
@@ -765,18 +770,18 @@ impl SweepManager {
         let (pass, checked) = self.pass_count();
         if checked > 0 {
             let all = pass == checked;
-            ui.label(RichText::new(format!("{pass} of {checked} point(s) meet every spec")).strong().color(if all {
-                pal.ok
-            } else {
-                pal.warning
-            }));
+            ui.label(
+                RichText::new(tf("{} of {} point(s) meet every spec", &[&pass.to_string(), &checked.to_string()]))
+                    .strong()
+                    .color(if all { pal.ok } else { pal.warning }),
+            );
         }
         egui::ScrollArea::both().id_salt("sw_table").auto_shrink([false, false]).show(ui, |ui| {
             egui::Grid::new("sw_grid").striped(true).num_columns(self.run_specs.len() + 3).spacing([18.0, 4.0]).show(ui, |ui| {
                 let head = |ui: &mut egui::Ui, t: &str| ui.label(RichText::new(t).small().strong().color(pal.text_weak));
                 head(ui, "#");
-                head(ui, "POINT");
-                head(ui, "STATUS");
+                head(ui, t("POINT"));
+                head(ui, t("STATUS"));
                 for s in &self.run_specs {
                     let lim = match (s.min.trim(), s.max.trim()) {
                         ("", "") => String::new(),
@@ -794,14 +799,18 @@ impl SweepManager {
                     }
                     let Some(r) = r else {
                         ui.label(RichText::new("…").color(pal.text_weak));
-                        ui.label(RichText::new("running").small().color(pal.text_weak));
+                        ui.label(RichText::new(t("running")).small().color(pal.text_weak));
                         ui.end_row();
                         continue;
                     };
                     ui.label(RichText::new(r.point.label()).monospace());
                     match &r.results {
-                        Ok(res) => ui.label(RichText::new(format!("ok · {:.0} ms", res.elapsed_ms)).small().color(pal.ok)),
-                        Err(e) => ui.label(RichText::new("failed").small().color(pal.danger)).on_hover_text(e.as_str()),
+                        Ok(res) => {
+                            ui.label(RichText::new(tf("ok · {} ms", &[&format!("{:.0}", res.elapsed_ms)])).small().color(pal.ok))
+                        }
+                        Err(e) => {
+                            ui.label(RichText::new(t("failed")).small().color(pal.danger)).on_hover_text(crate::i18n::t_text(e))
+                        }
                     };
                     for (s, v) in self.run_specs.iter().zip(&r.specs) {
                         match v {
@@ -814,7 +823,7 @@ impl SweepManager {
                                 ui.label(RichText::new(format_eng(*x, "")).monospace().color(c));
                             }
                             Err(e) => {
-                                ui.label(RichText::new("error").small().color(pal.danger)).on_hover_text(e.as_str());
+                                ui.label(RichText::new(t("error")).small().color(pal.danger)).on_hover_text(e.as_str());
                             }
                         }
                     }
@@ -842,8 +851,8 @@ impl SweepManager {
             self.plot_expr = v.map_or(String::new(), |v| v.name.clone());
         }
         ui.horizontal(|ui| {
-            theme::section(ui, "Overlay");
-            let l = ui.label("Dataset");
+            theme::section(ui, t("Overlay"));
+            let l = ui.label(t("Dataset"));
             egui::ComboBox::from_id_salt("sw_plot_an")
                 .selected_text(self.plot_analysis.as_str())
                 .show_ui(ui, |ui| {
@@ -853,17 +862,17 @@ impl SweepManager {
                 })
                 .response
                 .labelled_by(l.id);
-            let l = ui.label("Signal");
+            let l = ui.label(t("Signal"));
             ui.add(
                 egui::TextEdit::singleline(&mut self.plot_expr)
                     .code_editor()
                     .desired_width(260.0)
-                    .hint_text("v(out) or any expression"),
+                    .hint_text(t("v(out) or any expression")),
             )
             .labelled_by(l.id);
         });
         if self.plot_expr.trim().is_empty() {
-            ui.label(RichText::new("Enter a signal or expression to overlay it across the points.").color(pal.text_weak));
+            ui.label(RichText::new(t("Enter a signal or expression to overlay it across the points.")).color(pal.text_weak));
             return;
         }
         let log = self.plot_analysis == "ac";
@@ -891,7 +900,7 @@ impl SweepManager {
                     }
                     lines.push((name, pts, c, width));
                 }
-                Ok(CalcValue::Scalar(_)) => error = Some("the expression gives a number, not a waveform".to_string()),
+                Ok(CalcValue::Scalar(_)) => error = Some(t("the expression gives a number, not a waveform").to_string()),
                 Err(e) => error = Some(e),
             }
         }

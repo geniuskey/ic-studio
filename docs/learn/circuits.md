@@ -22,6 +22,12 @@ V = I · R          1 V across 1 kΩ drives 1 mA
 A resistor turns electrical energy into heat. The **power** it burns is `P = V · I`. Power
 is why chips get warm, and why designers care about every microamp.
 
+<!-- quiz
+? A 9 kΩ resistor is connected across the 1.8 V supply. How much current flows, in µA?
+= 200 ±2 µA
+> Ohm's law: I = V / R = 1.8 V / 9 kΩ = 0.2 mA = 200 µA. It burns P = V · I = 360 µW.
+-->
+
 ## Kirchhoff's laws: how circuits are solved
 
 Two rules are enough to solve any circuit, and they are exactly what a SPICE simulator
@@ -73,6 +79,12 @@ sets how fast a chip can run. Almost every speed question in digital design come
 
 </div>
 
+<!-- quiz
+? A 10 kΩ resistor charges a 1 pF capacitor. What is the time constant τ, in ns?
+= 10 ±0.5 ns
+> τ = R · C = 10⁴ Ω · 10⁻¹² F = 10⁻⁸ s = 10 ns. After 3τ = 30 ns the capacitor is at 95 %.
+-->
+
 ## Frequency response, decibels and Bode plots
 
 The same RC circuit behaves differently for slow and fast signals. A slow sine wave passes
@@ -98,6 +110,12 @@ A **Bode plot** draws gain in dB and phase in degrees against a logarithmic freq
 axis. Above its corner, an RC filter loses 20 dB per decade (a factor of 10 in frequency).
 **AC analysis** in a simulator computes exactly this plot.
 
+<!-- quiz
+? An RC low-pass is driven at ten times its corner frequency. What is its gain, in dB?
+= -20 ±1 dB
+> Above the corner the gain falls by 20 dB per decade, so one decade above it the gain is about −20 dB (a ratio of 0.1).
+-->
+
 ## The three main analyses
 
 | Analysis | Question it answers | Example |
@@ -106,6 +124,15 @@ axis. Above its corner, an RC filter loses 20 dB per decade (a factor of 10 in f
 | **DC sweep** | How does a DC output change as one source is swept? | An inverter's transfer curve |
 | **AC** (small-signal) | How do small sine waves pass through, at each frequency? | An amplifier's gain and bandwidth |
 | **Transient** | What happens over time with real waveforms? | A gate's delay, an oscillator's period |
+
+<!-- quiz
+? Which analysis measures the delay of a logic gate?
+- Operating point
+- DC sweep
+- AC
++ Transient
+> Delay is a time between two waveform edges, so it needs a simulation over time. OP and DC sweep have no time axis; AC is about frequency.
+-->
 
 ## Reading a SPICE netlist
 
@@ -145,5 +172,24 @@ corner frequency be?<sup>1</sup>
 </div>
 
 <sup>1</sup> Doubling R doubles τ and halves the corner: about 80 kHz.
+
+<!-- quiz
+? In a SPICE netlist, what is the value of `R2 a b 1m`?
+- 1 MΩ
++ 1 mΩ
+- 1 µΩ
+- 1 Ω
+> `m` is milli (10⁻³), so this is a milliohm. A megohm is written `1meg`.
+-->
+
+<!-- try: Simulate rc_lowpass | simulate rc_lowpass -->
+
+<!-- try: Open the rc_lowpass schematic | open rc_lowpass schematic -->
+
+<!-- quiz
+? With R1 = 2 kΩ and C1 = 1 nF, what is the corner frequency, in kHz?
+= 79.6 ±3 kHz
+> f = 1 / (2π · 2 kΩ · 1 nF) ≈ 79.6 kHz: doubling R halves the corner.
+-->
 
 Next: [The MOSFET](mosfet.md), the device the rest of the course is built on.

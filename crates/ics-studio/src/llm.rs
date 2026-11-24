@@ -14,6 +14,8 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::i18n::{t, tf};
+
 /// One `generateContent` round trip: Gemini request JSON in, Gemini response JSON out.
 pub trait Llm: Send {
     fn generate(&mut self, request: &Value) -> Result<Value, String>;
@@ -878,11 +880,11 @@ impl AiSettingsWindow {
 
     fn ui(&mut self, ui: &mut egui::Ui, s: &mut LlmSettings, dirs: &[PathBuf]) {
         let pal = crate::theme::palette(ui.ctx());
-        ui.label(egui::RichText::new("Used by the copilot and the other AI features.").color(pal.text_weak));
+        ui.label(egui::RichText::new(t("Used by the copilot and the other AI features.")).color(pal.text_weak));
         ui.add_space(6.0);
         let p = s.provider;
         egui::Grid::new("ai_models").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-            let l = ui.label("Provider");
+            let l = ui.label(t("Provider"));
             egui::ComboBox::from_id_salt("ai_provider")
                 .selected_text(p.name())
                 .show_ui(ui, |ui| {
@@ -894,7 +896,7 @@ impl AiSettingsWindow {
                 .labelled_by(l.id);
             ui.end_row();
             let c = s.config_mut(p);
-            let l = ui.label("API key");
+            let l = ui.label(t("API key"));
             let hint = if env_key(p.key_vars(), dirs).is_some() {
                 "from environment / .env".to_string()
             } else if p.key_vars().is_empty() {
@@ -905,26 +907,26 @@ impl AiSettingsWindow {
             ui.add(egui::TextEdit::singleline(&mut c.api_key).password(true).desired_width(300.0).hint_text(hint))
                 .labelled_by(l.id);
             ui.end_row();
-            let l = ui.label("Model");
+            let l = ui.label(t("Model"));
             let hint = if p.default_model().is_empty() { "e.g. llama3.1" } else { p.default_model() };
             ui.add(egui::TextEdit::singleline(&mut c.model).desired_width(300.0).hint_text(hint)).labelled_by(l.id);
             ui.end_row();
-            let l = ui.label("Base URL");
+            let l = ui.label(t("Base URL"));
             let hint = if p.default_base().is_empty() { "e.g. http://localhost:11434/v1" } else { p.default_base() };
             ui.add(egui::TextEdit::singleline(&mut c.base_url).desired_width(300.0).hint_text(hint)).labelled_by(l.id);
             ui.end_row();
         });
         ui.add_space(6.0);
-        ui.label(egui::RichText::new("Custom headers").strong());
+        ui.label(egui::RichText::new(t("Custom headers")).strong());
         let c = s.config_mut(p);
         let mut remove = None;
         for (k, h) in c.headers.iter_mut().enumerate() {
             ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut h.name).desired_width(150.0).hint_text("Header"))
-                    .on_hover_text(format!("Header {} name", k + 1));
-                ui.add(egui::TextEdit::singleline(&mut h.value).desired_width(240.0).hint_text("Value"))
-                    .on_hover_text(format!("Header {} value", k + 1));
-                if ui.small_button("x").on_hover_text("Remove header").clicked() {
+                ui.add(egui::TextEdit::singleline(&mut h.name).desired_width(150.0).hint_text(t("Header")))
+                    .on_hover_text(tf("Header {} name", &[&(k + 1).to_string()]));
+                ui.add(egui::TextEdit::singleline(&mut h.value).desired_width(240.0).hint_text(t("Value")))
+                    .on_hover_text(tf("Header {} value", &[&(k + 1).to_string()]));
+                if ui.small_button("x").on_hover_text(t("Remove header")).clicked() {
                     remove = Some(k);
                 }
             });
@@ -932,13 +934,13 @@ impl AiSettingsWindow {
         if let Some(k) = remove {
             c.headers.remove(k);
         }
-        if ui.button("+ Header").clicked() {
+        if ui.button(t("+ Header")).clicked() {
             c.headers.push(Header::default());
         }
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             let testing = self.test.is_some();
-            if ui.add_enabled(!testing, egui::Button::new("Test connection")).clicked() {
+            if ui.add_enabled(!testing, egui::Button::new(t("Test connection"))).clicked() {
                 self.status = None;
                 let (tx, rx) = mpsc::channel();
                 let (s, dirs, ctx) = (s.clone(), dirs.to_vec(), ui.ctx().clone());
@@ -973,7 +975,7 @@ impl AiSettingsWindow {
         }
         ui.add_space(8.0);
         ui.label(
-            egui::RichText::new("Settings, keys included, are saved as plain text in your user profile.")
+            egui::RichText::new(t("Settings, keys included, are saved as plain text in your user profile."))
                 .small()
                 .color(pal.text_weak),
         );

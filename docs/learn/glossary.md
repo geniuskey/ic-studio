@@ -82,6 +82,39 @@ Terms used in this course and in the rest of the guide, in alphabetical order.
 | **W, L** | Channel width and length, the sizes a designer chooses. |
 | **Wafer** | The silicon disc, up to 300 mm across, on which chips are made. |
 
+<!-- quiz
+? A voltage gain of 1000 is how many dB?
+= 60 ±0.5 dB
+> 20 · log₁₀(1000) = 60 dB. Each factor of 10 adds 20 dB.
+-->
+
+<!-- quiz
+? What does a tap do?
+- Connects metal1 to metal2
++ Ties the substrate or a well to its supply, keeping the transistor bodies biased
+- Measures a voltage in simulation
+- Splits a wide transistor into fingers
+> A tap is a contact to the substrate (ground) or the n-well (V<sub>DD</sub>). Taps and guard rings also prevent latch-up. Metal layers are joined by vias.
+-->
+
+<!-- quiz
+? By Pelgrom's law, a transistor with four times the gate area has a threshold mismatch …
+- four times smaller
++ half as large
+- the same
+- twice as large
+> Mismatch falls as 1/√(W·L): √4 = 2, so σ halves.
+-->
+
+<!-- quiz
+? What is a PCell?
+- A memory cell of the PDK
++ A layout generator that draws a device from parameters such as W and L
+- A cell that has passed LVS
+- A power cell for the supply rails
+> Parameterised cell: change W or L and the layout redraws itself. Schematic-driven layout places PCells for the schematic's devices.
+-->
+
 ## Further reading
 
 - Behzad Razavi, *Design of Analog CMOS Integrated Circuits* — the standard analog text,

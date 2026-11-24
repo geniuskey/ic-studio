@@ -25,6 +25,8 @@ project** works too; everything stays in memory until you press `Ctrl+S`.)
 
 ## Step 1: create the cell
 
+<!-- try: New cell | new-cell -->
+
 1. Press `Ctrl+N`.
 2. Name the cell `my_inv`, keep **schematic** checked, and press **Create**.
 
@@ -100,6 +102,8 @@ VIN in 0 DC 0 PULSE(0 1.8 1n 100p 100p 4n 10n)
 
 (Your device names may differ; the connections are what matter.)
 
+<!-- check: my_inv has a schematic with the inverter and its testbench (5 devices) | my_inv schematic 5 -->
+
 ## Step 6: the operating point
 
 1. Press `Ctrl+3` for the Simulation workspace. **Operating Point** is enabled by default.
@@ -109,6 +113,21 @@ VIN in 0 DC 0 PULSE(0 1.8 1n 100p 100p 4n 10n)
 4. In the Simulation workspace, open the **Operating Point** tab: the NMOS is in
    **cutoff**, the PMOS in **triode** with almost no current. As
    [predicted](cmos-logic.md#the-inverter): no static current.
+
+<!-- check: my_inv has been simulated | my_inv simulated -->
+
+<!-- check: With in at 0 V, out is at 1.8 V | my_inv measure op "v(out)" 1.7 1.9 -->
+
+<!-- check: The NMOS M2 is in cutoff | my_inv region M2 cutoff -->
+
+<!-- quiz
+? With in at 0 V, why does almost no current flow from vdd to ground?
+- The PMOS is off
++ The NMOS is off, so there is no path to ground
+- The load capacitor blocks DC
+- The supply is too low
+> The PMOS is on (triode) and holds out at 1.8 V, but the NMOS is in cutoff: the series path from vdd to ground is open. A capacitor does block DC, but it is not in that path.
+-->
 
 ## Step 7: the transfer curve (DC sweep)
 
@@ -123,10 +142,23 @@ Waveform Calculator**, choose the `dc` dataset and evaluate:
 cross(v(out) - v(in), 0)
 ```
 
-It returns the input voltage where out = in: **V<sub>M</sub> ≈ 0.826 V**.
+It returns the input voltage where out = in: **V<sub>M</sub> ≈ 0.830 V**.
 
-Also plot `i(VDD)`: the supply current is zero at both ends and peaks at about 118 µA near
+Also plot `i(VDD)`: the supply current is zero at both ends and peaks at about 135 µA near
 V<sub>M</sub>, where both transistors are on.
+
+<!-- try: Open the Waveform Calculator | calculator -->
+
+<!-- check: The switching threshold V_M is between 0.78 and 0.95 V | my_inv measure dc "cross(v(out) - v(in), 0)" 0.78 0.95 -->
+
+<!-- quiz
+? What does `cross(v(out) - v(in), 0)` return on the `dc` dataset?
+- The time at which the output crosses the input
++ The input voltage at which out = in, the switching threshold
+- The peak supply current
+- The gain of the inverter
+> On a DC sweep the x axis is the swept source VIN, so `cross` returns the VIN where v(out) − v(in) crosses 0: V<sub>M</sub>. There is no time axis in a DC sweep.
+-->
 
 ## Step 8: the delay (transient)
 
@@ -136,8 +168,8 @@ V<sub>M</sub>, where both transistors are on.
 3. In the Waveform Calculator, pick the `tran` dataset and evaluate the two delays:
 
    ```text
-   delay(v(in), 0.9, v(out), 0.9, rise, fall)     → t_pHL ≈ 36 ps
-   delay(v(in), 0.9, v(out), 0.9, fall, rise)     → t_pLH ≈ 52 ps
+   delay(v(in), 0.9, v(out), 0.9, rise, fall)     → t_pHL ≈ 33 ps
+   delay(v(in), 0.9, v(out), 0.9, fall, rise)     → t_pLH ≈ 47 ps
    ```
 
    Each measures from the input crossing 0.9 V (50 % of 1.8 V) to the output crossing
@@ -145,6 +177,19 @@ V<sub>M</sub>, where both transistors are on.
 
 The rising output is slower: the PMOS is weaker than the NMOS, as the
 [sizing table](cmos-logic.md#sizing-the-transistors) predicted.
+
+<!-- check: t_pHL (output falling) is below 50 ps | my_inv measure tran "delay(v(in), 0.9, v(out), 0.9, rise, fall)" 20p 50p -->
+
+<!-- check: t_pLH (output rising) is below 70 ps | my_inv measure tran "delay(v(in), 0.9, v(out), 0.9, fall, rise)" 20p 70p -->
+
+<!-- quiz
+? Why is t<sub>pLH</sub> (output rising) longer than t<sub>pHL</sub> with a 2 µm PMOS?
++ The output rises through the PMOS, which is weaker than the NMOS
+- The input pulse rises more slowly than it falls
+- The load capacitor is larger when charged
+- The NMOS leaks while the output rises
+> The pulse has equal 100 ps edges and the load is the same 20 fF both ways. The difference is the driver: the 2 µm PMOS has half the strength of the 1 µm NMOS (k' is four times lower).
+-->
 
 ## Step 9: balance the inverter
 
@@ -157,8 +202,8 @@ t<sub>pLH</sub> and t<sub>pHL</sub>?
 
 | PMOS W | V<sub>M</sub> | t<sub>pHL</sub> | t<sub>pLH</sub> |
 |---|---|---|---|
-| 2 µm | 0.83 V | 36 ps | 52 ps |
-| 4 µm | 0.90 V | 39 ps | 37 ps |
+| 2 µm | 0.83 V | 33 ps | 47 ps |
+| 4 µm | 0.90 V | 35 ps | 33 ps |
 
 The threshold moved to the middle and the delays are now balanced. t<sub>pHL</sub> got
 slightly *worse*: the bigger PMOS adds drain capacitance to the output that the NMOS
@@ -166,6 +211,17 @@ must also discharge. Every sizing decision trades something.
 
 To compare the two runs on one plot, tick the earlier run under **Compare runs**: it is
 drawn dashed.
+
+<!-- check: The delays are balanced within 8 ps (PMOS 4 µm) | my_inv measure tran "abs(delay(v(in), 0.9, v(out), 0.9, fall, rise) - delay(v(in), 0.9, v(out), 0.9, rise, fall))" "" 8p -->
+
+<!-- quiz
+? After widening the PMOS to 4 µm, why did t<sub>pHL</sub> get slightly worse?
+- The NMOS got weaker
++ The bigger PMOS adds drain capacitance that the NMOS must also discharge
+- V<sub>M</sub> moved down
+- The supply current fell
+> The NMOS is unchanged, but the output node now carries the larger drain junction of the 4 µm PMOS. V<sub>M</sub> moved up, to 0.90 V.
+-->
 
 ## Step 10: save
 
@@ -183,9 +239,24 @@ analyses.
 3. **Long channel.** Set both lengths to `360n`. Why does the delay grow so much?
 4. **Variation.** Choose **Simulation > Monte Carlo...**, add the measurements
    `dc: cross(v(out) - v(in), 0)` and `tran: delay(v(in), 0.9, v(out), 0.9, rise, fall)`,
-   and run 200 samples. Manufacturing variation spreads V<sub>M</sub> by about ±17 mV
-   (1σ) and t<sub>pHL</sub> by about ±1.5 ps. Real chips are designed to work across this
+   and run 200 samples. Manufacturing variation spreads V<sub>M</sub> by about ±16 mV
+   (1σ) and t<sub>pHL</sub> by about ±1.4 ps. Real chips are designed to work across this
    spread.
+
+<!-- quiz
+? Exercise 2: lowering V<sub>DD</sub> from 1.8 V to 1.2 V, what fraction of the switching energy C·V² is left, in percent?
+= 44.4 ±2 %
+> (1.2 / 1.8)² = 0.444: the energy falls to 44 %, by more than half.
+-->
+
+<!-- quiz
+? Exercise 3: why does the delay grow so much when both lengths go from 180 nm to 360 nm?
+- Only because the transistors are weaker
++ The on-resistance doubles (current ∝ W/L) and the gate and drain capacitances grow too
+- The threshold voltage doubles
+- The load capacitor doubles by itself
+> Halving W/L doubles R<sub>on</sub>, and the longer gates add capacitance to the nodes they load: both factors of t<sub>p</sub> ≈ 0.69 · R<sub>on</sub> · C<sub>L</sub> go up. V<sub>th</sub> stays at 0.45 V.
+-->
 
 <div class="callout say">
 

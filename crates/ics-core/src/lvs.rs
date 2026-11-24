@@ -296,7 +296,7 @@ fn um(v: f64) -> String {
 fn value(kind: Kind, v: f64) -> String {
     match kind {
         Kind::Res => format!("R={}", format_eng(v, " ohm")),
-        Kind::Npn | Kind::Pnp => format!("area={}", format_eng(v, "")),
+        Kind::Npn | Kind::Pnp => format!("area={}", format_eng(v, "")), // i18n: ignore
         _ => format!("C={}", format_eng(v, "F")),
     }
 }

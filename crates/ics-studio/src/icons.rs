@@ -2,6 +2,7 @@
 
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, Response, Sense, Shape, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
 
+use crate::i18n::{t, tf};
 use crate::theme;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -391,7 +392,7 @@ pub fn button(ui: &mut Ui, icon: Icon, selected: bool, enabled: bool, tip: &str)
         };
         paint(p, rect.shrink(5.0), icon, color);
     }
-    let resp = if enabled { resp.on_hover_text(tip) } else { resp.on_hover_text(format!("{tip} (not available now)")) };
+    let resp = if enabled { resp.on_hover_text(t(tip)) } else { resp.on_hover_text(tf("{} (not available now)", &[t(tip)])) };
     if enabled && resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }

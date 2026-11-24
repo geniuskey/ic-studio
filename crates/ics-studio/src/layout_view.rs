@@ -1,5 +1,6 @@
 //! Layout workspace: hierarchical full-custom editor with layer palette, cell placement and DRC.
 
+use crate::i18n::{t, tf};
 use std::collections::BTreeSet;
 
 use eframe::egui::{self, Align2, Color32, FontId, Key, Mesh, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
@@ -1148,46 +1149,46 @@ impl LayoutEditor {
     /// The command prompt shown on the canvas (what the next click does).
     pub fn prompt(&self) -> Option<String> {
         if self.paste.is_some() {
-            return Some("Paste: click to place · Esc cancels".into());
+            return Some(t("Paste: click to place · Esc cancels").into());
         }
         let second = self.box_start.is_some() || matches!(self.drag, Some(LDrag::Create { .. }));
         if self.zoom_box {
             return Some(
-                if second { "Zoom: click the opposite corner" } else { "Zoom: drag a box or click its first corner" }.into(),
+                t(if second { "Zoom: click the opposite corner" } else { "Zoom: drag a box or click its first corner" }).into(),
             );
         }
         let s = match self.tool {
             LayTool::Select => return None,
             LayTool::Stretch if self.stretch.is_some() || self.pstretch.is_some() || self.part_ref.is_some() => {
-                "Stretch: click the destination · Esc cancels".into()
+                t("Stretch: click the destination · Esc cancels").into()
             }
-            LayTool::Stretch if !self.part.is_empty() => "Stretch: click the reference point".into(),
-            LayTool::Stretch => "Stretch: click an edge or vertex, or drag a box around the vertices to stretch".into(),
+            LayTool::Stretch if !self.part.is_empty() => t("Stretch: click the reference point").into(),
+            LayTool::Stretch => t("Stretch: click an edge or vertex, or drag a box around the vertices to stretch").into(),
             LayTool::Move | LayTool::Copy => {
                 let n = self.tool.name();
                 match self.xfer {
-                    None if self.selection.is_empty() => format!("{n}: click an object at its reference point"),
-                    None => format!("{n}: click the reference point"),
+                    None if self.selection.is_empty() => tf("{}: click an object at its reference point", &[t(n)]),
+                    None => tf("{}: click the reference point", &[t(n)]),
                     Some(_) if self.tool == LayTool::Copy => {
-                        "Copy: click the destination (repeats) · right-click rotates, Shift+right-click flips".into()
+                        t("Copy: click the destination (repeats) · right-click rotates, Shift+right-click flips").into()
                     }
-                    Some(_) => "Move: click the destination · right-click rotates, Shift+right-click flips".into(),
+                    Some(_) => t("Move: click the destination · right-click rotates, Shift+right-click flips").into(),
                 }
             }
-            LayTool::Rect if second => "Rectangle: click the opposite corner".into(),
-            LayTool::Rect => "Rectangle: drag, or click the first corner".into(),
-            LayTool::Via => "Via: click for one cut, drag to fill an area".into(),
-            LayTool::Chop if second => "Chop: click the opposite corner".into(),
-            LayTool::Chop => "Chop: box to cut out of the selected shapes (or any shape under it)".into(),
-            LayTool::Split if second => "Split: click the end of the cut line".into(),
-            LayTool::Split => "Split: click two points of a line across the selected shapes (or any shape it crosses)".into(),
-            LayTool::Ruler if second => "Ruler: click the end point".into(),
-            LayTool::Ruler => "Ruler: click two points · Shift+K clears rulers".into(),
-            LayTool::Path if self.path_pts.is_empty() => "Path: click the start point · +/- change metal".into(),
-            LayTool::Path => "Path: click points · +/- change metal with a via · Enter finishes".into(),
-            LayTool::Polygon => "Polygon: click vertices, snapped to 0/45/90° (Shift: any angle) · Enter closes".into(),
-            LayTool::Label => format!("Label '{}': click to place", self.label_text.trim()),
-            LayTool::Instance => "Instance: click to place".into(),
+            LayTool::Rect if second => t("Rectangle: click the opposite corner").into(),
+            LayTool::Rect => t("Rectangle: drag, or click the first corner").into(),
+            LayTool::Via => t("Via: click for one cut, drag to fill an area").into(),
+            LayTool::Chop if second => t("Chop: click the opposite corner").into(),
+            LayTool::Chop => t("Chop: box to cut out of the selected shapes (or any shape under it)").into(),
+            LayTool::Split if second => t("Split: click the end of the cut line").into(),
+            LayTool::Split => t("Split: click two points of a line across the selected shapes (or any shape it crosses)").into(),
+            LayTool::Ruler if second => t("Ruler: click the end point").into(),
+            LayTool::Ruler => t("Ruler: click two points · Shift+K clears rulers").into(),
+            LayTool::Path if self.path_pts.is_empty() => t("Path: click the start point · +/- change metal").into(),
+            LayTool::Path => t("Path: click points · +/- change metal with a via · Enter finishes").into(),
+            LayTool::Polygon => t("Polygon: click vertices, snapped to 0/45/90° (Shift: any angle) · Enter closes").into(),
+            LayTool::Label => tf("Label '{}': click to place", &[self.label_text.trim()]),
+            LayTool::Instance => t("Instance: click to place").into(),
         };
         Some(s)
     }
@@ -1353,7 +1354,7 @@ impl LayoutEditor {
             None => {
                 self.note(
                     false,
-                    "Bus: drew the centre wire only; a bus needs Manhattan wires without U-turns that leave a via straight on",
+                    t("Bus: drew the centre wire only; a bus needs Manhattan wires without U-turns that leave a via straight on"),
                 );
                 vec![pts]
             }
@@ -1394,7 +1395,7 @@ impl LayoutEditor {
         let new: Vec<Vec<String>> = shorts(&check).into_iter().filter(|s| !before.contains(s) && s.contains(&net)).collect();
         if !new.is_empty() {
             let others: Vec<String> = new.iter().flatten().filter(|n| **n != net).cloned().collect();
-            self.note(false, format!("This wire on net {net} shorts it to {} (u undoes)", others.join(", ")));
+            self.note(false, tf("This wire on net {} shorts it to {} (u undoes)", &[&net.to_string(), &others.join(", ")]));
             self.verify.source = Some(check);
             self.verify.source_stale = false;
         }
@@ -1700,9 +1701,9 @@ impl LayoutEditor {
             Some(s) => {
                 self.active_layer = s.layer;
                 let name = cx.tech.layer(s.layer).map_or("?", |d| d.name.as_str());
-                self.note(true, format!("Active layer: {name}"));
+                self.note(true, tf("Active layer: {}", &[name]));
             }
-            None => self.note(false, "Layer tap: no shape under the cursor"),
+            None => self.note(false, t("Layer tap: no shape under the cursor")),
         }
     }
 
@@ -1715,7 +1716,7 @@ impl LayoutEditor {
             hits(l, &idx, &[], true, p.0, p.1, tol).into_iter().find_map(|id| l.instance(id))
         };
         let Some(i) = sel.or_else(under) else {
-            self.note(false, "Descend: select an instance or point at one");
+            self.note(false, t("Descend: select an instance or point at one"));
             return;
         };
         let child = cx.src.layout(&i.cell).and_then(|c| cx.hier.get_for(&i.cell, c, cx.src).bbox);
@@ -1797,7 +1798,7 @@ impl LayoutEditor {
             }
         }
         if self.selection.is_empty() {
-            self.note(false, format!("{}: nothing selected under the cursor", self.tool.name()));
+            self.note(false, tf("{}: nothing selected under the cursor", &[t(self.tool.name())]));
             return;
         }
         self.xfer = Some(p);
@@ -1818,7 +1819,7 @@ impl LayoutEditor {
         self.history.push(l);
         if self.tool == LayTool::Copy {
             let n = self.copy_array(l, cx, &t);
-            self.note(true, format!("Copied {n} item(s)"));
+            self.note(true, tf("Copied {} item(s)", &[&n.to_string()]));
         } else {
             l.transform_items(&self.selection, &t);
             self.xfer = None;
@@ -1869,7 +1870,7 @@ impl LayoutEditor {
     /// Move / Copy options.
     pub(super) fn apply_delta(&mut self, l: &mut Layout, cx: &mut LayCtx) -> bool {
         if self.selection.is_empty() {
-            self.note(false, "Move / copy by offset: select something first");
+            self.note(false, t("Move / copy by offset: select something first"));
             return false;
         }
         let (dx, dy) = self.delta;
@@ -1881,11 +1882,23 @@ impl LayoutEditor {
         let t = Trans::with(dx, dy, 0, false);
         if copy {
             let n = self.copy_array(l, cx, &t);
-            self.note(true, format!("Copied {n} item(s) by ({}, {}) µm", um(dx, cx.tech), um(dy, cx.tech)));
+            self.note(
+                true,
+                tf(
+                    "Copied {} item(s) by ({}, {}) µm",
+                    &[&n.to_string(), &um(dx, cx.tech).to_string(), &um(dy, cx.tech).to_string()],
+                ),
+            );
         } else {
             let ids = self.selection.clone();
             l.transform_items(&ids, &t);
-            self.note(true, format!("Moved {} item(s) by ({}, {}) µm", ids.len(), um(dx, cx.tech), um(dy, cx.tech)));
+            self.note(
+                true,
+                tf(
+                    "Moved {} item(s) by ({}, {}) µm",
+                    &[&ids.len().to_string(), &um(dx, cx.tech).to_string(), &um(dy, cx.tech).to_string()],
+                ),
+            );
         }
         cx.touched();
         true
@@ -1896,7 +1909,7 @@ impl LayoutEditor {
     pub(super) fn shape_to_ring(&mut self, l: &Layout, well: bool) -> bool {
         let one = (self.selection.len() == 1).then(|| *self.selection.first().unwrap()).and_then(|id| l.shape(id).cloned());
         let Some(s) = one else {
-            self.note(false, "Guard ring: select one path, polygon or rectangle as its centre line");
+            self.note(false, t("Guard ring: select one path, polygon or rectangle as its centre line"));
             return false;
         };
         let (points, closed) = match &s.geom {
@@ -1904,17 +1917,17 @@ impl LayoutEditor {
             Geometry::Polygon { points } => (points.clone(), true),
             Geometry::Rect(r) => (vec![(r.x0, r.y0), (r.x1, r.y0), (r.x1, r.y1), (r.x0, r.y1)], true),
             Geometry::Label { .. } => {
-                self.note(false, "Guard ring: a label has no centre line");
+                self.note(false, t("Guard ring: a label has no centre line"));
                 return false;
             }
         };
         if points.windows(2).any(|w| w[0].0 != w[1].0 && w[0].1 != w[1].1) {
-            self.note(false, "Guard ring: the centre line must be Manhattan");
+            self.note(false, t("Guard ring: the centre line must be Manhattan"));
             return false;
         }
         let pcell = ics_core::pcell::PCell::RingPath { well, points, closed, width: 0 };
         self.requests.push(LayRequest::ReplaceWithPCell { shape: s.id, pcell });
-        self.note(true, "Guard ring along the shape: stretch a side to move it, q edits width and closure");
+        self.note(true, t("Guard ring along the shape: stretch a side to move it, q edits width and closure"));
         false
     }
 
@@ -1928,14 +1941,14 @@ impl LayoutEditor {
             Ok(notes) => {
                 self.history.push(l);
                 *l = next;
-                let checked = if sch.is_some() { "" } else { " (no schematic: nets not checked)" };
+                let checked = if sch.is_some() { "" } else { &format!(" {}", t("(no schematic: nets not checked)")) };
                 self.note(true, format!("{}{checked}", notes.join("; ")));
                 cx.touched();
                 self.layout_changed();
                 true
             }
             Err(e) => {
-                self.note(false, format!("Abut: {e}"));
+                self.note(false, tf("Abut: {}", &[&e.to_string()]));
                 false
             }
         }
@@ -1950,13 +1963,13 @@ impl LayoutEditor {
         let k = tech.dbu_per_um.max(1) as f64;
         let g = tech.grid.max(1);
         let mut changed = false;
-        ui.checkbox(&mut self.snap_tracks, "Snap wires to tracks (and take their width)");
-        ui.checkbox(&mut self.show_tracks, "Show the active layer's tracks");
+        ui.checkbox(&mut self.snap_tracks, t("Snap wires to tracks (and take their width)"));
+        ui.checkbox(&mut self.show_tracks, t("Show the active layer's tracks"));
         let mut remove = None;
-        for (i, t) in l.tracks.iter().enumerate() {
+        for (i, tp) in l.tracks.iter().enumerate() {
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(t.describe(tech)).small());
-                if ui.small_button("Remove").clicked() {
+                ui.label(egui::RichText::new(tp.describe(tech)).small());
+                if ui.small_button(t("Remove")).clicked() {
                     remove = Some(i);
                 }
             });
@@ -1968,7 +1981,7 @@ impl LayoutEditor {
         }
         let layer = self.active_layer;
         let name = tech.layer(layer).map_or("?", |d| d.name.as_str()).to_string();
-        ui.label(egui::RichText::new(format!("New pattern on the active layer, {name}")).small().color(pal.text_weak));
+        ui.label(egui::RichText::new(tf("New pattern on the active layer, {}", &[&name])).small().color(pal.text_weak));
         let (h, start, pitch, width, wsp) = &mut self.track_form;
         if *pitch == 0
             && let Some(t) = TrackPattern::from_rules(tech, layer, *h)
@@ -1976,11 +1989,11 @@ impl LayoutEditor {
             (*pitch, *width) = (t.period, t.tracks[0].1);
         }
         ui.horizontal(|ui| {
-            ui.radio_value(h, true, "Horizontal");
-            ui.radio_value(h, false, "Vertical");
+            ui.radio_value(h, true, t("Horizontal"));
+            ui.radio_value(h, false, t("Vertical"));
         });
         let um_value = |ui: &mut egui::Ui, label: &str, v: &mut i64| {
-            let lb = ui.label(label);
+            let lb = ui.label(t(label));
             let mut f = *v as f64 / k;
             ui.add(egui::DragValue::new(&mut f).speed(0.01).max_decimals(4).suffix(" µm")).labelled_by(lb.id);
             *v = ((f * k / g as f64).round() as i64) * g;
@@ -1992,17 +2005,17 @@ impl LayoutEditor {
         });
         let mut add: Option<TrackPattern> = None;
         ui.horizontal(|ui| {
-            if ui.button("Add uniform").clicked() && *pitch > 0 && *width > 0 {
+            if ui.button(t("Add uniform")).clicked() && *pitch > 0 && *width > 0 {
                 add = Some(TrackPattern::uniform(layer, *h, *start, *pitch, *width));
             }
-            if ui.button("From layer rules").on_hover_text("Minimum width at the minimum pitch").clicked() {
+            if ui.button(t("From layer rules")).on_hover_text(t("Minimum width at the minimum pitch")).clicked() {
                 add = TrackPattern::from_rules(tech, layer, *h);
             }
         });
         ui.horizontal(|ui| {
             let lb = ui.label("WSP");
             ui.add(egui::TextEdit::singleline(wsp).hint_text("w s w s ... (µm)").desired_width(140.0)).labelled_by(lb.id);
-            if ui.button("Add WSP").on_hover_text("Widths and spaces alternating, e.g. 0.2 0.2 0.6 0.3").clicked() {
+            if ui.button(t("Add WSP")).on_hover_text(t("Widths and spaces alternating, e.g. 0.2 0.2 0.6 0.3")).clicked() {
                 let v: Vec<i64> = wsp
                     .split_whitespace()
                     .filter_map(|x| x.parse::<f64>().ok())
@@ -2012,7 +2025,7 @@ impl LayoutEditor {
                     (v.iter().step_by(2).copied().collect(), v.iter().skip(1).step_by(2).copied().collect());
                 add = TrackPattern::wsp(layer, *h, *start, &ws, &ss);
                 if add.is_none() {
-                    self.ed.msg = Some((false, "WSP: give positive width and space pairs, e.g. 0.2 0.2 0.6 0.3".into()));
+                    self.ed.msg = Some((false, t("WSP: give positive width and space pairs, e.g. 0.2 0.2 0.6 0.3").into()));
                 }
             }
         });
@@ -2021,13 +2034,13 @@ impl LayoutEditor {
             l.tracks.push(t);
             changed = true;
         }
-        if !l.tracks.is_empty() && ui.button("Check wires against tracks").clicked() {
+        if !l.tracks.is_empty() && ui.button(t("Check wires against tracks")).clicked() {
             let off = tracks::off_track(l, &l.tracks);
             self.selection = off.iter().map(|(id, _)| *id).collect();
             let m = if off.is_empty() {
-                "Every wire on a patterned layer is on a track".to_string()
+                t("Every wire on a patterned layer is on a track").to_string()
             } else {
-                format!("{} wire(s) off their tracks or of the wrong width: selected", off.len())
+                tf("{} wire(s) off their tracks or of the wrong width: selected", &[&off.len().to_string()])
             };
             self.note(off.is_empty(), m);
         }
@@ -2043,35 +2056,35 @@ impl LayoutEditor {
         let k = tech.dbu_per_um.max(1) as f64;
         let g = tech.grid.max(1);
         let um_value = |ui: &mut egui::Ui, label: &str, v: &mut i64| {
-            let lb = ui.label(label);
+            let lb = ui.label(t(label));
             let mut f = *v as f64 / k;
             ui.add(egui::DragValue::new(&mut f).speed(0.01).max_decimals(4).suffix(" µm")).labelled_by(lb.id);
             *v = ((f * k / g as f64).round() as i64) * g;
             ui.end_row();
         };
-        theme::section(ui, "Offset");
+        theme::section(ui, t("Offset"));
         egui::Grid::new("xfer_delta").num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| {
             um_value(ui, "Delta X", &mut self.delta.0);
             um_value(ui, "Delta Y", &mut self.delta.1);
         });
-        let verb = if self.tool == LayTool::Copy { "Copy" } else { "Move" };
-        if ui.button(format!("{verb} selection by offset")).clicked() {
+        let verb = if self.tool == LayTool::Copy { "Copy selection by offset" } else { "Move selection by offset" };
+        if ui.button(t(verb)).clicked() {
             self.actions.push(LayAction::ApplyDelta);
         }
         if self.tool == LayTool::Copy {
-            theme::section(ui, "Array");
+            theme::section(ui, t("Array"));
             egui::Grid::new("copy_array").num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| {
-                let r = ui.label("Rows");
+                let r = ui.label(t("Rows"));
                 ui.add(egui::DragValue::new(&mut self.copy_rows).range(1..=1000)).labelled_by(r.id);
                 ui.end_row();
-                let c = ui.label("Columns");
+                let c = ui.label(t("Columns"));
                 ui.add(egui::DragValue::new(&mut self.copy_cols).range(1..=1000)).labelled_by(c.id);
                 ui.end_row();
                 um_value(ui, "Column pitch", &mut self.copy_pitch.0);
                 um_value(ui, "Row pitch", &mut self.copy_pitch.1);
             });
             let pal = theme::palette(ui.ctx());
-            ui.label(egui::RichText::new("Pitch 0 = the selection's extent (copies abut)").small().color(pal.text_weak));
+            ui.label(egui::RichText::new(t("Pitch 0 = the selection's extent (copies abut)")).small().color(pal.text_weak));
         }
     }
 
@@ -2098,7 +2111,7 @@ impl LayoutEditor {
                 return;
             }
             if report {
-                self.note(false, "Stretch: no shape or PCell edge under the cursor");
+                self.note(false, t("Stretch: no shape or PCell edge under the cursor"));
             }
             return;
         };
@@ -2114,11 +2127,11 @@ impl LayoutEditor {
         };
         let Some(inst) = sel.or_else(under) else { return false };
         let Some(pcell) = cx.src.cell(&inst.cell).and_then(|c| c.pcell.clone()) else {
-            self.note(false, "Stretch: only PCell instances can be stretched; this is a fixed cell");
+            self.note(false, t("Stretch: only PCell instances can be stretched; this is a fixed cell"));
             return true;
         };
         if inst.array.is_some() {
-            self.note(false, "Stretch: an arrayed PCell cannot be stretched");
+            self.note(false, t("Stretch: an arrayed PCell cannot be stretched"));
             return true;
         }
         let Some(child) = pcell.generate(cx.tech).ok().and_then(|g| g.shapes_bbox()) else { return false };
@@ -2176,7 +2189,7 @@ impl LayoutEditor {
         let Some(s) = self.pstretch.take() else { return false };
         match Self::pcell_stretch_result(&s, tech, to) {
             Some((pcell, trans, _)) => {
-                self.note(true, format!("Stretched to {}", pcell.summary(tech.dbu_per_um)));
+                self.note(true, tf("Stretched to {}", &[&pcell.summary(tech.dbu_per_um)]));
                 self.requests.push(LayRequest::SetPCell { inst: s.inst, pcell, trans: Some(trans) });
                 true
             }
@@ -2536,7 +2549,7 @@ impl LayoutEditor {
                             if self.path_pts.is_empty() {
                                 self.wire_net = self.net_under(l, cx, p);
                                 if let Some((n, _)) = &self.wire_net {
-                                    self.note(true, format!("Wire on net {n}"));
+                                    self.note(true, tf("Wire on net {}", &[&n.to_string()]));
                                 }
                             }
                             if self.path_pts.last() != Some(&p) {
@@ -2933,7 +2946,7 @@ impl LayoutEditor {
                         painter.text(
                             h + Vec2::new(14.0, 14.0),
                             Align2::LEFT_TOP,
-                            "Choose a cell to place in the left panel",
+                            t("Choose a cell to place in the left panel"),
                             FontId::proportional(12.0),
                             pal.text_weak,
                         );
@@ -3029,7 +3042,7 @@ impl LayoutEditor {
             painter.text(
                 rect.center(),
                 Align2::CENTER_CENTER,
-                "Empty layout — choose a layer on the left, then press R and drag to draw a rectangle.\nP draws paths, L places labels, I places cells, K measures. Ctrl+wheel zooms, the wheel and middle-drag pan, right-drag zooms into a box.",
+                t("Empty layout — choose a layer on the left, then press R and drag to draw a rectangle.\nP draws paths, L places labels, I places cells, K measures. Ctrl+wheel zooms, the wheel and middle-drag pan, right-drag zooms into a box."),
                 FontId::proportional(14.0),
                 pal.text_weak,
             );
@@ -3062,34 +3075,34 @@ impl LayoutEditor {
         let tech = cx.tech;
         let pal = theme::palette(ui.ctx());
         if self.tool == LayTool::Path {
-            theme::section(ui, "Path");
+            theme::section(ui, t("Path"));
             ui.horizontal(|ui| {
-                let l = ui.label("Width (nm)");
+                let l = ui.label(t("Width (nm)"));
                 ui.add(egui::DragValue::new(&mut self.path_width).range(0..=100_000).speed(10)).labelled_by(l.id);
             });
             ui.label(
-                egui::RichText::new("0 = layer minimum width · Enter / double-click to finish").small().color(pal.text_weak),
+                egui::RichText::new(t("0 = layer minimum width · Enter / double-click to finish")).small().color(pal.text_weak),
             );
             ui.horizontal(|ui| {
-                let l = ui.label("Wires");
+                let l = ui.label(t("Wires"));
                 ui.add(egui::DragValue::new(&mut self.bus_wires).range(1..=64)).labelled_by(l.id);
-                let l = ui.label("Pitch (nm)");
+                let l = ui.label(t("Pitch (nm)"));
                 ui.add(egui::DragValue::new(&mut self.bus_pitch).range(0..=1_000_000).speed(10)).labelled_by(l.id);
             });
             ui.label(
-                egui::RichText::new("Wires > 1 draws a bus centred on the clicks · pitch 0 = width + spacing")
+                egui::RichText::new(t("Wires > 1 draws a bus centred on the clicks · pitch 0 = width + spacing"))
                     .small()
                     .color(pal.text_weak),
             );
             ui.horizontal(|ui| {
-                let l = ui.label("Current (mA)");
+                let l = ui.label(t("Current (mA)"));
                 ui.add(egui::DragValue::new(&mut self.wire_ma).range(0.0..=10_000.0).speed(0.05).max_decimals(3))
                     .labelled_by(l.id);
                 let est = ics_core::pex::wire_estimate(tech, self.active_layer, &[(0, 0), (0, 0)], self.wire_width(tech));
                 let need = est.and_then(|e| e.em_width(self.wire_ma * 1e-3, tech)).filter(|_| self.wire_ma > 0.0);
                 if ui
-                    .add_enabled(need.is_some(), egui::Button::new("Size for EM"))
-                    .on_hover_text("Set the width to the narrowest that carries this current within the layer's EM rule")
+                    .add_enabled(need.is_some(), egui::Button::new(t("Size for EM")))
+                    .on_hover_text(t("Set the width to the narrowest that carries this current within the layer's EM rule"))
                     .clicked()
                     && let Some(w) = need
                 {
@@ -3097,22 +3110,22 @@ impl LayoutEditor {
                 }
             });
             ui.label(
-                egui::RichText::new("Length, R, C and the EM limit show next to the cursor while drawing")
+                egui::RichText::new(t("Length, R, C and the EM limit show next to the cursor while drawing"))
                     .small()
                     .color(pal.text_weak),
             );
         }
         if self.tool == LayTool::Label {
-            theme::section(ui, "Label");
+            theme::section(ui, t("Label"));
             ui.horizontal(|ui| {
-                let l = ui.label("Text");
+                let l = ui.label(t("Text"));
                 ui.text_edit_singleline(&mut self.label_text).labelled_by(l.id);
             });
         }
         if self.tool == LayTool::Polygon {
-            theme::section(ui, "Polygon");
+            theme::section(ui, t("Polygon"));
             ui.label(
-                egui::RichText::new("Click vertices (Manhattan; hold Shift for any angle) · Enter / double-click to close")
+                egui::RichText::new(t("Click vertices (Manhattan; hold Shift for any angle) · Enter / double-click to close"))
                     .small()
                     .color(pal.text_weak),
             );
@@ -3142,12 +3155,12 @@ impl LayoutEditor {
         self.tool_options(ui, cx);
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            theme::section(ui, "Hierarchy");
+            theme::section(ui, t("Hierarchy"));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let dv = ui
                     .add(egui::DragValue::new(&mut self.max_depth).range(0..=32))
-                    .on_hover_text("Hierarchy levels drawn with their contents (keys 0-9)");
-                let lv = ui.label(egui::RichText::new("levels").small().color(pal.text_weak));
+                    .on_hover_text(t("Hierarchy levels drawn with their contents (keys 0-9)"));
+                let lv = ui.label(egui::RichText::new(t("levels")).small().color(pal.text_weak));
                 dv.labelled_by(lv.id);
             });
         });
@@ -3155,10 +3168,10 @@ impl LayoutEditor {
             hier_node(ui, cx.src, cx.cell, Some(l), None, 0, &mut open);
         });
         ui.add_space(6.0);
-        theme::section(ui, &format!("Layers · {}", tech.name));
+        theme::section(ui, &tf("Layers · {}", &[&tech.name]));
         ui.horizontal(|ui| {
             let all = |ui: &mut egui::Ui, text: &str, tip: &str, v: &mut [bool], on: bool| {
-                if ui.small_button(text).on_hover_text(tip).clicked() {
+                if ui.small_button(text).on_hover_text(t(tip)).clicked() {
                     v.iter_mut().for_each(|x| *x = on);
                 }
             };
@@ -3168,14 +3181,14 @@ impl LayoutEditor {
             all(ui, "NS", "No layer selectable", &mut self.selectable, false);
         });
         ui.horizontal(|ui| {
-            let fl = ui.label("Filter");
-            ui.add(egui::TextEdit::singleline(&mut self.layer_filter).hint_text("layer name").desired_width(f32::INFINITY))
+            let fl = ui.label(t("Filter"));
+            ui.add(egui::TextEdit::singleline(&mut self.layer_filter).hint_text(t("layer name")).desired_width(f32::INFINITY))
                 .labelled_by(fl.id);
         });
         ui.horizontal(|ui| {
-            ui.checkbox(&mut self.inst_selectable, "Instances selectable");
-            ui.checkbox(&mut self.used_layers_only, "Used only")
-                .on_hover_text("Hide layers with no shapes in this cell or the cells placed in it");
+            ui.checkbox(&mut self.inst_selectable, t("Instances selectable"));
+            ui.checkbox(&mut self.used_layers_only, t("Used only"))
+                .on_hover_text(t("Hide layers with no shapes in this cell or the cells placed in it"));
         });
         let filter = self.layer_filter.trim().to_lowercase();
         let used = self.used_layers_only.then(|| cx.hier.get_for(cx.cell, l, cx.src));
@@ -3218,7 +3231,7 @@ impl LayoutEditor {
                 let sel = Rect::from_center_size(r.rect.right_center() - Vec2::new(36.0, 0.0), Vec2::splat(18.0));
                 let sel_resp = ui
                     .interact(sel, ui.scope_id().with(("selectable", i)), Sense::click())
-                    .on_hover_text("Selectable: shapes on this layer can be picked");
+                    .on_hover_text(t("Selectable: shapes on this layer can be picked"));
                 let b = Rect::from_center_size(sel.center(), Vec2::splat(9.0));
                 let col = if sel_resp.hovered() { pal.text } else { pal.text_weak };
                 if self.selectable[i] {
@@ -3256,40 +3269,40 @@ impl LayoutEditor {
                         egui::RichText::new(format!("{}  {}/{}", def.name, def.gds_layer, def.gds_datatype)).small().strong(),
                     );
                     ui.separator();
-                    if ui.add_enabled(!active, egui::Button::new("Make Active Layer")).clicked() {
+                    if ui.add_enabled(!active, egui::Button::new(t("Make Active Layer"))).clicked() {
                         self.active_layer = i;
                         self.visible[i] = true;
                     }
-                    if ui.button(if self.visible[i] { "Hide" } else { "Show" }).clicked() {
+                    if ui.button(t(if self.visible[i] { "Hide" } else { "Show" })).clicked() {
                         self.visible[i] = !self.visible[i];
                     }
-                    if ui.button("Show Only This Layer").clicked() {
+                    if ui.button(t("Show Only This Layer")).clicked() {
                         self.visible.iter_mut().enumerate().for_each(|(j, v)| *v = j == i);
                     }
-                    if ui.button("Show All Layers").clicked() {
+                    if ui.button(t("Show All Layers")).clicked() {
                         self.visible.iter_mut().for_each(|v| *v = true);
                     }
                     ui.separator();
-                    if ui.button(if self.selectable[i] { "Make Unselectable" } else { "Make Selectable" }).clicked() {
+                    if ui.button(t(if self.selectable[i] { "Make Unselectable" } else { "Make Selectable" })).clicked() {
                         self.selectable[i] = !self.selectable[i];
                     }
-                    if ui.button("Only This Layer Selectable").clicked() {
+                    if ui.button(t("Only This Layer Selectable")).clicked() {
                         self.selectable.iter_mut().enumerate().for_each(|(j, v)| *v = j == i);
                     }
-                    if ui.button("All Layers Selectable").clicked() {
+                    if ui.button(t("All Layers Selectable")).clicked() {
                         self.selectable.iter_mut().for_each(|v| *v = true);
                     }
                     ui.separator();
-                    if ui.button("Copy Layer Name").clicked() {
+                    if ui.button(t("Copy Layer Name")).clicked() {
                         ui.ctx().copy_text(def.name.clone());
                     }
-                    if ui.button("Edit Display…").clicked() {
+                    if ui.button(t("Edit Display…")).clicked() {
                         self.requests.push(LayRequest::EditLayerDisplay(def.name.clone()));
                     }
                 });
             }
             if hidden > 0 {
-                ui.label(egui::RichText::new(format!("{hidden} unused layers hidden")).small().color(pal.text_weak));
+                ui.label(egui::RichText::new(tf("{} unused layers hidden", &[&hidden.to_string()])).small().color(pal.text_weak));
             }
         });
         open
@@ -3297,11 +3310,11 @@ impl LayoutEditor {
 
     fn placement_panel(&mut self, ui: &mut egui::Ui, cx: &mut LayCtx) {
         let pal = theme::palette(ui.ctx());
-        theme::section(ui, "Place cell");
+        theme::section(ui, t("Place cell"));
         let candidates: Vec<&CellRef> =
             cx.cells.iter().filter(|c| *c != cx.cell && !hier::would_cycle(cx.src, cx.cell, c)).collect();
         if candidates.is_empty() {
-            ui.label(egui::RichText::new("No other cells with a layout").small().color(pal.text_weak));
+            ui.label(egui::RichText::new(t("No other cells with a layout")).small().color(pal.text_weak));
         }
         egui::ScrollArea::vertical().id_salt("place_cells").max_height(140.0).show(ui, |ui| {
             for c in candidates {
@@ -3313,7 +3326,7 @@ impl LayoutEditor {
             }
         });
         egui::Grid::new("place_opts").num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| {
-            let l = ui.label("Rotation");
+            let l = ui.label(t("Rotation"));
             egui::ComboBox::from_id_salt("place_rot")
                 .selected_text(format!("{}°", self.place_rot as u32 * 90))
                 .show_ui(ui, |ui| {
@@ -3325,16 +3338,16 @@ impl LayoutEditor {
                 .labelled_by(l.id);
             ui.end_row();
             ui.label("");
-            ui.checkbox(&mut self.place_mirror, "Mirror about x");
+            ui.checkbox(&mut self.place_mirror, t("Mirror about x"));
             ui.end_row();
-            let l = ui.label("Columns");
+            let l = ui.label(t("Columns"));
             ui.add(egui::DragValue::new(&mut self.place_cols).range(1..=10_000)).labelled_by(l.id);
             ui.end_row();
-            let l = ui.label("Rows");
+            let l = ui.label(t("Rows"));
             ui.add(egui::DragValue::new(&mut self.place_rows).range(1..=10_000)).labelled_by(l.id);
             ui.end_row();
         });
-        ui.label(egui::RichText::new("Click to place · arrays abut at the cell extent").small().color(pal.text_weak));
+        ui.label(egui::RichText::new(t("Click to place · arrays abut at the cell extent")).small().color(pal.text_weak));
         ui.add_space(4.0);
     }
 
@@ -3346,7 +3359,7 @@ impl LayoutEditor {
         let mut open = None;
         let k = tech.dbu_per_um as f64;
         let um_edit = |ui: &mut egui::Ui, label: &str, v: &mut i64, focus: &mut bool| {
-            let l = ui.label(label);
+            let l = ui.label(t(label));
             let mut f = *v as f64 / k;
             let r = ui.add(egui::DragValue::new(&mut f).speed(0.01).max_decimals(3).suffix(" µm")).labelled_by(l.id);
             *focus |= r.drag_started() || r.gained_focus();
@@ -3362,19 +3375,19 @@ impl LayoutEditor {
         {
             let mut s = before.clone();
             let mut focus = false;
-            theme::section(ui, "Instance");
+            theme::section(ui, t("Instance"));
             egui::Grid::new("inst_props").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
-                ui.label("Cell");
+                ui.label(t("Cell"));
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(s.cell.to_string()).strong());
-                    if ui.small_button("Open").on_hover_text("Open this cell (double-click the instance)").clicked() {
+                    if ui.small_button(t("Open")).on_hover_text(t("Open this cell (double-click the instance)")).clicked() {
                         open = Some(s.cell.clone());
                     }
                 });
                 ui.end_row();
                 um_edit(ui, "x", &mut s.trans.x, &mut focus);
                 um_edit(ui, "y", &mut s.trans.y, &mut focus);
-                let ll = ui.label("Rotation");
+                let ll = ui.label(t("Rotation"));
                 egui::ComboBox::from_id_salt("inst_rot")
                     .selected_text(format!("{}°", s.trans.rot as u32 * 90))
                     .show_ui(ui, |ui| {
@@ -3386,11 +3399,11 @@ impl LayoutEditor {
                     .labelled_by(ll.id);
                 ui.end_row();
                 ui.label("");
-                focus |= ui.checkbox(&mut s.trans.mirror, "Mirror about x").clicked();
+                focus |= ui.checkbox(&mut s.trans.mirror, t("Mirror about x")).clicked();
                 ui.end_row();
                 ui.label("");
                 let mut is_array = s.array.is_some();
-                if ui.checkbox(&mut is_array, "Array").clicked() {
+                if ui.checkbox(&mut is_array, t("Array")).clicked() {
                     focus = true;
                     let cb = cx.hier.get(&s.cell, cx.src).and_then(|c| c.bbox).unwrap_or_default();
                     let lin = Trans { x: 0, y: 0, ..s.trans }.apply_rect(cb);
@@ -3398,11 +3411,11 @@ impl LayoutEditor {
                 }
                 ui.end_row();
                 if let Some(a) = s.array.as_mut() {
-                    let l1 = ui.label("Columns");
+                    let l1 = ui.label(t("Columns"));
                     let r = ui.add(egui::DragValue::new(&mut a.cols).range(1..=100_000)).labelled_by(l1.id);
                     focus |= r.drag_started() || r.gained_focus();
                     ui.end_row();
-                    let l2 = ui.label("Rows");
+                    let l2 = ui.label(t("Rows"));
                     let r = ui.add(egui::DragValue::new(&mut a.rows).range(1..=100_000)).labelled_by(l2.id);
                     focus |= r.drag_started() || r.gained_focus();
                     ui.end_row();
@@ -3411,15 +3424,15 @@ impl LayoutEditor {
                 }
                 if let Some(ci) = cx.hier.get(&s.cell, cx.src) {
                     if let Some(b) = ci.bbox {
-                        ui.label("Cell size");
+                        ui.label(t("Cell size"));
                         ui.label(format!("{} × {} µm", um(b.width(), tech), um(b.height(), tech)));
                         ui.end_row();
                     }
-                    ui.label("Flat shapes");
+                    ui.label(t("Flat shapes"));
                     ui.label(fmt_count(ci.flat_shapes * s.count()));
                     ui.end_row();
                 } else {
-                    ui.label("Status");
+                    ui.label(t("Status"));
                     ui.colored_label(pal.danger, "cell not found");
                     ui.end_row();
                 }
@@ -3439,30 +3452,30 @@ impl LayoutEditor {
                     self.inst_pcell = Some((id, p.clone()));
                 }
                 ui.add_space(6.0);
-                theme::section(ui, &format!("PCell · {}", p.kind_name()));
+                theme::section(ui, &tf("PCell · {}", &[p.kind_name()]));
                 if let Some((_, edited)) = self.inst_pcell.as_mut() {
                     edit::pcell_params(ui, edited, tech, "inst");
                     let valid = edited.generate(tech);
                     if let Err(e) = &valid {
                         ui.label(egui::RichText::new(e).small().color(pal.warning));
                     }
-                    if ui.add_enabled(*edited != p && valid.is_ok(), egui::Button::new("Apply")).clicked() {
+                    if ui.add_enabled(*edited != p && valid.is_ok(), egui::Button::new(t("Apply"))).clicked() {
                         self.requests.push(LayRequest::SetPCell { inst: id, pcell: edited.clone(), trans: None });
                     }
                 }
             }
             ui.add_space(8.0);
-            if ui.button("🗑 Delete").clicked() {
+            if ui.button(t("🗑 Delete")).clicked() {
                 changed |= self.delete_selection(l);
             }
         } else if let Some(id) = single
             && let Some(before) = l.shape(id).cloned()
         {
             let mut s = before.clone();
-            theme::section(ui, "Shape");
+            theme::section(ui, t("Shape"));
             let mut focus = false;
             egui::Grid::new("shape_props").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
-                let ll = ui.label("Layer");
+                let ll = ui.label(t("Layer"));
                 egui::ComboBox::from_id_salt("shape_layer")
                     .selected_text(&tech.layers[s.layer].name)
                     .show_ui(ui, |ui| {
@@ -3481,41 +3494,41 @@ impl LayoutEditor {
                         um_edit(ui, "y0", &mut r.y0, &mut focus);
                         um_edit(ui, "x1", &mut r.x1, &mut focus);
                         um_edit(ui, "y1", &mut r.y1, &mut focus);
-                        ui.label("Size");
+                        ui.label(t("Size"));
                         ui.label(format!("{} × {} µm", um(r.width(), tech), um(r.height(), tech)));
                         ui.end_row();
                     }
                     Geometry::Path { points, width } => {
                         um_edit(ui, "Width", width, &mut focus);
-                        ui.label("Points");
+                        ui.label(t("Points"));
                         ui.label(points.len().to_string());
                         ui.end_row();
                         if let Some(e) = ics_core::pex::wire_estimate(tech, s.layer, points, *width) {
-                            ui.label("Length");
+                            ui.label(t("Length"));
                             ui.label(format!("{:.3} µm", e.length_um));
                             ui.end_row();
-                            ui.label("Resistance");
+                            ui.label(t("Resistance"));
                             ui.label(ics_core::units::format_eng(e.ohms, "Ω"));
                             ui.end_row();
-                            ui.label("Capacitance");
+                            ui.label(t("Capacitance"));
                             ui.label(ics_core::units::format_eng(e.farads, "F"));
                             ui.end_row();
                             if e.em_amps > 0.0 {
-                                ui.label("EM limit");
+                                ui.label(t("EM limit"));
                                 ui.label(ics_core::units::format_eng(e.em_amps, "A"));
                                 ui.end_row();
                             }
                         }
                     }
                     Geometry::Label { text, size, .. } => {
-                        let l = ui.label("Text");
+                        let l = ui.label(t("Text"));
                         let r = ui.text_edit_singleline(text).labelled_by(l.id);
                         focus |= r.gained_focus();
                         ui.end_row();
                         um_edit(ui, "Size", size, &mut focus);
                     }
                     Geometry::Polygon { points } => {
-                        ui.label("Vertices");
+                        ui.label(t("Vertices"));
                         ui.label(points.len().to_string());
                         ui.end_row();
                     }
@@ -3534,38 +3547,38 @@ impl LayoutEditor {
                 changed = true;
             }
             ui.add_space(8.0);
-            if ui.button("🗑 Delete").clicked() {
+            if ui.button(t("🗑 Delete")).clicked() {
                 changed |= self.delete_selection(l);
             }
         } else if !self.selection.is_empty() {
             self.selection.retain(|id| l.shape(*id).is_some() || l.instance(*id).is_some());
-            theme::section(ui, "Selection");
-            ui.label(format!("{} items selected", self.selection.len()));
-            if ui.button("🗑 Delete").clicked() {
+            theme::section(ui, t("Selection"));
+            ui.label(tf("{} items selected", &[&self.selection.len().to_string()]));
+            if ui.button(t("🗑 Delete")).clicked() {
                 changed |= self.delete_selection(l);
             }
         } else {
             let idx = cx.index(l);
-            theme::section(ui, "Cell");
+            theme::section(ui, t("Cell"));
             egui::Grid::new("lay_stats").num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| {
-                ui.label("Shapes");
+                ui.label(t("Shapes"));
                 ui.label(fmt_count(l.shapes.len() as u64));
                 ui.end_row();
-                ui.label("Instances");
+                ui.label(t("Instances"));
                 ui.label(fmt_count(l.instances.len() as u64));
                 ui.end_row();
-                ui.label("Flat shapes");
+                ui.label(t("Flat shapes"));
                 ui.label(fmt_count(idx.flat_shapes));
                 ui.end_row();
                 if let Some(b) = idx.bbox {
-                    ui.label("Extent");
+                    ui.label(t("Extent"));
                     ui.label(format!("{} × {} µm", um(b.width(), tech), um(b.height(), tech)));
                     ui.end_row();
-                    ui.label("Area");
+                    ui.label(t("Area"));
                     ui.label(format!("{:.3} µm²", b.width() as f64 * b.height() as f64 / 1e6));
                     ui.end_row();
                 }
-                ui.label("Grid");
+                ui.label(t("Grid"));
                 ui.label(format!("{} nm", tech.grid));
                 ui.end_row();
             });
@@ -3578,7 +3591,7 @@ impl LayoutEditor {
             self.compare_panel(ui, cx);
             self.verify_panel(ui, l, cx);
             ui.add_space(12.0);
-            let ops = egui::CollapsingHeader::new("Layer operations")
+            let ops = egui::CollapsingHeader::new(t("Layer operations"))
                 .id_salt("lay_layer_ops")
                 .default_open(false)
                 .show(ui, |ui| self.layer_ops_panel(ui, l, cx));
@@ -3679,8 +3692,8 @@ fn hier_node(
         if depth == 0 {
             ui.label(text);
         } else if missing {
-            ui.label(text.strikethrough()).on_hover_text("cell not found");
-        } else if ui.link(text).on_hover_text(format!("Open {cell}")).clicked() {
+            ui.label(text.strikethrough()).on_hover_text(t("cell not found"));
+        } else if ui.link(text).on_hover_text(tf("Open {}", &[&cell.to_string()])).clicked() {
             *open = Some(cell.clone());
         }
         if let Some(n) = count {

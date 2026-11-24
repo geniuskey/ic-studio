@@ -11,6 +11,7 @@ use ics_core::verify::{self, Change, Status, TestDef, VerifyPlan, VerifyRun};
 use ics_core::{CellRef, Project};
 use ics_sim::SimOptions;
 
+use crate::i18n;
 use crate::theme::{self, Palette};
 
 pub enum VerifyAction {
@@ -90,24 +91,20 @@ impl Verification {
             self.before = Some((file_name(last), r));
         }
         let n = run.counts();
-        let mut msg = format!(
+        let mut msg = i18n::tf(
             "Verification {}: {} pass, {} fail, {} error, {} info",
-            run.status().label(),
-            n.pass,
-            n.fail,
-            n.error,
-            n.info
+            &[i18n::t(run.status().label()), &n.pass.to_string(), &n.fail.to_string(), &n.error.to_string(), &n.info.to_string()],
         );
         if let Some((name, b)) = &self.before {
             let reg = run.compare(b).iter().filter(|c| c.is_regression()).count();
             if reg > 0 {
-                msg += &format!("; {reg} regression(s) since {name}");
+                msg += &i18n::tf("; {} regression(s) since {}", &[&reg.to_string(), name]);
             }
         }
         if let Some(root) = self.history_root.clone() {
             match verify::save_history(&root, &run) {
                 Ok(_) => self.history = verify::list_history(&root),
-                Err(e) => msg += &format!(" (not saved: {e})"),
+                Err(e) => msg += &format!(" {}", i18n::tf("(not saved: {})", &[&e.to_string()])),
             }
         }
         let ok = matches!(run.status(), Status::Pass | Status::Info);
@@ -125,9 +122,9 @@ impl Verification {
             ctx.request_repaint_after(std::time::Duration::from_millis(150));
         }
         let pal = theme::palette(ctx);
-        crate::float::tool_window(ctx, "verification", "Verification", [760.0, 560.0], &mut open, |ui| {
+        crate::float::tool_window(ctx, "verification", i18n::t("Verification"), [760.0, 560.0], &mut open, |ui| {
             let Some(p) = project else {
-                ui.label("Open a project to verify it.");
+                ui.label(i18n::t("Open a project to verify it."));
                 return;
             };
             if let Some(a) = self.tests_ui(ui, p, active) {
@@ -136,22 +133,26 @@ impl Verification {
             ui.separator();
             ui.horizontal(|ui| {
                 let running = self.is_running();
-                if ui.add_enabled(!running, egui::Button::new("Run all tests")).clicked() {
+                if ui.add_enabled(!running, egui::Button::new(i18n::t("Run all tests"))).clicked() {
                     action = Some(VerifyAction::Run);
                 }
                 if running {
                     ui.spinner();
                     let (t, d, n) = self.progress.lock().unwrap().clone();
-                    ui.label(if t.is_empty() { "starting...".to_string() } else { format!("{t}: {d}/{n} point(s)") });
+                    ui.label(if t.is_empty() {
+                        i18n::t("starting...").to_string()
+                    } else {
+                        i18n::tf("{}: {}/{} point(s)", &[&t, &d.to_string(), &n.to_string()])
+                    });
                 }
                 ui.separator();
-                let l = ui.label("Compare with");
-                let current = self.before.as_ref().map_or("(none)".to_string(), |b| b.0.clone());
+                let l = ui.label(i18n::t("Compare with"));
+                let current = self.before.as_ref().map_or(i18n::t("(none)").to_string(), |b| b.0.clone());
                 let mut pick: Option<Option<PathBuf>> = None;
                 egui::ComboBox::from_id_salt("verify_before")
                     .selected_text(current)
                     .show_ui(ui, |ui| {
-                        if ui.selectable_label(self.before.is_none(), "(none)").clicked() {
+                        if ui.selectable_label(self.before.is_none(), i18n::t("(none)")).clicked() {
                             pick = Some(None);
                         }
                         for f in self.history.iter().rev() {
@@ -175,14 +176,15 @@ impl Verification {
                     }
                     None => {}
                 }
-                ui.checkbox(&mut self.hide_passing, "Failures only");
+                ui.checkbox(&mut self.hide_passing, i18n::t("Failures only"));
             });
             ui.separator();
             match &self.run {
                 Some(run) => results_ui(ui, run, self.before.as_ref().map(|b| &b.1), self.hide_passing, &pal),
                 None => {
                     ui.label(
-                        RichText::new("No run yet. Run all tests to check every spec over its corners.").color(pal.text_weak),
+                        RichText::new(i18n::t("No run yet. Run all tests to check every spec over its corners."))
+                            .color(pal.text_weak),
                     );
                 }
             }
@@ -195,17 +197,17 @@ impl Verification {
     fn tests_ui(&mut self, ui: &mut egui::Ui, p: &Project, active: Option<&CellRef>) -> Option<VerifyAction> {
         let mut plan = p.settings.verification.clone();
         let mut changed = false;
-        ui.label(RichText::new("Tests").strong());
+        ui.label(RichText::new(i18n::t("Tests")).strong());
         if plan.is_empty() {
             let defaults = verify::default_tests(p);
             ui.label(
-                RichText::new(format!(
+                RichText::new(i18n::tf(
                     "No plan: every cell with specs is a test ({}). Add a cell to start a plan.",
-                    if defaults.is_empty() {
-                        "none yet: give a cell specs in its Corner / Sweep Manager".to_string()
+                    &[&if defaults.is_empty() {
+                        i18n::t("none yet: give a cell specs in its Corner / Sweep Manager").to_string()
                     } else {
                         defaults.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", ")
-                    }
+                    }],
                 ))
                 .small(),
             );
@@ -220,16 +222,18 @@ impl Verification {
                 match cell.as_ref().and_then(|r| p.cell(r)) {
                     Some(c) => {
                         let sw = &c.sim.sweep;
-                        ui.label(format!(
+                        ui.label(i18n::tf(
                             "{} spec(s), {} corner(s), {} MC run(s)",
-                            sw.specs.len(),
-                            sw.corners.len().max(1),
-                            sw.monte_carlo.runs
+                            &[
+                                &sw.specs.len().to_string(),
+                                &sw.corners.len().max(1).to_string(),
+                                &sw.monte_carlo.runs.to_string(),
+                            ],
                         ))
                     }
-                    None => ui.label(RichText::new("no such cell").color(Color32::from_rgb(220, 80, 80))),
+                    None => ui.label(RichText::new(i18n::t("no such cell")).color(Color32::from_rgb(220, 80, 80))),
                 };
-                if ui.small_button("Remove").clicked() {
+                if ui.small_button(i18n::t("Remove")).clicked() {
                     remove = Some(k);
                 }
                 ui.end_row();
@@ -241,7 +245,7 @@ impl Verification {
         }
         if let Some(r) = active {
             let there = plan.tests.iter().any(|t| verify::find_cell(p, &t.cell).as_ref() == Some(r));
-            if ui.add_enabled(!there, egui::Button::new(format!("Add {r}"))).clicked() {
+            if ui.add_enabled(!there, egui::Button::new(i18n::tf("Add {}", &[&r.to_string()]))).clicked() {
                 if plan.tests.is_empty() {
                     plan.tests = verify::default_tests(p).iter().map(|(_, r)| TestDef::new(&r.to_string())).collect();
                 }
@@ -271,14 +275,17 @@ pub fn status_color(s: Status, pal: &Palette) -> Color32 {
 fn results_ui(ui: &mut egui::Ui, run: &VerifyRun, before: Option<&VerifyRun>, hide_passing: bool, pal: &Palette) {
     let n = run.counts();
     ui.horizontal(|ui| {
-        ui.label(RichText::new(run.status().label().to_uppercase()).strong().color(status_color(run.status(), pal)));
-        ui.label(format!("{} pass, {} fail, {} error, {} info   ({})", n.pass, n.fail, n.error, n.info, run.time));
+        ui.label(RichText::new(i18n::t(run.status().label()).to_uppercase()).strong().color(status_color(run.status(), pal)));
+        ui.label(i18n::tf(
+            "{} pass, {} fail, {} error, {} info   ({})",
+            &[&n.pass.to_string(), &n.fail.to_string(), &n.error.to_string(), &n.info.to_string(), &run.time],
+        ));
     });
     let changes: Vec<Change> = before.map(|b| run.compare(b)).unwrap_or_default();
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         egui::Grid::new("verify_results").num_columns(8).striped(true).spacing([12.0, 4.0]).show(ui, |ui| {
             for h in ["Test", "Spec", "Limits", "Worst", "Margin", "Pass", "Status", "Before"] {
-                ui.label(RichText::new(h).strong());
+                ui.label(RichText::new(i18n::t(h)).strong());
             }
             ui.end_row();
             for t in &run.tests {
@@ -310,28 +317,32 @@ fn results_ui(ui: &mut egui::Ui, run: &VerifyRun, before: Option<&VerifyRun>, hi
                     };
                     let r = ui.label(worst);
                     if !at.is_empty() {
-                        r.on_hover_text(format!("at {at}"));
+                        r.on_hover_text(i18n::tf("at {}", &[&at]));
                     }
                     ui.label(verify::fmt(s.margin));
                     ui.label(format!("{}/{}", s.passed, s.values.len()));
-                    let r = ui.label(RichText::new(st.label()).strong().color(status_color(st, pal)));
+                    let r = ui.label(RichText::new(i18n::t(st.label())).strong().color(status_color(st, pal)));
                     if !s.first_error.is_empty() {
-                        r.on_hover_text(format!("{} point(s) not measured: {}", s.errors, s.first_error));
+                        r.on_hover_text(i18n::tf("{} point(s) not measured: {}", &[&s.errors.to_string(), &s.first_error]));
                     } else if let Some(a) = s.advice() {
                         r.on_hover_text(crate::i18n::t_text(&a));
                     }
                     match ch {
-                        Some(c) if c.is_regression() => {
-                            ui.label(RichText::new(format!("was {}", c.before.map_or("new", |b| b.label()))).color(pal.danger))
-                        }
+                        Some(c) if c.is_regression() => ui.label(
+                            RichText::new(i18n::tf("was {}", &[i18n::t(c.before.map_or("new", |b| b.label()))]))
+                                .color(pal.danger),
+                        ),
                         Some(c) => ui
                             .label(match c.before {
-                                None => "new".to_string(),
-                                Some(b) if b != c.after => format!("was {}", b.label()),
-                                Some(_) => format!("was {}", verify::fmt(c.worst_before)),
+                                None => i18n::t("new").to_string(),
+                                Some(b) if b != c.after => i18n::tf("was {}", &[i18n::t(b.label())]),
+                                Some(_) => i18n::tf("was {}", &[&verify::fmt(c.worst_before)]),
                             })
-                            .on_hover_text(format!("worst {} -> {}", verify::fmt(c.worst_before), verify::fmt(c.worst_after))),
-                        None if before.is_some() => ui.label(RichText::new("same").color(pal.text_weak)),
+                            .on_hover_text(i18n::tf(
+                                "worst {} -> {}",
+                                &[&verify::fmt(c.worst_before), &verify::fmt(c.worst_after)],
+                            )),
+                        None if before.is_some() => ui.label(RichText::new(i18n::t("same")).color(pal.text_weak)),
                         None => ui.label(""),
                     };
                     ui.end_row();

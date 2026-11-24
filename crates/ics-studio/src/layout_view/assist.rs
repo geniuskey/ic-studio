@@ -1,6 +1,7 @@
 //! Virtuoso-style editing aids: gravity snapping, design-rule-driven (DRD) spacing feedback,
 //! the yank / paste clipboard, chop, align / distribute and wire layer switching.
 
+use crate::i18n::{t, tf};
 use std::collections::BTreeSet;
 
 use eframe::egui::{self, Rect, Stroke, StrokeKind};
@@ -461,7 +462,7 @@ impl LayoutEditor {
             clip.inst_boxes.push(idx.instance_bbox(l, i).unwrap_or_default().translate(-ox, -oy));
         }
         let text = clip.to_text();
-        self.note(true, format!("Copied {} item(s)", clip.count()));
+        self.note(true, tf("Copied {} item(s)", &[&clip.count().to_string()]));
         self.clip = Some(clip);
         Some(text)
     }
@@ -503,9 +504,10 @@ impl LayoutEditor {
             sel.insert(id);
         }
         self.selection = sel;
-        let mut m = format!("Pasted {} item(s)", clip.count() - skipped);
+        let mut m = tf("Pasted {} item(s)", &[&(clip.count() - skipped).to_string()]);
         if skipped > 0 {
-            m.push_str(&format!(" · {skipped} instance(s) of cells missing from this project skipped"));
+            m.push(' ');
+            m.push_str(&tf("· {} instance(s) of cells missing from this project skipped", &[&skipped.to_string()]));
         }
         self.note(skipped == 0, m);
         true
@@ -540,7 +542,7 @@ impl LayoutEditor {
             .cloned()
             .collect();
         if targets.is_empty() {
-            self.note(false, "Chop: no shape under the box");
+            self.note(false, t("Chop: no shape under the box"));
             return false;
         }
         self.history.push(l);
@@ -558,7 +560,7 @@ impl LayoutEditor {
             self.selection.extend(sel);
         }
         cx.touched();
-        self.note(true, format!("Chopped {done} shape(s)"));
+        self.note(true, tf("Chopped {} shape(s)", &[&done.to_string()]));
         done > 0
     }
 
@@ -579,7 +581,7 @@ impl LayoutEditor {
             }
         }
         if cuts.is_empty() {
-            self.note(false, "Split: the line does not cut a shape");
+            self.note(false, t("Split: the line does not cut a shape"));
             return false;
         }
         self.history.push(l);
@@ -596,7 +598,7 @@ impl LayoutEditor {
             self.selection.extend(sel);
         }
         cx.touched();
-        self.note(true, format!("Split {done} shape(s)"));
+        self.note(true, tf("Split {} shape(s)", &[&done.to_string()]));
         true
     }
 
@@ -628,11 +630,11 @@ impl LayoutEditor {
     pub(super) fn convert_to_polygon(&mut self, l: &mut Layout, cx: &mut LayCtx) -> bool {
         let n = self.reshape_selection(l, ics_core::reshape::to_polygon);
         if n == 0 {
-            self.note(false, "Convert to Polygon: select paths or rectangles");
+            self.note(false, t("Convert to Polygon: select paths or rectangles"));
             return false;
         }
         cx.touched();
-        self.note(true, format!("Converted {n} shape(s) to polygons"));
+        self.note(true, tf("Converted {} shape(s) to polygons", &[&n.to_string()]));
         true
     }
 
@@ -642,11 +644,14 @@ impl LayoutEditor {
         let c = ((self.ed.chamfer_um * cx.tech.dbu_per_um as f64 / g as f64).round() as i64 * g).max(0);
         let n = self.reshape_selection(l, |geom| ics_core::reshape::chamfer(geom, c).map(|x| vec![x]));
         if n == 0 {
-            self.note(false, "Chamfer: select rectangles or polygons with convex corners");
+            self.note(false, t("Chamfer: select rectangles or polygons with convex corners"));
             return false;
         }
         cx.touched();
-        self.note(true, format!("Chamfered {n} shape(s) by {} µm", c as f64 / cx.tech.dbu_per_um as f64));
+        self.note(
+            true,
+            tf("Chamfered {} shape(s) by {} µm", &[&n.to_string(), &(c as f64 / cx.tech.dbu_per_um as f64).to_string()]),
+        );
         true
     }
 
@@ -656,7 +661,7 @@ impl LayoutEditor {
         let mut boxes: Vec<(u64, IRect)> = self.item_boxes(l, cx).into_iter().map(|(id, b)| (id, o.apply_rect(b))).collect();
         let min = if matches!(op, AlignOp::DistributeH | AlignOp::DistributeV) { 3 } else { 2 };
         if boxes.len() < min {
-            self.note(false, format!("Select at least {min} items"));
+            self.note(false, tf("Select at least {} items", &[&min.to_string()]));
             return false;
         }
         let g = cx.tech.grid.max(1);
@@ -710,7 +715,7 @@ impl LayoutEditor {
     pub(super) fn switch_wire_layer(&mut self, l: &mut Layout, tech: &Tech, up: bool) -> bool {
         let Some((via, next)) = wire_via(tech, self.active_layer, up) else {
             let name = tech.layer(self.active_layer).map_or("?", |d| d.name.as_str());
-            self.note(false, format!("No via from {name} {}", if up { "up" } else { "down" }));
+            self.note(false, tf(if up { "No via from {} up" } else { "No via from {} down" }, &[name]));
             return false;
         };
         let Some(&last) = self.path_pts.last() else {
@@ -755,7 +760,10 @@ impl LayoutEditor {
         self.path_pts = vec![p];
         self.note(
             true,
-            format!("{} at ({}, {}) µm, now on {}", tech.vias[via].name, um(p.0, tech), um(p.1, tech), tech.layers[next].name),
+            tf(
+                "{} at ({}, {}) µm, now on {}",
+                &[&tech.vias[via].name, &um(p.0, tech).to_string(), &um(p.1, tech).to_string(), &tech.layers[next].name],
+            ),
         );
         changed
     }
@@ -767,11 +775,11 @@ impl LayoutEditor {
         }
         let mut changed = false;
         ui.add_space(6.0);
-        theme::section(ui, "Align");
+        theme::section(ui, t("Align"));
         for row in [AlignOp::ROW1, AlignOp::ROW2] {
             ui.horizontal_wrapped(|ui| {
                 for (op, name, tip) in row {
-                    if ui.small_button(name).on_hover_text(tip).clicked() {
+                    if ui.small_button(t(name)).on_hover_text(t(tip)).clicked() {
                         changed |= self.align(l, cx, op);
                     }
                 }

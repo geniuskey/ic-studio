@@ -31,7 +31,15 @@ Pick the transistor and resistor with the square law first, then let the simulat
 
 All targets met on paper. Now verify.
 
+<!-- quiz
+? Step 1 drives 100 fF. With the same 50 kΩ and a 200 fF load, what bandwidth would you expect, in MHz?
+= 15.9 ±0.8 MHz
+> 1 / (2π · 50 kΩ · 200 fF) ≈ 15.9 MHz, below the 20 MHz spec: twice the load halves the bandwidth.
+-->
+
 ## Step 2: draw the schematic
+
+<!-- try: New cell | new-cell -->
 
 1. `Ctrl+N`, name the cell `my_cs`, **Create**.
 2. Place an NMOS (`N`). Set **Width** `2u` and **Inductance / L** `1u`.
@@ -57,26 +65,34 @@ VDD vdd 0 DC 1.8
 VIN in 0 DC 0.7 AC 1 SIN(0.7 10m 1meg)
 ```
 
+<!-- check: my_cs has a schematic with the amplifier and its testbench (5 devices) | my_cs schematic 5 -->
+
 ## Step 3: check the operating point
 
 Press `Ctrl+3`, keep **Operating Point** enabled, and press `F5`. On the **Operating
 Point** tab:
 
 ```text
-v(out)  864.5 mV
-m1  saturation  id=18.71µ  vgs=700m  vds=864.5m  vth=450m  gm=149.7µ  gds=1.4µ
+v(out)  893.7 mV
+m1  saturation  id=18.13µ  vgs=700m  vds=893.7m  vth=450m  gm=145µ  gds=700n
 ```
 
 Check three things, always in this order:
 
 1. **Region**: `saturation`. If it said `triode`, the amplifier would not amplify.
-2. **Current**: 18.7 µA, close to the 17.5 µA estimate (the difference is λ, the slope
+2. **Current**: 18.1 µA, close to the 17.5 µA estimate (the difference is λ, the slope
    of the "flat" curves).
-3. **Output voltage**: 0.86 V, well above V<sub>ov</sub> = 0.25 V and below 1.8 V, so it
+3. **Output voltage**: 0.89 V, well above V<sub>ov</sub> = 0.25 V and below 1.8 V, so it
    can swing both ways.
 
-Now the predicted gain: g<sub>m</sub> · (R<sub>D</sub> ∥ r<sub>o</sub>) = 149.7 µS ×
-(50 kΩ ∥ 714 kΩ) = **7.0**.
+Now the predicted gain: g<sub>m</sub> · (R<sub>D</sub> ∥ r<sub>o</sub>) = 145 µS ×
+(50 kΩ ∥ 1.43 MΩ) = **7.0**.
+
+<!-- check: M1 is in saturation | my_cs region M1 saturation -->
+
+<!-- check: The output bias is between 0.7 and 1.05 V | my_cs measure op "v(out)" 0.7 1.05 -->
+
+<!-- check: The supply current is about 20 µA (15 to 23 µA) | my_cs measure op "-i(vdd)" 15u 23u -->
 
 ## Step 4: gain and bandwidth (AC)
 
@@ -90,27 +106,39 @@ from 180° (inverted) down by 90° past the corner. The **Measurements** row of 
 | Measurement | Value | Meaning |
 |---|---|---|
 | GAIN @ fstart | 16.9 dB | ×7.0, as calculated |
-| f -3 dB | ≈ 35 MHz | The bandwidth |
-| UNITY GAIN f | ≈ 250 MHz | Where the gain falls to 1 |
+| f -3 dB | ≈ 33 MHz | The bandwidth |
+| UNITY GAIN f | ≈ 230 MHz | Where the gain falls to 1 |
 
 Because the AC source has magnitude 1, `v(out)` *is* the gain. In general, use
 `v(out)/v(in)` in the [Waveform Calculator](../tools.md#waveform-calculator):
 `bandwidth(v(out)/v(in))` and `ugf(v(out)/v(in))`.
 
-Spec check: gain 16.9 dB ≥ 15 dB, bandwidth 35 MHz ≥ 20 MHz. **Both met.**
+Spec check: gain 16.9 dB ≥ 15 dB, bandwidth 33 MHz ≥ 20 MHz. **Both met.**
+
+<!-- check: Gain of at least 15 dB | my_cs measure ac "max(db(v(out)))" 15 "" -->
+
+<!-- check: Bandwidth of at least 20 MHz | my_cs measure ac "bandwidth(v(out))" 20meg "" -->
+
+<!-- quiz
+? A gain of ×7.0 is how many dB?
+= 16.9 ±0.3 dB
+> 20 · log₁₀(7.0) = 16.9 dB, the GAIN @ fstart the AC tab shows.
+-->
 
 ## Step 5: see it amplify (transient)
 
 1. Enable **Transient**: **Step** `1n`, **Stop time** `3u`. Press `F5`.
 2. On the **Transient** tab, plot `v(in)` and `v(out)`.
 
-The input wiggles by ±10 mV around 0.7 V. The output swings by ±70 mV (from 0.79 to
-0.93 V) around 0.86 V, upside down. The **PEAK-PEAK** column reads about 20 mV for the
+The input wiggles by ±10 mV around 0.7 V. The output swings by ±70 mV (from 0.82 to
+0.96 V) around 0.89 V, upside down. The **PEAK-PEAK** column reads about 20 mV for the
 input and 140 mV for the output: a gain of 7.
 
 Try a 100 mV input (`SIN(0.7 100m 1meg)`). The output is no longer a clean sine: the
 square law is not linear for large signals and the bottom of the swing pushes M1 towards
 triode. Small-signal analysis is only valid for small signals.
+
+<!-- check: The output swings about 140 mV peak to peak | my_cs measure tran "pp(v(out))" 110m 170m -->
 
 ## Step 6: explore the trade-off
 
@@ -118,13 +146,13 @@ Predict first, then simulate. Change **Resistance** of `RD` and fill in the tabl
 
 | R<sub>D</sub> | v(out) bias | M1 region | Gain | f -3 dB |
 |---|---|---|---|---|
-| 30 kΩ | 1.22 V | saturation | 12.9 dB (×4.4) | 56 MHz |
-| 50 kΩ | 0.86 V | saturation | 16.9 dB (×7.0) | 35 MHz |
-| 70 kΩ | 0.52 V | saturation | 19.4 dB (×9.3) | 25 MHz |
-| 100 kΩ | 0.18 V | **triode** | 5.6 dB (×1.9) | — |
+| 30 kΩ | 1.25 V | saturation | 12.7 dB (×4.3) | 54 MHz |
+| 50 kΩ | 0.89 V | saturation | 16.9 dB (×7.0) | 33 MHz |
+| 70 kΩ | 0.55 V | saturation | 19.6 dB (×9.5) | 24 MHz |
+| 100 kΩ | 0.18 V | **triode** | 6.0 dB (×2.0) | — |
 
 - Up to 70 kΩ, gain rises and bandwidth falls in proportion: their product, the
-  **gain-bandwidth**, stays near g<sub>m</sub>/(2π·C<sub>L</sub>) ≈ 240 MHz.
+  **gain-bandwidth**, stays near g<sub>m</sub>/(2π·C<sub>L</sub>) ≈ 230 MHz.
 - At 100 kΩ the resistor drops too much voltage, M1 is pushed into triode, and the gain
   collapses. **Always check the region after a change.**
 
@@ -133,17 +161,32 @@ this table for you: add the variable `RD.r` with the values `30k 50k 70k 100k`, 
 specs on the `ac` dataset, `max(db(v(out)))` for the gain and `bandwidth(v(out))` for the
 bandwidth, and press **Run Sweep**.
 
+<!-- quiz
+? Why does the gain collapse at R<sub>D</sub> = 100 kΩ?
+- The bandwidth becomes too high
++ The resistor drops so much voltage that M1 is pushed into triode
+- M1 enters cutoff
+- g<sub>m</sub> becomes too large
+> v(out) falls to 0.18 V, below V<sub>ov</sub> = 0.25 V, so M1 leaves saturation. In triode its drain current hardly depends on the gate and the transistor no longer amplifies.
+-->
+
+<!-- quiz
+? At R<sub>D</sub> = 70 kΩ the gain is ×9.5 and f<sub>-3dB</sub> is 24 MHz. What is the gain-bandwidth product, in MHz?
+= 228 ±10 MHz
+> 9.5 × 24 MHz ≈ 228 MHz, close to g<sub>m</sub>/(2π·C<sub>L</sub>) ≈ 230 MHz: R<sub>D</sub> trades gain for bandwidth at a nearly constant product.
+-->
+
 ## Step 7: is it robust?
 
 Real chips vary. Two quick checks:
 
 1. **Temperature**: set **Temperature** to `125` and press `F5`. Two effects compete:
    V<sub>th</sub> falls (to 0.35 V), so the current rises to 24 µA and the output drops
-   to 0.6 V; and the carrier mobility falls, so g<sub>m</sub> drops to 136 µS. The gain
-   falls to about ×6.2 (15.9 dB), just above the spec.
+   to 0.6 V; and the carrier mobility falls, so g<sub>m</sub> drops to 133 µS. The gain
+   falls to about ×6.4 (16.1 dB), just above the spec.
 2. **Monte Carlo**: **Simulation > Monte Carlo...**, add the measurements `op: v(out)`
    and `ac: max(db(v(out)))`, and run 200 samples. The output bias spreads with a σ of
-   about **130 mV**, and the gain ranges from 15.3 to 17.9 dB. This sensitivity is the
+   about **130 mV**, and the gain ranges from 15.1 to 18.1 dB. This sensitivity is the
    weakness of this simple circuit: its bias depends directly on V<sub>th</sub>. Real amplifiers set the bias with a
    [current mirror](analog-basics.md#the-current-mirror) and use differential pairs,
    which reject such shifts.
@@ -152,7 +195,7 @@ Real chips vary. Two quick checks:
 
 Open the demo `ota5t` (five-transistor OTA) and `ota2s` (two-stage OTA):
 
-1. Press `F5` and read the gain: about 42 dB for `ota5t`, 80 dB for `ota2s`.
+1. Press `F5` and read the gain: about 42 dB for `ota5t`, 83 dB for `ota2s`.
 2. On the schematic (`Ctrl+2`), find the differential pair, the current-mirror load and
    the tail current source. Read each transistor's g<sub>m</sub> and g<sub>ds</sub> on the
    **Operating Point** tab and check the gain formula
@@ -162,6 +205,12 @@ Open the demo `ota5t` (five-transistor OTA) and `ota2s` (two-stage OTA):
    placed in common-centroid order with dummies, the
    [matching](layout-basics.md#layout-techniques-you-will-see) an analog layout needs.
    Route it, then simulate with parasitics.
+
+<!-- try: Simulate ota5t | simulate ota5t -->
+
+<!-- try: Simulate ota2s | simulate ota2s -->
+
+<!-- try: Open the ota2s layout | open ota2s layout -->
 
 ## Where to go from here
 

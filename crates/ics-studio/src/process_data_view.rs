@@ -2,6 +2,7 @@
 //! capability, control charts of the wafer means and the model corners
 //! (`ics_core::process_data`).
 
+use crate::i18n::{t, tf};
 use eframe::egui::{self, RichText};
 use egui_plot::{Bar, BarChart, HLine, Legend, Line, LineStyle, Plot, PlotPoints, Points, VLine};
 use ics_core::process_data::{GENERIC180_SPEC, ParamSummary, ProcessSpec, WatData, summarize};
@@ -98,23 +99,23 @@ impl ProcessDataView {
     }
 
     fn mismatch_ui(&mut self, ui: &mut egui::Ui, pal: &crate::theme::Palette, action: &mut Option<ProcessDataAction>) {
-        crate::theme::section(ui, "Mismatch (matched pairs)");
+        crate::theme::section(ui, t("Mismatch (matched pairs)"));
         ui.horizontal(|ui| {
-            let l = ui.label("Pairs");
+            let l = ui.label(t("Pairs"));
             let shown = if self.pairs_name.is_empty() { "none" } else { self.pairs_name.as_str() };
             ui.label(RichText::new(shown).monospace()).labelled_by(l.id);
-            if ui.button("Load pairs…").on_hover_text("CSV: device, w, l (µm), dvt (V), dbeta (relative)").clicked() {
+            if ui.button(t("Load pairs…")).on_hover_text(t("CSV: device, w, l (µm), dvt (V), dbeta (relative)")).clicked() {
                 *action = Some(ProcessDataAction::LoadPairs);
             }
-            if ui.button("Example pairs").on_hover_text("Synthetic generic 180 nm matched pairs").clicked() {
+            if ui.button(t("Example pairs")).on_hover_text(t("Synthetic generic 180 nm matched pairs")).clicked() {
                 self.set_pairs_text(ics_core::mismatch::GENERIC180_PAIRS, "generic180 pairs (built in)");
             }
             if !self.mismatch.is_empty()
                 && ui
-                    .button("Use mismatch for Monte Carlo")
-                    .on_hover_text(
+                    .button(t("Use mismatch for Monte Carlo"))
+                    .on_hover_text(t(
                         "Store the Pelgrom coefficients in the technology: Monte Carlo draws them in place of Avt / Abeta",
-                    )
+                    ))
                     .clicked()
             {
                 *action = Some(ProcessDataAction::ApplyMismatch(ics_core::mismatch::MismatchModel::from_fits(
@@ -140,8 +141,11 @@ impl ProcessDataView {
                         .monospace(),
                 );
                 ui.label(
-                    RichText::new(format!("{} ({} pairs)", f.vt.sizes.len(), f.vt.sizes.iter().map(|s| s.n).sum::<usize>()))
-                        .monospace(),
+                    RichText::new(tf(
+                        "{} ({} pairs)",
+                        &[&f.vt.sizes.len().to_string(), &f.vt.sizes.iter().map(|s| s.n).sum::<usize>().to_string()],
+                    ))
+                    .monospace(),
                 );
                 ui.end_row();
             }
@@ -172,7 +176,7 @@ impl ProcessDataView {
                 }
             });
         ui.label(
-            RichText::new("Avt is the Pelgrom pair coefficient; Monte Carlo draws each device with Avt / √(2 W L).")
+            RichText::new(t("Avt is the Pelgrom pair coefficient; Monte Carlo draws each device with Avt / √(2 W L)."))
                 .small()
                 .color(pal.text_weak),
         );
@@ -213,13 +217,16 @@ impl ProcessDataView {
         Some(match r {
             Ok(c) => {
                 let worst = c.fits.iter().map(|f| f.error_sigma).fold(0.0, f64::max);
-                let msg = format!("Corner models: {} corner(s) fitted, worst error {worst:.3}σ", c.fits.len());
+                let msg = tf(
+                    "Corner models: {} corner(s) fitted, worst error {}σ",
+                    &[&c.fits.len().to_string(), &format!("{worst:.3}")],
+                );
                 self.corners = Some(c);
                 (true, msg)
             }
             Err(e) => {
                 self.error = Some(e.clone());
-                (false, format!("Corner models: {e}"))
+                (false, format!("{}: {e}", t("Corner models")))
             }
         })
     }
@@ -238,24 +245,24 @@ impl ProcessDataView {
             egui::ScrollArea::vertical().id_salt("pd_scroll").show(ui, |ui| {
                 let pal = crate::theme::palette(ui.ctx());
                 ui.horizontal(|ui| {
-                    let l = ui.label("Data");
+                    let l = ui.label(t("Data"));
                     let shown = if self.data_name.is_empty() { "none" } else { self.data_name.as_str() };
                     ui.label(RichText::new(shown).monospace()).labelled_by(l.id);
-                    if ui.button("Load CSV…").clicked() {
+                    if ui.button(t("Load CSV…")).clicked() {
                         action = Some(ProcessDataAction::LoadData);
                     }
-                    let l = ui.label("Spec");
+                    let l = ui.label(t("Spec"));
                     ui.label(RichText::new(&self.spec_name).monospace()).labelled_by(l.id);
-                    if ui.button("Load spec…").clicked() {
+                    if ui.button(t("Load spec…")).clicked() {
                         action = Some(ProcessDataAction::LoadSpec);
                     }
-                    if ui.button("Built-in spec").on_hover_text("The generic 180 nm WAT specification").clicked() {
+                    if ui.button(t("Built-in spec")).on_hover_text(t("The generic 180 nm WAT specification")).clicked() {
                         self.set_spec_text(GENERIC180_SPEC, "generic180 WAT (built in)");
                     }
                     let can = self.data.is_some() && self.spec.extraction.is_some() && !self.is_running();
                     if ui
-                        .add_enabled(can, egui::Button::new("Extract corners"))
-                        .on_hover_text("Fit tt / ff / ss / fs / sf model cards to the data (the spec's [extraction])")
+                        .add_enabled(can, egui::Button::new(t("Extract corners")))
+                        .on_hover_text(t("Fit tt / ff / ss / fs / sf model cards to the data (the spec's [extraction])"))
                         .clicked()
                     {
                         action = Some(ProcessDataAction::ExtractCorners);
@@ -269,7 +276,7 @@ impl ProcessDataView {
                 }
                 let Some(d) = self.data.clone() else {
                     ui.label(
-                        RichText::new("Load WAT / PCM data: CSV with lot, wafer and site columns and one column per parameter.")
+                        RichText::new(t("Load WAT / PCM data: CSV with lot, wafer and site columns and one column per parameter."))
                             .color(pal.text_weak),
                     );
                     self.mismatch_ui(ui, &pal, &mut action);
@@ -277,11 +284,11 @@ impl ProcessDataView {
                 };
                 let d = &d;
                 let wafers = d.wafers();
-                ui.label(RichText::new(format!("{} sites on {} wafers", d.sites.len(), wafers.len())).color(pal.text_weak));
-                crate::theme::section(ui, "Parameters");
+                ui.label(RichText::new(tf("{} sites on {} wafers", &[&d.sites.len().to_string(), &wafers.len().to_string()])).color(pal.text_weak));
+                crate::theme::section(ui, t("Parameters"));
                 egui::Grid::new("pd_grid").striped(true).num_columns(10).spacing([12.0, 3.0]).show(ui, |ui| {
                     for h in ["PARAMETER", "UNIT", "MEAN", "σ", "LSL", "USL", "Cpk", "OOS", "SPC", "CORNERS"] {
-                        ui.label(RichText::new(h).small().strong().color(pal.text_weak));
+                        ui.label(RichText::new(t(h)).small().strong().color(pal.text_weak));
                     }
                     ui.end_row();
                     for (k, s) in self.summary.iter().enumerate() {
@@ -318,22 +325,22 @@ impl ProcessDataView {
                             pal.text
                         }));
                         if s.violations.is_empty() {
-                            ui.label(RichText::new("in control").color(pal.ok));
+                            ui.label(RichText::new(t("in control")).color(pal.ok));
                         } else {
                             let (lot, wafer, _) = &wafers[s.violations[0].wafer];
-                            ui.label(RichText::new(format!("from {lot}/{wafer}")).color(pal.danger))
+                            ui.label(RichText::new(tf("from {}/{}", &[&lot.to_string(), &wafer.to_string()])).color(pal.danger))
                                 .on_hover_text(s.violations[0].message.clone());
                         }
                         match s.corners_cover {
-                            Some(true) => ui.label(RichText::new("cover ±3σ").color(pal.ok)),
-                            Some(false) => ui.label(RichText::new("narrower than ±3σ").color(pal.warning)),
+                            Some(true) => ui.label(RichText::new(t("cover ±3σ")).color(pal.ok)),
+                            Some(false) => ui.label(RichText::new(t("narrower than ±3σ")).color(pal.warning)),
                             None => ui.label("—"),
                         };
                         ui.end_row();
                     }
                 });
                 if let Some(c) = &self.corners {
-                    crate::theme::section(ui, "Corner models");
+                    crate::theme::section(ui, t("Corner models"));
                     egui::Grid::new("pd_corners").striped(true).num_columns(c.knobs.len() + 2).spacing([12.0, 3.0]).show(
                         ui,
                         |ui| {
@@ -369,7 +376,7 @@ impl ProcessDataView {
                     match &c.variation {
                         Ok(v) => {
                             let pv = &v.variation;
-                            crate::theme::section(ui, "Process variation (global, wafer to wafer)");
+                            crate::theme::section(ui, t("Process variation (global, wafer to wafer)"));
                             let n = pv.params.len();
                             egui::Grid::new("pd_variation").striped(true).num_columns(n + 3).spacing([12.0, 3.0]).show(ui, |ui| {
                                 for h in ["PARAMETER", "NOMINAL", "SIGMA"] {
@@ -393,10 +400,12 @@ impl ProcessDataView {
                                 }
                             });
                             let worst = v.params.iter().map(|(_, d, g)| (g / d - 1.0).abs()).fold(0.0, f64::max);
-                            ui.label(RichText::new(format!(
-                                "Reproduces the measured σ of {} within {:.1} %.",
-                                v.params.iter().map(|p| p.0.as_str()).collect::<Vec<_>>().join(", "),
-                                100.0 * worst
+                            ui.label(RichText::new(tf(
+                                "Reproduces the measured σ of {} within {} %.",
+                                &[
+                                    &v.params.iter().map(|p| p.0.as_str()).collect::<Vec<_>>().join(", "),
+                                    &format!("{:.1}", 100.0 * worst),
+                                ],
                             ))
                             .small()
                             .color(pal.text_weak))
@@ -409,22 +418,22 @@ impl ProcessDataView {
                             );
                         }
                         Err(e) => {
-                            ui.colored_label(pal.warning, format!("No process variation: {e}"));
+                            ui.colored_label(pal.warning, format!("{}: {e}", t("No process variation")));
                         }
                     }
                     ui.horizontal(|ui| {
                         if let Ok(v) = &c.variation
                             && ui
-                                .button("Use for Monte Carlo")
-                                .on_hover_text("Store the variation in the project's technology: Monte Carlo then draws it in place of the generic sigmas")
+                                .button(t("Use for Monte Carlo"))
+                                .on_hover_text(t("Store the variation in the project's technology: Monte Carlo then draws it in place of the generic sigmas"))
                                 .clicked()
                         {
                             action = Some(ProcessDataAction::ApplyVariation(v.variation.clone()));
                         }
-                        if ui.button("Save library…").clicked() {
+                        if ui.button(t("Save library…")).clicked() {
                             action = Some(ProcessDataAction::SaveLibrary(c.library.clone()));
                         }
-                        if ui.button("Copy library").clicked() {
+                        if ui.button(t("Copy library")).clicked() {
                             ui.ctx().copy_text(c.library.clone());
                         }
                     });
@@ -433,7 +442,7 @@ impl ProcessDataView {
                 let Some(s) = self.summary.get(self.selected) else { return };
                 let ps = self.spec.param(&s.name);
                 ui.add_space(4.0);
-                crate::theme::section(ui, &format!("Control chart · {} (wafer means)", s.name));
+                crate::theme::section(ui, &tf("Control chart · {} (wafer means)", &[&s.name]));
                 let h = 230.0;
                 let flagged: Vec<usize> = s.violations.iter().map(|v| v.wafer).collect();
                 Plot::new("pd_chart")
@@ -469,7 +478,7 @@ impl ProcessDataView {
                             }
                         }
                     });
-                crate::theme::section(ui, &format!("Distribution · {} (sites)", s.name));
+                crate::theme::section(ui, &tf("Distribution · {} (sites)", &[&s.name]));
                 let j = d.params.iter().position(|p| *p == s.name).unwrap_or(0);
                 let vals: Vec<f64> = d.values[j].iter().copied().filter(|v| v.is_finite()).collect();
                 let bins = 30usize;

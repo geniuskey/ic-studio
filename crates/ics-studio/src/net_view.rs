@@ -7,6 +7,7 @@ use ics_core::tech::Tech;
 use ics_core::units::format_eng;
 use ics_core::{CellRef, Project};
 
+use crate::i18n::{t, tf};
 use crate::layout_view::LayoutEditor;
 use crate::theme::{self, Palette};
 
@@ -127,13 +128,15 @@ impl NetBrowser {
     ) -> Option<NetAction> {
         let mut action = None;
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Net Browser").strong().color(pal.text_strong));
-            ui.label(RichText::new(cell.map_or("· open a layout cell".into(), |c| format!("· {c}"))).color(pal.text_weak));
+            ui.label(RichText::new(t("Net Browser")).strong().color(pal.text_strong));
+            ui.label(
+                RichText::new(cell.map_or(t("· open a layout cell").to_string(), |c| format!("· {c}"))).color(pal.text_weak),
+            );
             ui.separator();
             let busy = ed.as_ref().is_some_and(|e| e.is_verifying());
             if ui
-                .add_enabled(cell.is_some() && !busy, egui::Button::new("Extract"))
-                .on_hover_text("Extract the nets again")
+                .add_enabled(cell.is_some() && !busy, egui::Button::new(t("Extract")))
+                .on_hover_text(t("Extract the nets again"))
                 .clicked()
             {
                 action = Some(NetAction::Extract);
@@ -143,37 +146,42 @@ impl NetBrowser {
             }
         });
         let (Some(cell), Some(ed)) = (cell, ed) else {
-            ui.label(RichText::new("Open a layout cell.").color(pal.text_weak));
+            ui.label(RichText::new(t("Open a layout cell.")).color(pal.text_weak));
             return action;
         };
         let Some(x) = ed.verify.extraction.as_ref() else {
-            ui.label(RichText::new("No extraction yet: press Extract.").color(pal.text_weak));
+            ui.label(RichText::new(t("No extraction yet: press Extract.")).color(pal.text_weak));
             return action;
         };
         self.refresh(cell, x, tech);
         if ed.verify.stale {
-            ui.label(RichText::new("The layout changed since this extraction.").small().color(pal.warning));
+            ui.label(RichText::new(t("The layout changed since this extraction.")).small().color(pal.warning));
         }
         ui.horizontal(|ui| {
-            let l = ui.label("Filter");
-            ui.add(egui::TextEdit::singleline(&mut self.filter).desired_width(180.0).hint_text("vdd, net1…")).labelled_by(l.id);
-            let l = ui.label("Sort by");
+            let l = ui.label(t("Filter"));
+            let hint = "vdd, net1…"; // i18n: ignore
+            ui.add(egui::TextEdit::singleline(&mut self.filter).desired_width(180.0).hint_text(hint)).labelled_by(l.id);
+            let l = ui.label(t("Sort by"));
             egui::ComboBox::from_id_salt("nb_sort")
                 .selected_text(match self.sort {
-                    SortBy::Name => "Name",
-                    SortBy::Cap => "Capacitance",
-                    SortBy::Area => "Area",
-                    SortBy::Terminals => "Terminals",
+                    SortBy::Name => t("Name"),
+                    SortBy::Cap => t("Capacitance"),
+                    SortBy::Area => t("Area"),
+                    SortBy::Terminals => t("Terminals"),
                 })
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.sort, SortBy::Name, "Name");
-                    ui.selectable_value(&mut self.sort, SortBy::Cap, "Capacitance");
-                    ui.selectable_value(&mut self.sort, SortBy::Area, "Area");
-                    ui.selectable_value(&mut self.sort, SortBy::Terminals, "Terminals");
+                    ui.selectable_value(&mut self.sort, SortBy::Name, t("Name"));
+                    ui.selectable_value(&mut self.sort, SortBy::Cap, t("Capacitance"));
+                    ui.selectable_value(&mut self.sort, SortBy::Area, t("Area"));
+                    ui.selectable_value(&mut self.sort, SortBy::Terminals, t("Terminals"));
                 })
                 .response
                 .labelled_by(l.id);
-            ui.label(RichText::new(format!("{} nets · {} devices", x.nets.len(), x.devices.len())).small().color(pal.text_weak));
+            ui.label(
+                RichText::new(tf("{} nets · {} devices", &[&x.nets.len().to_string(), &x.devices.len().to_string()]))
+                    .small()
+                    .color(pal.text_weak),
+            );
         });
         let f = self.filter.to_ascii_lowercase();
         let mut order: Vec<&NetRow> =
@@ -189,14 +197,14 @@ impl NetBrowser {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             egui::Grid::new("nb_grid").striped(true).num_columns(5).spacing([18.0, 4.0]).show(ui, |ui| {
                 for h in ["NET", "LAYERS", "AREA", "TERMINALS", "WIRE CAP"] {
-                    ui.label(RichText::new(h).small().strong().color(pal.text_weak));
+                    ui.label(RichText::new(t(h)).small().strong().color(pal.text_weak));
                 }
                 ui.end_row();
                 for r in order {
                     let on = ed.verify.highlight == Some(r.index);
                     let text = RichText::new(&r.name).monospace();
                     let text = if r.labelled { text.strong() } else { text.color(pal.text_weak) };
-                    if ui.selectable_label(on, text).on_hover_text("Highlight and zoom").clicked() {
+                    if ui.selectable_label(on, text).on_hover_text(t("Highlight and zoom")).clicked() {
                         pick = Some(r.index);
                     }
                     ui.label(RichText::new(&r.layers).small());

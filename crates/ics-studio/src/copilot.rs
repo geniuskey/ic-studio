@@ -41,6 +41,7 @@ const READ_ONLY: [&str; 16] = [
     "diff_layout",
 ];
 
+use crate::i18n::{t, tf};
 pub use crate::llm::Llm;
 use crate::llm::LlmSettings;
 
@@ -650,7 +651,7 @@ impl Copilot {
 
     fn todo_panel(&self, ui: &mut egui::Ui, pal: &crate::theme::Palette) {
         let done = self.todos.iter().filter(|t| t.status == TodoStatus::Completed).count();
-        egui::CollapsingHeader::new(format!("Tasks {done}/{}", self.todos.len()))
+        egui::CollapsingHeader::new(tf("Tasks {}/{}", &[&done.to_string(), &self.todos.len().to_string()]))
             .id_salt("copilot_todos")
             .default_open(true)
             .show(ui, |ui| {
@@ -776,7 +777,7 @@ impl Copilot {
                     _ => vec![],
                 };
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(egui::RichText::new("Answer:").weak());
+                    ui.label(egui::RichText::new(t("Answer:")).weak());
                     for o in options {
                         if ui.button(&o).clicked() {
                             send = Some(Reply::Text(o));
@@ -786,10 +787,10 @@ impl Copilot {
             }
             Some(WaitKind::Approval) => {
                 ui.horizontal(|ui| {
-                    if ui.button("Approve plan").clicked() {
+                    if ui.button(t("Approve plan")).clicked() {
                         send = Some(Reply::Approve);
                     }
-                    ui.label(egui::RichText::new("or type changes below").weak());
+                    ui.label(egui::RichText::new(t("or type changes below")).weak());
                 });
             }
             None => {}
@@ -813,13 +814,13 @@ impl Copilot {
                             .desired_rows(2)
                             .desired_width(w - 14.0)
                             .return_key(shift_enter)
-                            .hint_text("Enter to send, Shift+Enter for a new line"),
+                            .hint_text(t("Enter to send, Shift+Enter for a new line")),
                     )
                 })
                 .inner;
             let r = r.labelled_by(l.id);
             let enter = r.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift);
-            if (ui.add_enabled(!busy, egui::Button::new("Send")).clicked() || enter) && !busy {
+            if (ui.add_enabled(!busy, egui::Button::new(t("Send"))).clicked() || enter) && !busy {
                 let t = std::mem::take(&mut self.input).trim().to_string();
                 if !t.is_empty() {
                     send = Some(Reply::Text(t));
@@ -838,20 +839,20 @@ impl Copilot {
             let busy = self.busy();
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(llm.describe()).weak());
-                if ui.small_button("AI Models…").on_hover_text("Choose the provider, model and API key").clicked() {
+                if ui.small_button(t("AI Models…")).on_hover_text(t("Choose the provider, model and API key")).clicked() {
                     self.open_settings = true;
                 }
             });
             ui.horizontal(|ui| {
-                ui.add_enabled(!busy, egui::Checkbox::new(&mut self.plan_mode, "Plan mode"))
-                    .on_hover_text("Investigate with read-only tools and present a plan for approval before editing anything");
-                if ui.add_enabled(!busy, egui::Button::new("Clear")).clicked() {
+                ui.add_enabled(!busy, egui::Checkbox::new(&mut self.plan_mode, t("Plan mode")))
+                    .on_hover_text(t("Investigate with read-only tools and present a plan for approval before editing anything"));
+                if ui.add_enabled(!busy, egui::Button::new(t("Clear"))).clicked() {
                     self.clear();
                 }
                 if !self.log.is_empty() {
                     crate::chat::copy_button_with(ui, egui::Id::unique("copilot_copy_all"), "Copy all", || self.transcript());
                 }
-                if busy && ui.button("Stop").clicked() {
+                if busy && ui.button(t("Stop")).clicked() {
                     self.stop();
                 }
             });

@@ -9,6 +9,7 @@ use ics_optics::calibrate::{Knob, Measured};
 use ics_optics::light::Spectrum;
 use ics_optics::pixel::{COLORS, Method, PixelResult, Settings};
 
+use crate::i18n::{t, tf};
 use crate::theme;
 
 /// The bundled example stack, shown until another is loaded.
@@ -312,39 +313,42 @@ impl PixelOptics {
             ui,
             |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Pixel stack").strong().color(pal.text_strong));
-                    if ui.button("Load…").clicked() {
+                    ui.label(RichText::new(t("Pixel stack")).strong().color(pal.text_strong));
+                    if ui.button(t("Load…")).clicked() {
                         action = Some(PixelAction::Load);
                     }
-                    if ui.button("BSI example").clicked() {
+                    if ui.button(t("BSI example")).clicked() {
                         self.text = EXAMPLE.to_string();
                         self.path = None;
                     }
                     if ui
-                        .button("FDTI device")
-                        .on_hover_text("Back-side illuminated 2 µm pixel with full-depth trenches and the device model")
+                        .button(t("FDTI device"))
+                        .on_hover_text(t("Back-side illuminated 2 µm pixel with full-depth trenches and the device model"))
                         .clicked()
                     {
                         self.text = FDTI_EXAMPLE.to_string();
                         self.path = None;
                     }
                     if ui
-                        .button("Bayer FDTI (layout)")
-                        .on_hover_text("The demo 2 x 2 cell bayer_fdti from the open project's layout, with the device model")
+                        .button(t("Bayer FDTI (layout)"))
+                        .on_hover_text(t("The demo 2 x 2 cell bayer_fdti from the open project's layout, with the device model"))
                         .clicked()
                     {
                         self.text = BAYER_EXAMPLE.to_string();
                         self.path = None;
                     }
                     if ui
-                        .button("Demo pixel (layout)")
-                        .on_hover_text("The demo 4T pixel's metals and photodiode from the open project")
+                        .button(t("Demo pixel (layout)"))
+                        .on_hover_text(t("The demo 4T pixel's metals and photodiode from the open project"))
                         .clicked()
                     {
                         self.text = LAYOUT_EXAMPLE.to_string();
                         self.path = None;
                     }
-                    if ui.button("From PDK").on_hover_text("The open cell's stack from the technology's cross section").clicked()
+                    if ui
+                        .button(t("From PDK"))
+                        .on_hover_text(t("The open cell's stack from the technology's cross section"))
+                        .clicked()
                     {
                         action = Some(PixelAction::FromPdk);
                     }
@@ -361,17 +365,17 @@ impl PixelOptics {
         );
         egui::CentralPanel::default().frame(egui::Frame::new().fill(pal.bg_panel).inner_margin(12)).show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
-                let l = ui.label("Chief ray angle (deg)");
+                let l = ui.label(t("Chief ray angle (deg)"));
                 ui.add(egui::DragValue::new(&mut self.cra).range(0.0..=40.0).speed(0.5)).labelled_by(l.id);
-                let l = ui.label("Illuminance (lux)");
+                let l = ui.label(t("Illuminance (lux)"));
                 ui.add(egui::DragValue::new(&mut self.lux).range(0.0..=1e6).speed(1.0)).labelled_by(l.id);
                 let l = ui.label("CCT (K)");
                 ui.add(egui::DragValue::new(&mut self.cct).range(1000.0..=20000.0).speed(50.0)).labelled_by(l.id);
-                let l = ui.label("IR cut (nm, 0 = none)");
+                let l = ui.label(t("IR cut (nm, 0 = none)"));
                 ui.add(egui::DragValue::new(&mut self.ir_cut).range(0.0..=1100.0).speed(5.0)).labelled_by(l.id);
-                ui.checkbox(&mut self.rcwa, "RCWA").on_hover_text("Rigorous coupled-wave analysis: includes diffraction, slower");
+                ui.checkbox(&mut self.rcwa, "RCWA").on_hover_text(t("Rigorous coupled-wave analysis: includes diffraction, slower"));
                 if self.rcwa {
-                    let l = ui.label("Harmonics");
+                    let l = ui.label(t("Harmonics"));
                     ui.add(egui::DragValue::new(&mut self.harmonics).range(3..=25).speed(0.1)).labelled_by(l.id);
                     if self.harmonics.is_multiple_of(2) {
                         self.harmonics += 1;
@@ -379,14 +383,14 @@ impl PixelOptics {
                     if let Some(st) = &self.stack {
                         let h = ics_optics::pixel::suggested_harmonics(st.pitch);
                         if self.harmonics < h {
-                            ui.label(RichText::new(format!("{h} converge this cell")).small().color(pal.warning));
+                            ui.label(RichText::new(tf("{} converge this cell", &[&h.to_string()])).small().color(pal.warning));
                         }
                     }
                 }
                 if self.is_running() {
                     ui.add(egui::Spinner::new());
-                    ui.label("Running…");
-                } else if ui.button("Run").clicked() {
+                    ui.label(t("Running…"));
+                } else if ui.button(t("Run")).clicked() {
                     action = Some(PixelAction::Run);
                 }
             });
@@ -394,7 +398,7 @@ impl PixelOptics {
             let result = self.result.clone();
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match &result {
                 None => {
-                    ui.label(RichText::new("Run to compute the quantum efficiency of the stack.").color(pal.text_weak));
+                    ui.label(RichText::new(t("Run to compute the quantum efficiency of the stack.")).color(pal.text_weak));
                 }
                 Some(Err(e)) => {
                     ui.colored_label(pal.danger, e);
@@ -456,23 +460,23 @@ impl PixelOptics {
                     ui.horizontal_wrapped(|ui| {
                         for (c, name) in COLORS.iter().enumerate() {
                             let (k, peak) = r.qe[c].iter().enumerate().fold((0, 0.0), |m, (k, &q)| if q > m.1 { (k, q) } else { m });
-                            ui.label(format!("{name} peak {:.0} % at {:.0} nm", peak * 100.0, r.wavelengths[k] * 1000.0));
+                            ui.label(tf("{} peak {} % at {} nm", &[name, &format!("{:.0}", peak * 100.0), &format!("{:.0}", r.wavelengths[k] * 1000.0)]));
                         }
                     });
                     ui.horizontal_wrapped(|ui| {
-                        if ui.button("Measured QE…").on_hover_text("A CSV of measured QE (wavelength in nm, R / Gr / Gb / B or G) to compare and fit").clicked() {
+                        if ui.button(t("Measured QE…")).on_hover_text(t("A CSV of measured QE (wavelength in nm, R / Gr / Gb / B or G) to compare and fit")).clicked() {
                             action = Some(PixelAction::LoadMeasured);
                         }
                         if let Some((name, m)) = &self.measured {
                             let rms = rms_against(r, m).map_or("-".into(), |v| format!("{v:.4}"));
-                            ui.label(format!("{name}: RMS difference {rms}"));
-                            let l = ui.label("Fit");
+                            ui.label(tf("{}: RMS difference {}", &[&name.to_string(), &rms]));
+                            let l = ui.label(t("Fit"));
                             ui.add(egui::TextEdit::singleline(&mut self.fit_knobs).desired_width(160.0))
                                 .labelled_by(l.id)
-                                .on_hover_text("cf_red, cf_green, cf_blue, cf, cf_density, cf_thickness, arc, si_thickness, lens, lens_n, lens_alpha, lens_shape, qe_scale");
+                                .on_hover_text("cf_red, cf_green, cf_blue, cf, cf_density, cf_thickness, arc, si_thickness, lens, lens_n, lens_alpha, lens_shape, qe_scale"); // i18n: ignore
                             if self.fit_job.is_some() {
                                 ui.add(egui::Spinner::new());
-                            } else if ui.button("Fit").clicked() {
+                            } else if ui.button(t("Fit")).clicked() {
                                 action = Some(PixelAction::Fit);
                             }
                         }
@@ -481,14 +485,14 @@ impl PixelOptics {
                     match &self.fit {
                         Some(Ok(f)) => {
                             ui.horizontal(|ui| {
-                                ui.label(format!(
-                                    "Fit ({} runs): RMS {:.4} -> {:.4}; the plot shows the fitted stack.",
-                                    f.evaluations, f.rms_before, f.rms_after
+                                ui.label(tf(
+                                    "Fit ({} runs): RMS {} -> {}; the plot shows the fitted stack.",
+                                    &[&f.evaluations.to_string(), &format!("{:.4}", f.rms_before), &format!("{:.4}", f.rms_after)],
                                 ));
-                                if let Ok(t) = &f.patched
-                                    && ui.button("Write into the stack").on_hover_text("Put the fitted values into the stack text (comments kept)").clicked()
+                                if let Ok(patched) = &f.patched
+                                    && ui.button(t("Write into the stack")).on_hover_text(t("Put the fitted values into the stack text (comments kept)")).clicked()
                                 {
-                                    write = Some(t.clone());
+                                    write = Some(patched.clone());
                                 }
                             });
                             for st in &f.stages {
@@ -519,34 +523,36 @@ impl PixelOptics {
                     if let Some(i) = r.wavelengths.iter().position(|&l| (l - 0.53).abs() < 1e-6) {
                         let b = r.budget[i];
                         ui.label(
-                            RichText::new(format!(
-                                "At 530 nm ({}): collected {:.0} %, reflected {:.0} %, absorbed above the silicon {:.0} %, in silicon outside the photodiode {:.0} %",
-                                r.method,
-                                b.collected * 100.0,
-                                b.reflected * 100.0,
-                                (b.color_filter + b.metal + b.other_layers) * 100.0,
-                                (b.silicon_shallow + b.silicon_outside + b.silicon_deep) * 100.0
+                            RichText::new(tf(
+                                "At 530 nm ({}): collected {} %, reflected {} %, absorbed above the silicon {} %, in silicon outside the photodiode {} %",
+                                &[
+                                    &r.method.to_string(),
+                                    &format!("{:.0}", b.collected * 100.0),
+                                    &format!("{:.0}", b.reflected * 100.0),
+                                    &format!("{:.0}", (b.color_filter + b.metal + b.other_layers) * 100.0),
+                                    &format!("{:.0}", (b.silicon_shallow + b.silicon_outside + b.silicon_deep) * 100.0),
+                                ],
                             ))
                             .color(pal.text_weak),
                         );
                     }
                     if let Some(cur) = self.currents {
                         ui.separator();
-                        ui.label(RichText::new("Photocurrent").strong().color(pal.text_strong));
+                        ui.label(RichText::new(t("Photocurrent")).strong().color(pal.text_strong));
                         ui.horizontal_wrapped(|ui| {
                             for (c, name) in COLORS.iter().enumerate() {
                                 ui.label(format!("{name}: {}", ics_core::units::format_eng(cur[c], "A")));
                             }
                         });
                         ui.horizontal(|ui| {
-                            let l = ui.label("Current source");
+                            let l = ui.label(t("Current source"));
                             ui.add(egui::TextEdit::singleline(&mut self.source).desired_width(60.0)).labelled_by(l.id);
-                            egui::ComboBox::from_label("Pixel colour").selected_text(COLORS[self.color]).show_ui(ui, |ui| {
+                            egui::ComboBox::from_label(t("Pixel colour")).selected_text(COLORS[self.color]).show_ui(ui, |ui| {
                                 for (c, name) in COLORS.iter().enumerate() {
                                     ui.selectable_value(&mut self.color, c, *name);
                                 }
                             });
-                            if ui.button("Apply to schematic").on_hover_text("Set the source's DC value in the active cell").clicked() {
+                            if ui.button(t("Apply to schematic")).on_hover_text(t("Set the source's DC value in the active cell")).clicked() {
                                 action = Some(PixelAction::SetSource { source: self.source.trim().to_string(), amps: cur[self.color] });
                             }
                         });
@@ -610,11 +616,11 @@ fn device_section(
 ) -> bool {
     let mut apply = false;
     ui.horizontal(|ui| {
-        ui.label(RichText::new(format!("Device model ({} nodes)", d.nodes)).strong().color(pal.text_strong));
+        ui.label(RichText::new(tf("Device model ({} nodes)", &[&d.nodes.to_string()])).strong().color(pal.text_strong));
         if from_layout
             && ui
-                .button("Apply to technology")
-                .on_hover_text("Write the mean pinning voltage and storage capacitance into the technology's photodiode, for the circuit simulation")
+                .button(t("Apply to technology"))
+                .on_hover_text(t("Write the mean pinning voltage and storage capacitance into the technology's photodiode, for the circuit simulation"))
                 .clicked()
         {
             apply = true;
@@ -625,7 +631,7 @@ fn device_section(
     }
     egui::Grid::new("pixel_device").striped(true).spacing([14.0, 4.0]).show(ui, |ui| {
         for h in ["", "Vpin", "Full well", "Fill level", "C", "Collection time", "Lowest barrier (empty well)"] {
-            ui.label(RichText::new(h).color(pal.text_weak));
+            ui.label(RichText::new(t(h)).color(pal.text_weak));
         }
         ui.end_row();
         for (k, p) in d.pixels.iter().enumerate() {
@@ -635,23 +641,25 @@ fn device_section(
             ui.label(format!("{:.3} V", p.full_well_level));
             ui.label(format!("{:.3} fF", p.capacitance));
             ui.label(format!("{:.1} ps", d.collection_time[k] * 1e3));
-            ui.label(format!("{:.3} V to {}", p.barrier, p.barrier_to));
+            ui.label(tf("{} V to {}", &[&format!("{:.3}", p.barrier), &p.barrier_to.to_string()]));
             ui.end_row();
         }
     });
     let h = 230.0;
     ui.horizontal(|ui| {
-        if let Some(t) = &d.transfer {
+        if let Some(tr) = &d.transfer {
             ui.vertical(|ui| {
                 let f = |v: Option<f64>| v.map_or("-".to_string(), |v| format!("{v:.2} ns"));
-                ui.label(format!(
-                    "Transfer of {} ({:.0} e-): 90 % in {}, 99 % in {}; {:.1} e- left ({:.2} %)",
-                    t.color,
-                    t.electrons,
-                    f(t.t90),
-                    f(t.t99),
-                    t.residual,
-                    100.0 * t.residual / t.electrons.max(1.0)
+                ui.label(tf(
+                    "Transfer of {} ({} e-): 90 % in {}, 99 % in {}; {} e- left ({} %)",
+                    &[
+                        &tr.color,
+                        &format!("{:.0}", tr.electrons),
+                        &f(tr.t90),
+                        &f(tr.t99),
+                        &format!("{:.1}", tr.residual),
+                        &format!("{:.2}", 100.0 * tr.residual / tr.electrons.max(1.0)),
+                    ],
                 ));
                 Plot::new("pixel_transfer")
                     .width(360.0)
@@ -663,17 +671,17 @@ fn device_section(
                     .allow_scroll(false)
                     .show(ui, |pu| {
                         let pts = |v: &[f64]| -> PlotPoints {
-                            t.time.iter().zip(v).skip(1).map(|(&x, &y)| [x.max(1e-4).log10(), y]).collect()
+                            tr.time.iter().zip(v).skip(1).map(|(&x, &y)| [x.max(1e-4).log10(), y]).collect()
                         };
-                        pu.line(Line::new("in the photodiode", pts(&t.in_photodiode)).color(pal.accent).width(2.0));
-                        pu.line(Line::new("arrived at n+", pts(&t.transferred)).color(pal.warning));
+                        pu.line(Line::new(t("in the photodiode"), pts(&tr.in_photodiode)).color(pal.accent).width(2.0));
+                        pu.line(Line::new(t("arrived at n+"), pts(&tr.transferred)).color(pal.warning));
                     });
             });
         }
         if !d.maps.is_empty() {
             ui.vertical(|ui| {
                 *map = (*map).min(d.maps.len() - 1);
-                egui::ComboBox::from_label("Map").selected_text(&d.maps[*map].name).show_ui(ui, |ui| {
+                egui::ComboBox::from_label(t("Map")).selected_text(&d.maps[*map].name).show_ui(ui, |ui| {
                     for (i, m) in d.maps.iter().enumerate() {
                         ui.selectable_value(map, i, &m.name);
                     }

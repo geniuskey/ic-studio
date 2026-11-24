@@ -11,6 +11,8 @@ Start from your `my_inv` cell with the PMOS at **2 µm** (set it back if you tri
 No project at hand? Open the demo and use `cmos_inverter` after deleting its layout
 (open it with `Ctrl+4`, then `Ctrl+A`, `Delete`).
 
+<!-- try: Open the demo project | demo -->
+
 ## Step 1: generate the layout
 
 1. With `my_inv` open, choose **Verify > Generate Layout from Schematic**.
@@ -36,6 +38,17 @@ back.
 
 </div>
 
+<!-- check: my_inv has a layout | my_inv layout -->
+
+<!-- quiz
+? The console says the capacitor and the sources were skipped (`no layout generator`). Why is that right?
+- Capacitors cannot be drawn on a chip
++ They are testbench parts that model the surroundings, not part of the circuit
+- The generator only places PMOS
+- They are placed later by the router
+> The supply, the input source and the 20 fF load stand for the world around the inverter. Only the two transistors (and their taps) belong in its layout.
+-->
+
 ## Step 2: route
 
 1. Choose **Verify > Route Flylines**.
@@ -58,6 +71,8 @@ Now break a rule on purpose, to see what a violation looks like:
    230 nm metal1 spacing. Hover it to read the rule.
 3. Press `Ctrl+.` (**Quick Fix**) on the violation, or simply `Ctrl+Z`.
 
+<!-- check: DRC: no violations | my_inv drc -->
+
 ## Step 4: LVS
 
 1. Press **Run LVS**.
@@ -77,6 +92,17 @@ Then LVS is fully clean. Try it: delete `CL` from the schematic and run LVS agai
 **Layout matches schematic**. (Undo with `Ctrl+Z` before continuing; the simulation
 needs the load.)
 
+<!-- check: LVS matches (after deleting CL from the schematic) | my_inv lvs -->
+
+<!-- quiz
+? LVS reports the schematic's 20 fF capacitor `CL` as missing in the layout. What is the right fix in a real project?
+- Draw a 20 fF capacitor in the layout
+- Ignore LVS for this cell
++ Keep the testbench in a separate cell that places the inverter
+- Make the load bigger
+> The load models the next gate, which is not part of this cell. With the sources and load in a testbench cell, the inverter cell holds only the circuit and LVS is fully clean.
+-->
+
 ## Step 5: post-layout simulation
 
 1. Press `Ctrl+3` for the Simulation workspace.
@@ -93,14 +119,22 @@ needs the load.)
 
 | | t<sub>pHL</sub> | t<sub>pLH</sub> |
 |---|---|---|
-| Schematic | 36.4 ps | 51.8 ps |
-| Post-layout | 39.8 ps | 56.1 ps |
+| Schematic | 33.2 ps | 47.0 ps |
+| Post-layout | 36.5 ps | 50.8 ps |
 
 The layout adds about 3 fF of wire and junction capacitance to the 20 fF load and some
-wire resistance: about 9 % slower. For a single inverter that is small; for long wires
+wire resistance: about 8 to 10 % slower. For a single inverter that is small; for long wires
 across a chip, parasitics can dominate the delay entirely.
 
 Under **Compare runs**, tick the schematic run to overlay the two waveforms.
+
+<!-- check: Post-layout t_pHL is below 55 ps | my_inv measure tran "delay(v(in), 0.9, v(out), 0.9, rise, fall)" 20p 55p -->
+
+<!-- quiz
+? t<sub>pHL</sub> went from 33.2 ps (schematic) to 36.5 ps (post-layout). How much slower is it, in percent?
+= 9.9 ±1 %
+> (36.5 − 33.2) / 33.2 = 9.9 %: about 3 fF of wiring and junctions added to the 20 fF load, plus some wire resistance.
+-->
 
 ## Step 6: export GDSII
 
@@ -148,5 +182,19 @@ You have been through the full custom-design loop:
    ics sim myproj my_inv --parasitics
    ics gds myproj my_inv -o my_inv.gds
    ```
+
+<!-- try: Open the cmos_inverter layout | open cmos_inverter layout -->
+
+<!-- try: Open the nand2 layout | open nand2 layout -->
+
+<!-- quiz
+? In a NAND2 layout, which transistors can share a diffusion region between them?
++ The two series NMOS, at their common middle node
+- An NMOS and a PMOS
+- None: every transistor needs its own source and drain
+> The two series NMOS meet at a node that connects to nothing else, so one diffusion strip serves as the drain of one and the source of the other. The parallel PMOS can share their output drain too. NMOS and PMOS sit in different wells and cannot share.
+-->
+
+<!-- try: Open the full_adder layout | open full_adder layout -->
 
 Next: the other half of chip design, [analog building blocks](analog-basics.md).

@@ -47,6 +47,24 @@ width of the poly line; the channel width W is the width of the active under it.
 draws the resulting cross-section along any cut line. See
 [Process emulation](../process.md).
 
+<!-- quiz
+? In layout, what sets a transistor's channel length L?
++ The width of the poly line where it crosses active
+- The width of the active under the poly
+- The size of the contacts
+- The metal1 wire width
+> A transistor is poly crossing active. The poly line's width is L; the width of the active under it is W.
+-->
+
+<!-- quiz
+? Which layer is the body of the PMOS?
+- The p-type substrate
++ `nwell`
+- `pplus`
+- `poly`
+> The PMOS sits in an n-well, tied to V<sub>DD</sub> through an n+ tap. The substrate is the body of the NMOS; `pplus` forms the PMOS source and drain.
+-->
+
 ## Reading a layout
 
 ![Rectangles drawn layer by layer, active, poly, contacts and metal, until they form an inverter](../images/layout-drawing.svg)
@@ -93,6 +111,12 @@ IC Studio helps while you draw: **DRD** shows the spacing halo of a shape being 
 **Magnet** snaps shapes to exactly the minimum spacing, and **Live DRC** marks violations
 as they appear. See [Verification](../verification.md).
 
+<!-- quiz
+? Parallel metal1 wires of minimum width at minimum spacing: what is their pitch (centre to centre), in nm?
+= 460 ±5 nm
+> Pitch = width + spacing = 230 nm + 230 nm = 460 nm.
+-->
+
 ## LVS: is it the same circuit?
 
 A DRC-clean layout can still be the *wrong circuit*: a missing contact, two nets
@@ -103,6 +127,14 @@ connected metal) and compares it with the schematic, device by device and net by
 ![The layout and schematic netlists side by side, devices matched one by one](../images/lvs-compare.svg)
 
 Two **clean** reports, DRC and LVS, are the minimum for any layout.
+
+<!-- quiz
+? A layout is DRC clean, but a contact between metal1 and the drain is missing. Which check finds it?
+- DRC
++ LVS
+- Neither: it cannot be found before silicon
+> A missing contact breaks no geometric rule, but it opens a net: the extracted circuit no longer matches the schematic, which LVS reports.
+-->
 
 ## Parasitics: the wires are not ideal
 
@@ -118,6 +150,15 @@ the layout and adds them to the netlist, so a **post-layout simulation** shows t
 speed.
 
 ![Layout wires turn into an RC network of parasitics, and the resimulated waveform is slower](../images/pex-backannotate.svg)
+
+<!-- quiz
+? Why are long wires drawn in metal rather than poly?
++ Poly has a far higher sheet resistance
+- Poly cannot cross active
+- Metal has no capacitance
+- The design rules forbid long poly
+> Metal has a few hundredths of an ohm per square, poly several ohms per square. Metal still has capacitance; and poly crossing active is exactly what makes a transistor.
+-->
 
 ## Layout techniques you will see
 
@@ -156,5 +197,11 @@ see which shapes form it. Press **Run LVS**: this layout has deliberate mistakes
 difference to zoom to it.
 
 </div>
+
+<!-- try: Open the cmos_inverter layout | open cmos_inverter layout -->
+
+<!-- try: Run LVS on cmos_inverter | lvs cmos_inverter -->
+
+<!-- try: Run DRC on cmos_inverter | drc cmos_inverter -->
 
 Next: [Hands-on: lay out the inverter](tutorial-layout.md).

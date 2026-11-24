@@ -14,6 +14,7 @@ use ics_core::region::{BoolOp, Region};
 use ics_core::rule_design::{self, Finding, PatternRun, Severity, Subject};
 use ics_core::{CellRef, IRect, Project, Tech};
 
+use crate::i18n::{self, t, tf};
 use crate::layout_view::layer_color;
 use crate::theme::{self, Palette};
 
@@ -113,54 +114,54 @@ impl Kind {
 
     fn title(self) -> &'static str {
         match self {
-            Kind::Width => "Minimum width",
-            Kind::Space => "Minimum spacing",
-            Kind::Separation => "Spacing to another layer",
-            Kind::Enclosure => "Enclosure",
-            Kind::Extension => "Extension",
-            Kind::Area => "Minimum area",
-            Kind::Antenna => "Antenna ratio",
-            Kind::Density => "Density",
-            Kind::Flag => "Flag every shape",
+            Kind::Width => t("Minimum width"),
+            Kind::Space => t("Minimum spacing"),
+            Kind::Separation => t("Spacing to another layer"),
+            Kind::Enclosure => t("Enclosure"),
+            Kind::Extension => t("Extension"),
+            Kind::Area => t("Minimum area"),
+            Kind::Antenna => t("Antenna ratio"),
+            Kind::Density => t("Density"),
+            Kind::Flag => t("Flag every shape"),
         }
     }
 
     /// The question the check answers, in plain words.
     fn question(self) -> &'static str {
         match self {
-            Kind::Width => "How narrow may a shape be?",
-            Kind::Space => "How close may two shapes of the same layer be?",
-            Kind::Separation => "How close may shapes of two different layers be?",
-            Kind::Enclosure => "How far must one layer reach around another, e.g. metal around a via?",
-            Kind::Extension => "How far must one layer stick out past another, e.g. poly past active?",
-            Kind::Area => "How small may a single shape be?",
-            Kind::Antenna => "Can a long wire damage a transistor gate during manufacturing?",
-            Kind::Density => "How much of each region must the layer fill?",
-            Kind::Flag => "Report every shape of a layer, e.g. a forbidden layer or a computed error layer.",
+            Kind::Width => t("How narrow may a shape be?"),
+            Kind::Space => t("How close may two shapes of the same layer be?"),
+            Kind::Separation => t("How close may shapes of two different layers be?"),
+            Kind::Enclosure => t("How far must one layer reach around another, e.g. metal around a via?"),
+            Kind::Extension => t("How far must one layer stick out past another, e.g. poly past active?"),
+            Kind::Area => t("How small may a single shape be?"),
+            Kind::Antenna => t("Can a long wire damage a transistor gate during manufacturing?"),
+            Kind::Density => t("How much of each region must the layer fill?"),
+            Kind::Flag => t("Report every shape of a layer, e.g. a forbidden layer or a computed error layer."),
         }
     }
 
     fn explain(self) -> &'static str {
         match self {
-            Kind::Width => "Every part of the layer must fit a MIN x MIN square. Narrow bars, necks and slivers are flagged.",
-            Kind::Space => {
-                "Facing edges of the layer (also within one shape: notches, holes) must be at least MIN apart; corner to corner gaps are measured diagonally."
-            }
-            Kind::Separation => {
-                "Shapes of the second layer that do not overlap the first must stay MIN away from it. Overlapping pieces count as joined and are not checked."
-            }
+            Kind::Width => t("Every part of the layer must fit a MIN x MIN square. Narrow bars, necks and slivers are flagged."),
+            Kind::Space => t(
+                "Facing edges of the layer (also within one shape: notches, holes) must be at least MIN apart; corner to corner gaps are measured diagonally.",
+            ),
+            Kind::Separation => t(
+                "Shapes of the second layer that do not overlap the first must stay MIN away from it. Overlapping pieces count as joined and are not checked.",
+            ),
             Kind::Enclosure => {
-                "Inner shapes that overlap the outer layer must lie inside it with a margin of at least MIN on every side."
+                t("Inner shapes that overlap the outer layer must lie inside it with a margin of at least MIN on every side.")
             }
-            Kind::Extension => {
-                "Where the first layer crosses out of the second (e.g. a poly gate leaving active), it must continue for at least MIN beyond the edge."
-            }
-            Kind::Area => "Every connected piece of the layer must have an area of at least MIN.",
-            Kind::Antenna => {
-                "For nets not tied to diffusion, the metal area up to this layer divided by the gate area must not exceed RATIO."
-            }
-            Kind::Density => "The layer must cover between MIN % and MAX % of every WINDOW x WINDOW window, stepped by STEP.",
-            Kind::Flag => "Every piece of the layer is reported. Combine with a derived layer to flag any condition.",
+            Kind::Extension => t(
+                "Where the first layer crosses out of the second (e.g. a poly gate leaving active), it must continue for at least MIN beyond the edge.",
+            ),
+            Kind::Area => t("Every connected piece of the layer must have an area of at least MIN."),
+            Kind::Antenna => t(
+                "For nets not tied to diffusion, the metal area up to this layer divided by the gate area must not exceed RATIO.",
+            ),
+            Kind::Density => t("The layer must cover between MIN % and MAX % of every WINDOW x WINDOW window, stepped by STEP."),
+            Kind::Flag => t("Every piece of the layer is reported. Combine with a derived layer to flag any condition."),
         }
     }
 }
@@ -214,10 +215,10 @@ impl Op {
 
     fn label(self) -> String {
         match self {
-            Op::Bool(BoolOp::And) => "A and B (overlap)".into(),
-            Op::Bool(BoolOp::Or) => "A or B (merge)".into(),
-            Op::Bool(BoolOp::Not) => "A not B (A minus B)".into(),
-            Op::Bool(BoolOp::Xor) => "A xor B (either, not both)".into(),
+            Op::Bool(BoolOp::And) => t("A and B (overlap)").into(),
+            Op::Bool(BoolOp::Or) => t("A or B (merge)").into(),
+            Op::Bool(BoolOp::Not) => t("A not B (A minus B)").into(),
+            Op::Bool(BoolOp::Xor) => t("A xor B (either, not both)").into(),
             Op::Select(how, not) => {
                 let what = match how {
                     Select::Interact => "interacting with",
@@ -226,13 +227,14 @@ impl Op {
                     Select::Enclose => "enclosing",
                     Select::Touch => "touching",
                 };
-                format!("pieces of A {}{what} B", if not { "not " } else { "" })
+                let s = format!("pieces of A {}{what} B", if not { "not " } else { "" });
+                t(&s).to_string()
             }
-            Op::Size => "A grown / shrunk by D".into(),
-            Op::Wide => "parts of A at least D wide".into(),
-            Op::Area => "pieces of A with MIN <= area < MAX".into(),
-            Op::Holes => "holes of A".into(),
-            Op::Extents => "bounding box of each piece of A".into(),
+            Op::Size => t("A grown / shrunk by D").into(),
+            Op::Wide => t("parts of A at least D wide").into(),
+            Op::Area => t("pieces of A with MIN <= area < MAX").into(),
+            Op::Holes => t("holes of A").into(),
+            Op::Extents => t("bounding box of each piece of A").into(),
         }
     }
 
@@ -507,10 +509,10 @@ fn new_rule(kind: Kind, layer: usize, tech: &Tech) -> Result<Rule, String> {
             let metal = if tech.vias.iter().any(|v| v.top == name) {
                 name.to_string()
             } else {
-                tech.vias.iter().rev().map(|v| v.top.clone()).next().ok_or("antenna rules need a via stack")?
+                tech.vias.iter().rev().map(|v| v.top.clone()).next().ok_or(t("antenna rules need a via stack"))?
             };
             let d = drc::parse_deck(&format!("antenna {metal} 400"), tech).map_err(|e| e[0].message.clone())?;
-            d.rules.into_iter().next().map(|r| r.rule).ok_or("antenna rule not created")?
+            d.rules.into_iter().next().map(|r| r.rule).ok_or(t("antenna rule not created"))?
         }
         Kind::Flag => Rule::Flag { layer },
     })
@@ -561,7 +563,7 @@ impl RuleDesigner {
             Ok(p) => (p.deck, p.notes),
             Err(errs) => {
                 let mut notes =
-                    vec!["The technology deck has errors; started from the rules derived from the layers:".to_string()];
+                    vec![t("The technology deck has errors; started from the rules derived from the layers:").to_string()];
                 notes.extend(errs.iter().map(|e| e.to_string()));
                 (drc::parse_deck(&drc::default_deck_text(tech), tech).unwrap_or_default(), notes)
             }
@@ -591,10 +593,14 @@ impl RuleDesigner {
                     self.baseline = rule_design::deck_text(&self.deck, tech);
                 }
                 self.file = (!svrf).then(|| path.to_path_buf());
-                let how = if svrf { " (translated from SVRF; Save as writes an IC Studio deck)" } else { "" };
-                self.status = Some((true, format!("Opened {}{how}", path.display())));
+                let how = if svrf {
+                    format!(" {}", t("(translated from SVRF; Save as writes an IC Studio deck)"))
+                } else {
+                    String::new()
+                };
+                self.status = Some((true, tf("Opened {}{}", &[&path.display().to_string(), &how])));
             }
-            Err(e) => self.status = Some((false, format!("Cannot open deck: {e}"))),
+            Err(e) => self.status = Some((false, tf("Cannot open deck: {}", &[&e.to_string()]))),
         }
     }
 
@@ -603,9 +609,9 @@ impl RuleDesigner {
         let text = rule_design::deck_text(&self.deck, tech);
         if let Err(errs) = drc::parse_deck(&text, tech) {
             self.tab = Tab::Issues;
-            return Err(format!("Not saved: {}", errs[0]));
+            return Err(tf("Not saved: {}", &[&errs[0].to_string()]));
         }
-        std::fs::write(path, &text).map_err(|e| format!("Cannot write {}: {e}", path.display()))?;
+        std::fs::write(path, &text).map_err(|e| tf("Cannot write {}: {}", &[&path.display().to_string(), &e.to_string()]))?;
         if standalone {
             self.baseline = text;
             self.touch();
@@ -624,7 +630,7 @@ impl RuleDesigner {
 
     fn save(&mut self, tech: &Tech, path: &Path, standalone: bool) {
         self.status = Some(match self.save_file(tech, path, standalone) {
-            Ok(()) => (true, format!("Saved {}", path.display())),
+            Ok(()) => (true, tf("Saved {}", &[&path.display().to_string()])),
             Err(e) => (false, e),
         });
     }
@@ -634,7 +640,7 @@ impl RuleDesigner {
         self.load(&tech, &tech.deck_text());
         self.notes.extend(notes);
         self.file = file.filter(|_| !self.notes.iter().any(|n| n.starts_with("SVRF")));
-        self.status = Some((true, format!("Technology {} ({} layers)", tech.name, tech.layers.len())));
+        self.status = Some((true, tf("Technology {} ({} layers)", &[&tech.name, &tech.layers.len().to_string()])));
         self.own_tech = Some(tech);
     }
 
@@ -678,14 +684,14 @@ impl RuleDesigner {
                 counts[i] = *full;
             }
         }
-        let total = counts.iter().sum();
-        self.status = Some((true, format!("{}: {total} violation(s) from the draft deck", job.cell)));
+        let total: usize = counts.iter().sum();
+        self.status = Some((true, tf("{}: {} violation(s) from the draft deck", &[&job.cell.to_string(), &total.to_string()])));
         self.check = Some(CellCheck { gen_: job.gen_, cell: job.cell, counts, total, millis: rep.millis });
     }
 
     fn start_check(&mut self, ctx: &egui::Context, project: &Project, cell: &CellRef) {
         if project.cell(cell).and_then(|c| c.layout.as_ref()).is_none() {
-            self.status = Some((false, format!("{cell} has no layout")));
+            self.status = Some((false, tf("{} has no layout", &[&cell.to_string()])));
             return;
         }
         let (tx, rx) = channel();
@@ -711,7 +717,7 @@ impl RuleDesigner {
                 Some(text)
             }
             Err(errs) => {
-                self.status = Some((false, format!("Not applied: {}", errs[0])));
+                self.status = Some((false, tf("Not applied: {}", &[&errs[0].to_string()])));
                 self.tab = Tab::Issues;
                 None
             }
@@ -732,7 +738,7 @@ impl RuleDesigner {
             let draft = self.text.clone();
             self.load(tech, &draft);
             self.baseline.clear();
-            self.notes.push(format!("Re-read the draft for technology {}", tech.name));
+            self.notes.push(tf("Re-read the draft for technology {}", &[&tech.name]));
         }
         self.poll();
         let mut open = true;
@@ -778,11 +784,11 @@ impl RuleDesigner {
             ui.horizontal(|ui| {
                 let issues = self.findings.iter().filter(|f| f.severity != Severity::Info).count();
                 for (t, name) in [
-                    (Tab::Guide, "Start here".to_string()),
-                    (Tab::Design, "Design".to_string()),
-                    (Tab::Coverage, "Coverage".into()),
-                    (Tab::Text, "Deck text".into()),
-                    (Tab::Issues, format!("Issues ({issues})")),
+                    (Tab::Guide, t("Start here").to_string()),
+                    (Tab::Design, t("Design").to_string()),
+                    (Tab::Coverage, t("Coverage").into()),
+                    (Tab::Text, t("Deck text").into()),
+                    (Tab::Issues, tf("Issues ({})", &[&issues.to_string()])),
                 ] {
                     if ui.selectable_label(self.tab == t, name).clicked() {
                         self.tab = t;
@@ -806,12 +812,12 @@ impl RuleDesigner {
                     _ => {
                         ui.add_space(40.0);
                         ui.vertical_centered(|ui| {
-                            ui.label(RichText::new("Select a rule on the left, or add one.").color(pal.text_weak));
+                            ui.label(RichText::new(t("Select a rule on the left, or add one.")).color(pal.text_weak));
                             ui.add_space(6.0);
-                            if ui.button("Add a rule…").clicked() {
+                            if ui.button(t("Add a rule…")).clicked() {
                                 self.open_gallery(tech);
                             }
-                            if ui.button("Open the guide").clicked() {
+                            if ui.button(t("Open the guide")).clicked() {
                                 self.tab = Tab::Guide;
                             }
                         });
@@ -841,15 +847,15 @@ impl RuleDesigner {
             },
             Act::Defaults => {
                 self.load(tech, &drc::default_deck_text(tech));
-                self.notes.push("Started from the layer defaults (not applied yet)".into());
+                self.notes.push(t("Started from the layer defaults (not applied yet)").into());
             }
             Act::FillGaps => {
                 let n = self.fill_gaps(tech);
-                self.status = Some((true, format!("Added {n} rule(s)")));
+                self.status = Some((true, tf("Added {} rule(s)", &[&n.to_string()])));
             }
             Act::FixAll => {
                 let n = rule_design::fix_all(&mut self.deck, tech);
-                self.status = Some((true, format!("Applied {n} fix(es)")));
+                self.status = Some((true, tf("Applied {} fix(es)", &[&n.to_string()])));
                 if n > 0 {
                     self.touch();
                 }
@@ -860,7 +866,7 @@ impl RuleDesigner {
                 }
             }
             Act::Apply | Act::ApplyRun if standalone => {
-                self.status = Some((false, "Open a project to apply the deck to its technology".into()));
+                self.status = Some((false, t("Open a project to apply the deck to its technology").into()));
             }
             Act::Apply => return self.apply_text(tech).map(DesignerAction::Apply),
             Act::ApplyRun => return self.apply_text(tech).map(DesignerAction::ApplyAndRun),
@@ -883,7 +889,7 @@ impl RuleDesigner {
                             let notes = pdk.warnings.iter().map(|w| format!("PDK: {w}")).collect();
                             self.use_tech(pdk.tech, pdk.drc_deck, notes);
                         }
-                        Err(e) => self.status = Some((false, format!("Cannot load PDK: {e}"))),
+                        Err(e) => self.status = Some((false, tf("Cannot load PDK: {}", &[&e.to_string()]))),
                     }
                 }
             }
@@ -912,28 +918,28 @@ impl RuleDesigner {
     ) -> Option<Act> {
         let mut act = None;
         ui.horizontal(|ui| {
-            ui.label(RichText::new("DRC Rule Designer").strong().color(pal.text_strong));
+            ui.label(RichText::new(t("DRC Rule Designer")).strong().color(pal.text_strong));
             if standalone {
-                ui.menu_button(format!("Technology: {}", tech.name), |ui| {
-                    if ui.button("Generic technology").clicked() {
+                ui.menu_button(tf("Technology: {}", &[&tech.name]), |ui| {
+                    if ui.button(t("Generic technology")).clicked() {
                         act = Some(Act::GenericTech);
                         ui.close();
                     }
-                    if ui.button("Load PDK…").clicked() {
+                    if ui.button(t("Load PDK…")).clicked() {
                         act = Some(Act::LoadPdk);
                         ui.close();
                     }
                 })
                 .response
-                .on_hover_text("Technology the rules are written for (no project is open)");
+                .on_hover_text(t("Technology the rules are written for (no project is open)"));
             } else {
                 ui.label(RichText::new(format!("· {}", tech.name)).color(pal.text_weak));
                 if let Some(f) = &self.shared {
                     let name = f.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-                    ui.label(RichText::new(format!("shared deck: {name}")).color(pal.accent)).on_hover_text(format!(
+                    ui.label(RichText::new(tf("shared deck: {}", &[&name])).color(pal.accent)).on_hover_text(tf(
                         "The technology's deck comes from {}. Applying writes it, so every project linked to it gets \
                          the change.",
-                        f.display()
+                        &[&f.display().to_string()],
                     ));
                 }
             }
@@ -943,48 +949,48 @@ impl RuleDesigner {
             }
             if self.dirty {
                 let (t, h) = if standalone {
-                    ("● unsaved", "The draft differs from the deck file. Save it to keep it.")
+                    (t("● unsaved"), t("The draft differs from the deck file. Save it to keep it."))
                 } else {
-                    ("● not applied", "The draft differs from the technology deck. Apply it to use it for DRC.")
+                    (t("● not applied"), t("The draft differs from the technology deck. Apply it to use it for DRC."))
                 };
                 ui.label(RichText::new(t).color(pal.warning)).on_hover_text(h);
             }
             ui.separator();
-            if ui.button("Open…").on_hover_text("Open a deck file (IC Studio or SVRF)").clicked() {
+            if ui.button(t("Open…")).on_hover_text(t("Open a deck file (IC Studio or SVRF)")).clicked() {
                 act = Some(Act::OpenDeck);
             }
             let save_hover = match &self.file {
-                Some(f) => format!("Write the draft to {}", f.display()),
-                None => "Write the draft to a deck file".into(),
+                Some(f) => tf("Write the draft to {}", &[&f.display().to_string()]),
+                None => t("Write the draft to a deck file").into(),
             };
-            if ui.button("Save").on_hover_text(save_hover).clicked() {
+            if ui.button(t("Save")).on_hover_text(save_hover).clicked() {
                 act = Some(Act::SaveDeck);
             }
-            if ui.button("Save as…").on_hover_text("Write the draft to a new deck file").clicked() {
+            if ui.button(t("Save as…")).on_hover_text(t("Write the draft to a new deck file")).clicked() {
                 act = Some(Act::SaveDeckAs);
             }
             ui.separator();
             let reload = if standalone && self.file.is_some() {
-                "Discard the draft and reopen the deck file"
+                t("Discard the draft and reopen the deck file")
             } else {
-                "Discard the draft and load the technology's deck"
+                t("Discard the draft and load the technology's deck")
             };
-            if ui.button("Reload").on_hover_text(reload).clicked() {
+            if ui.button(t("Reload")).on_hover_text(reload).clicked() {
                 act = Some(Act::Reload);
             }
-            if ui.button("Layer defaults").on_hover_text("Start from the rules derived from the layer and via definitions").clicked() {
+            if ui.button(t("Layer defaults")).on_hover_text(t("Start from the rules derived from the layer and via definitions")).clicked() {
                 act = Some(Act::Defaults);
             }
             if ui
-                .button("Fill gaps")
-                .on_hover_text("Add the width / space rules of routing layers and the via enclosures that are missing, with technology values")
+                .button(t("Fill gaps"))
+                .on_hover_text(t("Add the width / space rules of routing layers and the via enclosures that are missing, with technology values"))
                 .clicked()
             {
                 act = Some(Act::FillGaps);
             }
             if standalone {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Close").clicked() {
+                    if ui.button(t("Close")).clicked() {
                         self.open = false;
                     }
                     if let Some((ok, s)) = &self.status {
@@ -996,32 +1002,32 @@ impl RuleDesigner {
             ui.separator();
             let busy = self.job.is_some();
             let can_check = active.is_some() && !busy;
-            let check = ui.add_enabled(can_check, egui::Button::new(if busy { "Checking…" } else { "Check active cell" }));
+            let check = ui.add_enabled(can_check, egui::Button::new(if busy { t("Checking…") } else { t("Check active cell") }));
             let hover = match active {
-                Some(c) => format!("Run the draft deck on {c} and count violations per rule"),
-                None => "Open a layout cell first".into(),
+                Some(c) => tf("Run the draft deck on {} and count violations per rule", &[&c.to_string()]),
+                None => t("Open a layout cell first").into(),
             };
-            if check.on_hover_text(hover).on_disabled_hover_text("Open a layout cell first").clicked() {
+            if check.on_hover_text(hover).on_disabled_hover_text(t("Open a layout cell first")).clicked() {
                 act = Some(Act::Check);
             }
             if busy {
                 ui.spinner();
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("Close").clicked() {
+                if ui.button(t("Close")).clicked() {
                     self.open = false;
                 }
                 if ui
-                    .add_enabled(active.is_some(), egui::Button::new("Apply & run DRC"))
-                    .on_hover_text("Store the deck in the technology and run DRC on the active cell")
+                    .add_enabled(active.is_some(), egui::Button::new(t("Apply & run DRC")))
+                    .on_hover_text(t("Store the deck in the technology and run DRC on the active cell"))
                     .clicked()
                 {
                     act = Some(Act::ApplyRun);
                 }
-                let apply = egui::Button::new(RichText::new("Apply to technology").color(theme::on_fill(pal.accent))).fill(pal.accent);
+                let apply = egui::Button::new(RichText::new(t("Apply to technology")).color(theme::on_fill(pal.accent))).fill(pal.accent);
                 let hover = match &self.shared {
-                    Some(f) => format!("Store the deck in the technology and write it to the shared deck {}", f.display()),
-                    None => "Store the deck in the project's technology (save the project to keep it)".into(),
+                    Some(f) => tf("Store the deck in the technology and write it to the shared deck {}", &[&f.display().to_string()]),
+                    None => t("Store the deck in the project's technology (save the project to keep it)").into(),
                 };
                 if ui.add(apply).on_hover_text(hover).clicked() {
                     act = Some(Act::Apply);
@@ -1044,85 +1050,85 @@ impl RuleDesigner {
     ) -> Option<Act> {
         let mut act = None;
         ui.set_max_width(ui.available_width().min(780.0));
-        ui.label(RichText::new("Designing DRC rules").heading().color(pal.text_strong));
+        ui.label(RichText::new(t("Designing DRC rules")).heading().color(pal.text_strong));
         ui.label(
-            RichText::new(
+            RichText::new(t(
                 "Design Rule Checking (DRC) makes sure a layout can be manufactured. The foundry sets limits such as \
                  \"metal1 lines must be at least 0.23 µm wide\". Each rule in the deck checks one such limit and marks every \
                  place in the layout that breaks it. This window builds the deck with forms and pictures, and tests every \
                  rule while you edit it.",
-            )
+            ))
             .color(pal.text),
         );
         ui.add_space(10.0);
         let issues = self.findings.iter().filter(|f| f.severity != Severity::Info).count();
         let fixable = self.findings.iter().filter(|f| rule_design::auto_fixable(f)).count();
         step(ui, 1, "Start from a deck", pal, |ui| {
-            ui.label(format!(
+            ui.label(tf(
                 "The deck has {} rule(s) now. To start over, take the rules the technology derives from its layer and via definitions.",
-                self.deck.rules.len()
+                &[&self.deck.rules.len().to_string()],
             ));
             ui.horizontal(|ui| {
-                if ui.button("Start from layer defaults").clicked() {
+                if ui.button(t("Start from layer defaults")).clicked() {
                     act = Some(Act::Defaults);
                 }
-                if ui.button("Reload technology deck").clicked() {
+                if ui.button(t("Reload technology deck")).clicked() {
                     act = Some(Act::Reload);
                 }
             });
         });
         step(ui, 2, "Fill the gaps", pal, |ui| {
-            ui.label(
+            ui.label(t(
                 "Add the width and space rules of routing layers and the via enclosures that the technology defines but the \
                  deck lacks. Coverage shows which checks each layer has.",
-            );
+            ));
             ui.horizontal(|ui| {
-                if ui.button("Fill gaps").clicked() {
+                if ui.button(t("Fill gaps")).clicked() {
                     act = Some(Act::FillGaps);
                 }
-                if ui.button("Open coverage").clicked() {
+                if ui.button(t("Open coverage")).clicked() {
                     self.tab = Tab::Coverage;
                 }
             });
         });
         step(ui, 3, "Fix problems", pal, |ui| {
             let t = match (issues, fixable) {
-                (0, 0) => "No errors or warnings. Notes with suggestions are listed under Issues.".to_string(),
-                (n, 0) => format!("{n} error(s) or warning(s); open Issues to see what to change."),
-                (n, m) => format!("{n} error(s) or warning(s); {m} can be fixed with one click."),
+                (0, 0) => i18n::t("No errors or warnings. Notes with suggestions are listed under Issues.").to_string(),
+                (n, 0) => tf("{} error(s) or warning(s); open Issues to see what to change.", &[&n.to_string()]),
+                (n, m) => tf("{} error(s) or warning(s); {} can be fixed with one click.", &[&n.to_string(), &m.to_string()]),
             };
             ui.label(t);
             ui.horizontal(|ui| {
-                let fix = ui.add_enabled(fixable > 0, egui::Button::new(format!("Fix automatically ({fixable})")));
-                if fix.on_hover_text("Apply every suggested fix of the errors and warnings, and add the missing rules").clicked()
+                let fix = ui.add_enabled(fixable > 0, egui::Button::new(tf("Fix automatically ({})", &[&fixable.to_string()])));
+                if fix
+                    .on_hover_text(i18n::t("Apply every suggested fix of the errors and warnings, and add the missing rules"))
+                    .clicked()
                 {
                     act = Some(Act::FixAll);
                 }
-                if ui.button("Open issues").clicked() {
+                if ui.button(i18n::t("Open issues")).clicked() {
                     self.tab = Tab::Issues;
                 }
             });
         });
         step(ui, 4, "Add or change rules", pal, |ui| {
-            ui.label(
+            ui.label(t(
                 "Click a rule on the left to edit it. Every rule is tested on generated shapes: one exactly at the limit, \
                  which must pass, and one a grid step inside it, which must be flagged.",
-            );
-            if ui.button("Add a rule…").clicked() {
+            ));
+            if ui.button(t("Add a rule…")).clicked() {
                 self.open_gallery(tech);
             }
         });
         if standalone {
             step(ui, 5, "Save the deck", pal, |ui| {
-                ui.label(
-                    "No project is open, so the deck is kept in a file. Point a PDK's drc_deck at it to share it with \
-                     every project that loads the PDK, or open it here from a project and apply it.",
-                );
+                ui.label(t("No project is open, so the deck is kept in a file. Point a PDK's drc_deck at it to share it with \
+                     every project that loads the PDK, or open it here from a project and apply it."));
                 ui.horizontal(|ui| {
-                    if ui.button("Save").clicked() {
+                    if ui.button(t("Save")).clicked() {
                         act = Some(Act::SaveDeck);
                     }
-                    if ui.button("Save as…").clicked() {
+                    if ui.button(t("Save as…")).clicked() {
                         act = Some(Act::SaveDeckAs);
                     }
                 });
@@ -1130,47 +1136,48 @@ impl RuleDesigner {
         } else {
             step(ui, 5, "Try it on your layout", pal, |ui| {
                 ui.label(match active {
-                    Some(c) => format!("Count the violations of each rule in {c}. Nothing is changed."),
-                    None => "Open a layout cell to try the deck on it.".to_string(),
+                    Some(c) => tf("Count the violations of each rule in {}. Nothing is changed.", &[&c.to_string()]),
+                    None => t("Open a layout cell to try the deck on it.").to_string(),
                 });
-                if ui.add_enabled(active.is_some() && self.job.is_none(), egui::Button::new("Check active cell")).clicked() {
+                if ui.add_enabled(active.is_some() && self.job.is_none(), egui::Button::new(t("Check active cell"))).clicked() {
                     act = Some(Act::Check);
                 }
             });
             step(ui, 6, "Apply", pal, |ui| {
-                ui.label(
-                    "Store the deck as the technology's DRC deck so DRC uses it. Save the project to keep it. To \
+                ui.label(t("Store the deck as the technology's DRC deck so DRC uses it. Save the project to keep it. To \
                      share one deck between projects, save it to a file and link it with Tools > DRC Deck > Link \
-                     Shared Deck; applying then writes that file.",
-                );
-                if ui.button("Apply to technology").clicked() {
+                     Shared Deck; applying then writes that file."));
+                if ui.button(t("Apply to technology")).clicked() {
                     act = Some(Act::Apply);
                 }
             });
         }
         ui.add_space(12.0);
-        theme::section(ui, "Words you will see");
+        theme::section(ui, t("Words you will see"));
         let grid = um(tech.grid.max(1), tech);
         egui::Grid::new("rd_terms").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
             let terms = [
-                ("Layer", "A mask layer such as poly, metal1 or via1. Each rule checks one layer; some compare two.".to_string()),
-                ("Rule", "One limit, e.g. a minimum width. Its name (like metal1.W) is shown with every violation.".into()),
-                ("Violation", "A place where the layout breaks a rule. DRC marks it in the layout.".into()),
                 (
-                    "Derived layer",
-                    "A layer computed from others, e.g. gate = poly and active, to check only part of a layer.".into(),
+                    t("Layer"),
+                    t("A mask layer such as poly, metal1 or via1. Each rule checks one layer; some compare two.").to_string(),
                 ),
-                ("Grid", format!("The manufacturing grid. Every length must be a multiple of it ({grid} µm here).")),
+                (t("Rule"), t("One limit, e.g. a minimum width. Its name (like metal1.W) is shown with every violation.").into()),
+                (t("Violation"), t("A place where the layout breaks a rule. DRC marks it in the layout.").into()),
+                (
+                    t("Derived layer"),
+                    t("A layer computed from others, e.g. gate = poly and active, to check only part of a layer.").into(),
+                ),
+                (t("Grid"), tf("The manufacturing grid. Every length must be a multiple of it ({} µm here).", &[&grid])),
             ];
-            for (t, d) in terms {
-                ui.label(RichText::new(t).strong().color(pal.text_strong));
+            for (term, d) in terms {
+                ui.label(RichText::new(term).strong().color(pal.text_strong));
                 ui.label(RichText::new(d).color(pal.text));
                 ui.end_row();
             }
         });
         ui.add_space(12.0);
-        theme::section(ui, "Kinds of checks");
-        ui.label(RichText::new("Click one to add it.").small().color(pal.text_weak));
+        theme::section(ui, t("Kinds of checks"));
+        ui.label(RichText::new(t("Click one to add it.")).small().color(pal.text_weak));
         let (a, b) = (color_of(0, tech, pal.dark), color_of(other_layer(0, tech), tech, pal.dark));
         let mut pick = false;
         ui.horizontal_wrapped(|ui| {
@@ -1190,10 +1197,10 @@ impl RuleDesigner {
         if self.add_layer >= names.len() {
             self.add_layer = 0;
         }
-        ui.label(RichText::new("Add a rule").heading().color(pal.text_strong));
+        ui.label(RichText::new(t("Add a rule")).heading().color(pal.text_strong));
         ui.label(
             RichText::new(
-                "Choose the layer, then click the kind of check. The value starts from the technology; you can change it afterwards.",
+                t("Choose the layer, then click the kind of check. The value starts from the technology; you can change it afterwards."),
             )
             .color(pal.text_weak),
         );
@@ -1214,9 +1221,9 @@ impl RuleDesigner {
             for k in order {
                 let have = self.deck.rules.iter().any(|r| Kind::of(&r.rule) == k && r.rule.checked_layer() == l);
                 let note = if have {
-                    Some(("Already in the deck: click to edit it".to_string(), pal.text_weak))
+                    Some((t("Already in the deck: click to edit it").to_string(), pal.text_weak))
                 } else if rec.contains(&k) {
-                    Some(("Recommended for this layer".to_string(), pal.ok))
+                    Some((t("Recommended for this layer").to_string(), pal.ok))
                 } else {
                     None
                 };
@@ -1291,17 +1298,17 @@ impl RuleDesigner {
     fn rule_list(&mut self, ui: &mut egui::Ui, tech: &Tech, pal: &Palette) {
         let names = self.deck.layer_names(tech);
         ui.horizontal(|ui| {
-            let fl = ui.label("Filter");
-            ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("name, layer or kind").desired_width(f32::INFINITY))
+            let fl = ui.label(t("Filter"));
+            ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text(t("name, layer or kind")).desired_width(f32::INFINITY))
                 .labelled_by(fl.id);
         });
         ui.horizontal(|ui| {
-            if ui.button("+ Rule").on_hover_text("Pick a layer and a kind of check from pictures").clicked() {
+            if ui.button(t("+ Rule")).on_hover_text(t("Pick a layer and a kind of check from pictures")).clicked() {
                 self.open_gallery(tech);
             }
-            ui.menu_button("+ Derived layer", |ui| {
+            ui.menu_button(t("+ Derived layer"), |ui| {
                 ui.label(
-                    RichText::new("A layer computed from others, used by rules like any layer").small().color(pal.text_weak),
+                    RichText::new(t("A layer computed from others, used by rules like any layer")).small().color(pal.text_weak),
                 );
                 let a = tech.poly().unwrap_or(0);
                 let b = tech.diffusion().unwrap_or(other_layer(a, tech));
@@ -1309,10 +1316,10 @@ impl RuleDesigner {
                 if let (Some(p), Some(d)) = (tech.poly(), tech.diffusion()) {
                     presets.push((
                         "gate",
-                        "Transistor gates: where poly crosses active",
+                        t("Transistor gates: where poly crosses active"),
                         LayerExpr::Bool { a: p, op: BoolOp::And, b: d },
                     ));
-                    presets.push(("fieldpoly", "Poly wiring outside active", LayerExpr::Bool { a: p, op: BoolOp::Not, b: d }));
+                    presets.push(("fieldpoly", t("Poly wiring outside active"), LayerExpr::Bool { a: p, op: BoolOp::Not, b: d }));
                 }
                 let wide = (0..tech.layers.len()).find(|&i| tech.layers[i].routing && Some(i) != tech.poly());
                 let wide_name = wide.and_then(|m| tech.layer(m)).map(|d| format!("wide_{}", d.name));
@@ -1320,13 +1327,13 @@ impl RuleDesigner {
                     let min = 10 * tech.dbu_per_um.max(1);
                     presets.push((
                         n,
-                        "Wide metal (10 µm and wider), for wide-metal spacing rules",
+                        t("Wide metal (10 µm and wider), for wide-metal spacing rules"),
                         LayerExpr::Wide { a: m, min },
                     ));
                 }
                 presets.push((
                     "derived",
-                    "Custom: pick the operation and layers yourself",
+                    t("Custom: pick the operation and layers yourself"),
                     LayerExpr::Bool { a, op: BoolOp::And, b },
                 ));
                 for (base, what, expr) in presets {
@@ -1343,9 +1350,12 @@ impl RuleDesigner {
             });
         });
         ui.label(
-            RichText::new(format!("{} rule(s) · {} derived layer(s)", self.deck.rules.len(), self.deck.derived.len()))
-                .small()
-                .color(pal.text_weak),
+            RichText::new(tf(
+                "{} rule(s) · {} derived layer(s)",
+                &[&self.deck.rules.len().to_string(), &self.deck.derived.len().to_string()],
+            ))
+            .small()
+            .color(pal.text_weak),
         );
         ui.separator();
         let f = self.filter.to_ascii_lowercase();
@@ -1353,7 +1363,7 @@ impl RuleDesigner {
         let mut pick = None;
         egui::ScrollArea::vertical().id_salt("rd_rules").auto_shrink([false, false]).show(ui, |ui| {
             if !self.deck.derived.is_empty() {
-                theme::section(ui, "Derived layers");
+                theme::section(ui, t("Derived layers"));
                 for (k, d) in self.deck.derived.iter().enumerate() {
                     let line = d.deck_line(tech, &names);
                     if !f.is_empty() && !line.to_ascii_lowercase().contains(&f) {
@@ -1407,7 +1417,7 @@ impl RuleDesigner {
                                     {
                                         let col = if n == 0 { pal.ok } else { pal.danger };
                                         ui.label(RichText::new(n.to_string()).small().strong().color(col))
-                                            .on_hover_text(format!("{n} violation(s) in {}", c.cell));
+                                            .on_hover_text(tf("{} violation(s) in {}", &[&n.to_string(), &c.cell.to_string()]));
                                     }
                                     if let Some(s) = self.severity_of(Subject::Rule(i)) {
                                         let col = match s {
@@ -1431,7 +1441,7 @@ impl RuleDesigner {
 
     fn layer_pick(ui: &mut egui::Ui, id: &str, label: &str, l: &mut usize, limit: usize, cx: &Names) -> bool {
         let (names, tech, dark) = (cx.names, cx.tech, cx.dark);
-        let lb = ui.label(label);
+        let lb = ui.label(t(label));
         let before = *l;
         let text = names.get(*l).cloned().unwrap_or_else(|| format!("#{l}"));
         let r = egui::ComboBox::from_id_salt(id)
@@ -1454,7 +1464,7 @@ impl RuleDesigner {
     fn len_edit(ui: &mut egui::Ui, label: &str, v: &mut i64, tech: &Tech, pal: &Palette, hint: Option<i64>) -> bool {
         let d = tech.dbu_per_um.max(1) as f64;
         let g = tech.grid.max(1);
-        let lb = ui.label(label);
+        let lb = ui.label(t(label));
         let mut changed = false;
         ui.horizontal(|ui| {
             let mut x = *v as f64 / d;
@@ -1466,20 +1476,24 @@ impl RuleDesigner {
                 changed = true;
             }
             if g > 1 && *v % g != 0 {
-                ui.label(RichText::new("off grid").small().color(pal.warning));
+                ui.label(RichText::new(t("off grid")).small().color(pal.warning));
                 let snapped = ((*v as f64 / g as f64).round() as i64 * g).max(g);
-                if ui.small_button(format!("Snap to {}", um(snapped, tech))).clicked() {
+                if ui.small_button(tf("Snap to {}", &[&um(snapped, tech)])).clicked() {
                     *v = snapped;
                     changed = true;
                 }
             }
             match hint {
                 Some(t) if t == *v => {
-                    ui.label(RichText::new("technology value").small().color(pal.text_weak));
+                    ui.label(RichText::new(i18n::t("technology value")).small().color(pal.text_weak));
                 }
                 Some(t) => {
-                    ui.label(RichText::new(format!("technology: {} µm", um(t, tech))).small().color(pal.text_weak));
-                    if ui.small_button("Use").on_hover_text("Use the value from the layer and via definitions").clicked() {
+                    ui.label(RichText::new(tf("technology: {} µm", &[&um(t, tech)])).small().color(pal.text_weak));
+                    if ui
+                        .small_button(i18n::t("Use"))
+                        .on_hover_text(i18n::t("Use the value from the layer and via definitions"))
+                        .clicked()
+                    {
                         *v = t;
                         changed = true;
                     }
@@ -1492,7 +1506,7 @@ impl RuleDesigner {
     }
 
     fn num_edit(ui: &mut egui::Ui, label: &str, v: &mut f64, range: std::ops::RangeInclusive<f64>, suffix: &str) -> bool {
-        let lb = ui.label(label);
+        let lb = ui.label(t(label));
         let c =
             ui.add(egui::DragValue::new(v).speed(0.5).range(range).max_decimals(3).suffix(suffix)).labelled_by(lb.id).changed();
         ui.end_row();
@@ -1517,18 +1531,18 @@ impl RuleDesigner {
                 ui.label(RichText::new(format!("{}: {}", kind.title(), kind.question())).color(pal.text_weak));
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("Delete").clicked() {
+                if ui.button(t("Delete")).clicked() {
                     delete = true;
                 }
-                if ui.button("Duplicate").clicked() {
+                if ui.button(t("Duplicate")).clicked() {
                     duplicate = true;
                 }
-                if ui.add_enabled(i + 1 < self.deck.rules.len(), egui::Button::new("Down")).clicked() {
+                if ui.add_enabled(i + 1 < self.deck.rules.len(), egui::Button::new(t("Down"))).clicked() {
                     self.deck.rules.swap(i, i + 1);
                     self.sel = Sel::Rule(i + 1);
                     self.touch();
                 }
-                if ui.add_enabled(i > 0, egui::Button::new("Up")).clicked() {
+                if ui.add_enabled(i > 0, egui::Button::new(t("Up"))).clicked() {
                     self.deck.rules.swap(i, i - 1);
                     self.sel = Sel::Rule(i - 1);
                     self.touch();
@@ -1546,7 +1560,7 @@ impl RuleDesigner {
 
         let was_auto = nr.name == nr.rule.auto_name(&names);
         egui::Grid::new(("rd_form", i)).num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-            let lb = ui.label("Check");
+            let lb = ui.label(t("Check"));
             let mut k = kind;
             egui::ComboBox::from_id_salt("rd_kind")
                 .selected_text(k.title())
@@ -1611,7 +1625,7 @@ impl RuleDesigner {
                             Ok(Rule::Antenna { layer: nl, poly, active, vias, .. }) if nl == l => {
                                 swap = Some(Rule::Antenna { layer: nl, ratio: *ratio, poly, active, vias });
                             }
-                            _ => self.status = Some((false, format!("{} is not a metal of the via stack", names[l]))),
+                            _ => self.status = Some((false, tf("{} is not a metal of the via stack", &[&names[l]]))),
                         }
                     }
                     changed |= Self::num_edit(ui, "Maximum ratio", ratio, 0.0..=1.0e6, "");
@@ -1636,19 +1650,19 @@ impl RuleDesigner {
                 nr.rule = r;
                 changed = true;
             }
-            let lb = ui.label("Name");
+            let lb = ui.label(t("Name"));
             ui.horizontal(|ui| {
                 changed |= ui.add(egui::TextEdit::singleline(&mut nr.name).desired_width(180.0)).labelled_by(lb.id).changed();
-                if !was_auto && ui.small_button("Auto").on_hover_text("Use the generated name").clicked() {
+                if !was_auto && ui.small_button(t("Auto")).on_hover_text(t("Use the generated name")).clicked() {
                     nr.name = nr.rule.auto_name(&names);
                     changed = true;
                 }
             });
             ui.end_row();
-            let lb = ui.label("Description");
+            let lb = ui.label(t("Description"));
             let mut c = nr.comment.clone().unwrap_or_default();
             if ui
-                .add(egui::TextEdit::singleline(&mut c).hint_text("reported with violations (optional)").desired_width(320.0))
+                .add(egui::TextEdit::singleline(&mut c).hint_text(t("reported with violations (optional)")).desired_width(320.0))
                 .labelled_by(lb.id)
                 .changed()
             {
@@ -1691,7 +1705,7 @@ impl RuleDesigner {
         }
 
         ui.add_space(14.0);
-        theme::section(ui, "Does the rule work? Self-test on generated shapes (real DRC engine)");
+        theme::section(ui, t("Does the rule work? Self-test on generated shapes (real DRC engine)"));
         let rule = self.deck.rules[i].rule.clone();
         if self.runs.as_ref().is_none_or(|(r, _)| *r != rule) {
             let runs = if rule.layers().iter().all(|&l| l < tech.layers.len()) {
@@ -1704,9 +1718,9 @@ impl RuleDesigner {
         let runs = &self.runs.as_ref().expect("set").1;
         if runs.is_empty() {
             let why = if rule.layers().iter().any(|&l| l >= tech.layers.len()) {
-                "This rule reads a derived layer; use Check active cell to see what it flags."
+                t("This rule reads a derived layer; use Check active cell to see what it flags.")
             } else {
-                "No generated patterns for this check; the sketch below shows what it measures."
+                t("No generated patterns for this check; the sketch below shows what it measures.")
             };
             ui.label(RichText::new(why).small().color(pal.text_weak));
             ui.add_space(6.0);
@@ -1714,9 +1728,9 @@ impl RuleDesigner {
         } else {
             let ok = runs.iter().all(|r| r.as_expected);
             let (c, t) = if ok {
-                (pal.ok, "✔ The engine accepts the limit and flags a grid step inside it.")
+                (pal.ok, i18n::t("✔ The engine accepts the limit and flags a grid step inside it."))
             } else {
-                (pal.danger, "✖ The engine does not behave as the rule intends. Check the value and layers.")
+                (pal.danger, i18n::t("✖ The engine does not behave as the rule intends. Check the value and layers."))
             };
             ui.label(RichText::new(t).color(c));
             ui.add_space(4.0);
@@ -1730,9 +1744,15 @@ impl RuleDesigner {
             && let Some(&n) = c.counts.get(i)
         {
             ui.add_space(10.0);
-            theme::section(ui, "On the active cell");
+            theme::section(ui, t("On the active cell"));
             let col = if n == 0 { pal.ok } else { pal.danger };
-            ui.label(RichText::new(format!("{n} violation(s) in {} ({} total, {:.0} ms)", c.cell, c.total, c.millis)).color(col));
+            ui.label(
+                RichText::new(tf(
+                    "{} violation(s) in {} ({} total, {} ms)",
+                    &[&n.to_string(), &c.cell.to_string(), &c.total.to_string(), &format!("{:.0}", c.millis)],
+                ))
+                .color(col),
+            );
         }
     }
 
@@ -1754,8 +1774,8 @@ impl RuleDesigner {
             chip(ui, "LAYER", color_of(me, tech, pal.dark));
             ui.label(RichText::new(&self.deck.derived[k].name).heading().color(pal.text_strong));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let del = ui.add_enabled(users.is_empty(), egui::Button::new("Delete"));
-                if del.on_disabled_hover_text(format!("Used by {}", users.join(", "))).clicked() {
+                let del = ui.add_enabled(users.is_empty(), egui::Button::new(t("Delete")));
+                if del.on_disabled_hover_text(tf("Used by {}", &[&users.join(", ")])).clicked() {
                     delete = true;
                 }
             });
@@ -1767,24 +1787,24 @@ impl RuleDesigner {
             return;
         }
         ui.label(
-            RichText::new(
+            RichText::new(t(
                 "A derived layer is computed from technology layers and earlier derived layers; rules use it like any layer.",
-            )
+            ))
             .small()
             .color(pal.text_weak),
         );
         ui.add_space(8.0);
         let d = &mut self.deck.derived[k];
         egui::Grid::new(("rd_dform", k)).num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-            let lb = ui.label("Name");
+            let lb = ui.label(t("Name"));
             let mut name = d.name.clone();
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut name).desired_width(180.0)).labelled_by(lb.id);
                 let clash = names.iter().enumerate().any(|(i, x)| i != me && x.eq_ignore_ascii_case(&name));
                 if !valid_layer_name(&name) {
-                    ui.label(RichText::new("letters, digits, _ . - only").small().color(pal.danger));
+                    ui.label(RichText::new(t("letters, digits, _ . - only")).small().color(pal.danger));
                 } else if clash {
-                    ui.label(RichText::new("name already used").small().color(pal.danger));
+                    ui.label(RichText::new(t("name already used")).small().color(pal.danger));
                 } else if name != d.name {
                     d.name = name;
                     changed = true;
@@ -1793,12 +1813,12 @@ impl RuleDesigner {
             ui.end_row();
             match Op::of(&d.expr) {
                 None => {
-                    ui.label("Expression");
-                    ui.label(RichText::new("SVRF-only expression: it cannot be written to a native deck").color(pal.danger));
+                    ui.label(t("Expression"));
+                    ui.label(RichText::new(t("SVRF-only expression: it cannot be written to a native deck")).color(pal.danger));
                     ui.end_row();
                 }
                 Some(op) => {
-                    let lb = ui.label("Operation");
+                    let lb = ui.label(t("Operation"));
                     let mut o = op;
                     egui::ComboBox::from_id_salt("rd_op")
                         .selected_text(o.label())
@@ -1823,7 +1843,7 @@ impl RuleDesigner {
                         }
                         LayerExpr::Size { a, by } => {
                             changed |= Self::layer_pick(ui, "rd_da", "A", a, me, &cx);
-                            let lb = ui.label("D (negative shrinks)");
+                            let lb = ui.label(t("D (negative shrinks)"));
                             let dd = tech.dbu_per_um.max(1) as f64;
                             let mut x = *by as f64 / dd;
                             let r = ui.add(
@@ -1855,7 +1875,7 @@ impl RuleDesigner {
                             let lb = ui.label("MAX");
                             ui.horizontal(|ui| {
                                 let mut inf = max.is_none();
-                                if ui.checkbox(&mut inf, "no limit").changed() {
+                                if ui.checkbox(&mut inf, t("no limit")).changed() {
                                     *max = if inf { None } else { Some((lo * dd).round() as i128 * 4 + 1) };
                                     changed = true;
                                 }
@@ -1891,7 +1911,7 @@ impl RuleDesigner {
         ui.add_space(6.0);
         ui.label(RichText::new(d.deck_line(tech, &names)).monospace().color(pal.text));
         if !users.is_empty() {
-            ui.label(RichText::new(format!("Used by {}", users.join(", "))).small().color(pal.text_weak));
+            ui.label(RichText::new(tf("Used by {}", &[&users.join(", ")])).small().color(pal.text_weak));
         }
         let findings: Vec<Finding> = self.findings_for(Subject::Derived(k)).cloned().collect();
         for f in &findings {
@@ -1906,12 +1926,12 @@ impl RuleDesigner {
         }
         let d = &self.deck.derived[k];
         ui.add_space(14.0);
-        theme::section(ui, "Preview on sample shapes");
+        theme::section(ui, t("Preview on sample shapes"));
         if let Some(p) = rule_design::derived_preview(&d.expr) {
             preview_card(ui, &p, &d.name, me, tech, &names, pal);
         }
         if Op::of(&d.expr).is_some_and(Op::binary) {
-            ui.label(RichText::new("Outlines: inputs A and B · filled: the result").small().color(pal.text_weak));
+            ui.label(RichText::new(t("Outlines: inputs A and B · filled: the result")).small().color(pal.text_weak));
         }
     }
 
@@ -1928,7 +1948,7 @@ impl RuleDesigner {
             Kind::Antenna,
         ];
         ui.label(
-            RichText::new("Checks per layer (enclosure, separation and extension are listed on the checked layer). Click a value to edit it, + to add it with the technology value.")
+            RichText::new(t("Checks per layer (enclosure, separation and extension are listed on the checked layer). Click a value to edit it, + to add it with the technology value."))
                 .small()
                 .color(pal.text_weak),
         );
@@ -1936,9 +1956,9 @@ impl RuleDesigner {
         let mut pick = None;
         let mut add: Option<(Kind, usize)> = None;
         egui::Grid::new("rd_cov").striped(true).spacing([14.0, 6.0]).show(ui, |ui| {
-            ui.label(RichText::new("Layer").strong());
+            ui.label(RichText::new(t("Layer")).strong());
             for k in cols {
-                ui.label(RichText::new(k.label()).strong()).on_hover_text(format!("{}: {}", k.title(), k.question()));
+                ui.label(RichText::new(t(k.label())).strong()).on_hover_text(format!("{}: {}", k.title(), k.question()));
             }
             ui.end_row();
             for (l, lname) in names.iter().enumerate() {
@@ -1947,7 +1967,7 @@ impl RuleDesigner {
                     swatch(ui, color_of(l, tech, pal.dark));
                     ui.label(lname);
                     if routing {
-                        ui.label(RichText::new("routing").small().color(pal.text_weak));
+                        ui.label(RichText::new(t("routing")).small().color(pal.text_weak));
                     }
                 });
                 for k in cols {
@@ -1964,9 +1984,9 @@ impl RuleDesigner {
                             let r = &self.deck.rules[i].rule;
                             let mut t = rule_value(r, tech);
                             match *r {
-                                Rule::Enclosure { outer: o, .. } => t = format!("{t} by {}", names[o]),
-                                Rule::Separation { a, .. } => t = format!("{t} to {}", names[a]),
-                                Rule::Extension { b, .. } => t = format!("{t} past {}", names[b]),
+                                Rule::Enclosure { outer: o, .. } => t = tf("{} by {}", &[&t, &names[o]]),
+                                Rule::Separation { a, .. } => t = tf("{} to {}", &[&t, &names[a]]),
+                                Rule::Extension { b, .. } => t = tf("{} past {}", &[&t, &names[b]]),
                                 _ => {}
                             }
                             if ui.selectable_label(self.sel == Sel::Rule(i), RichText::new(t).small()).clicked() {
@@ -1976,10 +1996,10 @@ impl RuleDesigner {
                         let basic = matches!(k, Kind::Width | Kind::Space | Kind::Area);
                         if hits.is_empty() && l < tech.layers.len() {
                             if routing && matches!(k, Kind::Width | Kind::Space) {
-                                ui.label(RichText::new("missing").small().color(pal.warning));
+                                ui.label(RichText::new(t("missing")).small().color(pal.warning));
                             }
                             if (basic || routing)
-                                && ui.small_button("+").on_hover_text(format!("Add a {} rule", k.label())).clicked()
+                                && ui.small_button("+").on_hover_text(tf("Add a {} rule", &[t(k.label())])).clicked()
                             {
                                 add = Some((k, l));
                             }
@@ -2008,12 +2028,12 @@ impl RuleDesigner {
 
     fn text_tab(&mut self, ui: &mut egui::Ui, tech: &Tech, pal: &Palette) {
         ui.label(
-            RichText::new("The deck the designer writes. Edit it here and press Use text to bring the changes back into the designer; SVRF decks are translated.")
+            RichText::new(t("The deck the designer writes. Edit it here and press Use text to bring the changes back into the designer; SVRF decks are translated."))
                 .small()
                 .color(pal.text_weak),
         );
         ui.horizontal(|ui| {
-            if ui.add_enabled(self.text_edited, egui::Button::new("Use text")).clicked() {
+            if ui.add_enabled(self.text_edited, egui::Button::new(t("Use text"))).clicked() {
                 match drc::parse_any(&self.text, tech) {
                     Ok(p) => {
                         self.deck = p.deck;
@@ -2026,19 +2046,19 @@ impl RuleDesigner {
                     Err(errs) => self.text_errors = errs.iter().map(|e| e.to_string()).collect(),
                 }
             }
-            if ui.add_enabled(self.text_edited, egui::Button::new("Discard edits")).clicked() {
+            if ui.add_enabled(self.text_edited, egui::Button::new(t("Discard edits"))).clicked() {
                 self.text_edited = false;
                 self.text_errors.clear();
                 self.text_gen = 0;
             }
-            if ui.button("Copy").clicked() {
+            if ui.button(t("Copy")).clicked() {
                 ui.ctx().copy_text(self.text.clone());
             }
         });
         for e in &self.text_errors {
             ui.label(RichText::new(e).small().color(pal.danger));
         }
-        let lb = ui.label(RichText::new("Deck").small().color(pal.text_weak));
+        let lb = ui.label(RichText::new(t("Deck")).small().color(pal.text_weak));
         let r = ui
             .add(egui::TextEdit::multiline(&mut self.text).code_editor().desired_rows(30).desired_width(f32::INFINITY))
             .labelled_by(lb.id);
@@ -2049,22 +2069,20 @@ impl RuleDesigner {
 
     fn issues(&mut self, ui: &mut egui::Ui, tech: &Tech, pal: &Palette) {
         if self.findings.is_empty() {
-            ui.label(RichText::new("✔ No issues found").color(pal.ok));
+            ui.label(RichText::new(t("✔ No issues found")).color(pal.ok));
             return;
         }
         let names = self.deck.layer_names(tech);
         ui.label(
-            RichText::new(
-                "error: the rule cannot work as written · warning: probably a mistake · note: a suggestion. \
-                 The buttons apply the suggested change to the draft.",
-            )
+            RichText::new(t("error: the rule cannot work as written · warning: probably a mistake · note: a suggestion. \
+                 The buttons apply the suggested change to the draft."))
             .small()
             .color(pal.text_weak),
         );
         let fixable = self.findings.iter().filter(|f| rule_design::auto_fixable(f)).count();
-        let all = ui.add_enabled(fixable > 0, egui::Button::new(format!("Fix automatically ({fixable})")));
+        let all = ui.add_enabled(fixable > 0, egui::Button::new(tf("Fix automatically ({})", &[&fixable.to_string()])));
         let fix_all =
-            all.on_hover_text("Apply every suggested fix of the errors and warnings, and add the missing rules").clicked();
+            all.on_hover_text(t("Apply every suggested fix of the errors and warnings, and add the missing rules")).clicked();
         ui.add_space(6.0);
         let mut pick = None;
         let mut fix = None;
@@ -2079,7 +2097,7 @@ impl RuleDesigner {
                     Subject::Deck => None,
                 };
                 if let Some((s, name)) = target
-                    && ui.small_button(format!("Go to {name}")).clicked()
+                    && ui.small_button(tf("Go to {}", &[&name])).clicked()
                 {
                     pick = Some(s);
                 }
@@ -2091,7 +2109,7 @@ impl RuleDesigner {
         }
         if fix_all {
             let n = rule_design::fix_all(&mut self.deck, tech);
-            self.status = Some((true, format!("Applied {n} fix(es)")));
+            self.status = Some((true, tf("Applied {} fix(es)", &[&n.to_string()])));
             self.touch();
         } else if let Some(f) = fix {
             rule_design::apply_fix(&mut self.deck, &f, tech);
@@ -2103,9 +2121,9 @@ impl RuleDesigner {
 /// A finding with its fix button; true when the fix was clicked.
 fn finding_row(ui: &mut egui::Ui, f: &Finding, tech: &Tech, names: &[String], pal: &Palette) -> bool {
     let (tag, c) = match f.severity {
-        Severity::Error => ("error", pal.danger),
-        Severity::Warning => ("warning", pal.warning),
-        Severity::Info => ("note", pal.text_weak),
+        Severity::Error => (t("error"), pal.danger),
+        Severity::Warning => (t("warning"), pal.warning),
+        Severity::Info => (t("note"), pal.text_weak),
     };
     ui.horizontal_wrapped(|ui| {
         ui.label(RichText::new(tag).small().strong().color(c));
@@ -2132,7 +2150,7 @@ fn step(ui: &mut egui::Ui, n: usize, title: &str, pal: &Palette, body: impl FnOn
                     theme::on_fill(pal.accent),
                 );
                 ui.vertical(|ui| {
-                    ui.label(RichText::new(title).strong().color(pal.text_strong));
+                    ui.label(RichText::new(t(title)).strong().color(pal.text_strong));
                     body(ui);
                 });
             });
@@ -2325,18 +2343,18 @@ fn pattern_card(ui: &mut egui::Ui, run: &PatternRun, tech: &Tech, pal: &Palette)
             ui.label(RichText::new(&run.pattern.title).strong().color(pal.text_strong));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let (t, c) = match (run.markers.len(), run.as_expected) {
-                    (0, true) => ("accepted".to_string(), pal.ok),
-                    (n, true) => (format!("flagged {n}"), pal.ok),
-                    (0, false) => ("missed!".to_string(), pal.danger),
-                    (n, false) => (format!("false flag {n}"), pal.danger),
+                    (0, true) => (i18n::t("accepted").to_string(), pal.ok),
+                    (n, true) => (tf("flagged {}", &[&n.to_string()]), pal.ok),
+                    (0, false) => (i18n::t("missed!").to_string(), pal.danger),
+                    (n, false) => (tf("false flag {}", &[&n.to_string()]), pal.danger),
                 };
                 chip(ui, &t, c);
             });
         });
         let cap = if run.pattern.expect_fail {
-            "One grid step past the limit: the rule must flag it."
+            t("One grid step past the limit: the rule must flag it.")
         } else {
-            "Exactly at the limit: the rule must accept it."
+            t("Exactly at the limit: the rule must accept it.")
         };
         ui.label(RichText::new(cap).small().color(pal.text_weak));
         let (resp, p) = ui.allocate_painter(Vec2::new(w - 16.0, 220.0), Sense::hover());
@@ -2419,7 +2437,7 @@ fn preview_card(
         p.text(
             resp.rect.right_top() + Vec2::new(-6.0, 6.0),
             Align2::RIGHT_TOP,
-            format!("result: {name}"),
+            tf("result: {}", &[name]),
             FontId::proportional(12.0),
             rc,
         );
@@ -2456,7 +2474,10 @@ fn sketch(ui: &mut egui::Ui, rule: &Rule, tech: &Tech, names: &[String], pal: &P
             p.text(
                 Pos2::new(r.min.x + 5.0 * cell + 16.0, r.center().y),
                 Align2::LEFT_CENTER,
-                format!("{} µm windows\nallowed {min}-{max} %\nred: failing windows", um(window, tech)),
+                tf(
+                    "{} µm windows\nallowed {}-{} %\nred: failing windows",
+                    &[&um(window, tech), &min.to_string(), &max.to_string()],
+                ),
                 font,
                 pal.text,
             );
@@ -2466,14 +2487,14 @@ fn sketch(ui: &mut egui::Ui, rule: &Rule, tech: &Tech, names: &[String], pal: &P
             let pc = color_of(poly, tech, pal.dark);
             let gate = Rect::from_min_size(Pos2::new(r.left() + 20.0, r.bottom() - 40.0), Vec2::new(30.0, 30.0));
             p.rect_filled(gate, 0.0, pc.gamma_multiply(0.6));
-            p.text(gate.center_bottom() + Vec2::new(0.0, 4.0), Align2::CENTER_TOP, "gate", font.clone(), pal.text_weak);
+            p.text(gate.center_bottom() + Vec2::new(0.0, 4.0), Align2::CENTER_TOP, t("gate"), font.clone(), pal.text_weak);
             let metal = Rect::from_min_max(Pos2::new(gate.left(), r.top() + 20.0), Pos2::new(r.right() - 160.0, r.top() + 50.0));
             p.rect_filled(metal, 0.0, mc.gamma_multiply(0.5));
             p.line_segment([gate.center_top(), Pos2::new(gate.center().x, metal.bottom())], Stroke::new(3.0, pal.text_weak));
             p.text(
                 Pos2::new(r.right() - 150.0, r.center().y),
                 Align2::LEFT_CENTER,
-                format!("area({}) / area(gate)\nmust stay <= {ratio}\nfor nets without diffusion", nm(layer)),
+                tf("area({}) / area(gate)\nmust stay <= {}\nfor nets without diffusion", &[&nm(layer), &ratio.to_string()]),
                 font,
                 pal.text,
             );
@@ -2486,7 +2507,7 @@ fn sketch(ui: &mut egui::Ui, rule: &Rule, tech: &Tech, names: &[String], pal: &P
                 p.rect_filled(x, 0.0, c.gamma_multiply(0.45));
                 p.rect_stroke(x.expand(2.0), 0.0, Stroke::new(2.0, pal.danger), StrokeKind::Middle);
             }
-            p.text(r.right_center(), Align2::RIGHT_CENTER, format!("every piece of {}\nis reported", nm(l)), font, pal.text);
+            p.text(r.right_center(), Align2::RIGHT_CENTER, tf("every piece of {}\nis reported", &[&nm(l)]), font, pal.text);
         }
     }
 }

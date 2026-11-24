@@ -187,13 +187,13 @@ pub fn simulate(deck: &str, analyses: &[Analysis], opts: &SimOptions) -> Result<
 
             res.warnings.extend(circuit.warnings.iter().cloned());
             let mut log: Vec<String> = res.warnings.iter().map(|w| format!("warning: {w}")).collect();
-            log.push(format!("ics-sim: {} nodes, {} elements", circuit.node_count(), circuit.elements.len()));
+            log.push(format!("ics-sim: {} nodes, {} elements", circuit.node_count(), circuit.elements.len())); // i18n: ignore
             let mut eng = engine::Engine::new(circuit)?;
             for a in &analyses {
                 let t0 = Instant::now();
                 let ds = eng.run(a)?;
                 log.append(&mut eng.log);
-                log.push(format!("{:<6} {:>7} points  {:>8.2} ms", a.kind_name(), ds.len(), t0.elapsed().as_secs_f64() * 1e3));
+                log.push(format!("{:<6} {:>7} points  {:>8.2} ms", a.kind_name(), ds.len(), t0.elapsed().as_secs_f64() * 1e3)); // i18n: ignore // i18n: ignore
                 res.datasets.push(ds);
             }
             res.log = log.join("\n");

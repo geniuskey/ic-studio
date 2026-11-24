@@ -1280,6 +1280,18 @@ fn glyph_coverage() {
         include_str!("../src/hier_view.rs"),
         include_str!("../src/gen_view.rs"),
         include_str!("../src/guide_view.rs"),
+        include_str!("../src/learn.rs"),
+        include_str!("../src/learn_view.rs"),
+        include_str!("../../../docs/learn/index.md"),
+        include_str!("../../../docs/learn/circuits.md"),
+        include_str!("../../../docs/learn/mosfet.md"),
+        include_str!("../../../docs/learn/cmos-logic.md"),
+        include_str!("../../../docs/learn/tutorial-inverter.md"),
+        include_str!("../../../docs/learn/layout-basics.md"),
+        include_str!("../../../docs/learn/tutorial-layout.md"),
+        include_str!("../../../docs/learn/analog-basics.md"),
+        include_str!("../../../docs/learn/tutorial-amplifier.md"),
+        include_str!("../../../docs/learn/glossary.md"),
         include_str!("../src/derive_view.rs"),
         include_str!("../../ics-core/src/advice.rs"),
         include_str!("../../ics-core/src/derive.rs"),
@@ -2937,6 +2949,84 @@ fn tutorial_walkthrough() {
     shot(&mut h, "tutorial_03_done");
 }
 
+/// The Learn window: chapters in the app, moving through them, and the live checks of a
+/// chapter evaluated on the user's (here the demo's) design.
+#[test]
+fn learn_course() {
+    use egui_kittest::kittest::Queryable;
+    use ics_studio::learn::{Check, CheckKind, CheckState};
+    let mut h = app(demo_args("cmos_inverter", "schematic", false));
+    let cmos = ics_studio::learn::chapter_index("cmos-logic").unwrap();
+    h.state_mut().command(Command::Learn(Some(cmos)));
+    h.run_steps(4);
+    shot(&mut h, "70_learn_chapter");
+    // Answer the chapter's first multiple-choice quiz wrong, then right.
+    use ics_studio::learn::{Answer, Block};
+    let quizzes: Vec<_> = ics_studio::learn::blocks(ics_studio::i18n::Lang::En, cmos)
+        .iter()
+        .filter_map(|b| if let Block::Quiz(q) = b { Some(q.clone()) } else { None })
+        .collect();
+    let (n, options, correct) =
+        quizzes
+            .iter()
+            .enumerate()
+            .find_map(|(n, q)| {
+                if let Answer::Choice { options, correct } = &q.answer { Some((n, options.clone(), *correct)) } else { None }
+            })
+            .expect("the CMOS chapter has a multiple-choice quiz");
+    let key = format!("cmos-logic#{n}");
+    let option = |i: usize| ics_studio::learn::strip_inline(&options[i]);
+    // The quiz's Check button: the n-th of the chapter's quizzes.
+    let check_button = |h: &mut Harness<'_, IcStudio>| h.get_all_by_label("Check answer").nth(n).unwrap().click_accesskit();
+    h.get_by_label(&option((correct + 1) % options.len())).click_accesskit();
+    h.run_steps(2);
+    check_button(&mut h);
+    h.run_steps(3);
+    assert_eq!(h.state().learn().1.quiz.get(&key), Some(&false));
+    h.get_by_label(&option(correct)).click_accesskit();
+    h.run_steps(2);
+    check_button(&mut h);
+    h.run_steps(3);
+    assert_eq!(h.state().learn().1.quiz.get(&key), Some(&true));
+    shot(&mut h, "70_learn_quiz");
+    assert!(h.state().learn().0.open);
+    assert_eq!(h.state().learn().0.chapter, cmos);
+    h.get_by_label("Next ›").click();
+    h.run_steps(3);
+    assert_eq!(h.state().learn().0.chapter, cmos + 1);
+    assert!(h.state().learn().1.done.contains("cmos-logic"), "Next marks the chapter done");
+    assert_eq!(h.state().learn().1.last.as_deref(), Some(ics_studio::learn::CHAPTERS[cmos + 1].id));
+
+    let check = |kind| Check { label: "x".into(), cell: "cmos_inverter".into(), kind };
+    let pass = |s: CheckState| matches!(s, CheckState::Pass(_));
+    assert!(matches!(h.state().learn_check(&check(CheckKind::Simulated)), CheckState::Waiting(_)));
+    assert!(pass(h.state().learn_check(&check(CheckKind::Schematic { devices: 2 }))));
+    let missing = Check { label: "x".into(), cell: "no_such_cell".into(), kind: CheckKind::Schematic { devices: 1 } };
+    assert!(matches!(h.state().learn_check(&missing), CheckState::Waiting(_)));
+    h.state_mut().command(Command::RunSimulation);
+    h.run_steps(2);
+    settle(&mut h, "learn simulation");
+    let state = h.state().learn_check(&check(CheckKind::Simulated));
+    assert!(pass(state.clone()), "{state:?}");
+    let tphl = CheckKind::Measure {
+        analysis: "tran".into(),
+        expr: "delay(v(in), 0.9, v(out), 0.9, rise, fall)".into(),
+        min: "".into(),
+        max: "50p".into(),
+    };
+    let state = h.state().learn_check(&check(tphl));
+    assert!(pass(state.clone()), "tphl of the demo inverter: {state:?}");
+    let slow = CheckKind::Measure {
+        analysis: "tran".into(),
+        expr: "delay(v(in), 0.9, v(out), 0.9, rise, fall)".into(),
+        min: "".into(),
+        max: "1p".into(),
+    };
+    assert!(matches!(h.state().learn_check(&check(slow)), CheckState::Fail(_)));
+    assert!(matches!(h.state().learn_check(&check(CheckKind::DrcClean)), CheckState::Waiting(_)));
+    shot(&mut h, "71_learn_after_sim");
+}
+
 /// Requesting focus every frame interrupts IME composition every frame, which on Windows
 /// toggles the IME and floods the event loop until the app hangs.
 #[test]
@@ -3707,5 +3797,8 @@ fn korean_ui_screens() {
     h.state_mut().command(Command::Tutorial);
     h.run_steps(4);
     shot(&mut h, "63_ko_tutorial");
+    h.state_mut().command(Command::Learn(ics_studio::learn::chapter_index("mosfet")));
+    h.run_steps(4);
+    shot(&mut h, "64_ko_learn");
     ics_studio::i18n::set(ics_studio::i18n::Lang::En);
 }

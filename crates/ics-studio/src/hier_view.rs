@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use eframe::egui::{self, RichText};
 use ics_core::{CellRef, Project};
 
+use crate::i18n::{t, tf};
 use crate::theme::{self, Palette};
 
 /// Placement counts between the project's layouts.
@@ -91,16 +92,16 @@ impl HierBrowser {
                 .frame(egui::Frame::new().fill(pal.bg_sidebar).inner_margin(8)),
             ui,
             |ui| {
-                ui.label(RichText::new("Hierarchy Browser").strong().color(pal.text_strong));
-                let l = ui.label(RichText::new("Filter").small().color(pal.text_weak));
-                ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("cell name").desired_width(f32::INFINITY))
+                ui.label(RichText::new(t("Hierarchy Browser")).strong().color(pal.text_strong));
+                let l = ui.label(RichText::new(t("Filter")).small().color(pal.text_weak));
+                ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text(t("cell name")).desired_width(f32::INFINITY))
                     .labelled_by(l.id);
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     let f = self.filter.to_ascii_lowercase();
                     if f.is_empty() {
-                        theme::section(ui, &format!("Top cells ({})", u.tops.len()));
-                        for t in &u.tops {
-                            self.node(ui, &u, t, 1, &mut vec![], &pal);
+                        theme::section(ui, &tf("Top cells ({})", &[&u.tops.len().to_string()]));
+                        for top in &u.tops {
+                            self.node(ui, &u, top, 1, &mut vec![], &pal);
                         }
                     } else {
                         for (r, c) in
@@ -117,7 +118,7 @@ impl HierBrowser {
         );
         egui::CentralPanel::default().frame(egui::Frame::new().fill(pal.bg_panel).inner_margin(12)).show(ui, |ui| {
             let Some(sel) = self.selected.clone() else {
-                ui.label(RichText::new("Select a cell in the tree.").color(pal.text_weak));
+                ui.label(RichText::new(t("Select a cell in the tree.")).color(pal.text_weak));
                 return;
             };
             action = self.details(ui, project, &u, &sel, &pal);
@@ -130,7 +131,7 @@ impl HierBrowser {
         let label = if count > 1 { format!("{}  ×{count}", c.cell) } else { c.cell.clone() };
         let sel = self.selected.as_ref() == Some(c);
         if path.contains(c) || path.len() > 32 {
-            ui.label(RichText::new(format!("{label} (recursive)")).color(pal.danger));
+            ui.label(RichText::new(tf("{} (recursive)", &[&label])).color(pal.danger));
             return;
         }
         match kids {
@@ -164,15 +165,15 @@ impl HierBrowser {
     fn details(&mut self, ui: &mut egui::Ui, p: &Project, u: &Usage, r: &CellRef, pal: &Palette) -> Option<HierAction> {
         let mut action = None;
         let Some(cell) = p.cell(r) else {
-            ui.label(RichText::new(format!("{r} is not in the project")).color(pal.danger));
+            ui.label(RichText::new(tf("{} is not in the project", &[&r.to_string()])).color(pal.danger));
             return None;
         };
         ui.horizontal(|ui| {
             ui.label(RichText::new(r.to_string()).heading().strong());
-            if cell.layout.is_some() && ui.button("Open layout").clicked() {
+            if cell.layout.is_some() && ui.button(t("Open layout")).clicked() {
                 action = Some(HierAction::Open(r.clone(), crate::app::Workspace::Layout));
             }
-            if cell.schematic.is_some() && ui.button("Open schematic").clicked() {
+            if cell.schematic.is_some() && ui.button(t("Open schematic")).clicked() {
                 action = Some(HierAction::Open(r.clone(), crate::app::Workspace::Schematic));
             }
         });
@@ -190,14 +191,17 @@ impl HierBrowser {
                 .reduce(|a, b| ics_core::IRect::new(a.x0.min(b.x0), a.y0.min(b.y0), a.x1.max(b.x1), a.y1.max(b.y1)));
             egui::Grid::new("hb_stats").num_columns(2).spacing([24.0, 4.0]).show(ui, |ui| {
                 let mut row = |k: &str, v: String| {
-                    ui.label(RichText::new(k).color(pal.text_weak));
+                    ui.label(RichText::new(t(k)).color(pal.text_weak));
                     ui.label(RichText::new(v).monospace());
                     ui.end_row();
                 };
                 row("Shapes", l.shapes.len().to_string());
                 row(
                     "Instances",
-                    format!("{} ({} placements)", l.instances.len(), l.instances.iter().map(|i| i.count()).sum::<u64>()),
+                    tf(
+                        "{} ({} placements)",
+                        &[&l.instances.len().to_string(), &l.instances.iter().map(|i| i.count()).sum::<u64>().to_string()],
+                    ),
                 );
                 row("Flat shapes", flat.len().to_string());
                 if let Some(b) = bbox {
@@ -213,14 +217,14 @@ impl HierBrowser {
                 );
             });
         } else {
-            ui.label(RichText::new("No layout view").color(pal.text_weak));
+            ui.label(RichText::new(t("No layout view")).color(pal.text_weak));
         }
         ui.add_space(8.0);
         ui.columns(2, |cols| {
-            theme::section(&mut cols[0], "Places (flattened)");
+            theme::section(&mut cols[0], t("Places (flattened)"));
             let flat = flat_counts(u, r);
             if flat.is_empty() {
-                cols[0].label(RichText::new("No sub-cells").color(pal.text_weak));
+                cols[0].label(RichText::new(t("No sub-cells")).color(pal.text_weak));
             }
             egui::ScrollArea::vertical().id_salt("hb_places").show(&mut cols[0], |ui| {
                 for (k, n) in &flat {
@@ -229,10 +233,10 @@ impl HierBrowser {
                     }
                 }
             });
-            theme::section(&mut cols[1], "Used by");
+            theme::section(&mut cols[1], t("Used by"));
             let parents: BTreeSet<_> = u.parents.get(r).into_iter().flatten().collect();
             if parents.is_empty() {
-                cols[1].label(RichText::new("Top cell: not placed anywhere").color(pal.text_weak));
+                cols[1].label(RichText::new(t("Top cell: not placed anywhere")).color(pal.text_weak));
             }
             egui::ScrollArea::vertical().id_salt("hb_used").show(&mut cols[1], |ui| {
                 for (k, n) in parents {

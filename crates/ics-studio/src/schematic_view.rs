@@ -10,6 +10,7 @@ use ics_core::units::format_eng;
 
 use crate::canvas::View2D;
 use crate::history::History;
+use crate::i18n::{t, tf};
 use crate::theme::{self, Palette};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -367,7 +368,8 @@ pub fn draw_schematic(painter: &egui::Painter, view: &View2D, rect: Rect, sch: &
         {
             // Below the name / size lines.
             let pp = p + Vec2::new(0.0, lines.len() as f32 * font.size * 1.15);
-            painter.text(pp, align, format!("id={}", format_eng(*id, "A")), FontId::monospace(font.size * 0.8), pal.simulation);
+            let id = format!("id={}", format_eng(*id, "A"));
+            painter.text(pp, align, id, FontId::monospace(font.size * 0.8), pal.simulation);
         }
     }
     // pins without connection
@@ -685,13 +687,15 @@ impl SchematicEditor {
     fn selection_summary(&mut self, sch: &Schematic) -> String {
         if let [o] = self.selection.iter().copied().collect::<Vec<_>>()[..] {
             return match o {
-                SchObj::Instance(id) => sch.instance(id).map_or_else(String::new, |i| format!("{} · {}", i.name, i.kind.label())),
+                SchObj::Instance(id) => {
+                    sch.instance(id).map_or_else(String::new, |i| format!("{} · {}", i.name, t(i.kind.label())))
+                }
                 SchObj::Wire(id) => match self.conn(sch).wire_net.get(&id) {
-                    Some(n) => format!("Wire · net {n}"),
-                    None => "Wire".into(),
+                    Some(n) => tf("Wire · net {}", &[n]),
+                    None => t("Wire").into(),
                 },
                 SchObj::Label(id) => {
-                    sch.labels.iter().find(|l| l.id == id).map_or_else(String::new, |l| format!("Net label {}", l.name))
+                    sch.labels.iter().find(|l| l.id == id).map_or_else(String::new, |l| tf("Net label {}", &[&l.name]))
                 }
             };
         }
@@ -699,9 +703,9 @@ impl SchematicEditor {
         let (i, w, l) =
             (n(|o| matches!(o, SchObj::Instance(_))), n(|o| matches!(o, SchObj::Wire(_))), n(|o| matches!(o, SchObj::Label(_))));
         let mut parts = vec![];
-        for (c, what) in [(i, "instance"), (w, "wire"), (l, "label")] {
+        for (c, one, many) in [(i, "{} instance", "{} instances"), (w, "{} wire", "{} wires"), (l, "{} label", "{} labels")] {
             if c > 0 {
-                parts.push(format!("{c} {what}{}", if c == 1 { "" } else { "s" }));
+                parts.push(tf(if c == 1 { one } else { many }, &[&c.to_string()]));
             }
         }
         parts.join(", ")
@@ -728,7 +732,7 @@ impl SchematicEditor {
         let mut picked: Option<SchAction> = None;
         let mut requests = vec![];
         let item = |ui: &mut egui::Ui, a: SchAction, enabled: bool, picked: &mut Option<SchAction>| {
-            if ui.add_enabled(enabled, egui::Button::new(a.name()).shortcut_text(a.key())).clicked() {
+            if ui.add_enabled(enabled, egui::Button::new(t(&a.name())).shortcut_text(a.key())).clicked() {
                 *picked = Some(a);
             }
         };
@@ -742,7 +746,7 @@ impl SchematicEditor {
                     ui.label(egui::RichText::new(&summary).small().strong());
                     ui.separator();
                     if let Some(id) = self.selected_cell_instance(sch)
-                        && ui.add(egui::Button::new("Descend into Cell").shortcut_text("Shift+X")).clicked()
+                        && ui.add(egui::Button::new(t("Descend into Cell")).shortcut_text("Shift+X")).clicked()
                     {
                         requests.push(SchRequest::Descend(id));
                     }
@@ -758,15 +762,15 @@ impl SchematicEditor {
                 } else {
                     item(ui, SchAction::Tool(SchTool::Wire), true, &mut picked);
                     item(ui, SchAction::Tool(SchTool::Label), true, &mut picked);
-                    ui.menu_button("Place Device", |ui| {
+                    ui.menu_button(t("Place Device"), |ui| {
                         for k in DeviceKind::PALETTE {
                             item(ui, SchAction::Tool(SchTool::Place(k.with_body_pin(self.mos_body_pin))), true, &mut picked);
                         }
                     });
-                    if ui.add(egui::Button::new("Place Cell Instance…").shortcut_text("Shift+I")).clicked() {
+                    if ui.add(egui::Button::new(t("Place Cell Instance…")).shortcut_text("Shift+I")).clicked() {
                         requests.push(SchRequest::PlaceCell);
                     }
-                    if ui.add(egui::Button::new("Return to Parent").shortcut_text("Shift+B")).clicked() {
+                    if ui.add(egui::Button::new(t("Return to Parent")).shortcut_text("Shift+B")).clicked() {
                         requests.push(SchRequest::Return);
                     }
                     ui.separator();
@@ -776,21 +780,21 @@ impl SchematicEditor {
                     ui.separator();
                     item(ui, SchAction::Fit, true, &mut picked);
                     let mut g = grid;
-                    if ui.checkbox(&mut g, "Show Grid").clicked() {
+                    if ui.checkbox(&mut g, t("Show Grid")).clicked() {
                         picked = Some(SchAction::ToggleGrid);
                     }
                     let mut h = hv;
-                    if ui.checkbox(&mut h, "Wires Bend Horizontal First").on_hover_text("/").clicked() {
+                    if ui.checkbox(&mut h, t("Wires Bend Horizontal First")).on_hover_text("/").clicked() {
                         picked = Some(SchAction::ToggleWireBend);
                     }
                     ui.separator();
-                    if ui.add(egui::Button::new("Run Simulation").shortcut_text("F5")).clicked() {
+                    if ui.add(egui::Button::new(t("Run Simulation")).shortcut_text("F5")).clicked() {
                         requests.push(SchRequest::Simulate);
                     }
-                    if ui.button("Check Schematic").clicked() {
+                    if ui.button(t("Check Schematic")).clicked() {
                         requests.push(SchRequest::Check);
                     }
-                    if ui.button("Export Netlist…").clicked() {
+                    if ui.button(t("Export Netlist…")).clicked() {
                         requests.push(SchRequest::ExportNetlist);
                     }
                 }
@@ -1091,7 +1095,7 @@ impl SchematicEditor {
             painter.text(
                 rect.center(),
                 Align2::CENTER_CENTER,
-                "Empty schematic — pick a device from the library (or press R, C, V, N, P…) and click to place.\nW draws wires, T places net labels, right-click for a menu, scroll to zoom, right-drag to pan.",
+                t("Empty schematic — pick a device from the library (or press R, C, V, N, P…) and click to place.\nW draws wires, T places net labels, right-click for a menu, scroll to zoom, right-drag to pan."),
                 FontId::proportional(14.0),
                 pal.text_weak,
             );
@@ -1248,20 +1252,20 @@ impl SchematicEditor {
         let mut changed = false;
         let conn = self.conn(sch).clone();
         if self.selection.is_empty() {
-            theme::section(ui, "Schematic");
+            theme::section(ui, t("Schematic"));
             egui::Grid::new("sch_stats").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
-                ui.label("Instances");
+                ui.label(t("Instances"));
                 ui.label(sch.instances.iter().filter(|i| i.kind.spice_prefix().is_some()).count().to_string());
                 ui.end_row();
-                ui.label("Wires");
+                ui.label(t("Wires"));
                 ui.label(sch.wires.len().to_string());
                 ui.end_row();
-                ui.label("Nets");
+                ui.label(t("Nets"));
                 ui.label(conn.nets().len().to_string());
                 ui.end_row();
             });
             ui.add_space(8.0);
-            theme::section(ui, "Nets");
+            theme::section(ui, t("Nets"));
             egui::ScrollArea::vertical().id_salt("nets").max_height(260.0).show(ui, |ui| {
                 for n in conn.nets() {
                     let pins = conn.pin_nets.values().filter(|x| **x == n).count();
@@ -1275,7 +1279,7 @@ impl SchematicEditor {
                                 }))
                                 .sense(egui::Sense::click()),
                             )
-                            .on_hover_text("Click to select the net, right-click for more");
+                            .on_hover_text(t("Click to select the net, right-click for more"));
                         let select = |ed: &mut Self| {
                             ed.selection = conn.net_wires.get(&n).into_iter().flatten().map(|w| SchObj::Wire(*w)).collect();
                             ed.selection.extend(sch.labels.iter().filter(|l| l.name == n).map(|l| SchObj::Label(l.id)));
@@ -1284,21 +1288,21 @@ impl SchematicEditor {
                             select(self);
                         }
                         r.context_menu(|ui| {
-                            if ui.button("Select Net").clicked() {
+                            if ui.button(t("Select Net")).clicked() {
                                 select(self);
                             }
-                            if ui.button("Copy Net Name").clicked() {
+                            if ui.button(t("Copy Net Name")).clicked() {
                                 ui.ctx().copy_text(n.clone());
                             }
                         });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(egui::RichText::new(format!("{pins} pins")).small().color(pal.text_weak));
+                            ui.label(egui::RichText::new(tf("{} pins", &[&pins.to_string()])).small().color(pal.text_weak));
                         });
                     });
                 }
             });
             if !conn.warnings.is_empty() {
-                theme::section(ui, "Warnings");
+                theme::section(ui, t("Warnings"));
                 for w in &conn.warnings {
                     ui.colored_label(pal.warning, w);
                 }
@@ -1306,14 +1310,14 @@ impl SchematicEditor {
             return false;
         }
         if self.selection.len() > 1 {
-            theme::section(ui, "Selection");
-            ui.label(format!("{} objects selected", self.selection.len()));
+            theme::section(ui, t("Selection"));
+            ui.label(tf("{} objects selected", &[&self.selection.len().to_string()]));
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                if ui.button("⟳ Rotate").clicked() {
+                if ui.button(t("⟳ Rotate")).clicked() {
                     changed |= self.rotate_selection(sch, false);
                 }
-                if ui.button("🗑 Delete").clicked() {
+                if ui.button(t("🗑 Delete")).clicked() {
                     changed |= self.delete_selection(sch);
                 }
             });
@@ -1326,17 +1330,17 @@ impl SchematicEditor {
                     self.selection.clear();
                     return false;
                 };
-                theme::section(ui, before.kind.label());
+                theme::section(ui, t(before.kind.label()));
                 if before.kind.is_mos() {
                     let has_body = !before.kind.implicit_bulk();
                     let mut body = has_body;
                     ui.horizontal(|ui| {
-                        ui.label("Symbol");
-                        ui.selectable_value(&mut body, true, "4-terminal")
-                            .on_hover_text("The body is a pin to wire (unwired, it is tied to the source)");
-                        ui.selectable_value(&mut body, false, "3-terminal").on_hover_text(
+                        ui.label(t("Symbol"));
+                        ui.selectable_value(&mut body, true, t("4-terminal"))
+                            .on_hover_text(t("The body is a pin to wire (unwired, it is tied to the source)"));
+                        ui.selectable_value(&mut body, false, t("3-terminal")).on_hover_text(t(
                             "No body pin, the arrow on the source: the body connects to the net of the bulk parameter",
-                        );
+                        ));
                     });
                     if body != has_body {
                         let rail = self.bulk_net(before.kind).to_string();
@@ -1344,10 +1348,11 @@ impl SchematicEditor {
                         match next.set_body_pin(id, body, Some(&rail)) {
                             Ok(true) => {
                                 // Showing the pin labels it with the body's net: say so.
-                                self.body_pin_msg =
-                                    next.labels.iter().find(|l| !sch.labels.iter().any(|o| o.id == l.id)).map(|l| {
-                                        (id, format!("Labelled the body pin '{}' to keep it on its net", l.name), false)
-                                    });
+                                self.body_pin_msg = next
+                                    .labels
+                                    .iter()
+                                    .find(|l| !sch.labels.iter().any(|o| o.id == l.id))
+                                    .map(|l| (id, tf("Labelled the body pin '{}' to keep it on its net", &[&l.name]), false));
                                 self.history.push(sch);
                                 *sch = next;
                                 return true;
@@ -1372,16 +1377,14 @@ impl SchematicEditor {
                     }
                 }
                 if before.kind.is_mos() {
-                    ui.hyperlink_to(
-                        egui::RichText::new(crate::i18n::t("What do W, L and M do? (beginner course)")).small(),
-                        "https://pages.euiyun.com/ic-studio/learn/mosfet.html#w-l-and-the-parameters-in-ic-studio",
-                    );
+                    let url = "https://pages.euiyun.com/ic-studio/learn/mosfet.html#w-l-and-the-parameters-in-ic-studio";
+                    ui.hyperlink_to(egui::RichText::new(t("What do W, L and M do? (beginner course)")).small(), url);
                     ui.add_space(4.0);
                 }
                 let mut inst = before.clone();
                 let mut focus_gained = false;
                 egui::Grid::new("inst_props").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
-                    let l = ui.label("Name");
+                    let l = ui.label(t("Name"));
                     let r = ui.add(egui::TextEdit::singleline(&mut inst.name).desired_width(140.0)).labelled_by(l.id);
                     focus_gained |= r.gained_focus();
                     ui.end_row();
@@ -1404,26 +1407,26 @@ impl SchematicEditor {
                         }
                         ui.end_row();
                     }
-                    ui.label("Orientation");
+                    ui.label(t("Orientation"));
                     ui.horizontal(|ui| {
                         ui.label(format!("R{}{}", inst.orient.rot as u32 * 90, if inst.orient.mirror { " MY" } else { "" }));
-                        if ui.small_button("⟳").on_hover_text("Rotate (Space)").clicked() {
+                        if ui.small_button("⟳").on_hover_text(t("Rotate (Space)")).clicked() {
                             focus_gained = true;
                             inst.orient = inst.orient.rotated();
                         }
-                        if ui.small_button("⇋").on_hover_text("Mirror (X)").clicked() {
+                        if ui.small_button("⇋").on_hover_text(t("Mirror (X)")).clicked() {
                             focus_gained = true;
                             inst.orient = inst.orient.mirrored();
                         }
                     });
                     ui.end_row();
-                    ui.label("Position");
+                    ui.label(t("Position"));
                     ui.label(format!("({}, {})", inst.pos.x, inst.pos.y));
                     ui.end_row();
                 });
                 if inst.kind.spice_prefix().is_some() {
                     ui.add_space(8.0);
-                    theme::section(ui, "Connections");
+                    theme::section(ui, t("Connections"));
                     egui::Grid::new("inst_pins").num_columns(2).spacing([10.0, 3.0]).show(ui, |ui| {
                         for (pin, _) in inst.pin_positions() {
                             ui.label(egui::RichText::new(pin).monospace().color(pal.text_weak));
@@ -1443,10 +1446,10 @@ impl SchematicEditor {
                 }
             }
             SchObj::Label(id) => {
-                theme::section(ui, "Net Label");
+                theme::section(ui, t("Net Label"));
                 if let Some(idx) = sch.labels.iter().position(|l| l.id == id) {
                     let mut name = sch.labels[idx].name.clone();
-                    let lb = ui.label("Net name");
+                    let lb = ui.label(t("Net name"));
                     let r = ui.add(egui::TextEdit::singleline(&mut name).desired_width(160.0)).labelled_by(lb.id);
                     if r.gained_focus() {
                         self.history.push(sch);
@@ -1456,11 +1459,11 @@ impl SchematicEditor {
                         changed = true;
                     }
                     let mut port = sch.labels[idx].port;
-                    let lb = ui.label("Pin");
+                    let lb = ui.label(t("Pin"));
                     egui::ComboBox::from_id_salt("label_port")
-                        .selected_text(port.map_or("not a pin", PortDir::name))
+                        .selected_text(port.map_or(t("not a pin"), PortDir::name))
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut port, None, "not a pin");
+                            ui.selectable_value(&mut port, None, t("not a pin"));
                             for d in PortDir::ALL {
                                 ui.selectable_value(&mut port, Some(d), d.name());
                             }
@@ -1475,20 +1478,20 @@ impl SchematicEditor {
                 }
             }
             SchObj::Wire(id) => {
-                theme::section(ui, "Wire");
+                theme::section(ui, t("Wire"));
                 if let Some(w) = sch.wires.iter().find(|w| w.id == id) {
                     ui.label(format!("({}, {}) → ({}, {})", w.a.x, w.a.y, w.b.x, w.b.y));
                 }
                 if let Some(n) = conn.wire_net.get(&id) {
                     ui.horizontal(|ui| {
-                        ui.label("Net");
+                        ui.label(t("Net"));
                         ui.label(egui::RichText::new(n).monospace().color(pal.highlight));
                     });
                 }
             }
         }
         ui.add_space(10.0);
-        if ui.button("🗑 Delete").clicked() {
+        if ui.button(t("🗑 Delete")).clicked() {
             changed |= self.delete_selection(sch);
         }
         changed
@@ -1574,21 +1577,21 @@ pub fn device_palette(ui: &mut egui::Ui, editor: &mut SchematicEditor) {
     let pal = theme::palette(ui.ctx());
     // Select / Wire / Label live on the canvas toolbar; only the label tool's net name is here.
     if editor.tool == SchTool::Label {
-        theme::section(ui, "Net Label");
+        theme::section(ui, t("Net Label"));
         ui.horizontal(|ui| {
-            let l = ui.label("Net:");
+            let l = ui.label(t("Net:"));
             ui.add(egui::TextEdit::singleline(&mut editor.label_text).desired_width(110.0)).labelled_by(l.id);
         });
         ui.add_space(6.0);
     }
-    theme::section(ui, "Device Library · analogLib");
+    theme::section(ui, t("Device Library · analogLib"));
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("MOS").color(pal.text_weak));
         let mut body = editor.mos_body_pin;
-        ui.selectable_value(&mut body, true, "4-terminal").on_hover_text("Place MOS devices with a body pin to wire");
-        ui.selectable_value(&mut body, false, "3-terminal").on_hover_text(
+        ui.selectable_value(&mut body, true, t("4-terminal")).on_hover_text(t("Place MOS devices with a body pin to wire"));
+        ui.selectable_value(&mut body, false, t("3-terminal")).on_hover_text(t(
             "Place MOS devices without a body pin, the arrow on the source: the body is on ground (NMOS) or vdd (PMOS), set by the bulk parameter",
-        );
+        ));
         if body != editor.mos_body_pin {
             editor.mos_body_pin = body;
             if let SchTool::Place(k) = editor.tool {
@@ -1599,11 +1602,11 @@ pub fn device_palette(ui: &mut egui::Ui, editor: &mut SchematicEditor) {
     if !editor.mos_body_pin {
         egui::Grid::new("bulk_nets").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
             for (k, name) in ["NMOS body", "PMOS body"].into_iter().enumerate() {
-                let l = ui.label(egui::RichText::new(name).color(pal.text_weak));
+                let l = ui.label(egui::RichText::new(t(name)).color(pal.text_weak));
                 let hint = if k == 1 { "vdd" } else { "0" };
                 ui.add(egui::TextEdit::singleline(&mut editor.bulk_nets[k]).desired_width(90.0).hint_text(hint))
                     .labelled_by(l.id)
-                    .on_hover_text("Net the body of new 3-terminal devices connects to (a project setting)");
+                    .on_hover_text(t("Net the body of new 3-terminal devices connects to (a project setting)"));
                 ui.end_row();
             }
         });
@@ -1647,7 +1650,7 @@ pub fn device_palette(ui: &mut egui::Ui, editor: &mut SchematicEditor) {
                 r.rect.center_bottom() - Vec2::new(0.0, 4.0),
                 Align2::CENTER_BOTTOM,
                 // The MOS toggle above says which symbol; the tile keeps the short name.
-                kind.with_body_pin(true).label(),
+                t(kind.with_body_pin(true).label()),
                 FontId::proportional(11.0),
                 pal.text_weak,
             );
@@ -1669,7 +1672,7 @@ pub fn device_palette(ui: &mut egui::Ui, editor: &mut SchematicEditor) {
         }
     });
     ui.add_space(8.0);
-    theme::section(ui, "Shortcuts");
+    theme::section(ui, t("Shortcuts"));
     for (k, d) in [
         ("Space / X", "rotate / mirror"),
         ("Del", "delete selection"),
@@ -1681,7 +1684,7 @@ pub fn device_palette(ui: &mut egui::Ui, editor: &mut SchematicEditor) {
     ] {
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(theme::kbd(k)).monospace().small().color(pal.accent));
-            ui.label(egui::RichText::new(d).small().color(pal.text_weak));
+            ui.label(egui::RichText::new(t(d)).small().color(pal.text_weak));
         });
     }
 }

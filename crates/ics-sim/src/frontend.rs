@@ -588,13 +588,13 @@ fn expand_body(body: &[Line], scope: &mut Scope, ctx: &mut Ctx, depth: usize) ->
         };
         let card = format!("{ty} {}", toks[3..].join(" "));
         let emit = if scope.prefix.is_empty() {
-            ctx.out.push(Line { origin: l.origin.clone(), text: format!(".model {name} {card}") });
+            ctx.out.push(Line { origin: l.origin.clone(), text: format!(".model {name} {card}") }); // i18n: ignore
             name.clone()
         } else if let Some(e) = ctx.model_cards.get(&card) {
             e.clone()
         } else {
             let emit = format!("{}.{name}", scope.prefix);
-            ctx.out.push(Line { origin: l.origin.clone(), text: format!(".model {emit} {card}") });
+            ctx.out.push(Line { origin: l.origin.clone(), text: format!(".model {emit} {card}") }); // i18n: ignore
             ctx.model_cards.insert(card, emit.clone());
             emit
         };

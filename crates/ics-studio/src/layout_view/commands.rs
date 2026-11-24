@@ -2,6 +2,7 @@
 //! pop-up menu, the option forms (q, F3, e, Shift+E), partial selection (F4) and the
 //! mouse-button hints of the status line.
 
+use crate::i18n::{t, tf};
 use std::collections::{BTreeMap, BTreeSet};
 
 use eframe::egui::{self, Pos2, Rect, Stroke, StrokeKind, Vec2};
@@ -560,7 +561,7 @@ impl LayoutEditor {
             LayAction::QuickFix => {
                 if !self.live.enabled {
                     self.live.enabled = true;
-                    self.note(true, "Live DRC on");
+                    self.note(true, t("Live DRC on"));
                     return false;
                 }
                 self.open_quick_fix(l, cx, at, hover);
@@ -668,7 +669,7 @@ impl LayoutEditor {
         let n = self.part.len();
         self.part = Partial::default();
         self.part_ref = None;
-        self.note(true, format!("Stretched {n} item(s)"));
+        self.note(true, tf("Stretched {} item(s)", &[&n.to_string()]));
         true
     }
 
@@ -771,7 +772,7 @@ impl LayoutEditor {
         };
         let mut picked = None;
         let mut button = |ui: &mut egui::Ui, a: LayAction| {
-            if ui.add_enabled(enabled(a), egui::Button::new(a.name()).shortcut_text(a.key())).clicked() {
+            if ui.add_enabled(enabled(a), egui::Button::new(t(a.name())).shortcut_text(a.key())).clicked() {
                 picked = Some(a);
             }
         };
@@ -784,12 +785,12 @@ impl LayoutEditor {
                 ui.set_min_width(210.0);
                 if n_inst + n_shapes > 0 {
                     let mut parts = vec![];
-                    for (c, what) in [(n_shapes, "shape"), (n_inst, "instance")] {
+                    for (c, one, many) in [(n_shapes, "{} shape", "{} shapes"), (n_inst, "{} instance", "{} instances")] {
                         if c > 0 {
-                            parts.push(format!("{c} {what}{}", if c == 1 { "" } else { "s" }));
+                            parts.push(tf(if c == 1 { one } else { many }, &[&c.to_string()]));
                         }
                     }
-                    ui.label(egui::RichText::new(parts.join(", ") + " selected").small().strong());
+                    ui.label(egui::RichText::new(tf("{} selected", &[&parts.join(", ")])).small().strong());
                     ui.separator();
                 }
                 for item in items {
@@ -799,7 +800,7 @@ impl LayoutEditor {
                             ui.separator();
                         }
                         PopupItem::Sub(name, acts) => {
-                            ui.menu_button(*name, |ui| {
+                            ui.menu_button(t(name), |ui| {
                                 for a in *acts {
                                     button(ui, *a);
                                 }
@@ -882,18 +883,18 @@ impl LayoutEditor {
             _ if self.idle() => "Pop-up menu (drag: zoom box)",
             _ => "Zoom box (drag)",
         };
-        [l, "Pop-up menu (drag: pan)", r]
+        [t(l), t("Pop-up menu (drag: pan)"), t(r)]
     }
 
     /// Snap spacing field (toolbar and editor options).
     pub fn snap_control(&mut self, ui: &mut egui::Ui, tech: &Tech) {
         ui.horizontal(|ui| {
-            let sl = ui.label("Snap");
+            let sl = ui.label(t("Snap"));
             let mut snap_um = self.snap_step(tech) as f64 / tech.dbu_per_um as f64;
             if ui
                 .add(egui::DragValue::new(&mut snap_um).speed(0.005).range(0.0..=100.0).max_decimals(3).suffix(" µm"))
                 .labelled_by(sl.id)
-                .on_hover_text("Snap spacing, rounded to the technology grid")
+                .on_hover_text(t("Snap spacing, rounded to the technology grid"))
                 .changed()
             {
                 self.snap = (snap_um * tech.dbu_per_um as f64).round() as i64;
@@ -908,7 +909,7 @@ impl LayoutEditor {
         let mut rects = vec![];
         // Command options open at the top left of the canvas, properties at the top right.
         let window = |title: &str, id: &str, at: Pos2| {
-            egui::Window::new(egui::RichText::new(title).size(14.0).strong())
+            egui::Window::new(egui::RichText::new(t(title)).size(14.0).strong())
                 .id(egui::Id::unique(id))
                 .resizable(true)
                 .collapsible(false)
@@ -933,13 +934,13 @@ impl LayoutEditor {
         }
         if self.show_opts {
             let mut open = true;
-            let title = format!("{} Options", self.tool.name());
+            let title = tf("{} Options", &[t(self.tool.name())]);
             let shown =
                 window(&title, "lay_form_opts", rect.left_top() + Vec2::new(12.0, 48.0)).open(&mut open).show(ctx, |ui| {
                     if !self.tool_options(ui, cx) {
-                        ui.label(egui::RichText::new(format!("{} has no options of its own.", self.tool.name())).weak());
+                        ui.label(egui::RichText::new(tf("{} has no options of its own.", &[t(self.tool.name())])).weak());
                         self.snap_control(ui, cx.tech);
-                        ui.checkbox(&mut self.gravity, "Gravity");
+                        ui.checkbox(&mut self.gravity, t("Gravity"));
                     }
                 });
             rects.extend(shown.map(|r| r.response.rect));
@@ -950,17 +951,17 @@ impl LayoutEditor {
             let shown = window("Display Options", "lay_form_display", rect.left_top() + Vec2::new(12.0, 240.0))
                 .open(&mut open)
                 .show(ctx, |ui| {
-                    theme::section(ui, "Grid");
-                    ui.checkbox(&mut self.show_grid, "Show grid");
-                    theme::section(ui, "Display Levels");
+                    theme::section(ui, t("Grid"));
+                    ui.checkbox(&mut self.show_grid, t("Show grid"));
+                    theme::section(ui, t("Display Levels"));
                     ui.horizontal(|ui| {
-                        ui.label("From 0");
-                        let t = ui.label("To");
+                        ui.label(t("From 0"));
+                        let t = ui.label(t("To"));
                         ui.add(egui::DragValue::new(&mut self.max_depth).range(0..=32)).labelled_by(t.id);
                     });
-                    theme::section(ui, "Show");
-                    ui.checkbox(&mut self.show_flylines, "Flylines (unrouted schematic connections)");
-                    if ui.add_enabled(!l.rulers.is_empty(), egui::Button::new("Clear all rulers")).clicked() {
+                    theme::section(ui, t("Show"));
+                    ui.checkbox(&mut self.show_flylines, t("Flylines (unrouted schematic connections)"));
+                    if ui.add_enabled(!l.rulers.is_empty(), egui::Button::new(t("Clear all rulers"))).clicked() {
                         self.history.push(l);
                         l.rulers.clear();
                         changed = true;
@@ -974,21 +975,21 @@ impl LayoutEditor {
             let shown = window("Layout Editor Options", "lay_form_editor", rect.left_top() + Vec2::new(300.0, 240.0))
                 .open(&mut open)
                 .show(ctx, |ui| {
-                    theme::section(ui, "Snapping");
+                    theme::section(ui, t("Snapping"));
                     self.snap_control(ui, cx.tech);
-                    ui.checkbox(&mut self.gravity, "Gravity (snap to vertices and edges)");
-                    theme::section(ui, "Editing");
-                    ui.checkbox(&mut self.drd, "Design-rule-driven feedback (DRD)");
-                    ui.checkbox(&mut self.inst_selectable, "Instances selectable");
-                    ui.checkbox(&mut self.auto_abut, "Auto-abut moved MOS devices on shared nets");
-                    if ui.checkbox(&mut self.partial_mode, "Partial selection (F4)").changed() {
+                    ui.checkbox(&mut self.gravity, t("Gravity (snap to vertices and edges)"));
+                    theme::section(ui, t("Editing"));
+                    ui.checkbox(&mut self.drd, t("Design-rule-driven feedback (DRD)"));
+                    ui.checkbox(&mut self.inst_selectable, t("Instances selectable"));
+                    ui.checkbox(&mut self.auto_abut, t("Auto-abut moved MOS devices on shared nets"));
+                    if ui.checkbox(&mut self.partial_mode, t("Partial selection (F4)")).changed() {
                         self.part = Partial::default();
                     }
                     ui.horizontal(|ui| {
-                        let w = ui.label("Default path width (nm)");
+                        let w = ui.label(t("Default path width (nm)"));
                         ui.add(egui::DragValue::new(&mut self.path_width).range(0..=100_000).speed(10)).labelled_by(w.id);
                     });
-                    theme::section(ui, "Tracks");
+                    theme::section(ui, t("Tracks"));
                     changed |= self.tracks_form(ui, l, cx);
                 });
             rects.extend(shown.map(|r| r.response.rect));

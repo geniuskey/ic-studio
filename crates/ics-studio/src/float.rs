@@ -1,5 +1,6 @@
 //! Tool windows that dock inside the main window or pop out into their own native window.
 
+use crate::i18n::t;
 use crate::icons::{self, Icon};
 
 /// Shows `add` in an in-app window (the default) or, once popped out, in a separate OS window.
@@ -21,7 +22,7 @@ pub fn tool_window<R>(
     let mut add = Some(add);
     let r = if popped {
         let builder = egui::ViewportBuilder::default()
-            .with_title(title)
+            .with_title(t(title))
             .with_icon(crate::app_icon::icon())
             .with_inner_size(size)
             .with_min_inner_size([360.0, 300.0]);
@@ -50,7 +51,7 @@ pub fn tool_window<R>(
         let area = work_area(ctx).unwrap_or_else(|| ctx.content_rect());
         let gap = 8.0;
         let room = (area.size() - egui::vec2(2.0 * gap, 2.0 * gap)).max(egui::vec2(360.0, 300.0));
-        let resp = egui::Window::new(title)
+        let resp = egui::Window::new(t(title))
             .id(egui::Id::unique(("tool_window", id)))
             .open(&mut shown)
             .default_size(egui::vec2(size[0], size[1]).min(room))
@@ -103,7 +104,7 @@ fn pop_out_button(ctx: &egui::Context, id: &str, window: &egui::Response) -> boo
     let v = ui.style().interact(&resp);
     let r = rect.shrink((h - style.spacing.icon_width) * 0.5).expand(v.expansion);
     icons::paint(ui.painter(), r, Icon::PopOut, v.fg_stroke.color);
-    resp.on_hover_text("Pop out into a separate window").clicked()
+    resp.on_hover_text(t("Pop out into a separate window")).clicked()
 }
 
 fn icon_button(ui: &mut egui::Ui, icon: Icon, label: &str, tip: &str) -> egui::Response {
@@ -115,5 +116,5 @@ fn icon_button(ui: &mut egui::Ui, icon: Icon, label: &str, tip: &str) -> egui::R
         ui.painter().rect_filled(rect, 3.0, v.weak_bg_fill);
     }
     icons::paint(ui.painter(), rect.shrink(2.0), icon, v.fg_stroke.color);
-    resp.on_hover_text(tip)
+    resp.on_hover_text(t(tip))
 }

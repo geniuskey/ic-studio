@@ -5,6 +5,7 @@
 use eframe::egui;
 use egui::text::{LayoutJob, TextFormat};
 
+use crate::i18n::t;
 use crate::theme::Palette;
 
 /// A piece of a message: running text, or a fenced code block.
@@ -126,7 +127,7 @@ pub fn copy_button_with(ui: &mut egui::Ui, id: egui::Id, label: &str, text: impl
     let now = ui.input(|i| i.time);
     let at: Option<f64> = ui.data(|d| d.get_temp(id));
     let copied = at.is_some_and(|t| now - t < 1.5);
-    let r = ui.add(egui::Button::new(egui::RichText::new(if copied { "Copied" } else { label }).small()).small());
+    let r = ui.add(egui::Button::new(egui::RichText::new(t(if copied { "Copied" } else { label })).small()).small());
     if r.clicked() {
         ui.ctx().copy_text(text());
         ui.data_mut(|d| d.insert_temp(id, now));
@@ -134,7 +135,7 @@ pub fn copy_button_with(ui: &mut egui::Ui, id: egui::Id, label: &str, text: impl
     if copied {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(300));
     }
-    r.on_hover_text("Copy to the clipboard")
+    r.on_hover_text(t("Copy to the clipboard"))
 }
 
 /// Show a Markdown message. `id` keeps the code blocks' widgets apart.

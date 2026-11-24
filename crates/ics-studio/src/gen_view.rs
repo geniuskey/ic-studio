@@ -7,6 +7,7 @@ use ics_core::matching::{MatchSpec, Pattern};
 use ics_core::tech::Tech;
 use ics_core::{CellRef, IRect, Project};
 
+use crate::i18n::{t, tf};
 use crate::theme::{self, Palette};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -114,20 +115,20 @@ impl LayoutGenerators {
             let mut action = None;
             egui::CentralPanel::default().frame(egui::Frame::new().fill(pal.bg_panel).inner_margin(12)).show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Layout Generators").strong().color(pal.text_strong));
+                    ui.label(RichText::new(t("Layout Generators")).strong().color(pal.text_strong));
                     ui.label(
-                        RichText::new(cell.map_or("· open a layout cell".into(), |c| format!("· {c}"))).color(pal.text_weak),
+                        RichText::new(cell.map_or(t("· open a layout cell").into(), |c| format!("· {c}"))).color(pal.text_weak),
                     );
                 });
                 ui.horizontal(|ui| {
-                    for (t, n) in [
+                    for (tab, n) in [
                         (GenTab::GuardRing, "Guard Ring"),
                         (GenTab::ViaArray, "Via Array"),
                         (GenTab::Matching, "Matched Placement"),
                         (GenTab::Example, "By Example"),
                     ] {
-                        if ui.selectable_label(self.tab == t, n).clicked() {
-                            self.tab = t;
+                        if ui.selectable_label(self.tab == tab, t(n)).clicked() {
+                            self.tab = tab;
                         }
                     }
                 });
@@ -159,8 +160,8 @@ impl LayoutGenerators {
         });
         ui.horizontal(|ui| {
             if ui
-                .add_enabled(sel.is_some(), egui::Button::new("Use selection"))
-                .on_disabled_hover_text("Select shapes or instances first")
+                .add_enabled(sel.is_some(), egui::Button::new(t("Use selection")))
+                .on_disabled_hover_text(t("Select shapes or instances first"))
                 .clicked()
                 && let Some(b) = sel
             {
@@ -176,16 +177,16 @@ impl LayoutGenerators {
     }
 
     fn ring_ui(&mut self, ui: &mut egui::Ui, tech: &Tech, sel: Option<IRect>, ready: bool, pal: &Palette) -> Option<GenAction> {
-        theme::section(ui, "Area to surround");
+        theme::section(ui, t("Area to surround"));
         self.area_ui(ui, tech, sel, pal);
-        theme::section(ui, "Ring");
+        theme::section(ui, t("Ring"));
         ui.horizontal(|ui| {
-            ui.radio_value(&mut self.ring.well, false, "p+ substrate ring (NMOS)");
-            ui.radio_value(&mut self.ring.well, true, "n+ ring in nwell (PMOS)");
+            ui.radio_value(&mut self.ring.well, false, t("p+ substrate ring (NMOS)"));
+            ui.radio_value(&mut self.ring.well, true, t("n+ ring in nwell (PMOS)"));
         });
         egui::Grid::new("gen_ring").num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| {
             for (label, v) in [("Width (0 = minimum)", &mut self.ring.width), ("Gap to area (0 = minimum)", &mut self.ring.gap)] {
-                let l = ui.label(label);
+                let l = ui.label(t(label));
                 let mut x = um(*v, tech);
                 if ui.add(egui::DragValue::new(&mut x).speed(0.01).range(0.0..=100.0).suffix(" µm")).labelled_by(l.id).changed()
                 {
@@ -194,20 +195,21 @@ impl LayoutGenerators {
                 ui.end_row();
             }
         });
-        ui.checkbox(&mut self.ring.contacts, "Contacts along the ring");
-        ui.checkbox(&mut self.ring.metal, "Metal1 strap");
+        ui.checkbox(&mut self.ring.contacts, t("Contacts along the ring"));
+        ui.checkbox(&mut self.ring.metal, t("Metal1 strap"));
         if self.ring.contacts && !self.ring.metal {
-            ui.label(RichText::new("Contacts without the metal strap are not DRC clean").small().color(pal.warning));
+            ui.label(RichText::new(t("Contacts without the metal strap are not DRC clean")).small().color(pal.warning));
         }
         ui.add_space(8.0);
-        let b = egui::Button::new(RichText::new("Create Guard Ring").strong().color(theme::on_fill(pal.layout))).fill(pal.layout);
+        let b =
+            egui::Button::new(RichText::new(t("Create Guard Ring")).strong().color(theme::on_fill(pal.layout))).fill(pal.layout);
         ui.add_enabled(ready, b)
             .clicked()
             .then(|| GenAction::GuardRing(GuardRing { area: self.area_dbu(tech), ..self.ring.clone() }))
     }
 
     fn via_ui(&mut self, ui: &mut egui::Ui, tech: &Tech, sel: Option<IRect>, ready: bool, pal: &Palette) -> Option<GenAction> {
-        theme::section(ui, "Via");
+        theme::section(ui, t("Via"));
         if tech.via(&self.via).is_none() {
             self.via = tech
                 .vias
@@ -216,7 +218,7 @@ impl LayoutGenerators {
                 .or(tech.vias.first())
                 .map_or(String::new(), |v| v.name.clone());
         }
-        let l = ui.label("Via");
+        let l = ui.label(t("Via"));
         egui::ComboBox::from_id_salt("gen_via")
             .selected_text(self.via.as_str())
             .show_ui(ui, |ui| {
@@ -226,16 +228,17 @@ impl LayoutGenerators {
             })
             .response
             .labelled_by(l.id);
-        theme::section(ui, "Where");
-        ui.radio_value(&mut self.overlaps, true, "Every overlap of the via's layers");
-        ui.radio_value(&mut self.overlaps, false, "Fill the area below");
+        theme::section(ui, t("Where"));
+        ui.radio_value(&mut self.overlaps, true, t("Every overlap of the via's layers"));
+        ui.radio_value(&mut self.overlaps, false, t("Fill the area below"));
         let mut limit = !self.overlaps;
         if self.overlaps {
-            ui.checkbox(&mut limit, "Only within the area below");
+            ui.checkbox(&mut limit, t("Only within the area below"));
         }
         self.area_ui(ui, tech, sel, pal);
         ui.add_space(8.0);
-        let b = egui::Button::new(RichText::new("Create Via Arrays").strong().color(theme::on_fill(pal.layout))).fill(pal.layout);
+        let b =
+            egui::Button::new(RichText::new(t("Create Via Arrays")).strong().color(theme::on_fill(pal.layout))).fill(pal.layout);
         if !ui.add_enabled(ready && !self.via.is_empty(), b).clicked() {
             return None;
         }
@@ -248,13 +251,11 @@ impl LayoutGenerators {
     }
 
     fn example_ui(&mut self, ui: &mut egui::Ui, project: &Project, cell: Option<&CellRef>, pal: &Palette) -> Option<GenAction> {
-        theme::section(ui, "Layout by example");
+        theme::section(ui, t("Layout by example"));
         ui.label(
-            RichText::new(
-                "Reuse the placement of a finished cell with the same circuit: devices are matched by topology, \
+            RichText::new(t("Reuse the placement of a finished cell with the same circuit: devices are matched by topology, \
                  placed where their counterparts are and sized from this cell's schematic. Wells, implants and taps \
-                 are copied; wires are routed again.",
-            )
+                 are copied; wires are routed again."))
             .color(pal.text_weak),
         );
         let refs: Vec<CellRef> = project
@@ -268,7 +269,7 @@ impl LayoutGenerators {
             self.reference = None;
         }
         ui.horizontal(|ui| {
-            let l = ui.label("Reference");
+            let l = ui.label(t("Reference"));
             egui::ComboBox::from_id_salt("gen_reference")
                 .selected_text(self.reference.as_ref().map_or("choose a cell".into(), |r| r.to_string()))
                 .show_ui(ui, |ui| {
@@ -279,9 +280,9 @@ impl LayoutGenerators {
                 .response
                 .labelled_by(l.id);
         });
-        ui.checkbox(&mut self.route_after, "Route the flylines afterwards");
+        ui.checkbox(&mut self.route_after, t("Route the flylines afterwards"));
         let ready = cell.is_some() && self.reference.is_some();
-        if ui.add_enabled(ready, egui::Button::new("Place like reference")).clicked() {
+        if ui.add_enabled(ready, egui::Button::new(t("Place like reference"))).clicked() {
             return Some(GenAction::PlaceLike { reference: self.reference.clone()?, route: self.route_after });
         }
         None
@@ -289,9 +290,11 @@ impl LayoutGenerators {
 
     fn match_ui(&mut self, ui: &mut egui::Ui, devices: &[String], ready: bool, pal: &Palette) -> Option<GenAction> {
         let m = &mut self.matching;
-        theme::section(ui, "Devices");
+        theme::section(ui, t("Devices"));
         if devices.is_empty() {
-            ui.label(RichText::new("No MOS devices in this layout (generate it from the schematic first)").color(pal.text_weak));
+            ui.label(
+                RichText::new(t("No MOS devices in this layout (generate it from the schematic first)")).color(pal.text_weak),
+            );
         }
         m.devices.retain(|d| devices.contains(d));
         ui.horizontal_wrapped(|ui| {
@@ -306,34 +309,39 @@ impl LayoutGenerators {
                 }
             }
         });
-        theme::section(ui, "Pattern");
+        theme::section(ui, t("Pattern"));
         ui.horizontal(|ui| {
-            ui.radio_value(&mut m.pattern, Pattern::CommonCentroid, "Common centroid (ABBA)");
-            ui.radio_value(&mut m.pattern, Pattern::Interdigitated, "Interdigitated (ABAB)");
-            ui.radio_value(&mut m.pattern, Pattern::CommonCentroid2D, "2-D common centroid");
+            ui.radio_value(&mut m.pattern, Pattern::CommonCentroid, t("Common centroid (ABBA)"));
+            ui.radio_value(&mut m.pattern, Pattern::Interdigitated, t("Interdigitated (ABAB)"));
+            ui.radio_value(&mut m.pattern, Pattern::CommonCentroid2D, t("2-D common centroid"));
         });
         egui::Grid::new("gen_match").num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| {
-            let l = ui.label("Fingers per unit");
+            let l = ui.label(t("Fingers per unit"));
             ui.add(egui::DragValue::new(&mut m.unit_fingers).range(1..=64)).labelled_by(l.id);
             ui.end_row();
             if m.pattern == Pattern::CommonCentroid2D {
-                let l = ui.label("Rows");
+                let l = ui.label(t("Rows"));
                 ui.add(egui::DragValue::new(&mut m.rows).range(2..=16)).labelled_by(l.id);
                 ui.end_row();
             }
         });
-        ui.checkbox(&mut m.dummies, "Dummy devices at both row ends");
+        ui.checkbox(&mut m.dummies, t("Dummy devices at both row ends"));
         let counts: Vec<usize> = m.devices.iter().map(|_| 2).collect();
         if m.devices.len() >= 2
             && let Ok(p) = ics_core::matching::plan(m, &counts)
         {
-            ui.label(RichText::new(format!("Preview with 2 units each: {}", p.pattern)).monospace().small().color(pal.text_weak));
+            ui.label(
+                RichText::new(tf("Preview with 2 units each: {}", &[&p.pattern.to_string()]))
+                    .monospace()
+                    .small()
+                    .color(pal.text_weak),
+            );
         }
-        ui.label(RichText::new("Run before routing: wires crossing the block are not moved.").small().color(pal.text_weak));
+        ui.label(RichText::new(t("Run before routing: wires crossing the block are not moved.")).small().color(pal.text_weak));
         ui.add_space(8.0);
-        let b = egui::Button::new(RichText::new("Place Matched").strong().color(theme::on_fill(pal.layout))).fill(pal.layout);
+        let b = egui::Button::new(RichText::new(t("Place Matched")).strong().color(theme::on_fill(pal.layout))).fill(pal.layout);
         ui.add_enabled(ready && m.devices.len() >= 2, b)
-            .on_disabled_hover_text("Pick at least two devices")
+            .on_disabled_hover_text(t("Pick at least two devices"))
             .clicked()
             .then(|| GenAction::Match(m.clone()))
     }

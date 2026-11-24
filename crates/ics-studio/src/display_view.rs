@@ -6,6 +6,7 @@ use eframe::egui::{self, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
 use ics_core::Project;
 use ics_core::tech::{FillStyle, LayerDef, LineStyle, Stipple, Tech};
 
+use crate::i18n::t;
 use crate::layout_view::packet::Packet;
 use crate::theme::{self, Palette};
 
@@ -109,20 +110,24 @@ impl DisplayEditor {
     fn toolbar(&mut self, ui: &mut egui::Ui, tech: &Tech, pal: &Palette) -> Option<Vec<LayerDef>> {
         let mut apply = None;
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Layer Display").strong().color(pal.text_strong));
+            ui.label(RichText::new(t("Layer Display")).strong().color(pal.text_strong));
             ui.label(RichText::new(format!("· {}", tech.name)).color(pal.text_weak));
             let changed = self.layers != self.baseline;
             if changed {
-                ui.label(RichText::new("● not applied").color(pal.warning));
+                ui.label(RichText::new(t("● not applied")).color(pal.warning));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let b = egui::Button::new(RichText::new("Apply").strong().color(theme::on_fill(pal.accent))).fill(pal.accent);
+                let b = egui::Button::new(RichText::new(t("Apply")).strong().color(theme::on_fill(pal.accent))).fill(pal.accent);
                 if ui.add_enabled(changed, b).clicked() {
                     self.baseline = self.layers.clone();
-                    self.status = Some((true, "Applied to the technology".into()));
+                    self.status = Some((true, t("Applied to the technology").into()));
                     apply = Some(self.layers.clone());
                 }
-                if ui.add_enabled(changed, egui::Button::new("Revert")).on_hover_text("Discard the edits not applied").clicked() {
+                if ui
+                    .add_enabled(changed, egui::Button::new(t("Revert")))
+                    .on_hover_text(t("Discard the edits not applied"))
+                    .clicked()
+                {
                     self.layers = self.baseline.clone();
                     self.status = None;
                 }
@@ -136,8 +141,8 @@ impl DisplayEditor {
 
     fn layer_list(&mut self, ui: &mut egui::Ui, pal: &Palette) {
         ui.horizontal(|ui| {
-            let fl = ui.label("Filter");
-            ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("layer name").desired_width(f32::INFINITY))
+            let fl = ui.label(t("Filter"));
+            ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text(t("layer name")).desired_width(f32::INFINITY))
                 .labelled_by(fl.id);
         });
         ui.add_space(4.0);
@@ -176,7 +181,7 @@ impl DisplayEditor {
 
     fn packet(&mut self, ui: &mut egui::Ui, pal: &Palette) {
         let Some(def) = self.layers.get(self.sel).cloned() else {
-            ui.label("The technology has no layers.");
+            ui.label(t("The technology has no layers."));
             return;
         };
         ui.label(RichText::new(&def.name).heading().color(pal.text_strong));
@@ -186,16 +191,16 @@ impl DisplayEditor {
 
         let mut d = def.clone();
         egui::Grid::new("ld_colours").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
-            let l = ui.label("Fill colour");
+            let l = ui.label(t("Fill colour"));
             let mut rgb = [d.color[0], d.color[1], d.color[2]];
             if ui.color_edit_button_srgb(&mut rgb).labelled_by(l.id).changed() {
                 d.color = [rgb[0], rgb[1], rgb[2], d.color[3]];
             }
             ui.end_row();
-            let l = ui.label("Outline colour");
+            let l = ui.label(t("Outline colour"));
             ui.horizontal(|ui| {
                 let mut same = d.outline.is_none();
-                if ui.checkbox(&mut same, "Same as fill").changed() {
+                if ui.checkbox(&mut same, t("Same as fill")).changed() {
                     d.outline = if same { None } else { Some([d.color[0], d.color[1], d.color[2]]) };
                 }
                 if let Some(o) = &mut d.outline {
@@ -206,7 +211,7 @@ impl DisplayEditor {
         });
 
         ui.add_space(10.0);
-        theme::section(ui, "Fill style");
+        theme::section(ui, t("Fill style"));
         ui.horizontal_wrapped(|ui| {
             for f in FillStyle::ALL {
                 let sample = LayerDef { fill: f, stipple: None, ..d.clone() };
@@ -220,12 +225,12 @@ impl DisplayEditor {
 
         if d.fill.is_stipple() {
             ui.add_space(10.0);
-            theme::section(ui, "Stipple");
+            theme::section(ui, t("Stipple"));
             ui.label(
                 RichText::new(if d.stipple.is_some() {
-                    "Custom bitmap. Click or drag over the bits to change them."
+                    t("Custom bitmap. Click or drag over the bits to change them.")
                 } else {
-                    "Built-in bitmap. Click or drag over the bits to make a custom one."
+                    t("Built-in bitmap. Click or drag over the bits to make a custom one.")
                 })
                 .small()
                 .color(pal.text_weak),
@@ -234,7 +239,7 @@ impl DisplayEditor {
         }
 
         ui.add_space(10.0);
-        theme::section(ui, "Outline");
+        theme::section(ui, t("Outline"));
         ui.horizontal_wrapped(|ui| {
             for l in LineStyle::ALL {
                 let sample = LayerDef { fill: FillStyle::Outline, line: l, ..d.clone() };
@@ -256,21 +261,21 @@ impl DisplayEditor {
         let (mut w, mut h) = (base.width(), base.height());
         let mut changed = false;
         ui.horizontal(|ui| {
-            let lw = ui.label("Width");
+            let lw = ui.label(t("Width"));
             changed |= ui.add(egui::DragValue::new(&mut w).range(1..=MAX_BITS)).labelled_by(lw.id).changed();
-            let lh = ui.label("Height");
+            let lh = ui.label(t("Height"));
             changed |= ui.add(egui::DragValue::new(&mut h).range(1..=MAX_BITS)).labelled_by(lh.id).changed();
-            if ui.button("Invert").clicked() {
+            if ui.button(t("Invert")).clicked() {
                 bits.iter_mut().flatten().for_each(|b| *b ^= 1);
                 changed = true;
             }
-            if ui.button("Clear").clicked() {
+            if ui.button(t("Clear")).clicked() {
                 bits.iter_mut().flatten().for_each(|b| *b = 0);
                 changed = true;
             }
             if ui
-                .add_enabled(d.stipple.is_some(), egui::Button::new("Built-in"))
-                .on_hover_text("Use the fill style's own bitmap")
+                .add_enabled(d.stipple.is_some(), egui::Button::new(t("Built-in")))
+                .on_hover_text(t("Use the fill style's own bitmap"))
                 .clicked()
             {
                 d.stipple = None;

@@ -381,9 +381,10 @@ fn arity(f: &str, args: &[Val], min: usize, max: usize) -> Result<(), String> {
     if (min..=max).contains(&n) {
         return Ok(());
     }
-    let s = |k: usize| if k == 1 { "" } else { "s" };
-    Err(if min == max {
-        format!("{f}() takes {min} argument{}, got {n}", s(min))
+    Err(if min == max && min == 1 {
+        format!("{f}() takes 1 argument, got {n}")
+    } else if min == max {
+        format!("{f}() takes {min} arguments, got {n}")
     } else {
         format!("{f}() takes {min} to {max} arguments, got {n}")
     })

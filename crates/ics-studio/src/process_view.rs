@@ -4,6 +4,7 @@
 //! The flow runs on a worker thread and keeps a checkpoint after every step, so moving the
 //! step slider back is instant and an edit of step k runs again from step k only.
 
+use crate::i18n::{t, tf};
 use eframe::egui::{self, Color32, ColorImage, RichText, TextureHandle, TextureOptions};
 use egui_plot::{Legend, Line, Plot, PlotImage, PlotPoint, PlotPoints, Points};
 use ics_core::process::{
@@ -334,17 +335,17 @@ impl ProcessView {
         let stage = job.stage.load(Ordering::Relaxed);
         let secs = job.started.elapsed().as_secs_f32();
         if job.cancel.load(Ordering::Relaxed) {
-            let what = if restart { "Restarting with the new settings" } else { "Cancelling" };
+            let what = if restart { t("Restarting with the new settings") } else { t("Cancelling") };
             return (0.0, format!("{what}… ({secs:.1} s)"));
         }
         let n = job.want;
         match stage {
-            0 => (0.0, format!("Reading the layout… ({secs:.1} s)")),
+            0 => (0.0, tf("Reading the layout… ({} s)", &[&format!("{secs:.1}")])),
             k if k <= n => {
                 let f = (k - 1) as f32 / n.max(1) as f32;
-                (f, format!("Step {k} of {n}: {} ({secs:.1} s)", job.labels[k - 1]))
+                (f, tf("Step {} of {}: {} ({} s)", &[&k.to_string(), &n.to_string(), &job.labels[k - 1], &format!("{secs:.1}")]))
             }
-            _ => (1.0, format!("Finishing… ({secs:.1} s)")),
+            _ => (1.0, tf("Finishing… ({} s)", &[&format!("{secs:.1}")])),
         }
     }
 
@@ -443,25 +444,25 @@ impl ProcessView {
         let mut action = None;
         let mut open = self.open;
         let title = match &self.cell {
-            Some(c) => format!("Process Emulation: {c}"),
-            None => "Process Emulation".into(),
+            Some(c) => format!("{}: {c}", t("Process Emulation")),
+            None => t("Process Emulation").into(),
         };
         crate::float::tool_window(ctx, "process_emulation", &title, [860.0, 760.0], &mut open, |ui| {
             ui.horizontal(|ui| {
-                let l = ui.label("Flow");
+                let l = ui.label(t("Flow"));
                 let name = self.flow.as_ref().map_or("—".to_string(), |f| f.name.clone());
                 ui.label(RichText::new(name).strong()).labelled_by(l.id);
-                if ui.button("Load…").clicked() {
+                if ui.button(t("Load…")).clicked() {
                     action = Some(ProcessAction::Load);
                 }
-                if ui.button("Generic 180 nm").clicked() {
+                if ui.button(t("Generic 180 nm")).clicked() {
                     self.set_text(GENERIC180.to_string());
                 }
-                ui.toggle_value(&mut self.show_flow, "Edit flow").on_hover_text("Edit the steps of the flow");
+                ui.toggle_value(&mut self.show_flow, t("Edit flow")).on_hover_text(t("Edit the steps of the flow"));
                 if self.section.as_ref().is_some_and(|s| !s.dopants.is_empty())
                     && ui
-                        .toggle_value(&mut self.show_doping, "Doping")
-                        .on_hover_text("Colour silicon and poly by net doping: red n, blue p")
+                        .toggle_value(&mut self.show_doping, t("Doping"))
+                        .on_hover_text(t("Colour silicon and poly by net doping: red n, blue p"))
                         .changed()
                 {
                     self.texture = None;
@@ -491,7 +492,7 @@ impl ProcessView {
     fn editor(&mut self, ui: &mut egui::Ui, project: Option<&Project>) {
         let pal = crate::theme::palette(ui.ctx());
         ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.edit_toml, false, "Steps");
+            ui.selectable_value(&mut self.edit_toml, false, t("Steps"));
             ui.selectable_value(&mut self.edit_toml, true, "TOML");
         });
         let flow = match &self.parsed {
@@ -500,7 +501,7 @@ impl ProcessView {
                 if let Err(e) = parsed {
                     ui.colored_label(pal.danger, format!("process flow: {e}"));
                 }
-                let l = ui.label(RichText::new("Process flow (TOML)").small().color(pal.text_weak));
+                let l = ui.label(RichText::new(t("Process flow (TOML)")).small().color(pal.text_weak));
                 egui::ScrollArea::vertical().id_salt("pe_flow").show(ui, |ui| {
                     let r = ui
                         .add(egui::TextEdit::multiline(&mut self.text).code_editor().desired_width(f32::INFINITY))
@@ -512,7 +513,7 @@ impl ProcessView {
                 return;
             }
         };
-        egui::CollapsingHeader::new("Flow settings").id_salt("pe_settings").show(ui, |ui| {
+        egui::CollapsingHeader::new(t("Flow settings")).id_salt("pe_settings").show(ui, |ui| {
             let mut g = flow.clone();
             if settings_form(ui, &mut g) {
                 self.edit(|t| process_edit::set_header(t, &g));
@@ -532,9 +533,9 @@ impl ProcessView {
                     text = text.color(pal.text_weak);
                 }
                 let r = ui.selectable_label(self.selected == Some(k), text).on_hover_text(if cached.contains(&(k + 1)) {
-                    "Computed: instant to show"
+                    t("Computed: instant to show")
                 } else {
-                    "Not computed yet"
+                    t("Not computed yet")
                 });
                 if r.clicked() {
                     clicked = Some(k);
@@ -546,7 +547,7 @@ impl ProcessView {
         }
         let sel = self.selected.filter(|&k| k < n);
         ui.horizontal_wrapped(|ui| {
-            ui.menu_button("Add step", |ui| {
+            ui.menu_button(t("Add step"), |ui| {
                 for op in OPS {
                     if ui.button(op).clicked()
                         && let Some(s) = process_edit::new_step(op)
@@ -559,22 +560,22 @@ impl ProcessView {
                 }
             })
             .response
-            .on_hover_text("Insert a step after the selected one");
+            .on_hover_text(t("Insert a step after the selected one"));
             if let Some(k) = sel {
-                if ui.button("Duplicate").clicked() {
+                if ui.button(t("Duplicate")).clicked() {
                     let s = flow.steps[k].clone();
                     self.edit(|t| process_edit::insert_step(t, k + 1, &s));
                     self.select(k + 1);
                 }
-                if ui.add_enabled(k > 0, egui::Button::new("Up")).clicked() {
+                if ui.add_enabled(k > 0, egui::Button::new(t("Up"))).clicked() {
                     self.edit(|t| process_edit::move_step(t, k, k - 1));
                     self.select(k - 1);
                 }
-                if ui.add_enabled(k + 1 < n, egui::Button::new("Down")).clicked() {
+                if ui.add_enabled(k + 1 < n, egui::Button::new(t("Down"))).clicked() {
                     self.edit(|t| process_edit::move_step(t, k, k + 1));
                     self.select(k + 1);
                 }
-                if ui.button("Delete").clicked() {
+                if ui.button(t("Delete")).clicked() {
                     self.edit(|t| process_edit::remove_step(t, k));
                     if n > 1 {
                         self.select(k.saturating_sub(1));
@@ -585,7 +586,7 @@ impl ProcessView {
             }
         });
         let Some(k) = sel else {
-            ui.label(RichText::new("Select a step to edit it").color(pal.text_weak));
+            ui.label(RichText::new(t("Select a step to edit it")).color(pal.text_weak));
             return;
         };
         ui.separator();
@@ -602,7 +603,7 @@ impl ProcessView {
     fn section_view(&mut self, ui: &mut egui::Ui, project: Option<&Project>) {
         let pal = crate::theme::palette(ui.ctx());
         ui.horizontal(|ui| {
-            let l = ui.label("Cut (µm)");
+            let l = ui.label(t("Cut (µm)"));
             for (name, v) in
                 [("x0", &mut self.cut.x0), ("y0", &mut self.cut.y0), ("x1", &mut self.cut.x1), ("y1", &mut self.cut.y1)]
             {
@@ -612,7 +613,7 @@ impl ProcessView {
                     self.dirty = true;
                 }
             }
-            if ui.button("Across the diffusion").on_hover_text("Horizontal through the largest diffusion area").clicked()
+            if ui.button(t("Across the diffusion")).on_hover_text(t("Horizontal through the largest diffusion area")).clicked()
                 && let (Some(p), Some(c)) = (project, &self.cell)
                 && let Ok(cut) = default_cut(p, c)
             {
@@ -625,7 +626,7 @@ impl ProcessView {
             let mut k = self.steps.min(n);
             let what = if k == 0 { "substrate".to_string() } else { f.steps[k - 1].label() };
             ui.horizontal(|ui| {
-                let l = ui.label("After step");
+                let l = ui.label(t("After step"));
                 let r = ui.add(egui::Slider::new(&mut k, 0..=n)).labelled_by(l.id);
                 ui.label(RichText::new(what).color(pal.text_weak));
                 if r.changed() {
@@ -640,13 +641,13 @@ impl ProcessView {
             ui.horizontal(|ui| {
                 ui.add(egui::Spinner::new());
                 ui.add(egui::ProgressBar::new(f).desired_width(220.0).show_percentage());
-                if ui.button("Cancel").on_hover_text("Stop the run, keeping the last section").clicked() {
+                if ui.button(t("Cancel")).on_hover_text(t("Stop the run, keeping the last section")).clicked() {
                     job.cancel.store(true, Ordering::Relaxed);
                 }
                 ui.label(RichText::new(text).color(pal.text_weak));
             });
             if self.section.is_some() {
-                ui.label(RichText::new("Showing the previous section until the run ends").small().color(pal.text_weak));
+                ui.label(RichText::new(t("Showing the previous section until the run ends")).small().color(pal.text_weak));
             }
         }
         if let Some(e) = &self.error {
@@ -754,8 +755,11 @@ impl ProcessView {
         let x = self.probe.unwrap_or(w / 2.0);
         let stack: Vec<String> = s.stack_at(x).iter().rev().map(|(m, t)| format!("{m} {:.0} nm", t * 1000.0)).collect();
         ui.label(
-            RichText::new(format!("x = {x:.3} µm, surface {:.3} µm (click the section to probe)", s.surface_at(x)))
-                .color(pal.text_weak),
+            RichText::new(tf(
+                "x = {} µm, surface {} µm (click the section to probe)",
+                &[&format!("{x:.3}"), &format!("{:.3}", s.surface_at(x))],
+            ))
+            .color(pal.text_weak),
         );
         ui.label(RichText::new(stack.join("  |  ")).monospace());
         if doped {
@@ -776,7 +780,7 @@ impl ProcessView {
             let j: Vec<String> = s.junctions(x).iter().map(|z| format!("{:.0} nm", -z * 1000.0)).collect();
             ui.label(RichText::new(layers.join("  |  ")).monospace());
             ui.label(
-                RichText::new(format!("junctions at {} below z = 0", if j.is_empty() { "—".into() } else { j.join(", ") }))
+                RichText::new(tf("junctions at {} below z = 0", &[&if j.is_empty() { "—".into() } else { j.join(", ") }]))
                     .color(pal.text_weak),
             );
         }
@@ -799,7 +803,7 @@ fn buffered<T>(ui: &mut egui::Ui, id: egui::Id, label: egui::Id, shown: String, 
 
 /// A comma-separated list of names.
 fn list(ui: &mut egui::Ui, id: egui::Id, label: &str, v: &mut Vec<String>) -> bool {
-    let l = ui.label(label);
+    let l = ui.label(t(label));
     let out = buffered(ui, id, l.id, v.join(", "), |s| {
         Some(s.split(',').map(str::trim).filter(|x| !x.is_empty()).map(String::from).collect::<Vec<_>>())
     });
@@ -814,14 +818,14 @@ fn list(ui: &mut egui::Ui, id: egui::Id, label: &str, v: &mut Vec<String>) -> bo
 }
 
 fn text(ui: &mut egui::Ui, label: &str, v: &mut String) -> bool {
-    let l = ui.label(label);
+    let l = ui.label(t(label));
     let c = ui.add(egui::TextEdit::singleline(v).desired_width(150.0)).labelled_by(l.id).changed();
     ui.end_row();
     c
 }
 
 fn number(ui: &mut egui::Ui, label: &str, v: &mut f64, speed: f64, unit: &str) -> bool {
-    let l = ui.label(label);
+    let l = ui.label(t(label));
     let c = ui
         .add(egui::DragValue::new(v).speed(speed).max_decimals(4).range(0.0..=f64::MAX).suffix(unit))
         .labelled_by(l.id)
@@ -832,7 +836,7 @@ fn number(ui: &mut egui::Ui, label: &str, v: &mut f64, speed: f64, unit: &str) -
 
 /// A number typed in scientific notation (doses, concentrations).
 fn sci(ui: &mut egui::Ui, id: egui::Id, label: &str, v: &mut f64, unit: &str) -> bool {
-    let l = ui.label(label);
+    let l = ui.label(t(label));
     let out = ui
         .horizontal(|ui| {
             let out = buffered(ui, id, l.id, format!("{v:e}"), |s| s.parse::<f64>().ok().filter(|x| x.is_finite() && *x > 0.0));
@@ -852,14 +856,14 @@ fn sci(ui: &mut egui::Ui, id: egui::Id, label: &str, v: &mut f64, unit: &str) ->
 
 fn check(ui: &mut egui::Ui, label: &str, v: &mut bool, hint: &str) -> bool {
     ui.label("");
-    let c = ui.checkbox(v, label).on_hover_text(hint).changed();
+    let c = ui.checkbox(v, t(label)).on_hover_text(t(hint)).changed();
     ui.end_row();
     c
 }
 
 /// An optional number: a check box to have it, and its value.
 fn optional(ui: &mut egui::Ui, label: &str, v: &mut Option<f64>, default: f64, speed: f64, unit: &str) -> bool {
-    let l = ui.label(label);
+    let l = ui.label(t(label));
     let mut c = false;
     ui.horizontal(|ui| {
         let mut on = v.is_some();
@@ -883,7 +887,7 @@ const SPECIES: [&str; 5] = ["boron", "bf2", "phosphorus", "arsenic", "antimony"]
 /// Where a step acts: everywhere, where a layer expression is drawn, or where it is not.
 fn mask_form(ui: &mut egui::Ui, k: usize, m: &mut Mask, layers: &[String]) -> bool {
     let mut c = false;
-    let l = ui.label("Where");
+    let l = ui.label(t("Where"));
     let mode = if m.mask.is_some() {
         1
     } else if m.keep.is_some() {
@@ -901,7 +905,7 @@ fn mask_form(ui: &mut egui::Ui, k: usize, m: &mut Mask, layers: &[String]) -> bo
             }
         })
         .response
-        .on_hover_text("Where the step acts: the layer mask drawn (`mask`) or not drawn (`keep`)")
+        .on_hover_text(t("Where the step acts: the layer mask drawn (`mask`) or not drawn (`keep`)"))
         .labelled_by(l.id);
     ui.end_row();
     if new != mode {
@@ -914,14 +918,14 @@ fn mask_form(ui: &mut egui::Ui, k: usize, m: &mut Mask, layers: &[String]) -> bo
         c = true;
     }
     if let Some(e) = m.mask.as_mut().or(m.keep.as_mut()) {
-        let l = ui.label("Layers");
+        let l = ui.label(t("Layers"));
         ui.horizontal(|ui| {
             c |= ui
                 .add(egui::TextEdit::singleline(e).desired_width(110.0))
                 .labelled_by(l.id)
-                .on_hover_text("A layer or a derived-layer expression, e.g. active and not poly")
+                .on_hover_text(t("A layer or a derived-layer expression, e.g. active and not poly"))
                 .changed();
-            ui.menu_button("Pick", |ui| {
+            ui.menu_button(t("Pick"), |ui| {
                 egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
                     for n in layers {
                         if ui.button(n).clicked() {
@@ -942,7 +946,7 @@ fn mask_form(ui: &mut egui::Ui, k: usize, m: &mut Mask, layers: &[String]) -> bo
 fn step_form(ui: &mut egui::Ui, k: usize, s: &mut Step, layers: &[String]) -> bool {
     let id = |f: &str| egui::Id::unique(("pe_field", k, f.to_string()));
     let mut c = false;
-    ui.label(RichText::new(format!("Step {}: {}", k + 1, process_edit::op(s))).strong());
+    ui.label(RichText::new(tf("Step {}: {}", &[&(k + 1).to_string(), process_edit::op(s)])).strong());
     egui::Grid::new(("pe_step_grid", k)).num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| match s {
         Step::Deposit { name, material, thickness, conformal } => {
             c |= text(ui, "Name", name);
@@ -960,12 +964,12 @@ fn step_form(ui: &mut egui::Ui, k: usize, s: &mut Step, layers: &[String]) -> bo
         Step::Implant { name, mask, material, into, depth, species, dose, energy } => {
             c |= text(ui, "Name", name);
             c |= mask_form(ui, k, mask, layers);
-            let l = ui.label("Species");
+            let l = ui.label(t("Species"));
             let mut sp = species.clone();
             egui::ComboBox::from_id_salt(("pe_species", k))
                 .selected_text(sp.as_deref().unwrap_or("none"))
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut sp, None, "none");
+                    ui.selectable_value(&mut sp, None, t("none"));
                     for n in SPECIES {
                         ui.selectable_value(&mut sp, Some(n.to_string()), n);
                     }
@@ -996,12 +1000,12 @@ fn step_form(ui: &mut egui::Ui, k: usize, s: &mut Step, layers: &[String]) -> bo
                     c = true;
                 }
             }
-            let l = ui.label("Material");
+            let l = ui.label(t("Material"));
             let mut conv = material.is_some();
             if ui
-                .checkbox(&mut conv, "turn into")
+                .checkbox(&mut conv, t("turn into"))
                 .labelled_by(l.id)
-                .on_hover_text("Also turn the implanted cells into a material")
+                .on_hover_text(t("Also turn the implanted cells into a material"))
                 .changed()
             {
                 *material = conv.then(|| "ndiff".to_string());
@@ -1039,11 +1043,11 @@ fn step_form(ui: &mut egui::Ui, k: usize, s: &mut Step, layers: &[String]) -> bo
         }
         Step::Planarize { name, height, stop } => {
             c |= text(ui, "Name", name);
-            let l = ui.label("Down to");
+            let l = ui.label(t("Down to"));
             let mut by_stop = stop.is_some();
             ui.horizontal(|ui| {
-                c |= ui.radio_value(&mut by_stop, false, "height").labelled_by(l.id).changed();
-                c |= ui.radio_value(&mut by_stop, true, "a material").labelled_by(l.id).changed();
+                c |= ui.radio_value(&mut by_stop, false, t("height")).labelled_by(l.id).changed();
+                c |= ui.radio_value(&mut by_stop, true, t("a material")).labelled_by(l.id).changed();
             });
             ui.end_row();
             if by_stop && stop.is_none() {
@@ -1052,7 +1056,7 @@ fn step_form(ui: &mut egui::Ui, k: usize, s: &mut Step, layers: &[String]) -> bo
                 (*stop, *height) = (None, Some(0.0));
             }
             if let Some(h) = height {
-                let l = ui.label("Height");
+                let l = ui.label(t("Height"));
                 c |= ui.add(egui::DragValue::new(h).speed(0.001).max_decimals(4).suffix(" µm")).labelled_by(l.id).changed();
                 ui.end_row();
             }
@@ -1075,19 +1079,19 @@ fn settings_form(ui: &mut egui::Ui, f: &mut ProcessFlow) -> bool {
         c |= text(ui, "Name", &mut f.name);
         c |= text(ui, "Substrate", &mut f.substrate);
         c |= number(ui, "Depth shown", &mut f.substrate_depth, 0.01, " µm");
-        let l = ui.label("Resolution");
+        let l = ui.label(t("Resolution"));
         c |= ui
             .add(egui::DragValue::new(&mut f.resolution).speed(0.0005).range(0.001..=1.0).max_decimals(4).suffix(" µm"))
             .labelled_by(l.id)
-            .on_hover_text("Grid step: finer is slower")
+            .on_hover_text(t("Grid step: finer is slower"))
             .changed();
         ui.end_row();
-        let l = ui.label("Doping");
+        let l = ui.label(t("Doping"));
         let mut sp = f.substrate_doping.as_ref().map(|d| d.species.clone());
         egui::ComboBox::from_id_salt("pe_sub_species")
             .selected_text(sp.as_deref().unwrap_or("none"))
             .show_ui(ui, |ui| {
-                ui.selectable_value(&mut sp, None, "none");
+                ui.selectable_value(&mut sp, None, t("none"));
                 for n in SPECIES {
                     ui.selectable_value(&mut sp, Some(n.to_string()), n);
                 }

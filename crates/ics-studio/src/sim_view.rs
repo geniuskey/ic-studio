@@ -13,6 +13,7 @@ use ics_core::{Analysis, Backend, Cell, DeviceKind, SimSetup};
 use ics_sim::calc::{self, CalcValue};
 use ics_sim::{Dataset, SimOptions, SimResults, VecKind, Vector};
 
+use crate::i18n::{t, tf};
 use crate::schematic_view::OpAnnotation;
 use crate::theme;
 
@@ -136,16 +137,14 @@ impl SimState {
         self.running = None;
         Some(match r {
             Ok(res) => {
-                let mut msg = format!(
-                    "Simulation finished in {:.1} ms on {} ({} analyses)",
-                    res.elapsed_ms,
-                    res.backend,
-                    res.datasets.len()
+                let mut msg = tf(
+                    "Simulation finished in {} ms on {} ({} analyses)",
+                    &[&format!("{:.1}", res.elapsed_ms), &res.backend.to_string(), &res.datasets.len().to_string()],
                 );
                 match res.warnings.as_slice() {
                     [] => {}
                     [w] => msg += &format!(" - {w}"),
-                    [w, rest @ ..] => msg += &format!(" - {w} (+{} more in the log)", rest.len()),
+                    [w, rest @ ..] => msg += &format!(" - {}", tf("{} (+{} more in the log)", &[w, &rest.len().to_string()])),
                 }
                 let log = res.log.clone();
                 let mut res = res;
@@ -183,12 +182,16 @@ impl SimState {
                     }
                 }
                 self.runs += 1;
-                self.label = format!("Run {}", self.runs);
+                self.label = tf("Run {}", &[&self.runs.to_string()]);
                 SimEvent::Finished { ok: true, message: msg, log }
             }
             Err(e) => {
                 self.error = Some(e.clone());
-                SimEvent::Finished { ok: false, message: format!("Simulation failed: {e}"), log: String::new() }
+                SimEvent::Finished {
+                    ok: false,
+                    message: tf("Simulation failed: {}", &[&crate::i18n::t_text(&e)]),
+                    log: String::new(),
+                }
             }
         })
     }
@@ -248,7 +251,7 @@ pub fn setup_panel(
     let running = state.is_running();
     let fill = if running { pal.bg_hover } else { pal.simulation };
     let btn = egui::Button::new(
-        RichText::new(if running { "⏳  Running…" } else { "▶  Run Simulation" }).size(15.0).strong().color(if running {
+        RichText::new(if running { t("⏳  Running…") } else { t("▶  Run Simulation") }).size(15.0).strong().color(if running {
             pal.text_weak
         } else {
             theme::on_fill(fill)
@@ -261,15 +264,15 @@ pub fn setup_panel(
     }
     ui.add_space(8.0);
 
-    theme::section(ui, "Simulator");
-    let backend_label = ui.label("Backend");
+    theme::section(ui, t("Simulator"));
+    let backend_label = ui.label(t("Backend"));
     egui::ComboBox::from_id_salt("backend")
         .width(ui.available_width() - 8.0)
-        .selected_text(setup.backend.label())
+        .selected_text(t(setup.backend.label()))
         .show_ui(ui, |ui| {
-            ui.selectable_value(&mut setup.backend, Backend::Builtin, Backend::Builtin.label());
-            ui.selectable_value(&mut setup.backend, Backend::Ngspice, Backend::Ngspice.label());
-            ui.selectable_value(&mut setup.backend, Backend::Auto, Backend::Auto.label());
+            ui.selectable_value(&mut setup.backend, Backend::Builtin, t(Backend::Builtin.label()));
+            ui.selectable_value(&mut setup.backend, Backend::Ngspice, t(Backend::Ngspice.label()));
+            ui.selectable_value(&mut setup.backend, Backend::Auto, t(Backend::Auto.label()));
         })
         .response
         .labelled_by(backend_label.id);
@@ -278,28 +281,28 @@ pub fn setup_panel(
             ui.label(RichText::new(format!("✔ {v}")).small().color(pal.ok));
         }
         (Backend::Ngspice, None) => {
-            ui.label(RichText::new("✖ ngspice not found — install it or set the path in Settings").small().color(pal.danger));
+            ui.label(RichText::new(t("✖ ngspice not found — install it or set the path in Settings")).small().color(pal.danger));
         }
         (Backend::Auto, v) => {
             let text = match v {
-                Some(v) => format!("Built-in, {v} for PDK or unsupported models"),
-                None => "Built-in (ngspice not found for PDK models)".into(),
+                Some(v) => tf("Built-in, {} for PDK or unsupported models", &[v]),
+                None => t("Built-in (ngspice not found for PDK models)").into(),
             };
             ui.label(RichText::new(text).small().color(pal.text_weak));
         }
         _ if models.is_some() => {
-            ui.label(RichText::new("✖ This PDK's models may need ngspice (Auto picks it)").small().color(pal.danger));
+            ui.label(RichText::new(t("✖ This PDK's models may need ngspice (Auto picks it)")).small().color(pal.danger));
         }
         _ => {
             ui.label(
-                RichText::new("MNA engine · R C L V I D, MOS (L1, BSIM4), BJT, JFET, T, E F G H").small().color(pal.text_weak),
+                RichText::new(t("MNA engine · R C L V I D, MOS (L1, BSIM4), BJT, JFET, T, E F G H")).small().color(pal.text_weak),
             );
         }
     }
     if let Some(m) = models.filter(|m| !m.corners.is_empty()) {
         let default = if m.default_corner.is_empty() { &m.corners[0] } else { &m.default_corner };
-        let shown = |c: &str| if c.is_empty() { format!("default ({default})") } else { c.to_string() };
-        let l = ui.label("Corner");
+        let shown = |c: &str| if c.is_empty() { tf("default ({})", &[default]) } else { c.to_string() };
+        let l = ui.label(t("Corner"));
         egui::ComboBox::from_id_salt("corner")
             .width(ui.available_width() - 8.0)
             .selected_text(shown(&setup.corner))
@@ -313,16 +316,16 @@ pub fn setup_panel(
             .labelled_by(l.id);
     }
     ui.horizontal(|ui| {
-        let l = ui.label("Temperature");
+        let l = ui.label(t("Temperature"));
         ui.add(egui::DragValue::new(&mut setup.temp).range(-55.0..=200.0).suffix(" °C")).labelled_by(l.id);
     });
     let has_layout = cell.layout.is_some();
-    ui.add_enabled(has_layout, egui::Checkbox::new(&mut cell.sim.parasitics, "Include layout parasitics"))
-        .on_hover_text("Extract wire capacitance from the layout and add it to the matching schematic nets")
-        .on_disabled_hover_text("This cell has no layout");
+    ui.add_enabled(has_layout, egui::Checkbox::new(&mut cell.sim.parasitics, t("Include layout parasitics")))
+        .on_hover_text(t("Extract wire capacitance from the layout and add it to the matching schematic nets"))
+        .on_disabled_hover_text(t("This cell has no layout"));
     let setup: &mut SimSetup = &mut cell.sim;
     ui.add_space(6.0);
-    theme::section(ui, "Analyses");
+    theme::section(ui, t("Analyses"));
     for entry in &mut setup.analyses {
         let title = entry.analysis.title();
         egui::Frame::new()
@@ -332,12 +335,12 @@ pub fn setup_panel(
             .inner_margin(8)
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.checkbox(&mut entry.enabled, RichText::new(title).strong());
+                ui.checkbox(&mut entry.enabled, RichText::new(t(title)).strong());
                 if !entry.enabled {
                     return;
                 }
                 let field = |ui: &mut egui::Ui, label: &str, v: &mut String| {
-                    let l = ui.label(label);
+                    let l = ui.label(field_label(label));
                     let valid = parse_spice(v).is_some();
                     let mut te = egui::TextEdit::singleline(v).desired_width(90.0);
                     if !valid {
@@ -348,11 +351,11 @@ pub fn setup_panel(
                 };
                 egui::Grid::new(("an", title)).num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| match &mut entry.analysis {
                     Analysis::Op => {
-                        ui.label(RichText::new("DC bias point; annotates the schematic").small().color(pal.text_weak));
+                        ui.label(RichText::new(t("DC bias point; annotates the schematic")).small().color(pal.text_weak));
                         ui.end_row();
                     }
                     Analysis::Dc { source, start, stop, step } => {
-                        let l = ui.label("Source");
+                        let l = ui.label(t("Source"));
                         egui::ComboBox::from_id_salt("dc_src")
                             .selected_text(if source.is_empty() { "—" } else { source.as_str() })
                             .show_ui(ui, |ui| {
@@ -370,7 +373,7 @@ pub fn setup_panel(
                     Analysis::Ac { points_per_decade, fstart, fstop, sweep } => {
                         field(ui, "Start freq", fstart);
                         field(ui, "Stop freq", fstop);
-                        let l = ui.label("Sweep");
+                        let l = ui.label(t("Sweep"));
                         egui::ComboBox::from_id_salt("ac_sweep")
                             .selected_text(sweep.keyword())
                             .show_ui(ui, |ui| {
@@ -382,9 +385,9 @@ pub fn setup_panel(
                             .labelled_by(l.id);
                         ui.end_row();
                         let l = ui.label(match sweep {
-                            AcSweep::Dec => "Points/dec",
-                            AcSweep::Oct => "Points/oct",
-                            AcSweep::Lin => "Points",
+                            AcSweep::Dec => t("Points/dec"),
+                            AcSweep::Oct => t("Points/oct"),
+                            AcSweep::Lin => t("Points"),
                         });
                         ui.add(egui::DragValue::new(points_per_decade).range(1..=100_000)).labelled_by(l.id);
                         ui.end_row();
@@ -394,15 +397,15 @@ pub fn setup_panel(
                         field(ui, "Stop time", tstop);
                         field(ui, "Start (opt.)", tstart);
                         field(ui, "Max step (opt.)", tmax);
-                        let l = ui.label("Use .ic (uic)");
+                        let l = ui.label(t("Use .ic (uic)"));
                         ui.checkbox(uic, "").labelled_by(l.id);
                         ui.end_row();
                     }
                     Analysis::Noise { output, source, points_per_decade, fstart, fstop } => {
-                        let l = ui.label("Output node");
+                        let l = ui.label(t("Output node"));
                         ui.add(egui::TextEdit::singleline(output).desired_width(90.0)).labelled_by(l.id);
                         ui.end_row();
-                        let l = ui.label("Input source");
+                        let l = ui.label(t("Input source"));
                         egui::ComboBox::from_id_salt("noise_src")
                             .selected_text(if source.is_empty() { "—" } else { source.as_str() })
                             .show_ui(ui, |ui| {
@@ -415,31 +418,40 @@ pub fn setup_panel(
                         ui.end_row();
                         field(ui, "Start freq", fstart);
                         field(ui, "Stop freq", fstop);
-                        let l = ui.label("Points/dec");
+                        let l = ui.label(t("Points/dec"));
                         ui.add(egui::DragValue::new(points_per_decade).range(1..=1000)).labelled_by(l.id);
                         ui.end_row();
                     }
                 });
                 if let Err(e) = entry.analysis.validate() {
-                    ui.label(RichText::new(e).small().color(pal.danger));
+                    ui.label(RichText::new(crate::i18n::t_text(&e)).small().color(pal.danger));
                 }
             });
         ui.add_space(4.0);
     }
     ui.add_space(4.0);
-    egui::CollapsingHeader::new("Extra SPICE lines").default_open(!setup.extra.is_empty()).show(ui, |ui| {
-        let l = ui.label(RichText::new("Appended verbatim to the deck").small().color(pal.text_weak));
-        ui.add(
-            egui::TextEdit::multiline(&mut setup.extra)
-                .code_editor()
-                .desired_rows(4)
-                .desired_width(f32::INFINITY)
-                .hint_text(".include models.lib\n.options reltol=1e-4"),
-        )
-        .labelled_by(l.id);
-    });
-    ui.checkbox(&mut state.show_netlist, "Show netlist");
+    egui::CollapsingHeader::new(t("Extra SPICE lines")).id_salt("extra_spice").default_open(!setup.extra.is_empty()).show(
+        ui,
+        |ui| {
+            let l = ui.label(RichText::new(t("Appended verbatim to the deck")).small().color(pal.text_weak));
+            ui.add(
+                egui::TextEdit::multiline(&mut setup.extra)
+                    .code_editor()
+                    .desired_rows(4)
+                    .desired_width(f32::INFINITY)
+                    .hint_text(".include models.lib\n.options reltol=1e-4"), // i18n: ignore
+            )
+            .labelled_by(l.id);
+        },
+    );
+    ui.checkbox(&mut state.show_netlist, t("Show netlist"));
     (cell.sim != before, run)
+}
+
+/// An analysis field's label. "Stop" here is a sweep's end value, not the Stop button, so it
+/// has its own translation.
+fn field_label(en: &str) -> &str {
+    if en == "Stop" && crate::i18n::current() == crate::i18n::Lang::Ko { t("Stop (end value)") } else { t(en) }
 }
 
 fn x_formatter(kind: VecKind, log: bool) -> impl Fn(egui_plot::GridMark, &std::ops::RangeInclusive<f64>) -> String {
@@ -492,7 +504,7 @@ fn plot_dataset(
             .height(h)
             .legend(Legend::default())
             .x_axis_formatter(x_formatter(xk, true))
-            .y_axis_label("Magnitude (dB)")
+            .y_axis_label(t("Magnitude (dB)"))
             .label_formatter(label_fmt(xk, true, "dB"))
             .link_axis(link, [true, false])
             .link_cursor(link, [true, false])
@@ -515,8 +527,8 @@ fn plot_dataset(
         Plot::new(("phase", &d.analysis))
             .height(h)
             .x_axis_formatter(x_formatter(xk, true))
-            .y_axis_label("Phase (°)")
-            .x_axis_label("Frequency")
+            .y_axis_label(t("Phase (°)"))
+            .x_axis_label(t("Frequency"))
             .label_formatter(label_fmt(xk, true, "°"))
             .link_axis(link, [true, false])
             .link_cursor(link, [true, false])
@@ -540,7 +552,11 @@ fn plot_dataset(
             .legend(Legend::default())
             .x_axis_formatter(x_formatter(xk, false))
             .y_axis_formatter(move |m, _| format_eng(m.value, yunit))
-            .x_axis_label(if xk == VecKind::Time { "Time".to_string() } else { format!("{} (swept)", scale.name.to_uppercase()) })
+            .x_axis_label(if xk == VecKind::Time {
+                t("Time").to_string()
+            } else {
+                tf("{} (swept)", &[&scale.name.to_uppercase()])
+            })
             .label_formatter(label_fmt(xk, false, yunit))
             .show(ui, |pu| {
                 for name in sel {
@@ -572,7 +588,7 @@ fn measurements(
     }
     egui::Grid::new(("meas", &d.analysis)).striped(true).num_columns(5).spacing([18.0, 3.0]).show(ui, |ui| {
         let head = |ui: &mut egui::Ui, t: &str| {
-            ui.label(RichText::new(t).small().strong().color(pal.text_weak));
+            ui.label(RichText::new(crate::i18n::t(t)).small().strong().color(pal.text_weak));
         };
         head(ui, "SIGNAL");
         if d.analysis == "ac" {
@@ -622,7 +638,7 @@ fn op_table(ui: &mut egui::Ui, d: &Dataset) {
     let pal = theme::palette(ui.ctx());
     egui::ScrollArea::vertical().id_salt("op_scroll").show(ui, |ui| {
         ui.columns(2, |cols| {
-            theme::section(&mut cols[0], "Node voltages / branch currents");
+            theme::section(&mut cols[0], t("Node voltages / branch currents"));
             egui::Grid::new("op_nodes").striped(true).num_columns(2).spacing([24.0, 4.0]).show(&mut cols[0], |ui| {
                 for v in &d.vectors {
                     let color = if v.kind == VecKind::Current { pal.simulation } else { pal.wire };
@@ -631,7 +647,7 @@ fn op_table(ui: &mut egui::Ui, d: &Dataset) {
                     ui.end_row();
                 }
             });
-            theme::section(&mut cols[1], "Device operating points");
+            theme::section(&mut cols[1], t("Device operating points"));
             let count = |r: &str| d.devices.iter().filter(|x| x.region.as_deref() == Some(r)).count();
             let (sat, tri, off) = (count("saturation"), count("triode"), count("cutoff") + count("subthreshold"));
             if sat + tri + off > 0 {
@@ -651,7 +667,7 @@ fn op_table(ui: &mut egui::Ui, d: &Dataset) {
             }
             if d.devices.is_empty() {
                 cols[1].label(
-                    RichText::new("Device OP details are available with the built-in engine.").small().color(pal.text_weak),
+                    RichText::new(t("Device OP details are available with the built-in engine.")).small().color(pal.text_weak),
                 );
             }
             for dev in &d.devices {
@@ -733,7 +749,7 @@ pub fn results_panel(ui: &mut egui::Ui, state: &mut SimState) -> Option<String> 
         ui.centered_and_justified(|ui| {
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.label(format!("Simulating… {:.1} s", t0.elapsed().as_secs_f32()));
+                ui.label(tf("Simulating… {} s", &[&format!("{:.1}", t0.elapsed().as_secs_f32())]));
             });
         });
         ui.ctx().request_repaint();
@@ -741,8 +757,8 @@ pub fn results_panel(ui: &mut egui::Ui, state: &mut SimState) -> Option<String> 
     }
     if let Some(e) = &state.error {
         egui::Frame::new().fill(pal.danger.gamma_multiply(0.12)).corner_radius(6).inner_margin(10).show(ui, |ui| {
-            ui.colored_label(pal.danger, RichText::new("Simulation error").strong());
-            ui.label(RichText::new(e).monospace());
+            ui.colored_label(pal.danger, RichText::new(t("Simulation error")).strong());
+            ui.label(RichText::new(crate::i18n::t_text(e)).monospace());
         });
         ui.add_space(8.0);
     }
@@ -750,9 +766,9 @@ pub fn results_panel(ui: &mut egui::Ui, state: &mut SimState) -> Option<String> 
         if state.error.is_none() {
             ui.centered_and_justified(|ui| {
                 ui.label(
-                    RichText::new(
+                    RichText::new(t(
                         "Configure analyses on the left and press ▶ Run (F5).\nResults, waveforms and measurements appear here.",
-                    )
+                    ))
                     .color(pal.text_weak)
                     .size(14.0),
                 );
@@ -763,11 +779,11 @@ pub fn results_panel(ui: &mut egui::Ui, state: &mut SimState) -> Option<String> 
     ui.horizontal(|ui| {
         for d in &res.datasets {
             let label = match d.analysis.as_str() {
-                "op" => "Operating Point",
-                "dc" => "DC Sweep",
+                "op" => t("Operating Point"),
+                "dc" => t("DC Sweep"),
                 "ac" => "AC",
-                "tran" => "Transient",
-                "noise" => "Noise",
+                "tran" => t("Transient"),
+                "noise" => t("Noise"),
                 other => other,
             };
             if ui.selectable_label(state.tab == d.analysis, label).clicked() {
@@ -776,12 +792,12 @@ pub fn results_panel(ui: &mut egui::Ui, state: &mut SimState) -> Option<String> 
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if let Some(d) = res.dataset(&state.tab)
-                && ui.button("⬇ CSV").on_hover_text("Export this dataset").clicked()
+                && ui.button("⬇ CSV").on_hover_text(t("Export this dataset")).clicked()
             {
                 match export_csv(d) {
-                    Ok(Some(p)) => msg = Some(format!("Exported {}", p.display())),
+                    Ok(Some(p)) => msg = Some(tf("Exported {}", &[&p.display().to_string()])),
                     Ok(None) => {}
-                    Err(e) => msg = Some(format!("Export failed: {e}")),
+                    Err(e) => msg = Some(tf("Export failed: {}", &[&e])),
                 }
             }
             ui.label(RichText::new(format!("{} · {:.1} ms", res.backend, res.elapsed_ms)).small().color(pal.text_weak));
@@ -800,19 +816,20 @@ pub fn results_panel(ui: &mut egui::Ui, state: &mut SimState) -> Option<String> 
         colors.insert(v.name.clone(), trace[i % trace.len()]);
     }
     theme::aside(egui::Panel::right("signals").resizable(true).default_size(190.0), ui, |ui| {
-        theme::section(ui, "Signals");
-        let fl = ui.label(RichText::new("Filter").small().color(pal.text_weak));
-        ui.add(egui::TextEdit::singleline(&mut state.filter).hint_text("v(out)…").desired_width(f32::INFINITY))
-            .labelled_by(fl.id);
+        theme::section(ui, t("Signals"));
+        let fl = ui.label(RichText::new(t("Filter")).small().color(pal.text_weak));
+        let hint = "v(out)…"; // i18n: ignore
+        ui.add(egui::TextEdit::singleline(&mut state.filter).hint_text(hint).desired_width(f32::INFINITY)).labelled_by(fl.id);
         ui.horizontal(|ui| {
-            if ui.small_button("all V").clicked() {
+            if ui.small_button(t("all V")).clicked() {
                 *sel = d.signals().filter(|v| v.kind == VecKind::Voltage).map(|v| v.name.clone()).collect();
             }
-            if ui.small_button("clear").clicked() {
+            if ui.small_button(t("clear")).clicked() {
                 sel.clear();
             }
         });
-        egui::CollapsingHeader::new(format!("Compare runs ({})", state.history.len()))
+        egui::CollapsingHeader::new(tf("Compare runs ({})", &[&state.history.len().to_string()]))
+            .id_salt("compare_runs")
             .default_open(state.history.iter().any(|r| r.shown))
             .show(ui, |ui| runs_ui(ui, &mut state.label, &mut state.history));
         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -833,21 +850,22 @@ pub fn results_panel(ui: &mut egui::Ui, state: &mut SimState) -> Option<String> 
                         }
                     }
                     r.context_menu(|ui| {
-                        if ui.button("Plot Only This").clicked() {
+                        if ui.button(t("Plot Only This")).clicked() {
                             *sel = [v.name.clone()].into_iter().collect();
                         }
-                        if ui.button(if sel.contains(&v.name) { "Hide" } else { "Show" }).clicked() && !sel.remove(&v.name) {
+                        if ui.button(if sel.contains(&v.name) { t("Hide") } else { t("Show") }).clicked() && !sel.remove(&v.name)
+                        {
                             sel.insert(v.name.clone());
                         }
                         let same_kind: Vec<String> = d.signals().filter(|x| x.kind == v.kind).map(|x| x.name.clone()).collect();
-                        if ui.button("Show All of This Kind").clicked() {
+                        if ui.button(t("Show All of This Kind")).clicked() {
                             sel.extend(same_kind);
                         }
-                        if ui.button("Clear Plot").clicked() {
+                        if ui.button(t("Clear Plot")).clicked() {
                             sel.clear();
                         }
                         ui.separator();
-                        if ui.button("Copy Name").clicked() {
+                        if ui.button(t("Copy Name")).clicked() {
                             ui.ctx().copy_text(v.name.clone());
                         }
                     });
@@ -862,7 +880,7 @@ pub fn results_panel(ui: &mut egui::Ui, state: &mut SimState) -> Option<String> 
         .filter_map(|r| Some((r.label.as_str(), r.results.dataset(&d.analysis)?)))
         .collect();
     egui::Panel::bottom("meas").resizable(true).default_size(110.0).show(ui, |ui| {
-        theme::section(ui, "Measurements");
+        theme::section(ui, t("Measurements"));
         egui::ScrollArea::vertical().show(ui, |ui| measurements(ui, d, sel, &colors, &others));
     });
     egui::CentralPanel::default().frame(egui::Frame::new().inner_margin(4)).show(ui, |ui| {
@@ -875,19 +893,19 @@ pub fn results_panel(ui: &mut egui::Ui, state: &mut SimState) -> Option<String> 
 /// overlaid (dashed) on the plots and listed in the measurements.
 pub fn runs_ui(ui: &mut egui::Ui, label: &mut String, history: &mut Vec<SavedRun>) {
     let pal = theme::palette(ui.ctx());
-    let l = ui.label(RichText::new("Current").small().color(pal.text_weak));
+    let l = ui.label(RichText::new(t("Current")).small().color(pal.text_weak));
     ui.add(egui::TextEdit::singleline(label).desired_width(f32::INFINITY)).labelled_by(l.id);
     if history.is_empty() {
-        ui.label(RichText::new("Earlier runs appear here after the next simulation.").small().color(pal.text_weak));
+        ui.label(RichText::new(t("Earlier runs appear here after the next simulation.")).small().color(pal.text_weak));
         return;
     }
     let mut remove = None;
     for (i, r) in history.iter_mut().enumerate().rev() {
         ui.horizontal(|ui| {
-            ui.checkbox(&mut r.shown, "").on_hover_text("Overlay on the plots");
+            ui.checkbox(&mut r.shown, "").on_hover_text(t("Overlay on the plots"));
             let l = ui.label(RichText::new(format!("{} ms", r.results.elapsed_ms.round())).small().color(pal.text_weak));
             ui.add(egui::TextEdit::singleline(&mut r.label).desired_width(110.0)).labelled_by(l.id);
-            if ui.small_button("Delete").clicked() {
+            if ui.small_button(t("Delete")).clicked() {
                 remove = Some(i);
             }
         });

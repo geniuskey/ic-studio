@@ -18,6 +18,7 @@ use ics_core::pcell::PCell;
 use ics_core::pcell_design::{Axis, CornerRun, Diag, Finding, Level, Op, Param, ParamKind, Side, Target, Template, Values};
 use ics_core::{CellRef, IRect, Layout, Project, Tech};
 
+use crate::i18n::{self, t, tf};
 use crate::layout_view::layer_color;
 use crate::theme::{self, Palette};
 
@@ -214,12 +215,12 @@ impl PCellDesigner {
         let tpl = match (&c.pcell, &c.layout) {
             (Some(PCell::Template { def, .. }), _) => (**def).clone(),
             (Some(_), _) => {
-                self.status = Some((false, format!("{r} is a generated PCell; open the drawn cell instead")));
+                self.status = Some((false, tf("{} is a generated PCell; open the drawn cell instead", &[&r.to_string()])));
                 return;
             }
             (None, Some(l)) => Template::from_layout(&unique_name(project, &r.lib, &format!("{}_pc", r.cell)), l),
             (None, None) => {
-                self.status = Some((false, format!("{r} has no layout")));
+                self.status = Some((false, tf("{} has no layout", &[&r.to_string()])));
                 return;
             }
         };
@@ -237,7 +238,7 @@ impl PCellDesigner {
         self.pick = None;
         self.corners = None;
         self.layers = LayerView::default();
-        self.status = Some((true, format!("Loaded {r}")));
+        self.status = Some((true, tf("Loaded {}", &[&r.to_string()])));
         self.touch();
     }
 
@@ -247,7 +248,7 @@ impl PCellDesigner {
         let ours = self.tpl.as_ref().is_some_and(|t| t.name == r.cell) && self.lib == r.lib;
         if ours && self.baseline.is_some() && self.baseline == self.tpl {
             self.load(project, r);
-            self.status = Some((true, format!("{r} was updated by the agent")));
+            self.status = Some((true, tf("{} was updated by the agent", &[&r.to_string()])));
         }
     }
 
@@ -293,11 +294,10 @@ impl PCellDesigner {
                     self.findings.push(Finding {
                         level: Level::Warning,
                         target: Target::Template,
-                        message: format!(
+                        message: tf(
                             "No DRC rule of the technology's deck reads {} of the drawing's layers ({}): a clean corner \
                              check says nothing about them",
-                            open.len(),
-                            open.join(", ")
+                            &[&open.len().to_string(), &open.join(", ")],
                         ),
                     });
                 }
@@ -309,10 +309,9 @@ impl PCellDesigner {
                     self.findings.push(Finding {
                         level: Level::Warning,
                         target: Target::Template,
-                        message: format!(
-                            "At the defaults, {name} differs from the drawing: {} µm² extra, {} µm² missing",
-                            num(um2(l.added.area())),
-                            num(um2(l.removed.area()))
+                        message: tf(
+                            "At the defaults, {} differs from the drawing: {} µm² extra, {} µm² missing",
+                            &[&name, &num(um2(l.added.area())), &num(um2(l.removed.area()))],
                         ),
                     });
                 }
@@ -320,11 +319,9 @@ impl PCellDesigner {
                     self.findings.push(Finding {
                         level: Level::Warning,
                         target: Target::Template,
-                        message: format!(
+                        message: tf(
                             "At the defaults, placed cells differ from the drawing: {} new, {} gone, {} moved",
-                            d.placed.len(),
-                            d.unplaced.len(),
-                            d.moved.len()
+                            &[&d.placed.len().to_string(), &d.unplaced.len().to_string(), &d.moved.len().to_string()],
                         ),
                     });
                 }
@@ -396,7 +393,10 @@ impl PCellDesigner {
         let gen_ = job.gen_;
         self.job = None;
         let bad = runs.iter().filter(|r| r.result.as_ref().map_or(true, |c| !c.violations.is_empty())).count();
-        self.status = Some((bad == 0, format!("Corner check: {} of {} corner(s) clean", runs.len() - bad, runs.len())));
+        self.status = Some((
+            bad == 0,
+            tf("Corner check: {} of {} corner(s) clean", &[&(runs.len() - bad).to_string(), &runs.len().to_string()]),
+        ));
         self.corner_sel = runs.iter().position(|r| r.result.as_ref().map_or(true, |c| !c.violations.is_empty())).unwrap_or(0);
         self.corners = Some((gen_, runs));
     }
@@ -406,7 +406,7 @@ impl PCellDesigner {
         let deck = match drc::parse_any(&project.tech.deck_text(), &project.tech) {
             Ok(d) => d.deck,
             Err(e) => {
-                self.status = Some((false, format!("The technology deck does not parse: {}", e[0])));
+                self.status = Some((false, tf("The technology deck does not parse: {}", &[&e[0].to_string()])));
                 return;
             }
         };
@@ -489,19 +489,19 @@ impl PCellDesigner {
             ui.horizontal(|ui| {
                 let issues = self.findings.iter().filter(|f| f.level != Level::Info).count();
                 let corners = match (&self.corners, &self.job) {
-                    (_, Some(_)) => "Corners (running)".to_string(),
+                    (_, Some(_)) => t("Corners (running)").to_string(),
                     (Some((g, runs)), _) => {
                         let bad = runs.iter().filter(|r| r.result.as_ref().map_or(true, |c| !c.violations.is_empty())).count();
-                        let stale = if *g != self.gen_ { ", outdated" } else { "" };
-                        format!("Corners ({bad} failing{stale})")
+                        let stale = if *g != self.gen_ { t(", outdated") } else { "" };
+                        tf("Corners ({} failing{})", &[&bad.to_string(), stale])
                     }
-                    _ => "Corners".into(),
+                    _ => t("Corners").into(),
                 };
                 for (t, name) in [
-                    (Tab::Guide, "Start here".to_string()),
-                    (Tab::Design, "Design".into()),
+                    (Tab::Guide, t("Start here").to_string()),
+                    (Tab::Design, t("Design").into()),
                     (Tab::Corners, corners),
-                    (Tab::Issues, format!("Issues ({issues})")),
+                    (Tab::Issues, tf("Issues ({})", &[&issues.to_string()])),
                 ] {
                     if ui.selectable_label(self.tab == t, name).clicked() {
                         self.tab = t;
@@ -522,28 +522,28 @@ impl PCellDesigner {
     fn toolbar(&mut self, ui: &mut egui::Ui, project: &Project, active: Option<&CellRef>, pal: &Palette) -> Option<PCellAction> {
         let mut action = None;
         ui.horizontal(|ui| {
-            ui.label(RichText::new("PCell Designer").strong().color(pal.text_strong));
+            ui.label(RichText::new(t("PCell Designer")).strong().color(pal.text_strong));
             if let Some(s) = &self.source {
-                ui.label(RichText::new(format!("· from {s}")).color(pal.text_weak));
+                ui.label(RichText::new(tf("· from {}", &[&s.to_string()])).color(pal.text_weak));
             }
             if self.tpl.is_some() && self.baseline.as_ref() != self.tpl.as_ref() {
-                ui.label(RichText::new("● not saved").color(pal.warning))
-                    .on_hover_text("The design differs from the saved master cell. Save it to place it.");
+                ui.label(RichText::new(t("● not saved")).color(pal.warning))
+                    .on_hover_text(t("The design differs from the saved master cell. Save it to place it."));
             }
             ui.separator();
-            let load = ui.add_enabled(active.is_some(), egui::Button::new("Load active cell"));
+            let load = ui.add_enabled(active.is_some(), egui::Button::new(t("Load active cell")));
             let hover = match active {
-                Some(c) => format!("Start a design from the drawing of {c} (a saved design reopens)"),
-                None => "Open a layout cell first".into(),
+                Some(c) => tf("Start a design from the drawing of {} (a saved design reopens)", &[&c.to_string()]),
+                None => t("Open a layout cell first").into(),
             };
-            if load.on_hover_text(hover).on_disabled_hover_text("Open a layout cell first").clicked()
+            if load.on_hover_text(hover).on_disabled_hover_text(t("Open a layout cell first")).clicked()
                 && let Some(r) = active
             {
                 self.load(project, r);
             }
             if ui
-                .add_enabled(!self.undo.is_empty(), egui::Button::new("Undo"))
-                .on_hover_text("Undo the last design change")
+                .add_enabled(!self.undo.is_empty(), egui::Button::new(t("Undo")))
+                .on_hover_text(t("Undo the last design change"))
                 .clicked()
                 && let Some(t) = self.undo.pop()
             {
@@ -552,11 +552,11 @@ impl PCellDesigner {
             }
             if let Some(t) = &self.tpl
                 && ui
-                    .button("Export SKILL…")
-                    .on_hover_text(
+                    .button(i18n::t("Export SKILL…"))
+                    .on_hover_text(i18n::t(
                         "Write the PCell as a SKILL pcDefinePCell for Cadence Virtuoso (.il), generating the same \
                          layout. Layer names are the technology's.",
-                    )
+                    ))
                     .clicked()
             {
                 let lib = if self.lib.is_empty() { "myLib".to_string() } else { self.lib.clone() };
@@ -568,42 +568,43 @@ impl PCellDesigner {
                             .save_file();
                         if let Some(path) = pick {
                             self.status = Some(match std::fs::write(&path, text) {
-                                Ok(()) if warnings.is_empty() => (true, format!("Wrote {}", path.display())),
-                                Ok(()) => (true, format!("Wrote {} ({})", path.display(), warnings.join("; "))),
+                                Ok(()) if warnings.is_empty() => (true, tf("Wrote {}", &[&path.display().to_string()])),
+                                Ok(()) => (true, tf("Wrote {} ({})", &[&path.display().to_string(), &warnings.join("; ")])),
                                 Err(e) => (false, format!("{}: {e}", path.display())),
                             });
                         }
                     }
-                    Err(e) => self.status = Some((false, format!("SKILL export: {e}"))),
+                    Err(e) => self.status = Some((false, tf("SKILL export: {}", &[&e.to_string()]))),
                 }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("Close").clicked() {
+                if ui.button(t("Close")).clicked() {
                     self.open = false;
                 }
                 let Some(t) = &self.tpl else { return };
                 let errors = self.findings.iter().filter(|f| f.level == Level::Error).count();
-                let save = egui::Button::new(RichText::new("Save PCell").color(theme::on_fill(pal.accent))).fill(pal.accent);
+                let save =
+                    egui::Button::new(RichText::new(i18n::t("Save PCell")).color(theme::on_fill(pal.accent))).fill(pal.accent);
                 let libs: Vec<&str> =
                     project.libraries.iter().map(|l| l.name.as_str()).filter(|l| *l != ics_core::pcell::PCELL_LIB).collect();
                 if self.lib.is_empty() || !libs.contains(&self.lib.as_str()) {
                     self.lib = libs.first().map(|s| s.to_string()).unwrap_or_default();
                 }
-                let hover = format!(
+                let hover = tf(
                     "Store the master cell {}/{} and update the variants already placed. Place it with the layout \
                      editor's instance tool (Designed PCells).",
-                    self.lib, t.name
+                    &[&self.lib, &t.name],
                 );
                 if ui
                     .add_enabled(errors == 0 && !self.lib.is_empty(), save)
                     .on_hover_text(hover)
-                    .on_disabled_hover_text("Fix the errors on the Issues tab first")
+                    .on_disabled_hover_text(i18n::t("Fix the errors on the Issues tab first"))
                     .clicked()
                 {
                     action = Some(PCellAction::Publish { lib: self.lib.clone(), def: Box::new(t.clone()) });
                     self.baseline = Some(t.clone());
                 }
-                let lb = ui.label("in");
+                let lb = ui.label(i18n::t("in"));
                 egui::ComboBox::from_id_salt("pd_lib")
                     .selected_text(self.lib.clone())
                     .show_ui(ui, |ui| {
@@ -613,7 +614,7 @@ impl PCellDesigner {
                     })
                     .response
                     .labelled_by(lb.id)
-                    .on_hover_text("Library of the master cell");
+                    .on_hover_text(i18n::t("Library of the master cell"));
                 if let Some((ok, s)) = &self.status {
                     ui.label(RichText::new(s).small().color(if *ok { pal.text_weak } else { pal.danger }));
                 }
@@ -634,10 +635,10 @@ impl PCellDesigner {
         let tech = &project.tech;
         egui::ScrollArea::vertical().id_salt("pd_side").auto_shrink([false, false]).show(ui, |ui| {
             let Some(t) = self.tpl.as_mut() else { return };
-            theme::section(ui, "PCell");
+            theme::section(ui, i18n::t("PCell"));
             let mut name = t.name.clone();
             ui.horizontal(|ui| {
-                let lb = ui.label("Name");
+                let lb = ui.label(i18n::t("Name"));
                 if ui.add(egui::TextEdit::singleline(&mut name).desired_width(170.0)).labelled_by(lb.id).changed() {
                     self.undo.push(t.clone());
                     t.name = name;
@@ -646,9 +647,9 @@ impl PCellDesigner {
             });
             let mut desc = t.description.clone();
             ui.horizontal(|ui| {
-                let lb = ui.label("Note");
+                let lb = ui.label(i18n::t("Note"));
                 if ui
-                    .add(egui::TextEdit::singleline(&mut desc).desired_width(170.0).hint_text("what the cell is"))
+                    .add(egui::TextEdit::singleline(&mut desc).desired_width(170.0).hint_text(i18n::t("what the cell is")))
                     .labelled_by(lb.id)
                     .changed()
                 {
@@ -657,23 +658,22 @@ impl PCellDesigner {
                 }
             });
             ui.label(
-                RichText::new(format!(
+                RichText::new(tf(
                     "{} shape(s), {} instance(s) in the drawing",
-                    t.source.shapes.len(),
-                    t.source.instances.len()
+                    &[&t.source.shapes.len().to_string(), &t.source.instances.len().to_string()],
                 ))
                 .small()
                 .color(pal.text_weak),
             );
             ui.add_space(6.0);
-            theme::section(ui, "Parameters");
+            theme::section(ui, i18n::t("Parameters"));
             let mut new_sel = None;
             for (i, p) in t.params.iter().enumerate() {
                 let sev = self.findings.iter().filter(|f| f.target == Target::Param(i)).map(|f| f.level).min();
                 let text = format!(
                     "{}  {}  = {}{}",
                     p.name,
-                    p.kind.label(),
+                    i18n::t(p.kind.label()),
                     num(p.default),
                     if p.kind == ParamKind::Length { " µm" } else { "" }
                 );
@@ -687,8 +687,8 @@ impl PCellDesigner {
             ui.horizontal_wrapped(|ui| {
                 for kind in ParamKind::ALL {
                     if ui
-                        .small_button(format!("+ {}", kind.label()))
-                        .on_hover_text(format!("Add a {} parameter", kind.label()))
+                        .small_button(format!("+ {}", i18n::t(kind.label())))
+                        .on_hover_text(tf("Add a {} parameter", &[i18n::t(kind.label())]))
                         .clicked()
                     {
                         self.undo.push(t.clone());
@@ -717,9 +717,9 @@ impl PCellDesigner {
                 }
             });
             ui.add_space(6.0);
-            theme::section(ui, "Operations");
+            theme::section(ui, i18n::t("Operations"));
             if t.ops.is_empty() {
-                ui.label(RichText::new("None yet. Add one, or use a suggestion below.").small().color(pal.text_weak));
+                ui.label(RichText::new(i18n::t("None yet. Add one, or use a suggestion below.")).small().color(pal.text_weak));
             }
             for (k, op) in t.ops.iter().enumerate() {
                 let sev = self.findings.iter().filter(|f| f.target == Target::Op(k)).map(|f| f.level).min();
@@ -737,8 +737,8 @@ impl PCellDesigner {
             let mut add = None;
             ui.horizontal_wrapped(|ui| {
                 if ui
-                    .small_button("+ Stretch X")
-                    .on_hover_text("A vertical line; what is right of it moves by the amount")
+                    .small_button(i18n::t("+ Stretch X"))
+                    .on_hover_text(i18n::t("A vertical line; what is right of it moves by the amount"))
                     .clicked()
                 {
                     add = Some((
@@ -747,8 +747,8 @@ impl PCellDesigner {
                     ));
                 }
                 if ui
-                    .small_button("+ Stretch Y")
-                    .on_hover_text("A horizontal line; what is above it moves by the amount")
+                    .small_button(i18n::t("+ Stretch Y"))
+                    .on_hover_text(i18n::t("A horizontal line; what is above it moves by the amount"))
                     .clicked()
                 {
                     add = Some((
@@ -757,8 +757,8 @@ impl PCellDesigner {
                     ));
                 }
                 if ui
-                    .small_button("+ Diagonal")
-                    .on_hover_text("A 45° line (x + y constant) in a region; vertices up and right of it move across it")
+                    .small_button(i18n::t("+ Diagonal"))
+                    .on_hover_text(i18n::t("A 45° line (x + y constant) in a region; vertices up and right of it move across it"))
                     .clicked()
                 {
                     add = Some((
@@ -773,7 +773,7 @@ impl PCellDesigner {
                         Pick::Region,
                     ));
                 }
-                if ui.small_button("+ Repeat").on_hover_text("Copy what lies inside a region count times, pitch apart").clicked()
+                if ui.small_button(i18n::t("+ Repeat")).on_hover_text(i18n::t("Copy what lies inside a region count times, pitch apart")).clicked()
                 {
                     add = Some((
                         Op::Repeat {
@@ -788,13 +788,13 @@ impl PCellDesigner {
                     ));
                 }
                 if ui
-                    .small_button("+ Condition")
-                    .on_hover_text("Drop what lies inside a region when an expression is false")
+                    .small_button(i18n::t("+ Condition"))
+                    .on_hover_text(i18n::t("Drop what lies inside a region when an expression is false"))
                     .clicked()
                 {
                     add = Some((Op::Condition { region: quarter, when: first_bool(t), layers: vec![] }, Pick::Region));
                 }
-                if ui.small_button("+ Contact fill").on_hover_text("An area refilled with via cuts after stretching").clicked() {
+                if ui.small_button(i18n::t("+ Contact fill")).on_hover_text(i18n::t("An area refilled with via cuts after stretching")).clicked() {
                     let via = tech.vias.first().map(|v| v.name.clone()).unwrap_or_default();
                     add = Some((Op::ContactFill { rect: quarter, via }, Pick::Region));
                 }
@@ -808,58 +808,58 @@ impl PCellDesigner {
                 self.gen_ += 1;
             }
             ui.add_space(6.0);
-            theme::section(ui, "Suggestions");
-            ui.label(RichText::new("Read the drawing and add the usual parameters of a device.").small().color(pal.text_weak));
+            theme::section(ui, i18n::t("Suggestions"));
+            ui.label(RichText::new(i18n::t("Read the drawing and add the usual parameters of a device.")).small().color(pal.text_weak));
             let mut sug: Option<(&str, Result<String, String>)> = None;
             let before = t.clone();
             if !t.source.instances.is_empty()
                 && ui
-                    .button("Flatten instances")
+                    .button(i18n::t("Flatten instances"))
                     .on_hover_text(
-                        "Turn the placed cells of the drawing (via cells, say) into shapes, so stretches can pick their \
-                         layers and their cuts can become contact fills. Run it before Contacts to fills.",
+                        i18n::t("Turn the placed cells of the drawing (via cells, say) into shapes, so stretches can pick their \
+                         layers and their cuts can become contact fills. Run it before Contacts to fills."),
                     )
                     .clicked()
             {
                 let n = t.flatten_instances(project);
-                sug = Some(("flatten", Ok(format!("{n} instance(s) flattened"))));
+                sug = Some(("flatten", Ok(tf("{} instance(s) flattened", &[&n.to_string()]))));
             }
             if ui
-                .button("Contacts to fills")
-                .on_hover_text("Replace every cluster of via cuts by a contact fill, so stretching re-arrays the cuts")
+                .button(i18n::t("Contacts to fills"))
+                .on_hover_text(i18n::t("Replace every cluster of via cuts by a contact fill, so stretching re-arrays the cuts"))
                 .clicked()
             {
                 let n = t.suggest_contact_fills(tech);
                 sug = Some((
                     "contacts",
-                    if n > 0 { Ok(format!("{n} contact fill(s) made")) } else { Err("No via cuts found".into()) },
+                    if n > 0 { Ok(tf("{} contact fill(s) made", &[&n.to_string()])) } else { Err(i18n::t("No via cuts found").into()) },
                 ));
             }
             if ui
-                .button("Detect fingers (nf)")
-                .on_hover_text("Equal gates at a fixed pitch become one unit repeated nf times; shapes spanning them follow")
+                .button(i18n::t("Detect fingers (nf)"))
+                .on_hover_text(i18n::t("Equal gates at a fixed pitch become one unit repeated nf times; shapes spanning them follow"))
                 .clicked()
             {
                 sug = Some(("fingers", t.suggest_fingers(tech)));
             }
-            if ui.button("Width stretch (w)").on_hover_text("A horizontal line through the diffusion, driven by w").clicked() {
+            if ui.button(i18n::t("Width stretch (w)")).on_hover_text(i18n::t("A horizontal line through the diffusion, driven by w")).clicked() {
                 sug = Some(("width", t.suggest_width(tech)));
             }
-            if ui.button("Length stretch (l)").on_hover_text("A vertical line through the first gate, driven by l").clicked() {
+            if ui.button(i18n::t("Length stretch (l)")).on_hover_text(i18n::t("A vertical line through the first gate, driven by l")).clicked() {
                 sug = Some(("length", t.suggest_length(tech)));
             }
             // The gate and diffusion layers the MOS suggestions look for (technology roles).
-            ui.label(RichText::new("Device layers (technology roles)").small().color(pal.text_weak));
+            ui.label(RichText::new(i18n::t("Device layers (technology roles)")).small().color(pal.text_weak));
             let present: Vec<usize> = self.layer_counts.iter().map(|c| c.layer).collect();
             let lname = |l: usize| tech.layer(l).map_or_else(|| format!("layer #{l}"), |d| d.name.clone());
             let (poly, diff) = (tech.roles.poly.clone(), tech.roles.diffusion.first().cloned().unwrap_or_default());
             let mut roles: Option<(String, String)> = None;
             ui.horizontal_wrapped(|ui| {
-                for (label, cur, id, gate) in [("Gate", &poly, "pd_role_poly", true), ("Diffusion", &diff, "pd_role_diff", false)]
+                for (label, cur, id, gate) in [(i18n::t("Gate"), &poly, "pd_role_poly", true), (i18n::t("Diffusion"), &diff, "pd_role_diff", false)]
                 {
                     let lb = ui.label(RichText::new(label).small());
                     let missing = tech.layer_index(cur).is_none_or(|l| !present.contains(&l));
-                    let text = if cur.is_empty() { "(none)".to_string() } else { cur.clone() };
+                    let text = if cur.is_empty() { i18n::t("(none)").to_string() } else { cur.clone() };
                     egui::ComboBox::from_id_salt(id)
                         .selected_text(if missing { RichText::new(text).color(pal.warning) } else { RichText::new(text) })
                         .show_ui(ui, |ui| {
@@ -873,10 +873,10 @@ impl PCellDesigner {
                         .response
                         .labelled_by(lb.id)
                         .on_hover_text(if gate {
-                            "The technology's gate (poly) role: gates are its shapes over diffusion. Changing it changes the \
-                             technology (extraction reads it too)."
+                            i18n::t("The technology's gate (poly) role: gates are its shapes over diffusion. Changing it changes the \
+                             technology (extraction reads it too).")
                         } else {
-                            "The technology's first diffusion role. Changing it changes the technology (extraction reads it too)."
+                            i18n::t("The technology's first diffusion role. Changing it changes the technology (extraction reads it too).")
                         });
                 }
             });
@@ -918,22 +918,22 @@ impl PCellDesigner {
         if self.tpl.is_none() {
             return;
         }
-        theme::section(ui, "Layers");
+        theme::section(ui, t("Layers"));
         let counts = self.layer_counts.clone();
         let mut step = 0;
         let lv = &mut self.layers;
         ui.horizontal_wrapped(|ui| {
-            if ui.button("Prev").on_hover_text("Show the previous layer alone ( [ )").clicked() {
+            if ui.button(t("Prev")).on_hover_text(t("Show the previous layer alone ( [ )")).clicked() {
                 step = -1;
             }
-            if ui.button("Next").on_hover_text("Show the next layer alone ( ] )").clicked() {
+            if ui.button(t("Next")).on_hover_text(t("Show the next layer alone ( ] )")).clicked() {
                 step = 1;
             }
-            if ui.button("All").on_hover_text("Show every layer").clicked() {
+            if ui.button(t("All")).on_hover_text(t("Show every layer")).clicked() {
                 lv.solo = None;
                 lv.hidden.clear();
             }
-            if ui.button("None").on_hover_text("Hide every layer; then tick the ones to look at").clicked() {
+            if ui.button(t("None")).on_hover_text(t("Hide every layer; then tick the ones to look at")).clicked() {
                 lv.solo = None;
                 lv.hidden = counts.iter().map(|c| c.layer).collect();
             }
@@ -945,8 +945,8 @@ impl PCellDesigner {
         let unchecked: BTreeSet<usize> = drawn.into_iter().filter(|&l| self.drc_checks(l) == Some(false)).collect();
         let Some(t) = &self.tpl else { return };
         let lv = &mut self.layers;
-        ui.checkbox(&mut lv.hide_others, "Hide the others")
-            .on_hover_text("With one layer alone, leave the other layers out instead of dimming them");
+        ui.checkbox(&mut lv.hide_others, i18n::t("Hide the others"))
+            .on_hover_text(i18n::t("With one layer alone, leave the other layers out instead of dimming them"));
         // Reproduction: generation at the defaults against the drawing as loaded.
         let differ: BTreeMap<usize, (i128, i128)> = self
             .repro
@@ -955,48 +955,51 @@ impl PCellDesigner {
             .unwrap_or_default();
         match &self.repro {
             None => {
-                ui.label(RichText::new("Cannot compare with the drawing (generation fails)").small().color(pal.danger));
+                ui.label(RichText::new(i18n::t("Cannot compare with the drawing (generation fails)")).small().color(pal.danger));
             }
             Some(_) if differ.is_empty() => {
-                ui.label(RichText::new("The defaults reproduce the drawing on every layer").small().color(pal.ok)).on_hover_text(
-                    "Generated at the default values, the cell is the drawing as loaded, layer by layer (XOR is empty)",
-                );
+                ui.label(RichText::new(i18n::t("The defaults reproduce the drawing on every layer")).small().color(pal.ok))
+                    .on_hover_text(i18n::t(
+                        "Generated at the default values, the cell is the drawing as loaded, layer by layer (XOR is empty)",
+                    ));
             }
             Some(_) => {
                 ui.label(
-                    RichText::new(format!("{} layer(s) differ from the drawing at the defaults", differ.len()))
+                    RichText::new(tf("{} layer(s) differ from the drawing at the defaults", &[&differ.len().to_string()]))
                         .small()
                         .color(pal.danger),
                 )
-                .on_hover_text("Generated at the default values, these layers are not the drawing as loaded. See Issues.");
-                ui.checkbox(&mut self.show_diff, "Mark the differences")
-                    .on_hover_text("Outline on the drawing what generation adds (solid) and leaves out (dashed)");
+                .on_hover_text(i18n::t(
+                    "Generated at the default values, these layers are not the drawing as loaded. See Issues.",
+                ));
+                ui.checkbox(&mut self.show_diff, i18n::t("Mark the differences"))
+                    .on_hover_text(i18n::t("Outline on the drawing what generation adds (solid) and leaves out (dashed)"));
             }
         }
         let shown = counts.iter().filter(|c| lv.alpha(c.layer).is_some_and(|a| a >= 1.0)).count();
         let lost = counts.iter().filter(|c| (c.source == 0) != (c.generated == 0)).count();
-        let mut note = format!("{} layer(s), {shown} shown; shapes: drawing / preview", counts.len());
+        let mut note = tf("{} layer(s), {} shown; shapes: drawing / preview", &[&counts.len().to_string(), &shown.to_string()]);
         if lost > 0 {
-            note.push_str(&format!(". {lost} layer(s) appear or vanish in the preview"));
+            note.push_str(&tf(". {} layer(s) appear or vanish in the preview", &[&lost.to_string()]));
         }
         if !t.fixed.is_empty() {
-            note.push_str(&format!(". {} fixed", t.fixed.len()));
+            note.push_str(&tf(". {} fixed", &[&t.fixed.len().to_string()]));
         }
         ui.label(RichText::new(note).small().color(pal.text_weak));
         if !unchecked.is_empty() {
             ui.label(
-                RichText::new(format!("{} layer(s) no DRC rule checks (name in italics)", unchecked.len()))
+                RichText::new(tf("{} layer(s) no DRC rule checks (name in italics)", &[&unchecked.len().to_string()]))
                     .small()
                     .color(pal.warning),
             )
-            .on_hover_text(
+            .on_hover_text(i18n::t(
                 "The technology's DRC deck reads none of these layers, so the corner check cannot catch errors on them. \
                      Check them by eye, layer by layer, or add rules in the Rule Designer.",
-            );
+            ));
         }
         if let Some(s) = lv.solo {
             let name = tech.layer(s).map_or_else(|| format!("layer {s}"), |d| d.name.clone());
-            ui.label(RichText::new(format!("Alone: {name}")).strong().color(pal.accent));
+            ui.label(RichText::new(tf("Alone: {}", &[&name])).strong().color(pal.accent));
         }
         ui.add_space(4.0);
         let um2 = |a: i128| num(a as f64 / (tech.dbu_per_um.max(1) as f64).powi(2));
@@ -1033,39 +1036,49 @@ impl PCellDesigner {
                     }
                     let mut tip = match d {
                         Some(d) => format!("GDS {}/{}", d.gds_layer, d.gds_datatype),
-                        None => "Not a layer of the technology".into(),
+                        None => i18n::t("Not a layer of the technology").into(),
                     };
-                    tip.push_str(&format!("\n{} shape(s) drawn, {} in the preview", c.source, c.generated));
+                    tip.push('\n');
+                    tip.push_str(&tf("{} shape(s) drawn, {} in the preview", &[&c.source.to_string(), &c.generated.to_string()]));
                     match diff {
-                        Some((add, rem)) => tip.push_str(&format!(
-                            "\nAt the defaults: {} µm² extra, {} µm² missing against the drawing",
-                            um2(*add),
-                            um2(*rem)
-                        )),
-                        None if self.repro.is_some() => tip.push_str("\nAt the defaults: same as the drawing"),
+                        Some((add, rem)) => {
+                            tip.push('\n');
+                            tip.push_str(&tf(
+                                "At the defaults: {} µm² extra, {} µm² missing against the drawing",
+                                &[&um2(*add), &um2(*rem)],
+                            ));
+                        }
+                        None if self.repro.is_some() => {
+                            tip.push('\n');
+                            tip.push_str(i18n::t("At the defaults: same as the drawing"));
+                        }
                         None => {}
                     }
                     let ops = ops_on_layer(t, c.layer, tech);
                     if !ops.is_empty() {
-                        tip.push_str(&format!("\nOperations: {}", ops.join(", ")));
+                        tip.push('\n');
+                        tip.push_str(&tf("Operations: {}", &[&ops.join(", ")]));
                     }
                     if fixed {
-                        tip.push_str("\nFixed: operations on all layers leave it alone");
+                        tip.push('\n');
+                        tip.push_str(i18n::t("Fixed: operations on all layers leave it alone"));
                     }
                     if no_drc {
-                        tip.push_str("\nNo rule of the DRC deck reads this layer");
+                        tip.push('\n');
+                        tip.push_str(i18n::t("No rule of the DRC deck reads this layer"));
                     }
                     resp.on_hover_text(tip);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let alone = lv.solo == Some(c.layer);
-                        if ui.selectable_label(alone, "Only").on_hover_text(format!("Show {name} alone")).clicked() {
+                        if ui.selectable_label(alone, i18n::t("Only")).on_hover_text(tf("Show {} alone", &[&name])).clicked() {
                             lv.solo = if alone { None } else { Some(c.layer) };
                         }
                         if ui
-                            .selectable_label(fixed, "Fix")
-                            .on_hover_text(format!(
-                                "Fixed: stretches, repeats and conditions on all layers leave {name} as drawn (markers, IDs, \
-                                 a boundary drawn once). An operation that lists {name} still acts on it."
+                            .selectable_label(fixed, i18n::t("Fix"))
+                            .on_hover_text(tf(
+                                "Fixed: stretches, repeats and conditions on all layers leave {} as drawn (markers, IDs, \
+                                 a boundary drawn once). An operation that lists {} still acts on it.",
+                                &[&name, &name],
                             ))
                             .clicked()
                         {
@@ -1073,8 +1086,9 @@ impl PCellDesigner {
                         }
                         let text = format!("{} / {}", c.source, c.generated);
                         let tc = if (c.source == 0) != (c.generated == 0) { pal.danger } else { pal.text_weak };
-                        ui.label(RichText::new(text).small().monospace().color(tc))
-                            .on_hover_text("Shapes on the layer in the drawing / in the cell generated at the preview values");
+                        ui.label(RichText::new(text).small().monospace().color(tc)).on_hover_text(i18n::t(
+                            "Shapes on the layer in the drawing / in the cell generated at the preview values",
+                        ));
                     });
                 });
             }
@@ -1106,7 +1120,7 @@ impl PCellDesigner {
             Sel::Op(k) => self.op_editor(ui, k, tech, pal),
             Sel::None => {
                 ui.label(
-                    RichText::new("Select a parameter or an operation on the left. The left picture is the drawing with the operations; the right one is the cell generated at the values below.")
+                    RichText::new(t("Select a parameter or an operation on the left. The left picture is the drawing with the operations; the right one is the cell generated at the values below."))
                         .color(pal.text_weak),
                 );
             }
@@ -1140,7 +1154,7 @@ impl PCellDesigner {
             |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new("Preview at").strong());
+                    ui.label(RichText::new(i18n::t("Preview at")).strong());
                     for p in &t.params {
                         let v = self.preview.entry(p.name.clone()).or_insert(p.default);
                         let lb = ui.label(p.name.as_str());
@@ -1163,10 +1177,10 @@ impl PCellDesigner {
                         }
                         ui.add_space(6.0);
                     }
-                    if ui.small_button("Defaults").clicked() {
+                    if ui.small_button(i18n::t("Defaults")).clicked() {
                         self.preview = t.defaults();
                     }
-                    ui.checkbox(&mut self.show_source_on_preview, "Overlay drawing");
+                    ui.checkbox(&mut self.show_source_on_preview, i18n::t("Overlay drawing"));
                 });
             },
         );
@@ -1181,43 +1195,43 @@ impl PCellDesigner {
         let before = t.clone();
         let mut remove = false;
         card(ui, pal, |ui| {
-            ui.label(RichText::new("Parameter").strong().color(pal.text_strong));
+            ui.label(RichText::new(i18n::t("Parameter")).strong().color(pal.text_strong));
             ui.label(
-                RichText::new(
+                RichText::new(i18n::t(
                     "A value the user of the PCell sets. Operations use it by name in their expressions (lengths in µm).",
-                )
+                ))
                 .small()
                 .color(pal.text_weak),
             );
             let p = &mut t.params[i];
             let old_name = p.name.clone();
             egui::Grid::new("pd_param").num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| {
-                let lb = ui.label("Name");
+                let lb = ui.label(i18n::t("Name"));
                 ui.add(egui::TextEdit::singleline(&mut p.name).desired_width(160.0)).labelled_by(lb.id);
                 ui.end_row();
-                let lb = ui.label("Kind");
+                let lb = ui.label(i18n::t("Kind"));
                 egui::ComboBox::from_id_salt("pd_kind")
-                    .selected_text(p.kind.label())
+                    .selected_text(i18n::t(p.kind.label()))
                     .show_ui(ui, |ui| {
                         for k in ParamKind::ALL {
-                            ui.selectable_value(&mut p.kind, k, k.label());
+                            ui.selectable_value(&mut p.kind, k, i18n::t(k.label()));
                         }
                     })
                     .response
                     .labelled_by(lb.id);
                 ui.end_row();
                 let suffix = if p.kind == ParamKind::Length { " µm" } else { "" };
-                let lb = ui.label("Default");
+                let lb = ui.label(i18n::t("Default"));
                 if p.kind == ParamKind::Bool {
                     let mut on = p.default != 0.0;
-                    ui.checkbox(&mut on, "on").labelled_by(lb.id);
+                    ui.checkbox(&mut on, i18n::t("on")).labelled_by(lb.id);
                     p.default = if on { 1.0 } else { 0.0 };
                 } else {
                     ui.add(egui::DragValue::new(&mut p.default).speed(0.01).max_decimals(4).suffix(suffix)).labelled_by(lb.id);
                 }
                 ui.end_row();
                 if p.kind != ParamKind::Bool {
-                    for (label, v) in [("Minimum", &mut p.min), ("Maximum", &mut p.max)] {
+                    for (label, v) in [(i18n::t("Minimum"), &mut p.min), (i18n::t("Maximum"), &mut p.max)] {
                         let lb = ui.label(label);
                         ui.horizontal(|ui| {
                             let mut on = v.is_some();
@@ -1227,13 +1241,13 @@ impl PCellDesigner {
                             if let Some(x) = v.as_mut() {
                                 ui.add(egui::DragValue::new(x).speed(0.01).max_decimals(4).suffix(suffix)).labelled_by(lb.id);
                             } else {
-                                ui.label(RichText::new("none").small().color(pal.text_weak));
+                                ui.label(RichText::new(i18n::t("none")).small().color(pal.text_weak));
                             }
                         });
                         ui.end_row();
                     }
                 }
-                let lb = ui.label("Description");
+                let lb = ui.label(i18n::t("Description"));
                 ui.add(egui::TextEdit::singleline(&mut p.description).desired_width(260.0)).labelled_by(lb.id);
                 ui.end_row();
             });
@@ -1242,7 +1256,7 @@ impl PCellDesigner {
                 rename_in_ops(&mut t.ops, &from, &to);
             }
             ui.horizontal(|ui| {
-                if ui.button("Delete parameter").clicked() {
+                if ui.button(i18n::t("Delete parameter")).clicked() {
                     remove = true;
                 }
             });
@@ -1271,26 +1285,29 @@ impl PCellDesigner {
         card(ui, pal, |ui| {
             let op = &mut t.ops[k];
             ui.horizontal(|ui| {
-                ui.label(RichText::new(format!("{}. {}", k + 1, op.title())).strong().color(pal.text_strong));
+                ui.label(RichText::new(format!("{}. {}", k + 1, i18n::t(op.title()))).strong().color(pal.text_strong));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    remove = ui.button("Delete").clicked();
-                    down = ui.small_button("Later").on_hover_text("Move down (stretches apply in list order)").clicked();
-                    up = ui.small_button("Earlier").on_hover_text("Move up").clicked();
+                    remove = ui.button(i18n::t("Delete")).clicked();
+                    down = ui
+                        .small_button(i18n::t("Later"))
+                        .on_hover_text(i18n::t("Move down (stretches apply in list order)"))
+                        .clicked();
+                    up = ui.small_button(i18n::t("Earlier")).on_hover_text(i18n::t("Move up")).clicked();
                 });
             });
             ui.label(RichText::new(explain(op)).small().color(pal.text_weak));
             egui::Grid::new("pd_op").num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| match op {
                 Op::Stretch { axis, at, side, amount, layers } => {
                     axis_pick(ui, axis);
-                    let lb = ui.label("Line at");
+                    let lb = ui.label(i18n::t("Line at"));
                     ui.horizontal(|ui| {
                         len_edit(ui, at, tech, lb.id);
-                        if ui.selectable_label(pick == Some(Pick::Line), "Pick on drawing").clicked() {
+                        if ui.selectable_label(pick == Some(Pick::Line), i18n::t("Pick on drawing")).clicked() {
                             pick = if pick == Some(Pick::Line) { None } else { Some(Pick::Line) };
                         }
                     });
                     ui.end_row();
-                    let lb = ui.label("Moves");
+                    let lb = ui.label(i18n::t("Moves"));
                     egui::ComboBox::from_id_salt("pd_side")
                         .selected_text(side.label(*axis))
                         .show_ui(ui, |ui| {
@@ -1305,7 +1322,7 @@ impl PCellDesigner {
                     layers_edit(ui, layers, tech);
                 }
                 Op::Diagonal { dir, at, side, amount, region, layers } => {
-                    let lb = ui.label("Line");
+                    let lb = ui.label(i18n::t("Line"));
                     egui::ComboBox::from_id_salt("pd_diag")
                         .selected_text(format!("{} =", dir.label()))
                         .show_ui(ui, |ui| {
@@ -1316,14 +1333,14 @@ impl PCellDesigner {
                         .response
                         .labelled_by(lb.id);
                     ui.end_row();
-                    let lb = ui.label("Line at");
+                    let lb = ui.label(i18n::t("Line at"));
                     len_edit(ui, at, tech, lb.id);
                     ui.end_row();
-                    let lb = ui.label("Moves");
+                    let lb = ui.label(i18n::t("Moves"));
                     let name = |s: Side| match s {
-                        Side::High => "high side (larger value)",
-                        Side::Low => "low side (smaller value)",
-                        Side::Both => "both sides (centred)",
+                        Side::High => i18n::t("high side (larger value)"),
+                        Side::Low => i18n::t("low side (smaller value)"),
+                        Side::Both => i18n::t("both sides (centred)"),
                     };
                     egui::ComboBox::from_id_salt("pd_dside")
                         .selected_text(name(*side))
@@ -1344,10 +1361,10 @@ impl PCellDesigner {
                     region_row(ui, "Region", region, tech, &mut pick);
                     expr_edit(ui, "Count", count, &params, "copies, rounded; 1 = as drawn");
                     expr_edit(ui, "Pitch", pitch, &params, "µm between copies");
-                    let lb = ui.label("Spanning shapes");
+                    let lb = ui.label(i18n::t("Spanning shapes"));
                     ui.horizontal(|ui| {
                         let mut auto = at.is_none();
-                        if ui.checkbox(&mut auto, "stretch at the region middle").labelled_by(lb.id).changed() {
+                        if ui.checkbox(&mut auto, i18n::t("stretch at the region middle")).labelled_by(lb.id).changed() {
                             *at = if auto {
                                 None
                             } else {
@@ -1368,7 +1385,7 @@ impl PCellDesigner {
                 }
                 Op::ContactFill { rect, via } => {
                     region_row(ui, "Area", rect, tech, &mut pick);
-                    let lb = ui.label("Via");
+                    let lb = ui.label(i18n::t("Via"));
                     egui::ComboBox::from_id_salt("pd_via")
                         .selected_text(via.clone())
                         .show_ui(ui, |ui| {
@@ -1499,7 +1516,7 @@ impl PCellDesigner {
                     p.text(
                         r.left_top() + Vec2::new(3.0, 2.0),
                         Align2::LEFT_TOP,
-                        format!("{} repeat", k + 1),
+                        tf("{} repeat", &[&(k + 1).to_string()]),
                         FontId::proportional(11.0),
                         c,
                     );
@@ -1534,7 +1551,7 @@ impl PCellDesigner {
                     p.text(
                         r.left_top() + Vec2::new(3.0, 2.0),
                         Align2::LEFT_TOP,
-                        format!("{} if", k + 1),
+                        tf("{} if", &[&(k + 1).to_string()]),
                         FontId::proportional(11.0),
                         c,
                     );
@@ -1548,7 +1565,7 @@ impl PCellDesigner {
         p.text(
             resp.rect.left_top() + Vec2::new(8.0, 6.0),
             Align2::LEFT_TOP,
-            format!("Drawing and operations{}", self.filter_note(tech)),
+            tf("Drawing and operations{}", &[&self.filter_note(tech)]),
             FontId::proportional(12.0),
             pal.text_weak,
         );
@@ -1640,7 +1657,7 @@ impl PCellDesigner {
                 p.text(
                     resp.rect.right_top() + Vec2::new(-8.0, 6.0),
                     Align2::RIGHT_TOP,
-                    "Drag to draw the region",
+                    i18n::t("Drag to draw the region"),
                     FontId::proportional(12.0),
                     accent,
                 );
@@ -1657,7 +1674,7 @@ impl PCellDesigner {
             p.text(
                 resp.rect.right_top() + Vec2::new(-8.0, 6.0),
                 Align2::RIGHT_TOP,
-                "Click to place the line",
+                i18n::t("Click to place the line"),
                 FontId::proportional(12.0),
                 accent,
             );
@@ -1667,8 +1684,10 @@ impl PCellDesigner {
     /// Caption suffix naming the layer filter of the pictures.
     fn filter_note(&self, tech: &Tech) -> String {
         match self.layers.solo {
-            Some(s) => format!("  ·  {} alone", tech.layer(s).map_or("?", |d| d.name.as_str())),
-            None if self.layers.filtered() => format!("  ·  {} layer(s) hidden", self.layers.hidden.len()),
+            Some(s) => format!("  ·  {}", tf("{} alone", &[tech.layer(s).map_or("?", |d| d.name.as_str())])),
+            None if self.layers.filtered() => {
+                format!("  ·  {}", tf("{} layer(s) hidden", &[&self.layers.hidden.len().to_string()]))
+            }
             None => String::new(),
         }
     }
@@ -1751,7 +1770,7 @@ impl PCellDesigner {
                 p.text(
                     resp.rect.left_top() + Vec2::new(8.0, 6.0),
                     Align2::LEFT_TOP,
-                    format!("Generated: {name}{}", self.filter_note(tech)),
+                    tf("Generated: {}{}", &[&name, &self.filter_note(tech)]),
                     FontId::proportional(12.0),
                     pal.text_weak,
                 );
@@ -1767,13 +1786,13 @@ impl PCellDesigner {
 
     fn corners_tab(&mut self, ui: &mut egui::Ui, project: &Project, pal: &Palette) {
         let tech = &project.tech;
-        ui.label(RichText::new("Corner check").heading().color(pal.text_strong));
+        ui.label(RichText::new(t("Corner check")).heading().color(pal.text_strong));
         ui.label(
-            RichText::new(
+            RichText::new(t(
                 "Generates the cell at its defaults, at each parameter's minimum and maximum (booleans toggled) and at all \
                  minimums / maximums together, and runs the technology's DRC deck on each. A PCell should be DRC clean over \
                  its whole range: narrow the range or fix the operation that breaks.",
-            )
+            ))
             .color(pal.text),
         );
         if let Some(t) = &self.tpl {
@@ -1786,47 +1805,48 @@ impl PCellDesigner {
                         .collect();
                     if !open.is_empty() {
                         ui.label(
-                            RichText::new(format!(
+                            RichText::new(tf(
                                 "No rule of the deck reads {} of the drawing's layers, so a clean result says nothing about \
                                  them: {}",
-                                open.len(),
-                                open.join(", ")
+                                &[&open.len().to_string(), &open.join(", ")],
                             ))
                             .color(pal.warning),
                         );
                     }
                 }
                 Some((_, Err(e))) => {
-                    ui.label(RichText::new(format!("The technology's DRC deck does not parse: {e}")).color(pal.danger));
+                    ui.label(
+                        RichText::new(tf("The technology's DRC deck does not parse: {}", &[&e.to_string()])).color(pal.danger),
+                    );
                 }
                 None => {}
             }
         }
         ui.horizontal(|ui| {
             let busy = self.job.is_some();
-            if ui.add_enabled(!busy, egui::Button::new(if busy { "Checking…" } else { "Run corner check" })).clicked() {
+            if ui.add_enabled(!busy, egui::Button::new(if busy { t("Checking…") } else { t("Run corner check") })).clicked() {
                 self.start_corners(ui.ctx(), project);
             }
             if busy {
                 ui.spinner();
             }
             if let Some(t) = &self.tpl {
-                ui.label(RichText::new(format!("{} corner(s)", t.corners().len())).small().color(pal.text_weak));
+                ui.label(RichText::new(tf("{} corner(s)", &[&t.corners().len().to_string()])).small().color(pal.text_weak));
             }
         });
         ui.add_space(6.0);
         let Some((g, runs)) = &self.corners else {
-            ui.label(RichText::new("Not run yet.").color(pal.text_weak));
+            ui.label(RichText::new(t("Not run yet.")).color(pal.text_weak));
             return;
         };
         if *g != self.gen_ {
-            ui.label(RichText::new("The design changed since this check: run it again.").small().color(pal.warning));
+            ui.label(RichText::new(t("The design changed since this check: run it again.")).small().color(pal.warning));
         }
         let mut pick = None;
         egui::Grid::new("pd_corners").num_columns(3).striped(true).spacing([14.0, 4.0]).show(ui, |ui| {
-            ui.label(RichText::new("Corner").strong());
-            ui.label(RichText::new("Result").strong());
-            ui.label(RichText::new("Size").strong());
+            ui.label(RichText::new(t("Corner")).strong());
+            ui.label(RichText::new(t("Result")).strong());
+            ui.label(RichText::new(t("Size")).strong());
             ui.end_row();
             for (i, r) in runs.iter().enumerate() {
                 if ui.selectable_label(self.corner_sel == i, &r.label).clicked() {
@@ -1834,13 +1854,13 @@ impl PCellDesigner {
                 }
                 match &r.result {
                     Ok(c) if c.violations.is_empty() => {
-                        ui.label(RichText::new("DRC clean").color(pal.ok));
+                        ui.label(RichText::new(t("DRC clean")).color(pal.ok));
                     }
                     Ok(c) => {
-                        ui.label(RichText::new(format!("{} violation(s)", c.violations.len())).color(pal.danger));
+                        ui.label(RichText::new(tf("{} violation(s)", &[&c.violations.len().to_string()])).color(pal.danger));
                     }
                     Err(e) => {
-                        ui.label(RichText::new(format!("does not generate: {e}")).color(pal.danger));
+                        ui.label(RichText::new(tf("does not generate: {}", &[&e.to_string()])).color(pal.danger));
                     }
                 }
                 match r.result.as_ref().ok().and_then(|c| c.layout.shapes_bbox()) {
@@ -1884,7 +1904,7 @@ impl PCellDesigner {
 
     fn issues(&mut self, ui: &mut egui::Ui, pal: &Palette) {
         if self.findings.is_empty() {
-            ui.label(RichText::new("No issues.").color(pal.ok));
+            ui.label(RichText::new(t("No issues.")).color(pal.ok));
         }
         let mut go = None;
         for f in &self.findings {
@@ -1892,11 +1912,11 @@ impl PCellDesigner {
                 finding_row(ui, f, pal);
                 let label = match f.target {
                     Target::Param(i) => self.tpl.as_ref().and_then(|t| t.params.get(i)).map(|p| p.name.clone()),
-                    Target::Op(k) => Some(format!("operation {}", k + 1)),
+                    Target::Op(k) => Some(tf("operation {}", &[&(k + 1).to_string()])),
                     Target::Template => None,
                 };
                 if let Some(l) = label
-                    && ui.small_button(format!("Show {l}")).clicked()
+                    && ui.small_button(tf("Show {}", &[&l])).clicked()
                 {
                     go = Some(f.target);
                 }
@@ -1920,36 +1940,36 @@ impl PCellDesigner {
 
     fn guide(&mut self, ui: &mut egui::Ui, project: &Project, active: Option<&CellRef>, pal: &Palette) {
         ui.set_max_width(ui.available_width().min(800.0));
-        ui.label(RichText::new("Making a PCell from a drawn layout").heading().color(pal.text_strong));
+        ui.label(RichText::new(t("Making a PCell from a drawn layout")).heading().color(pal.text_strong));
         ui.label(
-            RichText::new(
+            RichText::new(t(
                 "A parametric cell (PCell) is a layout that redraws itself for the values its user picks, such as width, \
                  length or finger count. Here you start from a cell that is already drawn and DRC clean, and describe how \
                  it changes: lines that stretch it, parts that repeat, parts that are optional, and contacts that re-array. \
                  Every change is previewed and checked with DRC at the extremes before you save it.",
-            )
+            ))
             .color(pal.text),
         );
         ui.add_space(10.0);
         let loaded = self.tpl.is_some();
         step(ui, 1, "Load the drawn cell", pal, |ui| {
-            ui.label(
+            ui.label(t(
                 "Open the finished layout in the editor and load it. Draw it at typical values, clean of DRC errors. For a \
                  multi-finger device, draw two or three identical fingers so the pitch can be read.",
-            );
+            ));
             match (active, &self.source) {
                 (Some(a), _) => {
-                    if ui.button(format!("Load {a}")).clicked() {
+                    if ui.button(tf("Load {}", &[&a.to_string()])).clicked() {
                         self.load(project, a);
                     }
                 }
                 (None, None) => {
-                    ui.label(RichText::new("No layout cell is open.").small().color(pal.warning));
+                    ui.label(RichText::new(t("No layout cell is open.")).small().color(pal.warning));
                 }
                 _ => {}
             }
             if let Some(s) = &self.source {
-                ui.label(RichText::new(format!("Loaded: {s}")).small().color(pal.ok));
+                ui.label(RichText::new(tf("Loaded: {}", &[&s.to_string()])).small().color(pal.ok));
             }
         });
         if !loaded {
@@ -1962,66 +1982,66 @@ impl PCellDesigner {
         let repeats = t.ops.iter().filter(|o| matches!(o, Op::Repeat { .. })).count();
         let mut run_sug: Option<u8> = None;
         step(ui, 2, "Let contacts re-array", pal, |ui| {
-            ui.label(
+            ui.label(i18n::t(
                 "A stretched contact is a DRC error: cuts have one fixed size. A contact fill owns an area and fills it with \
                  as many cuts as fit, at the via's size and spacing, after the cell is stretched.",
-            );
+            ));
             ui.horizontal(|ui| {
-                if ui.button("Contacts to fills").clicked() {
+                if ui.button(i18n::t("Contacts to fills")).clicked() {
                     run_sug = Some(0);
                 }
-                ui.label(RichText::new(format!("{fills} fill(s) now")).small().color(pal.text_weak));
+                ui.label(RichText::new(tf("{} fill(s) now", &[&fills.to_string()])).small().color(pal.text_weak));
             });
         });
         step(ui, 3, "Repeat fingers or units", pal, |ui| {
-            ui.label(
+            ui.label(i18n::t(
                 "A repeat copies what lies inside its region count times, pitch apart. Shapes that span the region (the \
                  diffusion, implant, gate strap) stretch with the copies. For a MOS, the fingers can be detected: the \
                  drawing is cut down to the fewest fingers that work and nf repeats the last one, with the drawn count as \
                  default so nothing changes until nf does.",
-            );
+            ));
             ui.horizontal(|ui| {
-                if ui.button("Detect fingers (nf)").clicked() {
+                if ui.button(i18n::t("Detect fingers (nf)")).clicked() {
                     run_sug = Some(1);
                 }
-                ui.label(RichText::new(format!("{repeats} repeat(s) now")).small().color(pal.text_weak));
+                ui.label(RichText::new(tf("{} repeat(s) now", &[&repeats.to_string()])).small().color(pal.text_weak));
             });
         });
         step(ui, 4, "Place stretch lines", pal, |ui| {
-            ui.label(
+            ui.label(i18n::t(
                 "A stretch line crosses the cell; everything on its moving side shifts by the change of its amount from the \
                  default, so the shapes it crosses grow. Put W lines through the middle of the diffusion and L lines through \
                  the gate. Shapes that must not grow (contacts, labels) should not cross a line.",
-            );
+            ));
             ui.horizontal(|ui| {
-                if ui.button("Width stretch (w)").clicked() {
+                if ui.button(i18n::t("Width stretch (w)")).clicked() {
                     run_sug = Some(2);
                 }
-                if ui.button("Length stretch (l)").clicked() {
+                if ui.button(i18n::t("Length stretch (l)")).clicked() {
                     run_sug = Some(3);
                 }
-                ui.label(RichText::new(format!("{stretches} line(s) now")).small().color(pal.text_weak));
+                ui.label(RichText::new(tf("{} line(s) now", &[&stretches.to_string()])).small().color(pal.text_weak));
             });
         });
         step(ui, 5, "Set parameter ranges", pal, |ui| {
-            ui.label(
+            ui.label(i18n::t(
                 "Give every parameter a minimum and maximum: they are what the corner check tests and what users of the \
                  PCell may enter. Expressions combine parameters, e.g. (nf - 1) * 0.72 or if(guard, 0.5, 0).",
-            );
+            ));
         });
         step(ui, 6, "Check the corners", pal, |ui| {
-            ui.label("Run DRC on the cell at the defaults and at the extremes of every parameter.");
-            if ui.button("Run corner check").clicked() {
+            ui.label(i18n::t("Run DRC on the cell at the defaults and at the extremes of every parameter."));
+            if ui.button(i18n::t("Run corner check")).clicked() {
                 self.start_corners(ui.ctx(), project);
             }
         });
         step(ui, 7, "Save and place", pal, |ui| {
-            ui.label(
+            ui.label(i18n::t(
                 "Save PCell stores the master cell (its layout is the default variant). In the layout editor, the instance \
                  tool lists it under Designed PCells; placed instances can be edited in the inspector and stretched by their \
                  handles. Saving again updates every placed variant. Export SKILL writes the same PCell as a \
                  pcDefinePCell for Cadence Virtuoso.",
-            );
+            ));
         });
         concepts(ui, pal);
         if let Some(s) = run_sug {
@@ -2031,7 +2051,11 @@ impl PCellDesigner {
             let r = match s {
                 0 => {
                     let n = t.suggest_contact_fills(tech);
-                    if n > 0 { Ok(format!("{n} contact fill(s) made")) } else { Err("No via cuts found".into()) }
+                    if n > 0 {
+                        Ok(tf("{} contact fill(s) made", &[&n.to_string()]))
+                    } else {
+                        Err(i18n::t("No via cuts found").into())
+                    }
                 }
                 1 => t.suggest_fingers(tech),
                 2 => t.suggest_width(tech),
@@ -2051,7 +2075,7 @@ impl PCellDesigner {
 
 fn concepts(ui: &mut egui::Ui, pal: &Palette) {
     ui.add_space(10.0);
-    ui.label(RichText::new("Good practice").strong().color(pal.text_strong));
+    ui.label(RichText::new(t("Good practice")).strong().color(pal.text_strong));
     for tip in [
         "Stretch lines apply in list order, and each one moves the lines and regions after it.",
         "A W line through the middle of the diffusion stretches the gates, contacts and metal straps together.",
@@ -2060,7 +2084,7 @@ fn concepts(ui: &mut egui::Ui, pal: &Palette) {
         "Name parameters as the schematic does (w, l, nf, m) so LVS and the schematic match.",
         "Lengths are in µm and snapped to the manufacturing grid.",
     ] {
-        ui.label(RichText::new(format!("· {tip}")).color(pal.text));
+        ui.label(RichText::new(format!("· {}", t(tip))).color(pal.text));
     }
 }
 
@@ -2097,18 +2121,18 @@ fn rename_in_ops(ops: &mut [Op], from: &str, to: &str) {
 
 fn explain(op: &Op) -> &'static str {
     match op {
-        Op::Stretch { .. } => {
-            "Everything on the moving side shifts by the change of the amount from its default value; shapes crossing the line grow."
-        }
-        Op::Diagonal { .. } => {
-            "Vertices inside the region on the moving side of the 45° line shift across it: 45° shapes crossing it lengthen. Keep axis-parallel shapes wholly in or out of the region."
-        }
-        Op::Repeat { .. } => {
-            "Items wholly inside the region are copied count times, pitch apart; shapes that span the region stretch to cover the copies."
-        }
-        Op::Condition { .. } => "Items wholly inside the region are left out when the expression is 0 (false).",
+        Op::Stretch { .. } => t(
+            "Everything on the moving side shifts by the change of the amount from its default value; shapes crossing the line grow.",
+        ),
+        Op::Diagonal { .. } => t(
+            "Vertices inside the region on the moving side of the 45° line shift across it: 45° shapes crossing it lengthen. Keep axis-parallel shapes wholly in or out of the region.",
+        ),
+        Op::Repeat { .. } => t(
+            "Items wholly inside the region are copied count times, pitch apart; shapes that span the region stretch to cover the copies.",
+        ),
+        Op::Condition { .. } => t("Items wholly inside the region are left out when the expression is 0 (false)."),
         Op::ContactFill { .. } => {
-            "After stretching and repeating, the area is filled with the largest centred array of via cuts."
+            t("After stretching and repeating, the area is filled with the largest centred array of via cuts.")
         }
     }
 }
@@ -2152,10 +2176,10 @@ fn axis_hi(a: Axis, r: &IRect) -> i64 {
 }
 
 fn axis_pick(ui: &mut egui::Ui, axis: &mut Axis) {
-    let lb = ui.label("Direction");
+    let lb = ui.label(t("Direction"));
     ui.horizontal(|ui| {
-        ui.selectable_value(axis, Axis::X, "along x").labelled_by(lb.id);
-        ui.selectable_value(axis, Axis::Y, "along y").labelled_by(lb.id);
+        ui.selectable_value(axis, Axis::X, t("along x")).labelled_by(lb.id);
+        ui.selectable_value(axis, Axis::Y, t("along y")).labelled_by(lb.id);
     });
     ui.end_row();
 }
@@ -2170,7 +2194,7 @@ fn len_edit(ui: &mut egui::Ui, v: &mut i64, tech: &Tech, label: egui::Id) {
 }
 
 fn region_row(ui: &mut egui::Ui, label: &str, r: &mut IRect, tech: &Tech, pick: &mut Option<Pick>) {
-    let lb = ui.label(label);
+    let lb = ui.label(t(label));
     ui.vertical(|ui| {
         ui.horizontal(|ui| {
             for (name, v) in [("x0", &mut r.x0), ("y0", &mut r.y0), ("x1", &mut r.x1), ("y1", &mut r.y1)] {
@@ -2178,7 +2202,7 @@ fn region_row(ui: &mut egui::Ui, label: &str, r: &mut IRect, tech: &Tech, pick: 
                 len_edit(ui, v, tech, l.id);
             }
         });
-        if ui.selectable_label(*pick == Some(Pick::Region), "Draw on the drawing").labelled_by(lb.id).clicked() {
+        if ui.selectable_label(*pick == Some(Pick::Region), t("Draw on the drawing")).labelled_by(lb.id).clicked() {
             *pick = if *pick == Some(Pick::Region) { None } else { Some(Pick::Region) };
         }
     });
@@ -2192,11 +2216,11 @@ fn region_row(ui: &mut egui::Ui, label: &str, r: &mut IRect, tech: &Tech, pick: 
 }
 
 fn expr_edit(ui: &mut egui::Ui, label: &str, text: &mut String, params: &[String], hint: &str) {
-    let lb = ui.label(label);
+    let lb = ui.label(t(label));
     ui.vertical(|ui| {
         ui.horizontal(|ui| {
             ui.add(egui::TextEdit::singleline(text).desired_width(220.0).font(egui::TextStyle::Monospace)).labelled_by(lb.id);
-            ui.menu_button("Insert", |ui| {
+            ui.menu_button(t("Insert"), |ui| {
                 for p in params {
                     if ui.button(p).clicked() {
                         if !text.is_empty() && !text.ends_with(' ') {
@@ -2207,13 +2231,13 @@ fn expr_edit(ui: &mut egui::Ui, label: &str, text: &mut String, params: &[String
                     }
                 }
                 if params.is_empty() {
-                    ui.label("No parameters yet");
+                    ui.label(t("No parameters yet"));
                 }
             });
         });
         let pal = theme::palette(ui.ctx());
         match ics_core::pcell_design::parse_expr(text) {
-            Ok(_) => ui.label(RichText::new(hint).small().color(pal.text_weak)),
+            Ok(_) => ui.label(RichText::new(t(hint)).small().color(pal.text_weak)),
             Err(e) => ui.label(RichText::new(e).small().color(pal.danger)),
         };
     });
@@ -2221,14 +2245,14 @@ fn expr_edit(ui: &mut egui::Ui, label: &str, text: &mut String, params: &[String
 }
 
 fn layers_edit(ui: &mut egui::Ui, layers: &mut Vec<usize>, tech: &Tech) {
-    let lb = ui.label("Layers");
+    let lb = ui.label(t("Layers"));
     let text = if layers.is_empty() {
-        "all".to_string()
+        t("all").to_string()
     } else {
         layers.iter().filter_map(|&l| tech.layer(l)).map(|d| d.name.as_str()).collect::<Vec<_>>().join(", ")
     };
     ui.menu_button(text, |ui| {
-        if ui.button("All layers").clicked() {
+        if ui.button(t("All layers")).clicked() {
             layers.clear();
         }
         ui.separator();
@@ -2261,9 +2285,9 @@ fn dot(ui: &mut egui::Ui, sev: Option<Level>, pal: &Palette) {
 
 fn finding_row(ui: &mut egui::Ui, f: &Finding, pal: &Palette) {
     let (tag, c) = match f.level {
-        Level::Error => ("error", pal.danger),
-        Level::Warning => ("warning", pal.warning),
-        Level::Info => ("note", pal.text_weak),
+        Level::Error => (t("error"), pal.danger),
+        Level::Warning => (t("warning"), pal.warning),
+        Level::Info => (t("note"), pal.text_weak),
     };
     ui.horizontal_wrapped(|ui| {
         ui.label(RichText::new(tag).small().strong().color(c));
@@ -2298,7 +2322,7 @@ fn step(ui: &mut egui::Ui, n: usize, title: &str, pal: &Palette, body: impl FnOn
                     theme::on_fill(pal.accent),
                 );
                 ui.vertical(|ui| {
-                    ui.label(RichText::new(title).strong().color(pal.text_strong));
+                    ui.label(RichText::new(t(title)).strong().color(pal.text_strong));
                     body(ui);
                 });
             });
@@ -2456,7 +2480,7 @@ fn ops_on_layer(t: &Template, layer: usize, tech: &Tech) -> Vec<String> {
                 .is_some_and(|v| [&v.bottom, &v.cut, &v.top].iter().any(|n| tech.layer_index(n) == Some(layer))),
         };
         if on {
-            out.push(format!("{} {}", k + 1, op.title().to_lowercase()));
+            out.push(format!("{} {}", k + 1, i18n::t(op.title()).to_lowercase()));
         }
     }
     out

@@ -180,7 +180,7 @@ impl Tutorial {
             return q;
         }
         let mut open = true;
-        egui::Window::new("Tutorial")
+        egui::Window::new(t("Tutorial"))
             .id(egui::Id::unique("tutorial"))
             .open(&mut open)
             .collapsible(true)
@@ -213,10 +213,8 @@ impl Tutorial {
         let Some(step) = STEPS.get(self.step) else {
             ui.label(RichText::new(t("You're ready to design")).size(16.0).strong());
             ui.label(
-                RichText::new(
-                    "That's the whole flow: schematic, simulation, layout and verification. \
-                     Next, create your own cell with File › New Cell…, or browse the other demo designs.",
-                )
+                RichText::new(t("That's the whole flow: schematic, simulation, layout and verification. \
+                     Next, create your own cell with File › New Cell…, or browse the other demo designs."))
                 .color(pal.text_weak),
             );
             ui.add_space(8.0);

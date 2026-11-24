@@ -42,15 +42,21 @@ PMOS 2 µm, 길이는 둘 다 180 nm).
 
 - 입력이 낮으면 출력은 1.8 V, 입력이 높으면 0 V를 유지합니다. 논리 레벨이 **복원**되므로 게이트를
   여러 개 거쳐도 잡음이 쌓이지 않습니다.
-- 가운데에서 곡선은 매우 가파릅니다(이득 약 −55). 문턱 근처의 작은 입력 변화가 큰 출력 변화를
+- 가운데에서 곡선은 매우 가파릅니다(이득 약 −22). 문턱 근처의 작은 입력 변화가 큰 출력 변화를
   만듭니다.
-- <strong>스위칭 문턱 V<sub>M</sub></strong>은 out = in이 되는 점입니다. 여기서는 약 **0.82 V**로, NMOS가
+- <strong>스위칭 문턱 V<sub>M</sub></strong>은 out = in이 되는 점입니다. 여기서는 약 **0.83 V**로, NMOS가
   PMOS보다 강하기 때문에 중간(0.9 V)보다 조금 낮습니다.
-- **잡음 여유**(noise margin): V<sub>IL</sub> ≈ 0.67 V보다 낮은 입력은 0으로, V<sub>IH</sub> ≈
-  0.92 V보다 높은 입력은 1로 읽힙니다(기울기가 −1인 점).
+- **잡음 여유**(noise margin): V<sub>IL</sub> ≈ 0.65 V보다 낮은 입력은 0으로, V<sub>IH</sub> ≈
+  0.96 V보다 높은 입력은 1로 읽힙니다(기울기가 −1인 점).
 
 입력이 가운데 영역을 지나는 동안에만 두 트랜지스터가 함께 일부 켜지고, V<sub>DD</sub>에서 접지로
-단락 전류(short-circuit current)가 흐릅니다(이 인버터에서는 최대 약 118 µA).
+단락 전류(short-circuit current)가 흐릅니다(이 인버터에서는 최대 약 135 µA).
+
+<!-- quiz
+? 이 인버터는 V<sub>IH</sub> ≈ 0.96 V보다 높은 입력을 1로 읽고, 출력 하이는 1.8 V입니다. 하이 노이즈 마진 NM<sub>H</sub> = V<sub>OH</sub> − V<sub>IH</sub>는 몇 V일까요?
+= 0.84 ±0.02 V
+> NM<sub>H</sub> = 1.8 − 0.96 = 0.84 V입니다. 앞단 게이트가 보낸 1은 0.84 V의 노이즈까지 견딥니다. 로우 마진은 V<sub>IL</sub> − 0 ≈ 0.65 V입니다.
+-->
 
 ## NAND와 NOR
 
@@ -80,6 +86,15 @@ NAND는 NMOS를 직렬로 두므로 비용이 덜 듭니다.
 
 </div>
 
+<!-- quiz
+? 2입력 NOR의 풀업 네트워크는 무엇일까요?
+- 병렬 PMOS 두 개
++ 직렬 PMOS 두 개
+- 병렬 NMOS 두 개
+- PMOS 한 개
+> NOR의 풀다운은 병렬 NMOS 두 개(OR)이고, 풀업은 그 쌍대인 직렬 PMOS 두 개입니다. 약한 PMOS가 직렬이 되므로 NAND를 더 선호합니다.
+-->
+
 ## 지연: 게이트에 시간이 걸리는 이유
 
 게이트의 출력은 **부하 커패시턴스**(load capacitance) C<sub>L</sub>을 구동합니다. 다음 단의 게이트,
@@ -95,12 +110,18 @@ t_p ≈ 0.69 · R_on · C_L
 50 %를 지나는 시점까지로 잽니다. 두 가지가 있습니다. **t<sub>pHL</sub>**(출력 하강, NMOS를 통해)과
 **t<sub>pLH</sub>**(출력 상승, PMOS를 통해)입니다.
 
-위 인버터에 20 fF 부하를 달면 IC Studio 시뮬레이션 결과 **t<sub>pHL</sub> ≈ 36 ps**,
-**t<sub>pLH</sub> ≈ 52 ps**입니다. PMOS가 약하기 때문에 상승이 더 느립니다.
+위 인버터에 20 fF 부하를 달면 IC Studio 시뮬레이션 결과 **t<sub>pHL</sub> ≈ 33 ps**,
+**t<sub>pLH</sub> ≈ 47 ps**입니다. PMOS가 약하기 때문에 상승이 더 느립니다.
 
 게이트를 빠르게 하려면 R<sub>on</sub>을 줄이거나(트랜지스터를 넓게) C<sub>L</sub>을 줄입니다(구동할
 게이트를 적게 또는 작게, 배선을 짧게). 하지만 넓은 트랜지스터는 게이트도 커서 *앞* 단의 부하가
 됩니다. 크기 정하기는 균형의 문제입니다.
+
+<!-- quiz
+? R<sub>on</sub> = 5 kΩ인 게이트가 C<sub>L</sub> = 20 fF를 구동합니다. t<sub>p</sub>를 어림하면 몇 ps일까요?
+= 69 ±3 ps
+> t<sub>p</sub> ≈ 0.69 · 5 kΩ · 20 fF = 0.69 · 100 ps = 69 ps입니다.
+-->
 
 ## 전력
 
@@ -116,6 +137,12 @@ CMOS 칩은 세 가지 방식으로 전력을 소모합니다.
 전압을 낮추는 것이 전력을 아끼는 가장 효과적인 방법입니다. 그래서 수십 년에 걸쳐 공급 전압이
 5 V에서 1 V 아래로 내려왔습니다.
 
+<!-- quiz
+? C<sub>L</sub> = 20 fF인 노드가 V<sub>DD</sub> = 1.8 V, 1 GHz 클록의 10 % 사이클에서 스위칭합니다. 동적 전력은 몇 µW일까요?
+= 6.48 ±0.2 µW
+> P = α · C<sub>L</sub> · V<sub>DD</sub>² · f = 0.1 · 20 fF · 3.24 V² · 1 GHz = 6.48 µW입니다. 0.9 V라면 그 4분의 1입니다.
+-->
+
 ## 트랜지스터 크기 정하기
 
 범용 테크놀로지의 PMOS는 k' = 70 µA/V²로, NMOS의 280 µA/V²에 비해 같은 W/L에서 네 배 약합니다.
@@ -123,8 +150,8 @@ CMOS 칩은 세 가지 방식으로 전력을 소모합니다.
 
 | PMOS 폭 | V<sub>M</sub> | t<sub>pHL</sub> / t<sub>pLH</sub> | 설명 |
 |---|---|---|---|
-| W<sub>p</sub> = 2·W<sub>n</sub> (2 µm) | 0.82 V | 36 / 52 ps | 흔한 절충안: 작지만 약간 불균형 |
-| W<sub>p</sub> = 4·W<sub>n</sub> (4 µm) | 0.90 V | 39 / 37 ps | 균형: 대칭적인 문턱과 지연 |
+| W<sub>p</sub> = 2·W<sub>n</sub> (2 µm) | 0.83 V | 33 / 47 ps | 흔한 절충안: 작지만 약간 불균형 |
+| W<sub>p</sub> = 4·W<sub>n</sub> (4 µm) | 0.90 V | 35 / 33 ps | 균형: 대칭적인 문턱과 지연 |
 
 (20 fF 부하로 시뮬레이션. 균형형은 상승과 하강 지연이 같지만 PMOS가 커서 자신을 구동하는 앞 단에도
 부하가 되므로, 게이트 체인 안에서는 2:1 비율이 더 나은 경우가 많습니다.)
@@ -136,6 +163,15 @@ V_M = (V_th,n + r · (V_DD − |V_th,p|)) / (1 + r),   r = √(k'_p·W_p/L_p / (
 ```
 
 W<sub>p</sub> = 4·W<sub>n</sub>이면 r = 1이 되고 V<sub>M</sub>은 정확히 V<sub>DD</sub>/2입니다.
+
+<!-- quiz
+? NMOS가 1 µm일 때 V<sub>M</sub>을 V<sub>DD</sub>/2에 두는 PMOS 폭은 얼마일까요?
+- 1 µm
+- 2 µm
++ 4 µm
+- 8 µm
+> k'<sub>p</sub>가 k'<sub>n</sub>의 4분의 1이므로 W<sub>p</sub> = 4·W<sub>n</sub>이면 r = 1이 되어 V<sub>M</sub> = 0.9 V입니다. 흔히 쓰는 2 µm에서는 0.83 V입니다.
+-->
 
 <div class="callout say">
 
@@ -150,5 +186,19 @@ ic-studio --demo --cell cmos_inverter --workspace simulation
 각 단의 지연 때문에 루프가 결코 안정되지 못해 발진합니다. 주기는 2 × 5 × t<sub>p</sub>입니다.
 
 </div>
+
+<!-- try: cmos_inverter 시뮬레이션 | simulate cmos_inverter -->
+
+<!-- try: nand2 회로도 열기 | open nand2 schematic -->
+
+<!-- try: nor2 회로도 열기 | open nor2 schematic -->
+
+<!-- try: ring_osc5 시뮬레이션 | simulate ring_osc5 -->
+
+<!-- quiz
+? 5단 링 오실레이터의 단마다 t<sub>p</sub> = 14 ps입니다. 주기는 몇 ps일까요?
+= 140 ±5 ps
+> 주기 = 2 × 5 × t<sub>p</sub> = 140 ps입니다. 한 주기에 에지가 루프를 두 번(한 번은 상승, 한 번은 하강) 돕니다.
+-->
 
 이제 직접 만들어 봅시다: [실습: 인버터 설계](tutorial-inverter.md).

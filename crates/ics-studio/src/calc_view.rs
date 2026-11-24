@@ -6,6 +6,7 @@ use ics_core::CellRef;
 use ics_core::units::format_eng;
 use ics_sim::calc::{self, CalcValue};
 
+use crate::i18n::t;
 use crate::sim_view::SimState;
 use crate::theme::{self, Palette};
 
@@ -37,7 +38,7 @@ impl Calculator {
         });
         let (text, ok) = match &r {
             Ok(s) => (s.clone(), true),
-            Err(e) => (e.clone(), false),
+            Err(e) => (crate::i18n::t_text(e), false),
         };
         self.history.push((analysis.to_string(), expr.trim().to_string(), text, ok));
         if self.history.len() > 200 {
@@ -78,15 +79,15 @@ impl Calculator {
         );
         egui::CentralPanel::default().frame(egui::Frame::new().fill(pal.bg_panel).inner_margin(12)).show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Waveform Calculator").strong().color(pal.text_strong));
-                ui.label(RichText::new(cell.map_or("· no cell".into(), |c| format!("· {c}"))).color(pal.text_weak));
+                ui.label(RichText::new(t("Waveform Calculator")).strong().color(pal.text_strong));
+                ui.label(RichText::new(cell.map_or(t("· no cell").to_string(), |c| format!("· {c}"))).color(pal.text_weak));
             });
             ui.separator();
             if analyses.is_empty() {
-                ui.label(RichText::new("No results for the active cell: run a simulation (F5) first.").color(pal.text_weak));
+                ui.label(RichText::new(t("No results for the active cell: run a simulation (F5) first.")).color(pal.text_weak));
             }
             ui.horizontal(|ui| {
-                let l = ui.label("Dataset");
+                let l = ui.label(t("Dataset"));
                 egui::ComboBox::from_id_salt("calc_ds")
                     .selected_text(self.analysis.as_str())
                     .show_ui(ui, |ui| {
@@ -97,11 +98,11 @@ impl Calculator {
                     .response
                     .labelled_by(l.id);
             });
-            let l = ui.label("Expression");
+            let l = ui.label(t("Expression"));
             let te = egui::TextEdit::singleline(&mut self.expr)
                 .code_editor()
                 .desired_width(f32::INFINITY)
-                .hint_text("bandwidth(v(out)/v(in))   risetime(v(out))   deriv(v(out))");
+                .hint_text("bandwidth(v(out)/v(in))   risetime(v(out))   deriv(v(out))"); // i18n: ignore
             let resp = ui.add(te).labelled_by(l.id);
             if std::mem::take(&mut self.focus) {
                 resp.request_focus();
@@ -110,17 +111,17 @@ impl Calculator {
             let mut run = None;
             ui.horizontal(|ui| {
                 let ready = sim.is_some() && !analyses.is_empty() && !self.expr.trim().is_empty();
-                if ui.add_enabled(ready, egui::Button::new("Evaluate")).on_hover_text("Enter").clicked() || (enter && ready) {
+                if ui.add_enabled(ready, egui::Button::new(t("Evaluate"))).on_hover_text("Enter").clicked() || (enter && ready) {
                     run = Some(false);
                 }
                 if ui
-                    .add_enabled(ready, egui::Button::new("Plot"))
-                    .on_hover_text("Add the waveform to the results plot")
+                    .add_enabled(ready, egui::Button::new(t("Plot")))
+                    .on_hover_text(t("Add the waveform to the results plot"))
                     .clicked()
                 {
                     run = Some(true);
                 }
-                if ui.button("Clear history").clicked() {
+                if ui.button(t("Clear history")).clicked() {
                     self.history.clear();
                 }
             });
@@ -129,7 +130,7 @@ impl Calculator {
                 let _ = self.evaluate(s, &a, &e, plot);
             }
             ui.add_space(6.0);
-            theme::section(ui, "Results");
+            theme::section(ui, t("Results"));
             let mut reuse = None;
             egui::ScrollArea::vertical().id_salt("calc_hist").auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
                 egui::Grid::new("calc_hist_grid").striped(true).num_columns(3).spacing([14.0, 4.0]).show(ui, |ui| {
@@ -137,7 +138,7 @@ impl Calculator {
                         ui.label(RichText::new(a).small().color(pal.text_weak));
                         if ui
                             .add(egui::Label::new(RichText::new(e).monospace()).sense(egui::Sense::click()))
-                            .on_hover_text("Edit again")
+                            .on_hover_text(t("Edit again"))
                             .clicked()
                         {
                             reuse = Some((a.clone(), e.clone()));
@@ -155,23 +156,24 @@ impl Calculator {
     }
 
     fn palette(&mut self, ui: &mut egui::Ui, sim: Option<&SimState>, pal: &Palette) {
-        let fl = ui.label(RichText::new("Filter").small().color(pal.text_weak));
-        ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("rise, db, v(out)…").desired_width(f32::INFINITY))
+        let fl = ui.label(RichText::new(t("Filter")).small().color(pal.text_weak));
+        ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text(t("rise, db, v(out)…")).desired_width(f32::INFINITY))
             .labelled_by(fl.id);
         let f = self.filter.to_ascii_lowercase();
         egui::ScrollArea::vertical().id_salt("calc_pal").show(ui, |ui| {
-            theme::section(ui, "Signals");
+            theme::section(ui, t("Signals"));
             let ds = sim.and_then(|s| s.results.as_ref()).and_then(|r| r.dataset(&self.analysis));
             for v in ds.into_iter().flat_map(|d| d.vectors.iter()) {
                 if (!f.is_empty() && !v.name.to_ascii_lowercase().contains(&f)) || v.name.contains(' ') {
                     continue;
                 }
-                if ui.add(egui::Button::new(RichText::new(&v.name).monospace()).frame(false)).on_hover_text("Insert").clicked() {
+                if ui.add(egui::Button::new(RichText::new(&v.name).monospace()).frame(false)).on_hover_text(t("Insert")).clicked()
+                {
                     self.expr.push_str(&v.name);
                     self.focus = true;
                 }
             }
-            theme::section(ui, "Functions");
+            theme::section(ui, t("Functions"));
             for (sig, help) in calc::functions() {
                 if !f.is_empty() && !sig.to_ascii_lowercase().contains(&f) && !help.to_ascii_lowercase().contains(&f) {
                     continue;

@@ -1,6 +1,29 @@
 //! Korean UI strings, keyed by the English source text (see `i18n`). Hangul needs a system
 //! font, so this file is not part of the bundled-font glyph check.
 
+mod app;
+mod designers;
+pub mod figures;
+mod layout;
+mod learn;
+mod sim;
+mod tools;
+
+/// Every table of whole UI strings, one per area of the app.
+pub const PARTS: &[&[(&str, &str)]] = &[KO, app::KO, designers::KO, layout::KO, learn::KO, sim::KO, tools::KO];
+
+mod core;
+
+/// Every template table: the UI's and the core crates' messages.
+pub fn templates() -> impl Iterator<Item = &'static (&'static str, &'static str)> {
+    TEMPLATES.iter().chain(core::TEMPLATES)
+}
+
+/// The entries of all [`PARTS`].
+pub fn all() -> impl Iterator<Item = &'static (&'static str, &'static str)> {
+    PARTS.iter().flat_map(|p| p.iter())
+}
+
 /// Whole UI strings.
 pub const KO: &[(&str, &str)] = &[
     ("File", "파일"),
@@ -88,6 +111,9 @@ pub const KO: &[(&str, &str)] = &[
     ("Demo designs", "데모 설계"),
     ("Will be created at {}", "{}에 만들어집니다"),
     ("Cancel", "취소"),
+    ("Close Tab", "탭 닫기"),
+    ("Close Other Tabs", "다른 탭 닫기"),
+    ("Close All Tabs", "모든 탭 닫기"),
     ("New cell", "새 셀"),
     ("Library", "라이브러리"),
     ("Cell name", "셀 이름"),

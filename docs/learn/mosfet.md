@@ -21,6 +21,15 @@ Heavily doped regions are written **n+** and **p+**. Where n-type and p-type mee
 junctions of a MOSFET are reverse-biased, so they block current and isolate the
 transistor from the silicon around it.
 
+<!-- quiz
+? Silicon doped with boron is …
+- n-type, with extra electrons
++ p-type, with holes as carriers
+- an insulator
+- unchanged: doping only matters for metal
+> Boron leaves holes, which behave as positive carriers: p-type. Phosphorus and arsenic bring extra electrons: n-type.
+-->
+
 ## The structure
 
 ![NMOS cross-section: as the gate voltage rises above the threshold voltage a channel forms under the gate and electrons flow from source to drain](../images/learn-mosfet-channel.svg)
@@ -56,6 +65,12 @@ nothing. That is why MOS logic burns almost no power when it is not switching, a
 gate can drive many others.
 
 </div>
+
+<!-- quiz
+? An NMOS of the generic technology has V<sub>GS</sub> = 1.0 V. What is its overdrive voltage, in volts?
+= 0.55 ±0.01 V
+> V<sub>ov</sub> = V<sub>GS</sub> − V<sub>th</sub> = 1.0 − 0.45 = 0.55 V.
+-->
 
 ## The four terminals and the voltages that matter
 
@@ -93,6 +108,14 @@ modulation**, set by λ.
 - **Analog** circuits bias transistors in **saturation**, where they act as
   voltage-controlled current sources, the basis of every amplifier.
 
+<!-- quiz
+? An NMOS (V<sub>th</sub> = 0.45 V) has V<sub>GS</sub> = 1.2 V and V<sub>DS</sub> = 0.3 V. Which region is it in?
+- Cut-off
++ Triode
+- Saturation
+> V<sub>ov</sub> = 1.2 − 0.45 = 0.75 V. V<sub>DS</sub> = 0.3 V is below V<sub>ov</sub>, so the channel is not pinched off: triode, where the transistor acts as a resistor. It is not cut-off, since V<sub>GS</sub> > V<sub>th</sub>.
+-->
+
 ### The square law
 
 The saturation equation is called the **square law**:
@@ -119,10 +142,16 @@ and V<sub>GS</sub> = 0.7 V:
 
 ```text
 V_ov = 0.7 − 0.45 = 0.25 V
-I_D  = ½ · 280µ · (2/1) · 0.25² = 17.5 µA      (simulator: 18.7 µA, with λ)
+I_D  = ½ · 280µ · (2/1) · 0.25² = 17.5 µA      (simulator: 18.1 µA, with λ)
 ```
 
 You will meet this exact transistor again in the [amplifier tutorial](tutorial-amplifier.md).
+
+<!-- quiz
+? The worked example's NMOS (k' = 280 µA/V², W/L = 2 µm / 1 µm) gets V<sub>GS</sub> = 0.95 V. What drain current does the square law predict, in µA?
+= 70 ±2 µA
+> V<sub>ov</sub> = 0.95 − 0.45 = 0.5 V, I<sub>D</sub> = ½ · 280 µ · 2 · 0.5² = 70 µA. Twice the overdrive gives four times the current of the 17.5 µA example.
+-->
 
 ## The PMOS: the complementary twin
 
@@ -143,6 +172,12 @@ That ratio is the subject of [sizing](cmos-logic.md#sizing-the-transistors).
 
 On a schematic the PMOS is drawn with a small circle (a "bubble") on its gate, a reminder
 that it turns on with a low input.
+
+<!-- quiz
+? How wide must a PMOS be to carry the same current as a 1 µm NMOS of the same length, in µm?
+= 4 ±0.1 µm
+> k' of the PMOS (70 µA/V²) is a quarter of the NMOS's (280 µA/V²), so the PMOS needs four times the W/L.
+-->
 
 ## W, L and the parameters in IC Studio
 
@@ -175,6 +210,12 @@ MOSFET's region (cutoff, triode, saturation), I<sub>D</sub>, V<sub>GS</sub>,
 V<sub>DS</sub>, V<sub>th</sub>, g<sub>m</sub> and g<sub>ds</sub>. Checking regions there is
 the first thing an analog designer does after every change.
 
+<!-- quiz
+? The generic models scale `lambda` by 0.5 µm / L from 0.08. What `lambda` does an NMOS with L = 2 µm get?
+= 0.02 ±0.002
+> 0.08 · 0.5 µm / 2 µm = 0.02. A longer channel modulates less, so the output resistance and the gain go up.
+-->
+
 <div class="callout say">
 
 **Try it:** plot the output curves yourself. Create a cell with one NMOS (`W` = `1u`,
@@ -188,5 +229,7 @@ values `0.8 1.0 1.2 1.4 1.6 1.8` and press **Run Sweep**: **Overlay** draws the 
 family.
 
 </div>
+
+<!-- try: Create a new cell | new-cell -->
 
 Next: [CMOS logic](cmos-logic.md), where NMOS and PMOS are paired into logic gates.

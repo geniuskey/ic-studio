@@ -9,6 +9,7 @@ use eframe::egui::{self, RichText};
 use ics_mcp::ext::Registry;
 use ics_mcp::ext::install::{self, IndexEntry, Source};
 
+use crate::i18n::{t, tf};
 use crate::theme::{self, Palette};
 
 /// The guide page on using and writing extensions.
@@ -65,10 +66,10 @@ impl ExtensionManager {
 
     fn install(&mut self, ctx: &egui::Context, reg: &Registry, src: Source) {
         let Some(root) = Self::root(reg) else {
-            self.status = Some((false, "No per-user data folder for extensions".into()));
+            self.status = Some((false, t("No per-user data folder for extensions").into()));
             return;
         };
-        let what = format!("Installing {}", src.describe());
+        let what = tf("Installing {}", &[&src.describe()]);
         self.start(ctx, what, move || {
             let (m, _) = install::install(&root, &src, false)?;
             let runs = m.run.as_ref().map_or(String::new(), |r| format!("; it runs `{}`", r.argv().join(" ")));
@@ -120,25 +121,25 @@ impl ExtensionManager {
         let mut action = None;
         egui::CentralPanel::default().frame(egui::Frame::new().fill(pal.bg_panel).inner_margin(12)).show(ui, |ui| {
             ui.label(
-                RichText::new(
+                RichText::new(t(
                     "Extensions add tools, menu commands, SKILL scripts and PDKs. Ones with a program run it with your \
                      rights: install only extensions you trust.",
-                )
+                ))
                 .small()
                 .color(pal.text_weak),
             );
             ui.horizontal(|ui| {
                 if let Some(root) = Self::root(reg) {
-                    ui.label(RichText::new(format!("Folder: {}", root.display())).small().color(pal.text_weak));
-                    if ui.small_button("Open").clicked() {
+                    ui.label(RichText::new(tf("Folder: {}", &[&root.display().to_string()])).small().color(pal.text_weak));
+                    if ui.small_button(t("Open")).clicked() {
                         let _ = std::fs::create_dir_all(&root);
                         action = Some(ExtAction::OpenFolder(root));
                     }
                 }
-                if ui.small_button("Reload").clicked() {
+                if ui.small_button(t("Reload")).clicked() {
                     action = Some(ExtAction::Reload);
                 }
-                if ui.small_button("Writing extensions (guide)").clicked() {
+                if ui.small_button(t("Writing extensions (guide)")).clicked() {
                     ui.ctx().open_url(egui::OpenUrl::new_tab(GUIDE));
                 }
             });
@@ -153,9 +154,9 @@ impl ExtensionManager {
             }
             ui.add_space(6.0);
             egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
-                ui.heading(format!("Installed ({})", reg.extensions.len()));
+                ui.heading(tf("Installed ({})", &[&reg.extensions.len().to_string()]));
                 if reg.extensions.is_empty() {
-                    ui.label(RichText::new("None yet. Add one below or from the index.").color(pal.text_weak));
+                    ui.label(RichText::new(t("None yet. Add one below or from the index.")).color(pal.text_weak));
                 }
                 for e in &reg.extensions {
                     if let Some(a) = self.installed_row(ui, reg, e, &pal) {
@@ -166,10 +167,10 @@ impl ExtensionManager {
                     ui.label(RichText::new(format!("{}: {err}", p.display())).small().color(pal.warning));
                 }
                 ui.add_space(10.0);
-                ui.heading("Add");
+                ui.heading(t("Add"));
                 self.add_ui(ui, reg);
                 ui.add_space(10.0);
-                ui.heading("Community index");
+                ui.heading(t("Community index"));
                 self.index_ui(ui, reg, &pal);
             });
         });
@@ -190,7 +191,7 @@ impl ExtensionManager {
             ui.horizontal(|ui| {
                 let mut on = e.enabled;
                 let l = ui.label(RichText::new(&i.name).strong().color(pal.text_strong));
-                if ui.checkbox(&mut on, "Enabled").labelled_by(l.id).changed()
+                if ui.checkbox(&mut on, t("Enabled")).labelled_by(l.id).changed()
                     && let Some(root) = Self::root(reg)
                 {
                     match install::set_enabled(&root, e.id(), on) {
@@ -203,7 +204,7 @@ impl ExtensionManager {
                 }
                 ui.label(RichText::new(format!("{} · {}", i.version, i.id)).small().color(pal.text_weak));
                 if e.running() {
-                    ui.label(RichText::new("running").small().color(pal.ok));
+                    ui.label(RichText::new(t("running")).small().color(pal.ok));
                 }
             });
             if !i.description.is_empty() {
@@ -215,7 +216,7 @@ impl ExtensionManager {
             let m = &e.manifest;
             let list = |ui: &mut egui::Ui, what: &str, items: Vec<String>| {
                 if !items.is_empty() {
-                    ui.label(RichText::new(format!("{what}: {}", items.join(", "))).small().color(pal.text_weak));
+                    ui.label(RichText::new(format!("{}: {}", t(what), items.join(", "))).small().color(pal.text_weak));
                 }
             };
             list(ui, "Tools", m.tools.iter().map(|t| m.tool_name(&t.name)).collect());
@@ -233,35 +234,36 @@ impl ExtensionManager {
             list(ui, "License / authors", meta);
             ui.horizontal(|ui| {
                 let busy = self.job.is_some();
-                if ui.add_enabled(!busy && source.is_some(), egui::Button::new("Update")).clicked()
+                if ui.add_enabled(!busy && source.is_some(), egui::Button::new(t("Update"))).clicked()
                     && let Some(root) = Self::root(reg)
                 {
                     e.stop();
                     let id = e.id().to_string();
-                    self.start(ui.ctx(), format!("Updating {id}"), move || {
+                    self.start(ui.ctx(), tf("Updating {}", &[&id]), move || {
                         let (m, _) = install::update(&root, &id)?;
                         Ok(format!("Updated {id} to {}", m.extension.version))
                     });
                 }
-                if ui.add_enabled(!busy, egui::Button::new("Remove")).clicked()
+                if ui.add_enabled(!busy, egui::Button::new(t("Remove"))).clicked()
                     && let Some(root) = Self::root(reg)
                 {
                     e.stop();
                     self.status = Some(match install::remove(&root, e.id()) {
-                        Ok(()) => (true, format!("Removed {}", i.name)),
+                        Ok(()) => (true, tf("Removed {}", &[&i.name])),
                         Err(err) => (false, err),
                     });
                     action = Some(ExtAction::Reload);
                 }
-                if ui.button("Open Folder").clicked() {
+                if ui.button(t("Open Folder")).clicked() {
                     action = Some(ExtAction::OpenFolder(e.dir.clone()));
                 }
                 if let Some(url) = i.repository.as_ref().or(i.homepage.as_ref())
-                    && ui.button("Website").clicked()
+                    && ui.button(t("Website")).clicked()
                 {
                     ui.ctx().open_url(egui::OpenUrl::new_tab(url));
                 }
-                if e.running() && ui.button("Stop").on_hover_text("Stop its program; it starts again when needed").clicked() {
+                if e.running() && ui.button(t("Stop")).on_hover_text(t("Stop its program; it starts again when needed")).clicked()
+                {
                     e.stop();
                 }
             });
@@ -273,26 +275,26 @@ impl ExtensionManager {
     fn add_ui(&mut self, ui: &mut egui::Ui, reg: &Registry) {
         let busy = self.job.is_some();
         ui.horizontal(|ui| {
-            if ui.add_enabled(!busy, egui::Button::new("Install from Folder…")).clicked()
-                && let Some(dir) = rfd::FileDialog::new().set_title("Extension folder (with extension.toml)").pick_folder()
+            if ui.add_enabled(!busy, egui::Button::new(t("Install from Folder…"))).clicked()
+                && let Some(dir) = rfd::FileDialog::new().set_title(t("Extension folder (with extension.toml)")).pick_folder()
             {
                 self.install(ui.ctx(), reg, Source::Folder(dir));
             }
         });
         egui::Grid::new("ext_git").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
-            let l = ui.label("Git URL");
-            ui.add(egui::TextEdit::singleline(&mut self.url).hint_text("https://github.com/you/ics-ext").desired_width(380.0))
+            let l = ui.label(t("Git URL"));
+            ui.add(egui::TextEdit::singleline(&mut self.url).hint_text("https://github.com/you/ics-ext").desired_width(380.0)) // i18n: ignore
                 .labelled_by(l.id);
             ui.end_row();
-            let l = ui.label("Sub-folder");
-            ui.add(egui::TextEdit::singleline(&mut self.sub).hint_text("optional").desired_width(380.0)).labelled_by(l.id);
+            let l = ui.label(t("Sub-folder"));
+            ui.add(egui::TextEdit::singleline(&mut self.sub).hint_text(t("optional")).desired_width(380.0)).labelled_by(l.id);
             ui.end_row();
-            let l = ui.label("Tag / branch");
-            ui.add(egui::TextEdit::singleline(&mut self.rev).hint_text("optional").desired_width(380.0)).labelled_by(l.id);
+            let l = ui.label(t("Tag / branch"));
+            ui.add(egui::TextEdit::singleline(&mut self.rev).hint_text(t("optional")).desired_width(380.0)).labelled_by(l.id);
             ui.end_row();
         });
         let opt = |s: &str| Some(s.trim().to_string()).filter(|s| !s.is_empty());
-        if ui.add_enabled(!busy && !self.url.trim().is_empty(), egui::Button::new("Install from Git")).clicked() {
+        if ui.add_enabled(!busy && !self.url.trim().is_empty(), egui::Button::new(t("Install from Git"))).clicked() {
             match Source::parse(self.url.trim(), opt(&self.rev), opt(&self.sub)) {
                 Ok(src) => self.install(ui.ctx(), reg, src),
                 Err(e) => self.status = Some((false, e)),
@@ -302,9 +304,9 @@ impl ExtensionManager {
 
     fn index_ui(&mut self, ui: &mut egui::Ui, reg: &Registry, pal: &Palette) {
         ui.horizontal(|ui| {
-            let l = ui.label("Search");
+            let l = ui.label(t("Search"));
             ui.add(egui::TextEdit::singleline(&mut self.query).desired_width(240.0)).labelled_by(l.id);
-            let label = if self.index.is_some() { "Refresh" } else { "Load Index" };
+            let label = t(if self.index.is_some() { "Refresh" } else { "Load Index" });
             if ui.add_enabled(self.index_job.is_none(), egui::Button::new(label)).clicked() {
                 self.fetch_index(ui.ctx());
             }
@@ -313,7 +315,7 @@ impl ExtensionManager {
             }
         });
         ui.label(
-            RichText::new("Publish yours by adding it to extensions/index.json of the IC Studio repository.")
+            RichText::new(t("Publish yours by adding it to extensions/index.json of the IC Studio repository."))
                 .small()
                 .color(pal.text_weak),
         );
@@ -326,12 +328,12 @@ impl ExtensionManager {
             Some(Ok(v)) => v.iter().filter(|e| e.matches(self.query.trim())).cloned().collect::<Vec<_>>(),
         };
         if entries.is_empty() {
-            ui.label(RichText::new("No extension matches").color(pal.text_weak));
+            ui.label(RichText::new(t("No extension matches")).color(pal.text_weak));
         }
         for e in entries {
             ui.horizontal(|ui| {
                 let installed = reg.get(&e.id).is_some();
-                let button = if installed { "Installed" } else { "Install" };
+                let button = t(if installed { "Installed" } else { "Install" });
                 if ui.add_enabled(!installed && self.job.is_none(), egui::Button::new(button)).clicked() {
                     self.install(ui.ctx(), reg, e.source());
                 }

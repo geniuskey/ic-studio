@@ -24,6 +24,8 @@ IC Studio를 실행합니다. 시작 페이지에서 <strong>New project…</str
 
 ## 1단계: 셀 만들기
 
+<!-- try: 새 셀 | new-cell -->
+
 1. `Ctrl+N`을 누릅니다.
 2. 셀 이름을 `my_inv`로 입력하고 **schematic**을 체크한 채로 **Create**를 누릅니다.
 
@@ -96,6 +98,8 @@ VIN in 0 DC 0 PULSE(0 1.8 1n 100p 100p 4n 10n)
 
 (소자 이름은 다를 수 있습니다. 중요한 것은 연결입니다.)
 
+<!-- check: my_inv에 인버터와 테스트벤치 회로도가 있음(소자 5개) | my_inv schematic 5 -->
+
 ## 6단계: 동작점
 
 1. `Ctrl+3`을 눌러 Simulation 워크스페이스로 갑니다. **Operating Point**는 기본으로 켜져 있습니다.
@@ -103,6 +107,21 @@ VIN in 0 DC 0 PULSE(0 1.8 1n 100p 100p 4n 10n)
 3. 회로도(`Ctrl+2`)로 돌아가면 모든 넷에 전압이 표시됩니다. `in`이 0 V일 때 `out`은 1.8 V입니다.
 4. Simulation 워크스페이스에서 **Operating Point** 탭을 엽니다. NMOS는 **cutoff**, PMOS는 전류가
    거의 없는 **triode** 상태입니다. [예측한 대로](cmos-logic.md#인버터) 정적 전류가 없습니다.
+
+<!-- check: my_inv를 시뮬레이션함 | my_inv simulated -->
+
+<!-- check: in이 0 V일 때 out이 1.8 V | my_inv measure op "v(out)" 1.7 1.9 -->
+
+<!-- check: NMOS M2가 차단 영역 | my_inv region M2 cutoff -->
+
+<!-- quiz
+? in이 0 V일 때 vdd에서 접지로 전류가 거의 흐르지 않는 이유는 무엇일까요?
+- PMOS가 꺼져 있어서
++ NMOS가 꺼져 있어 접지로 가는 경로가 없어서
+- 부하 커패시터가 DC를 막아서
+- 전원 전압이 너무 낮아서
+> PMOS는 켜져(트라이오드) out을 1.8 V로 유지하지만 NMOS가 차단 상태라 vdd에서 접지로 가는 직렬 경로가 열려 있습니다. 커패시터도 DC를 막지만 그 경로에 있지 않습니다.
+-->
 
 ## 7단계: 전달 곡선 (DC 스윕)
 
@@ -117,10 +136,23 @@ VIN in 0 DC 0 PULSE(0 1.8 1n 100p 100p 4n 10n)
 cross(v(out) - v(in), 0)
 ```
 
-out = in이 되는 입력 전압, **V<sub>M</sub> ≈ 0.826 V**가 나옵니다.
+out = in이 되는 입력 전압, **V<sub>M</sub> ≈ 0.830 V**가 나옵니다.
 
 `i(VDD)`도 플롯해 보세요. 공급 전류는 양 끝에서 0이고, 두 트랜지스터가 함께 켜지는 V<sub>M</sub>
-근처에서 약 118 µA로 최대가 됩니다.
+근처에서 약 135 µA로 최대가 됩니다.
+
+<!-- try: 파형 계산기 열기 | calculator -->
+
+<!-- check: 스위칭 문턱 V_M이 0.78–0.95 V | my_inv measure dc "cross(v(out) - v(in), 0)" 0.78 0.95 -->
+
+<!-- quiz
+? `dc` 데이터셋에서 `cross(v(out) - v(in), 0)`은 무엇을 돌려줄까요?
+- 출력이 입력을 가로지르는 시각
++ out = in이 되는 입력 전압, 즉 스위칭 문턱
+- 전원 전류의 최댓값
+- 인버터의 이득
+> DC 스윕의 x축은 스윕한 소스 VIN이므로 `cross`는 v(out) − v(in)이 0을 지나는 VIN, 즉 V<sub>M</sub>을 돌려줍니다. DC 스윕에는 시간 축이 없습니다.
+-->
 
 ## 8단계: 지연 (과도 해석)
 
@@ -130,14 +162,27 @@ out = in이 되는 입력 전압, **V<sub>M</sub> ≈ 0.826 V**가 나옵니다.
 3. Waveform Calculator에서 `tran` 데이터셋을 선택하고 두 지연을 계산합니다.
 
    ```text
-   delay(v(in), 0.9, v(out), 0.9, rise, fall)     → t_pHL ≈ 36 ps
-   delay(v(in), 0.9, v(out), 0.9, fall, rise)     → t_pLH ≈ 52 ps
+   delay(v(in), 0.9, v(out), 0.9, rise, fall)     → t_pHL ≈ 33 ps
+   delay(v(in), 0.9, v(out), 0.9, fall, rise)     → t_pLH ≈ 47 ps
    ```
 
    각각 입력이 0.9 V(1.8 V의 50 %)를 지나는 시점부터 출력이 0.9 V를 지나는 시점까지를 잽니다.
 
 출력 상승이 더 느립니다. [크기 표](cmos-logic.md#트랜지스터-크기-정하기)에서 예측했듯이 PMOS가
 NMOS보다 약하기 때문입니다.
+
+<!-- check: t_pHL(출력 하강)이 50 ps 미만 | my_inv measure tran "delay(v(in), 0.9, v(out), 0.9, rise, fall)" 20p 50p -->
+
+<!-- check: t_pLH(출력 상승)이 70 ps 미만 | my_inv measure tran "delay(v(in), 0.9, v(out), 0.9, fall, rise)" 20p 70p -->
+
+<!-- quiz
+? PMOS가 2 µm일 때 t<sub>pLH</sub>(출력 상승)가 t<sub>pHL</sub>보다 긴 이유는 무엇일까요?
++ 출력은 PMOS를 통해 올라가는데 PMOS가 NMOS보다 약해서
+- 입력 펄스의 상승이 하강보다 느려서
+- 충전되면 부하 커패시터가 커져서
+- 출력이 올라가는 동안 NMOS가 누설되어서
+> 펄스의 상승·하강 에지는 모두 100 ps이고 부하도 양쪽 모두 20 fF입니다. 차이는 구동 소자에 있습니다. 2 µm PMOS는 1 µm NMOS의 절반 세기입니다(k'가 4분의 1).
+-->
 
 ## 9단계: 인버터 균형 맞추기
 
@@ -149,8 +194,8 @@ NMOS보다 약하기 때문입니다.
 
 | PMOS W | V<sub>M</sub> | t<sub>pHL</sub> | t<sub>pLH</sub> |
 |---|---|---|---|
-| 2 µm | 0.83 V | 36 ps | 52 ps |
-| 4 µm | 0.90 V | 39 ps | 37 ps |
+| 2 µm | 0.83 V | 33 ps | 47 ps |
+| 4 µm | 0.90 V | 35 ps | 33 ps |
 
 문턱이 가운데로 옮겨졌고 지연도 균형이 맞았습니다. t<sub>pHL</sub>은 조금 *나빠졌습니다*. 커진
 PMOS가 출력에 드레인 커패시턴스를 더해, NMOS가 그만큼 더 방전해야 하기 때문입니다. 크기를 정하는
@@ -158,6 +203,17 @@ PMOS가 출력에 드레인 커패시턴스를 더해, NMOS가 그만큼 더 방
 
 두 실행 결과를 한 플롯에서 비교하려면 **Compare runs**에서 이전 실행을 체크하세요. 점선으로
 그려집니다.
+
+<!-- check: 두 지연의 차이가 8 ps 이내(PMOS 4 µm) | my_inv measure tran "abs(delay(v(in), 0.9, v(out), 0.9, fall, rise) - delay(v(in), 0.9, v(out), 0.9, rise, fall))" "" 8p -->
+
+<!-- quiz
+? PMOS를 4 µm로 넓힌 뒤 t<sub>pHL</sub>가 조금 나빠진 이유는 무엇일까요?
+- NMOS가 약해져서
++ 커진 PMOS가 더한 드레인 커패시턴스를 NMOS가 함께 방전해야 해서
+- V<sub>M</sub>이 내려가서
+- 전원 전류가 줄어서
+> NMOS는 그대로이지만 출력 노드에 4 µm PMOS의 더 큰 드레인 접합이 붙었습니다. V<sub>M</sub>은 0.90 V로 올라갔습니다.
+-->
 
 ## 10단계: 저장
 
@@ -175,8 +231,23 @@ PMOS가 출력에 드레인 커패시턴스를 더해, NMOS가 그만큼 더 방
    늘어날까요?
 4. **편차.** <strong>Simulation > Monte Carlo...</strong>를 선택하고 측정 항목
    `dc: cross(v(out) - v(in), 0)`과 `tran: delay(v(in), 0.9, v(out), 0.9, rise, fall)`을 추가한
-   뒤 200개 샘플을 실행합니다. 제조 편차로 V<sub>M</sub>은 약 ±17 mV(1σ), t<sub>pHL</sub>은 약
-   ±1.5 ps 퍼집니다. 실제 칩은 이 퍼짐 전체에서 동작하도록 설계합니다.
+   뒤 200개 샘플을 실행합니다. 제조 편차로 V<sub>M</sub>은 약 ±16 mV(1σ), t<sub>pHL</sub>은 약
+   ±1.4 ps 퍼집니다. 실제 칩은 이 퍼짐 전체에서 동작하도록 설계합니다.
+
+<!-- quiz
+? 연습 문제 2: V<sub>DD</sub>를 1.8 V에서 1.2 V로 낮추면 스위칭 에너지 C·V²는 몇 %가 남을까요?
+= 44.4 ±2 %
+> (1.2 / 1.8)² = 0.444이므로 에너지는 44 %로, 절반 넘게 줄어듭니다.
+-->
+
+<!-- quiz
+? 연습 문제 3: 두 길이를 180 nm에서 360 nm로 늘리면 지연이 크게 느는 이유는 무엇일까요?
+- 트랜지스터가 약해졌기 때문만
++ 온저항이 두 배가 되고(전류 ∝ W/L) 게이트와 드레인 커패시턴스도 커져서
+- 문턱 전압이 두 배가 되어서
+- 부하 커패시터가 저절로 두 배가 되어서
+> W/L이 절반이 되어 R<sub>on</sub>이 두 배가 되고, 길어진 게이트가 구동되는 노드에 커패시턴스를 더합니다. t<sub>p</sub> ≈ 0.69 · R<sub>on</sub> · C<sub>L</sub>의 두 인자가 모두 커집니다. V<sub>th</sub>는 0.45 V 그대로입니다.
+-->
 
 <div class="callout say">
 

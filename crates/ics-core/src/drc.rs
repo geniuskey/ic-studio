@@ -248,23 +248,23 @@ impl DerivedLayer {
                 };
                 format!("{} = {} {op} {}", self.name, n(a), n(b))
             }
-            LayerExpr::Size { a, by } => format!("{} = {} size {}", self.name, n(a), fmt_um(by, tech)),
-            LayerExpr::Wide { a, min } => format!("{} = {} wide {}", self.name, n(a), fmt_um(min, tech)),
+            LayerExpr::Size { a, by } => format!("{} = {} size {}", self.name, n(a), fmt_um(by, tech)), // i18n: ignore
+            LayerExpr::Wide { a, min } => format!("{} = {} wide {}", self.name, n(a), fmt_um(min, tech)), // i18n: ignore
             LayerExpr::Select { a, how, not, b } => {
                 format!("{} = {} {}{} {}", self.name, n(a), if not { "not " } else { "" }, how.keyword(), n(b))
             }
-            LayerExpr::Holes { a } => format!("{} = holes {}", self.name, n(a)),
-            LayerExpr::Extents { a } => format!("{} = extents {}", self.name, n(a)),
+            LayerExpr::Holes { a } => format!("{} = holes {}", self.name, n(a)), // i18n: ignore
+            LayerExpr::Extents { a } => format!("{} = extents {}", self.name, n(a)), // i18n: ignore
             LayerExpr::AreaRange { a, min, max } => {
                 let d = tech.dbu_per_um.max(1) as f64;
                 let um2 = |v: i128| format!("{}", v as f64 / (d * d));
-                format!("{} = {} area {} {}", self.name, n(a), min.map_or("0".into(), um2), max.map_or("inf".into(), um2))
+                format!("{} = {} area {} {}", self.name, n(a), min.map_or("0".into(), um2), max.map_or("inf".into(), um2)) // i18n: ignore
             }
             LayerExpr::Union(ref v) => {
                 let parts: Vec<String> = v.iter().map(|&l| n(l)).collect();
-                format!("# {} = union of {}", self.name, if parts.is_empty() { "nothing".into() } else { parts.join(", ") })
+                format!("# {} = union of {}", self.name, if parts.is_empty() { "nothing".into() } else { parts.join(", ") }) // i18n: ignore
             }
-            LayerExpr::Check(ref r) => format!("# {} = violations of: {}", self.name, r.deck_line(tech, names)),
+            LayerExpr::Check(ref r) => format!("# {} = violations of: {}", self.name, r.deck_line(tech, names)), // i18n: ignore
         }
     }
 }
@@ -417,20 +417,20 @@ impl Rule {
         let n = |l: usize| layer_name(names, l);
         let um = |v: i64| fmt_um(v, tech);
         match *self {
-            Rule::Width { layer, min } => format!("width {} {}", n(layer), um(min)),
-            Rule::Space { layer, min } => format!("space {} {}", n(layer), um(min)),
-            Rule::Separation { a, b, min } => format!("separation {} {} {}", n(a), n(b), um(min)),
-            Rule::Enclosure { inner, outer, min } => format!("enclosure {} {} {}", n(inner), n(outer), um(min)),
-            Rule::Extension { a, b, min } => format!("extension {} {} {}", n(a), n(b), um(min)),
+            Rule::Width { layer, min } => format!("width {} {}", n(layer), um(min)), // i18n: ignore
+            Rule::Space { layer, min } => format!("space {} {}", n(layer), um(min)), // i18n: ignore
+            Rule::Separation { a, b, min } => format!("separation {} {} {}", n(a), n(b), um(min)), // i18n: ignore
+            Rule::Enclosure { inner, outer, min } => format!("enclosure {} {} {}", n(inner), n(outer), um(min)), // i18n: ignore
+            Rule::Extension { a, b, min } => format!("extension {} {} {}", n(a), n(b), um(min)), // i18n: ignore
             Rule::Area { layer, min } => {
                 let d = tech.dbu_per_um.max(1) as f64;
-                format!("area {} {}", n(layer), min as f64 / (d * d))
+                format!("area {} {}", n(layer), min as f64 / (d * d)) // i18n: ignore
             }
-            Rule::Antenna { layer, ratio, .. } => format!("antenna {} {ratio}", n(layer)),
+            Rule::Antenna { layer, ratio, .. } => format!("antenna {} {ratio}", n(layer)), // i18n: ignore
             Rule::Density { layer, min, max, window, step } => {
-                format!("density {} {min} {max} {} {}", n(layer), um(window), um(step))
+                format!("density {} {min} {max} {} {}", n(layer), um(window), um(step)) // i18n: ignore
             }
-            Rule::Flag { layer } => format!("flag {}", n(layer)),
+            Rule::Flag { layer } => format!("flag {}", n(layer)), // i18n: ignore
         }
     }
 }
@@ -589,7 +589,7 @@ pub fn derived_region(expr: &str, tech: &Tech, layers: &[Region]) -> Result<Regi
     let mut parts: Vec<&str> = expr.split(';').map(str::trim).filter(|p| !p.is_empty()).collect();
     let last = parts.pop().ok_or("empty layer expression")?;
     let mut text: String = parts.iter().map(|p| format!("{p}\n")).collect();
-    text += &format!("_derived_ = {last}\n");
+    text += &format!("_derived_ = {last}\n"); // i18n: ignore
     let deck = parse_deck(&text, tech).map_err(|e| e.iter().map(|e| e.message.clone()).collect::<Vec<_>>().join("; "))?;
     if deck.derived.is_empty() {
         return Err(format!("'{expr}' is not a layer expression"));
@@ -834,6 +834,7 @@ fn antenna_rule(layer: usize, ratio: f64, tech: &Tech) -> Result<Rule, String> {
     Ok(Rule::Antenna { layer, ratio, poly, active, vias })
 }
 
+// i18n: off: the generated deck text is not a message.
 /// A deck derived from the technology: width / space per layer plus via enclosure rules.
 pub fn default_deck_text(tech: &Tech) -> String {
     let um = |v: i64| fmt_um(v, tech);
@@ -845,14 +846,14 @@ pub fn default_deck_text(tech: &Tech) -> String {
     };
     for l in &tech.layers {
         if l.min_width > 0 {
-            push(format!("width {} {}", l.name, um(l.min_width)));
+            push(format!("width {} {}", l.name, um(l.min_width))); // i18n: ignore
         }
         if l.min_spacing > 0 {
-            push(format!("space {} {}", l.name, um(l.min_spacing)));
+            push(format!("space {} {}", l.name, um(l.min_spacing))); // i18n: ignore
         }
         if l.min_area > 0 {
             let d = tech.dbu_per_um.max(1) as f64;
-            push(format!("area {} {}", l.name, l.min_area as f64 / (d * d)));
+            push(format!("area {} {}", l.name, l.min_area as f64 / (d * d))); // i18n: ignore
         }
     }
     for v in &tech.vias {
@@ -864,29 +865,29 @@ pub fn default_deck_text(tech: &Tech) -> String {
         if v.cut_spacing > cut.min_spacing {
             push(format!("space {} {}", cut.name, um(v.cut_spacing)));
         }
-        push(format!("enclosure {} {} {}", cut.name, bottom.name, um(v.enc_bottom)));
+        push(format!("enclosure {} {} {}", cut.name, bottom.name, um(v.enc_bottom))); // i18n: ignore
         push(format!("enclosure {} {} {}", cut.name, top.name, um(v.enc_top)));
     }
     let def = |n: &str| tech.layer_index(n).and_then(|i| tech.layer(i));
     if let (Some(poly), Some(active)) = (tech.poly().and_then(|i| tech.layer(i)), tech.diffusion().and_then(|i| tech.layer(i))) {
-        push(format!("extension {} {} {}", poly.name, active.name, um(tech.rules.poly_endcap)));
+        push(format!("extension {} {} {}", poly.name, active.name, um(tech.rules.poly_endcap))); // i18n: ignore
         // A PMOS gate needs its n-well: without one the device is in the substrate, which
         // neither width nor spacing rules notice.
         if let (Some(nwell), Some(pimp)) =
             (tech.nwell().and_then(|i| tech.layer(i)), tech.implant(true).and_then(|i| tech.layer(i)))
         {
-            push(format!("well_pgate = {} and {}", poly.name, active.name));
-            push(format!("well_pgate_p = well_pgate and {}", pimp.name));
-            push(format!("well_pgate_out = well_pgate_p not {}", nwell.name));
+            push(format!("well_pgate = {} and {}", poly.name, active.name)); // i18n: ignore
+            push(format!("well_pgate_p = well_pgate and {}", pimp.name)); // i18n: ignore
+            push(format!("well_pgate_out = well_pgate_p not {}", nwell.name)); // i18n: ignore
             push("pmos_outside_nwell: flag well_pgate_out".to_string());
         }
         for v in &tech.vias {
             if let Some(top) = def(&v.top).filter(|t| t.routing && t.name != poly.name && t.name != active.name) {
-                push(format!("antenna {} {ANTENNA_RATIO}", top.name));
+                push(format!("antenna {} {ANTENNA_RATIO}", top.name)); // i18n: ignore
             }
         }
     }
-    let mut out = format!("# DRC deck derived from technology '{}' (lengths in µm)\n", tech.name);
+    let mut out = format!("# DRC deck derived from technology '{}' (lengths in µm)\n", tech.name); // i18n: ignore
     for l in lines {
         out.push_str(&l);
         out.push('\n');
@@ -900,6 +901,7 @@ pub fn default_deck_text(tech: &Tech) -> String {
     }
     out
 }
+// i18n: on
 
 /// Run the technology's deck ([`Tech::deck_text`]).
 pub fn run_tech_deck(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Result<DrcReport, Vec<DeckError>> {

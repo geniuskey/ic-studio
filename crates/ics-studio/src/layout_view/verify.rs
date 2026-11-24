@@ -1,5 +1,6 @@
 //! Verification panel: rule-deck DRC, connectivity extraction with net highlighting, and LVS.
 
+use crate::i18n::{t, tf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
@@ -343,11 +344,11 @@ impl LayoutEditor {
 
     /// Progress row while `what` runs. Cancel discards the result; the worker finishes on its own.
     fn job_row(&mut self, ui: &mut egui::Ui, what: Verify) {
-        let Some((w, t)) = self.verify.running().filter(|(w, _)| *w == what) else { return };
+        let Some((w, el)) = self.verify.running().filter(|(w, _)| *w == what) else { return };
         ui.horizontal(|ui| {
             ui.add(egui::Spinner::new());
-            ui.label(egui::RichText::new(format!("Running {}… {:.1} s", w.name(), t.as_secs_f64())).small());
-            if ui.small_button("Cancel").clicked() {
+            ui.label(egui::RichText::new(tf("Running {}… {} s", &[t(w.name()), &format!("{:.1}", el.as_secs_f64())])).small());
+            if ui.small_button(t("Cancel")).clicked() {
                 self.verify.job = None;
             }
         });
@@ -373,25 +374,25 @@ impl LayoutEditor {
         let idle = !self.is_verifying();
 
         ui.add_space(12.0);
-        theme::section(ui, "Design Rule Check");
+        theme::section(ui, t("Design Rule Check"));
         ui.horizontal(|ui| {
-            let run = ui.add_enabled(idle, egui::Button::new("▶ Run DRC"));
-            if run.on_hover_text("Run the rule deck on the flattened cell").clicked() {
+            let run = ui.add_enabled(idle, egui::Button::new(t("▶ Run DRC")));
+            if run.on_hover_text(t("Run the rule deck on the flattened cell")).clicked() {
                 self.start_verification(Verify::Drc, l, cx, ui.ctx());
             }
-            if self.verify.drc.is_some() && ui.button("Clear").clicked() {
+            if self.verify.drc.is_some() && ui.button(t("Clear")).clicked() {
                 self.verify.drc = None;
                 self.verify.marker = None;
             }
         });
-        egui::CollapsingHeader::new("Rule deck").id_salt("deck").show(ui, |ui| {
+        egui::CollapsingHeader::new(t("Rule deck")).id_salt("deck").show(ui, |ui| {
             let deck = self.verify.deck.get_or_insert_with(|| deck_source(cx));
             let lb =
-                ui.label(egui::RichText::new("width / space / separation / enclosure / extension / area / antenna / density · µm · derived: name = a and|or|not|xor b, name = a size|wide d").small().weak());
+                ui.label(egui::RichText::new(t("width / space / separation / enclosure / extension / area / antenna / density · µm · derived: name = a and|or|not|xor b, name = a size|wide d")).small().weak());
             ui.add(egui::TextEdit::multiline(deck).code_editor().desired_rows(10).desired_width(f32::INFINITY))
                 .labelled_by(lb.id);
             ui.horizontal(|ui| {
-                if ui.button("Save to technology").on_hover_text("Store this deck in the project's tech.json").clicked() {
+                if ui.button(t("Save to technology")).on_hover_text(t("Store this deck in the project's tech.json")).clicked() {
                     match drc::parse_any(deck, tech) {
                         Ok(_) => {
                             self.verify.deck_errors.clear();
@@ -400,17 +401,17 @@ impl LayoutEditor {
                         Err(errs) => self.verify.deck_errors = deck_errors(&errs),
                     }
                 }
-                if ui.button("Reset").on_hover_text("Rules derived from the technology layers and vias").clicked() {
+                if ui.button(t("Reset")).on_hover_text(t("Rules derived from the technology layers and vias")).clicked() {
                     *deck = drc::default_deck_text(tech);
                 }
-                if ui.button("Rule Designer…").on_hover_text("Design the rules visually in a separate window").clicked() {
+                if ui.button(t("Rule Designer…")).on_hover_text(t("Design the rules visually in a separate window")).clicked() {
                     self.requests.push(LayRequest::OpenRuleDesigner);
                 }
             });
         });
         self.job_row(ui, Verify::Drc);
         if !self.verify.deck_notes.is_empty() {
-            egui::CollapsingHeader::new(format!("SVRF notes ({})", self.verify.deck_notes.len().saturating_sub(1)))
+            egui::CollapsingHeader::new(tf("SVRF notes ({})", &[&self.verify.deck_notes.len().saturating_sub(1).to_string()]))
                 .id_salt("deck_notes")
                 .show(ui, |ui| {
                     egui::ScrollArea::vertical().id_salt("deck_notes_scroll").max_height(160.0).show(ui, |ui| {
@@ -425,17 +426,22 @@ impl LayoutEditor {
         }
         if let Some(r) = &self.verify.drc {
             let summary = format!(
-                "{} rule(s) · {} shapes · {:.0} ms{}",
-                r.rules_run,
-                r.shapes,
-                r.millis,
-                if r.skipped > 0 { format!(" · {} without a location", r.skipped) } else { String::new() }
+                "{}{}",
+                tf(
+                    "{} rule(s) · {} shapes · {} ms",
+                    &[&r.rules_run.to_string(), &r.shapes.to_string(), &format!("{:.0}", r.millis)]
+                ),
+                if r.skipped > 0 {
+                    format!(" {}", tf("· {} without a location", &[&r.skipped.to_string()]))
+                } else {
+                    String::new()
+                }
             );
             ui.label(egui::RichText::new(summary).small().color(pal.text_weak));
             if r.violations.is_empty() {
-                ui.colored_label(pal.ok, "✔ No violations");
+                ui.colored_label(pal.ok, t("✔ No violations"));
             } else {
-                ui.colored_label(pal.danger, format!("{} violation(s)", r.violations.len()));
+                ui.colored_label(pal.danger, tf("{} violation(s)", &[&r.violations.len().to_string()]));
                 let mut groups: Vec<(&str, Vec<&drc::Violation>)> = vec![];
                 for v in &r.violations {
                     match groups.iter_mut().find(|g| g.0 == v.rule) {
@@ -448,10 +454,15 @@ impl LayoutEditor {
                         egui::CollapsingHeader::new(format!("{rule}  ({})", vs.len())).id_salt(("drc_rule", rule)).show(
                             ui,
                             |ui| {
-                                ui.label(egui::RichText::new(&vs[0].description).small().color(pal.text_weak));
+                                ui.label(
+                                    egui::RichText::new(crate::i18n::t_text(&vs[0].description)).small().color(pal.text_weak),
+                                );
                                 for v in vs.iter().take(500) {
                                     let m = v.marker;
-                                    let txt = format!("at {}, {} µm", um((m.x0 + m.x1) / 2, tech), um((m.y0 + m.y1) / 2, tech));
+                                    let txt = tf(
+                                        "at {}, {} µm",
+                                        &[&um((m.x0 + m.x1) / 2, tech).to_string(), &um((m.y0 + m.y1) / 2, tech).to_string()],
+                                    );
                                     if ui.add(egui::Button::new(egui::RichText::new(txt).small()).frame(false)).clicked() {
                                         zoom = Some(m);
                                     }
@@ -464,26 +475,31 @@ impl LayoutEditor {
         }
 
         ui.add_space(12.0);
-        theme::section(ui, "Connectivity");
+        theme::section(ui, t("Connectivity"));
         ui.horizontal(|ui| {
-            let run = ui.add_enabled(idle, egui::Button::new("Extract"));
-            if run.on_hover_text("Find nets and transistors in the flattened cell").clicked() {
+            let run = ui.add_enabled(idle, egui::Button::new(t("Extract")));
+            if run.on_hover_text(t("Find nets and transistors in the flattened cell")).clicked() {
                 self.start_verification(Verify::Extract, l, cx, ui.ctx());
             }
-            ui.add_enabled(self.verify.extraction.is_some(), egui::Checkbox::new(&mut self.verify.pick_nets, "Pick nets"))
-                .on_hover_text("Click shapes in the canvas to highlight their net");
+            ui.add_enabled(self.verify.extraction.is_some(), egui::Checkbox::new(&mut self.verify.pick_nets, t("Pick nets")))
+                .on_hover_text(t("Click shapes in the canvas to highlight their net"));
         });
         self.job_row(ui, Verify::Extract);
         if let Some(x) = &self.verify.extraction {
             let n = x.devices.iter().filter(|d| d.kind == DevKind::Nmos).count();
             let p = x.devices.len() - n;
             ui.label(
-                egui::RichText::new(format!("{} nets · {} nmos · {} pmos", x.nets.len(), n, p)).small().color(pal.text_weak),
+                egui::RichText::new(tf(
+                    "{} nets · {} nmos · {} pmos",
+                    &[&x.nets.len().to_string(), &n.to_string(), &p.to_string()],
+                ))
+                .small()
+                .color(pal.text_weak),
             );
             for w in x.warnings.iter().take(20) {
                 ui.label(egui::RichText::new(w).small().color(pal.warning));
             }
-            egui::CollapsingHeader::new("Nets").id_salt("nets").show(ui, |ui| {
+            egui::CollapsingHeader::new(t("Nets")).id_salt("nets").show(ui, |ui| {
                 egui::ScrollArea::vertical().id_salt("net_list").max_height(160.0).show(ui, |ui| {
                     let mut order: Vec<usize> = (0..x.nets.len()).collect();
                     order.sort_by_key(|&i| (!x.nets[i].labelled, x.nets[i].name.clone()));
@@ -498,7 +514,7 @@ impl LayoutEditor {
                     }
                 });
             });
-            egui::CollapsingHeader::new("Devices").id_salt("devices").show(ui, |ui| {
+            egui::CollapsingHeader::new(t("Devices")).id_salt("devices").show(ui, |ui| {
                 egui::ScrollArea::vertical().id_salt("dev_list").max_height(160.0).show(ui, |ui| {
                     for d in x.devices.iter().take(2000) {
                         let kind = if d.kind == DevKind::Nmos { "nmos" } else { "pmos" };
@@ -542,19 +558,19 @@ impl LayoutEditor {
             }
             if let Some((_, _, Some(e))) = &self.verify.net_elec {
                 ui.add_space(8.0);
-                theme::section(ui, &format!("Net {}: electrical", e.net));
+                theme::section(ui, &tf("Net {}: electrical", &[&e.net]));
                 egui::Grid::new("net_elec").num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| {
-                    ui.label("C to substrate");
+                    ui.label(t("C to substrate"));
                     ui.label(format_eng(e.farads, "F"));
                     ui.end_row();
                     for (n, c) in &e.coupling {
-                        ui.label(format!("Coupling to {n}"));
+                        ui.label(tf("Coupling to {}", &[n]));
                         ui.label(format_eng(*c, "F"));
                         ui.end_row();
                     }
                     match e.worst_r {
                         Some((r, at)) => {
-                            ui.label("Worst terminal R");
+                            ui.label(t("Worst terminal R"));
                             ui.label(format_eng(r, "Ω")).on_hover_text(format!(
                                 "From the first terminal to the one at {}, {} µm",
                                 um(at.0, tech),
@@ -563,8 +579,10 @@ impl LayoutEditor {
                             ui.end_row();
                         }
                         None => {
-                            ui.label("Terminal R");
-                            ui.label(egui::RichText::new("needs two terminals on resistive wiring").small().color(pal.text_weak));
+                            ui.label(t("Terminal R"));
+                            ui.label(
+                                egui::RichText::new(t("needs two terminals on resistive wiring")).small().color(pal.text_weak),
+                            );
                             ui.end_row();
                         }
                     }
@@ -578,16 +596,16 @@ impl LayoutEditor {
         }
 
         ui.add_space(12.0);
-        theme::section(ui, "Layout vs Schematic");
+        theme::section(ui, t("Layout vs Schematic"));
         let circuit = cx.src.circuit(cx.cell).ok();
         let schematic = circuit.as_deref();
         match schematic {
             None => {
-                ui.label(egui::RichText::new("This cell has no schematic to compare against").small().color(pal.text_weak));
+                ui.label(egui::RichText::new(t("This cell has no schematic to compare against")).small().color(pal.text_weak));
             }
             Some(_) => {
-                let run = ui.add_enabled(idle, egui::Button::new("▶ Run LVS"));
-                if run.on_hover_text("Extract the layout and compare it with the schematic").clicked() {
+                let run = ui.add_enabled(idle, egui::Button::new(t("▶ Run LVS")));
+                if run.on_hover_text(t("Extract the layout and compare it with the schematic")).clicked() {
                     self.start_verification(Verify::Lvs, l, cx, ui.ctx());
                 }
             }
@@ -605,9 +623,9 @@ impl LayoutEditor {
                 .color(pal.text_weak),
             );
             if r.matched {
-                ui.colored_label(pal.ok, "✔ Layout matches schematic");
+                ui.colored_label(pal.ok, t("✔ Layout matches schematic"));
             } else {
-                ui.colored_label(pal.danger, format!("{} difference(s)", r.errors.len()));
+                ui.colored_label(pal.danger, tf("{} difference(s)", &[&r.errors.len().to_string()]));
                 egui::ScrollArea::vertical().id_salt("lvs").max_height(200.0).show(ui, |ui| {
                     for e in &r.errors {
                         let tag = match e.kind {
@@ -616,10 +634,10 @@ impl LayoutEditor {
                             LvsErrorKind::Parameter => "param",
                             LvsErrorKind::Net => "net",
                         };
-                        let txt = egui::RichText::new(format!("[{tag}] {}", e.message)).small();
+                        let txt = egui::RichText::new(format!("[{tag}] {}", crate::i18n::t_text(&e.message))).small();
                         match e.marker {
                             Some(m) => {
-                                if ui.add(egui::Button::new(txt).frame(false)).on_hover_text("Click to zoom").clicked() {
+                                if ui.add(egui::Button::new(txt).frame(false)).on_hover_text(t("Click to zoom")).clicked() {
                                     zoom = Some(m);
                                 }
                             }
@@ -633,10 +651,12 @@ impl LayoutEditor {
             if !r.warnings.is_empty() {
                 egui::ScrollArea::vertical().id_salt("lvs_warnings").max_height(120.0).show(ui, |ui| {
                     for w in &r.warnings {
-                        let txt = egui::RichText::new(format!("[warning] {}", w.message)).small().color(pal.warning);
+                        let txt = egui::RichText::new(tf("[warning] {}", &[&crate::i18n::t_text(&w.message)]))
+                            .small()
+                            .color(pal.warning);
                         match w.marker {
                             Some(m) => {
-                                if ui.add(egui::Button::new(txt).frame(false)).on_hover_text("Click to zoom").clicked() {
+                                if ui.add(egui::Button::new(txt).frame(false)).on_hover_text(t("Click to zoom")).clicked() {
                                     zoom = Some(m);
                                 }
                             }
@@ -649,10 +669,10 @@ impl LayoutEditor {
             }
         }
         ui.add_space(12.0);
-        theme::section(ui, "Check Against Source");
+        theme::section(ui, t("Check Against Source"));
         match schematic {
             None => {
-                ui.label(egui::RichText::new("This cell has no schematic").small().color(pal.text_weak));
+                ui.label(egui::RichText::new(t("This cell has no schematic")).small().color(pal.text_weak));
             }
             Some(sch) => {
                 let small = l.shapes.len() + l.instances.len() <= LIVE_SOURCE_ITEMS;
@@ -661,38 +681,38 @@ impl LayoutEditor {
                     self.verify.source_stale = false;
                 }
                 ui.horizontal_wrapped(|ui| {
-                    if ui.button("Check").on_hover_text("Missing, extra and changed devices, shorts and opens").clicked() {
+                    if ui.button(t("Check")).on_hover_text(t("Missing, extra and changed devices, shorts and opens")).clicked() {
                         self.verify.source = Some(eco::check(sch, l, cx.src));
                         self.verify.source_stale = false;
                     }
                     if ui
-                        .button("Update")
-                        .on_hover_text(
+                        .button(t("Update"))
+                        .on_hover_text(t(
                             "Place new schematic devices and resize changed ones in place (Update Components and Nets)",
-                        )
+                        ))
                         .clicked()
                     {
                         self.requests.push(LayRequest::UpdateFromSource(false));
                     }
                     if ui
-                        .button("Update + delete extra")
-                        .on_hover_text("Also delete devices no longer in the schematic")
+                        .button(t("Update + delete extra"))
+                        .on_hover_text(t("Also delete devices no longer in the schematic"))
                         .clicked()
                     {
                         self.requests.push(LayRequest::UpdateFromSource(true));
                     }
-                    if self.verify.source.is_some() && ui.button("Clear").clicked() {
+                    if self.verify.source.is_some() && ui.button(t("Clear")).clicked() {
                         self.verify.source = None;
                         self.verify.source_live = false;
                     }
                 });
-                ui.add_enabled(small, egui::Checkbox::new(&mut self.verify.source_live, "Live: check again after every edit"))
-                    .on_disabled_hover_text(format!("Only for cells of up to {LIVE_SOURCE_ITEMS} top-level items"));
+                ui.add_enabled(small, egui::Checkbox::new(&mut self.verify.source_live, t("Live: check again after every edit")))
+                    .on_disabled_hover_text(tf("Only for cells of up to {} top-level items", &[&LIVE_SOURCE_ITEMS.to_string()]));
             }
         }
         if let Some(c) = &self.verify.source {
             if self.verify.source_stale {
-                ui.label(egui::RichText::new("Out of date: the layout changed").small().color(pal.warning));
+                ui.label(egui::RichText::new(t("Out of date: the layout changed")).small().color(pal.warning));
             }
             if c.is_clean() {
                 ui.colored_label(pal.ok, format!("✔ {}", c.summary()));
@@ -700,10 +720,10 @@ impl LayoutEditor {
                 ui.colored_label(pal.danger, c.summary());
                 egui::ScrollArea::vertical().id_salt("eco").max_height(200.0).show(ui, |ui| {
                     for i in &c.issues {
-                        let txt = egui::RichText::new(format!("[{}] {}", i.kind(), i.message())).small();
+                        let txt = egui::RichText::new(format!("[{}] {}", i.kind(), crate::i18n::t_text(&i.message()))).small();
                         match i.at() {
                             Some(m) => {
-                                if ui.add(egui::Button::new(txt).frame(false)).on_hover_text("Click to zoom").clicked() {
+                                if ui.add(egui::Button::new(txt).frame(false)).on_hover_text(t("Click to zoom")).clicked() {
                                     zoom = Some(m);
                                 }
                             }
@@ -717,17 +737,17 @@ impl LayoutEditor {
         }
 
         ui.add_space(12.0);
-        theme::section(ui, "IR Drop / EM");
+        theme::section(ui, t("IR Drop / EM"));
         ui.horizontal(|ui| {
-            let label = ui.label(egui::RichText::new("Net").small());
+            let label = ui.label(egui::RichText::new(t("Net")).small());
             ui.add(egui::TextEdit::singleline(&mut self.verify.emir_net).desired_width(80.0)).labelled_by(label.id);
-            let label = ui.label(egui::RichText::new("mA / device").small());
+            let label = ui.label(egui::RichText::new(t("mA / device")).small());
             ui.add(egui::DragValue::new(&mut self.verify.emir_ma).range(0.0..=1000.0).speed(0.01))
                 .labelled_by(label.id)
-                .on_hover_text("Current drawn by every device on the net; 0 simulates the schematic's operating point");
+                .on_hover_text(t("Current drawn by every device on the net; 0 simulates the schematic's operating point"));
         });
-        let run = ui.add_enabled(idle && !self.verify.emir_net.trim().is_empty(), egui::Button::new("▶ Run IR / EM"));
-        if run.on_hover_text("Solve the net's resistive mesh from its labelled pins and check current densities").clicked() {
+        let run = ui.add_enabled(idle && !self.verify.emir_net.trim().is_empty(), egui::Button::new(t("▶ Run IR / EM")));
+        if run.on_hover_text(t("Solve the net's resistive mesh from its labelled pins and check current densities")).clicked() {
             self.start_verification(Verify::Emir, l, cx, ui.ctx());
         }
         self.job_row(ui, Verify::Emir);
@@ -738,7 +758,7 @@ impl LayoutEditor {
                     ui.label(egui::RichText::new(w).small().color(pal.warning));
                 }
                 if !rep.violations.is_empty() {
-                    ui.colored_label(pal.danger, format!("{} EM violation(s)", rep.violations.len()));
+                    ui.colored_label(pal.danger, tf("{} EM violation(s)", &[&rep.violations.len().to_string()]));
                     egui::ScrollArea::vertical().id_salt("em").max_height(160.0).show(ui, |ui| {
                         for v in rep.violations.iter().take(500) {
                             let m = v.at;
@@ -764,9 +784,9 @@ impl LayoutEditor {
         }
         if !tech.signoff.is_empty() {
             ui.add_space(12.0);
-            theme::section(ui, "Sign-off");
+            theme::section(ui, t("Sign-off"));
             self.verify.runset = self.verify.runset.min(tech.signoff.len() - 1);
-            let label = ui.label(egui::RichText::new("Runset").small());
+            let label = ui.label(egui::RichText::new(t("Runset")).small());
             egui::ComboBox::from_id_salt("runset")
                 .width(ui.available_width() - 8.0)
                 .selected_text(tech.signoff[self.verify.runset].name.as_str())
@@ -778,8 +798,8 @@ impl LayoutEditor {
                 .response
                 .labelled_by(label.id);
             let rs = &tech.signoff[self.verify.runset];
-            let run = ui.add_enabled(idle, egui::Button::new(format!("▶ Run {}", rs.tool.label())));
-            if run.on_hover_text(format!("Write the cell to GDS and run {}", rs.deck)).clicked() {
+            let run = ui.add_enabled(idle, egui::Button::new(tf("▶ Run {}", &[rs.tool.label()])));
+            if run.on_hover_text(tf("Write the cell to GDS and run {}", &[&rs.deck])).clicked() {
                 self.start_verification(Verify::Signoff, l, cx, ui.ctx());
             }
             self.job_row(ui, Verify::Signoff);
@@ -798,18 +818,19 @@ impl LayoutEditor {
                         });
                     }
                     if !rep.notes.is_empty() {
-                        egui::CollapsingHeader::new(format!("Deck notes ({})", rep.notes.len())).id_salt("signoff_notes").show(
-                            ui,
-                            |ui| {
+                        egui::CollapsingHeader::new(tf("Deck notes ({})", &[&rep.notes.len().to_string()]))
+                            .id_salt("signoff_notes")
+                            .show(ui, |ui| {
                                 egui::ScrollArea::vertical().id_salt("signoff_notes_scroll").max_height(160.0).show(ui, |ui| {
                                     for n in &rep.notes {
                                         ui.label(egui::RichText::new(n).small().color(pal.text_weak));
                                     }
                                 });
-                            },
-                        );
+                            });
                     }
-                    ui.label(egui::RichText::new(format!("Reports: {}", rep.dir.display())).small().color(pal.text_weak));
+                    ui.label(
+                        egui::RichText::new(tf("Reports: {}", &[&rep.dir.display().to_string()])).small().color(pal.text_weak),
+                    );
                 }
                 Some(Err(e)) => {
                     ui.label(egui::RichText::new(e).small().color(pal.danger));
@@ -818,7 +839,7 @@ impl LayoutEditor {
             }
         }
         if self.verify.stale {
-            ui.label(egui::RichText::new("Results are out of date: the layout changed").small().color(pal.warning));
+            ui.label(egui::RichText::new(t("Results are out of date: the layout changed")).small().color(pal.warning));
         }
         if let Some(z) = zoom {
             self.zoom_to(z);
@@ -846,7 +867,7 @@ impl LayoutEditor {
             painter.text(
                 rect.left_top() + egui::vec2(10.0, 8.0),
                 egui::Align2::LEFT_TOP,
-                format!("net {}", net.name),
+                tf("net {}", &[&net.name]),
                 egui::FontId::proportional(13.0),
                 fill,
             );

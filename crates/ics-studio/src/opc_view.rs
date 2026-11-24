@@ -7,6 +7,7 @@ use ics_core::region::Region;
 use ics_core::tech::Tech;
 use ics_core::{CellRef, IRect, Project};
 
+use crate::i18n::{t, tf};
 use crate::theme::{self, Palette};
 
 /// Polygons drawn per region in the preview.
@@ -69,25 +70,25 @@ impl OpcTool {
     fn ui(&mut self, ui: &mut egui::Ui, project: &Project, active: Option<&CellRef>, pal: &Palette) -> bool {
         let tech = &project.tech;
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Optical Proximity Correction").strong().color(pal.text_strong));
+            ui.label(RichText::new(t("Optical Proximity Correction")).strong().color(pal.text_strong));
             match active {
                 Some(c) => ui.label(RichText::new(format!("· {c}")).color(pal.text_weak)),
-                None => ui.label(RichText::new("· open a layout cell").color(pal.warning)),
+                None => ui.label(RichText::new(t("· open a layout cell")).color(pal.warning)),
             };
         });
         ui.label(
-            RichText::new(
+            RichText::new(t(
                 "Gaussian blur + threshold resist model; edges are fragmented and moved against their placement error.",
-            )
+            ))
             .small()
             .color(pal.text_weak),
         );
         ui.separator();
         let Some(p) = self.params.as_mut() else { return false };
         let before = p.clone();
-        theme::section(ui, "Layers");
+        theme::section(ui, t("Layers"));
         egui::Grid::new("opc_layers").num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| {
-            let l = ui.label("Correct");
+            let l = ui.label(t("Correct"));
             let mut layer = p.layer;
             layer_combo(ui, "opc_layer", tech, &mut layer, l.id);
             if layer != p.layer {
@@ -97,33 +98,34 @@ impl OpcTool {
         });
         let mask = tech.layer(p.layer).map_or_else(String::new, |d| opc::mask_layer_name(&d.name));
         ui.label(
-            RichText::new(format!(
-                "The mask goes to {mask}; the drawn shapes stay as they are, and applying again replaces the previous mask"
+            RichText::new(tf(
+                "The mask goes to {}; the drawn shapes stay as they are, and applying again replaces the previous mask",
+                &[&mask],
             ))
             .small()
             .color(pal.text_weak),
         );
-        theme::section(ui, "Optical model");
+        theme::section(ui, t("Optical model"));
         egui::Grid::new("opc_model").num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| {
             dbu_field(ui, "Blur sigma", &mut p.sigma, tech);
-            let l = ui.label("Threshold");
+            let l = ui.label(t("Threshold"));
             ui.add(egui::DragValue::new(&mut p.threshold).range(0.05..=0.95).speed(0.01)).labelled_by(l.id);
             ui.end_row();
         });
-        theme::section(ui, "Correction");
+        theme::section(ui, t("Correction"));
         egui::Grid::new("opc_corr").num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| {
             dbu_field(ui, "Fragment length", &mut p.fragment, tech);
             dbu_field(ui, "Max outward move", &mut p.max_out, tech);
             dbu_field(ui, "Max inward move", &mut p.max_in, tech);
             dbu_field(ui, "EPE tolerance", &mut p.tolerance, tech);
-            let l = ui.label("Iterations");
+            let l = ui.label(t("Iterations"));
             ui.add(egui::DragValue::new(&mut p.iterations).range(1..=50)).labelled_by(l.id);
             ui.end_row();
-            let l = ui.label("Gain");
+            let l = ui.label(t("Gain"));
             ui.add(egui::DragValue::new(&mut p.gain).range(0.1..=1.0).speed(0.01)).labelled_by(l.id);
             ui.end_row();
         });
-        if ui.button("Defaults").on_hover_text("Reset to values derived from the layer's min width and spacing").clicked() {
+        if ui.button(t("Defaults")).on_hover_text(t("Reset to values derived from the layer's min width and spacing")).clicked() {
             *p = OpcParams::for_layer(tech, p.layer);
         }
         let layer = p.layer;
@@ -134,8 +136,8 @@ impl OpcTool {
         let mut apply = false;
         ui.horizontal(|ui| {
             if ui
-                .add_enabled(active.is_some(), egui::Button::new("Preview"))
-                .on_hover_text("Run the correction without changing the layout")
+                .add_enabled(active.is_some(), egui::Button::new(t("Preview")))
+                .on_hover_text(t("Run the correction without changing the layout"))
                 .clicked()
                 && let Some(c) = active
             {
@@ -143,9 +145,11 @@ impl OpcTool {
                 self.zoom = 1.0;
                 self.pan = Vec2::ZERO;
             }
-            let b = egui::Button::new(RichText::new("Apply OPC").strong().color(theme::on_fill(pal.layout))).fill(pal.layout);
-            apply =
-                ui.add_enabled(active.is_some(), b).on_hover_text("Write the corrected mask into the cell (undoable)").clicked();
+            let b = egui::Button::new(RichText::new(t("Apply OPC")).strong().color(theme::on_fill(pal.layout))).fill(pal.layout);
+            apply = ui
+                .add_enabled(active.is_some(), b)
+                .on_hover_text(t("Write the corrected mask into the cell (undoable)"))
+                .clicked();
         });
         if let Some((c, r)) = &self.preview {
             ui.add_space(6.0);
@@ -155,7 +159,7 @@ impl OpcTool {
                     report(ui, c, rep, tech, pal);
                     ui.horizontal_wrapped(|ui| {
                         for (k, name) in ["Target", "Mask", "Printed (no OPC)", "Printed (OPC)"].iter().enumerate() {
-                            ui.checkbox(&mut self.show[k], *name);
+                            ui.checkbox(&mut self.show[k], t(name));
                         }
                     });
                     canvas(ui, rep, color, self.show, &mut self.zoom, &mut self.pan, pal);
@@ -176,15 +180,15 @@ fn report(ui: &mut egui::Ui, cell: &CellRef, rep: &OpcReport, tech: &Tech, pal: 
     let nm = |v: f64| v * 1000.0 / tech.dbu_per_um.max(1) as f64;
     egui::Frame::new().fill(pal.bg_widget).corner_radius(6).inner_margin(8).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.label(RichText::new(format!("Preview · {cell}")).strong());
+        ui.label(RichText::new(tf("Preview · {}", &[&cell.to_string()])).strong());
         egui::Grid::new("opc_stats").num_columns(4).spacing([14.0, 2.0]).show(ui, |ui| {
             for h in ["", "EPE rms", "EPE max", "On target"] {
-                ui.label(RichText::new(h).small().color(pal.text_weak));
+                ui.label(RichText::new(t(h)).small().color(pal.text_weak));
             }
             ui.end_row();
             let n = rep.fragments.len();
             let row = |ui: &mut egui::Ui, name: &str, s: &EpeStats, c: Color32| {
-                ui.label(name);
+                ui.label(t(name));
                 ui.label(RichText::new(format!("{:.2} nm", nm(s.rms))).color(c));
                 ui.label(RichText::new(format!("{:.2} nm", nm(s.max))).color(c));
                 ui.label(RichText::new(format!("{} / {n}", s.within)).color(c));
@@ -195,11 +199,13 @@ fn report(ui: &mut egui::Ui, cell: &CellRef, rep: &OpcReport, tech: &Tech, pal: 
         });
         let um2 = |a: i128| a as f64 / (tech.dbu_per_um.max(1) as f64).powi(2);
         ui.label(
-            RichText::new(format!(
-                "{} iteration(s) · mask area {:.3} µm² ({:+.1}% of drawn)",
-                rep.iterations,
-                um2(rep.mask.area()),
-                (rep.mask.area() as f64 / rep.target.area().max(1) as f64 - 1.0) * 100.0
+            RichText::new(tf(
+                "{} iteration(s) · mask area {} µm² ({}% of drawn)",
+                &[
+                    &rep.iterations.to_string(),
+                    &format!("{:.3}", um2(rep.mask.area())),
+                    &format!("{:+.1}", (rep.mask.area() as f64 / rep.target.area().max(1) as f64 - 1.0) * 100.0),
+                ],
             ))
             .small()
             .color(pal.text_weak),
@@ -261,7 +267,7 @@ fn canvas(ui: &mut egui::Ui, rep: &OpcReport, color: Color32, show: [bool; 4], z
     painter.text(
         rect.left_bottom() + Vec2::new(8.0, -6.0),
         egui::Align2::LEFT_BOTTOM,
-        "scroll to zoom · drag to pan · double-click to fit",
+        t("scroll to zoom · drag to pan · double-click to fit"),
         egui::FontId::proportional(11.0),
         pal.text_weak,
     );
@@ -300,7 +306,7 @@ fn snap(v: f64, tech: &Tech) -> i64 {
 }
 
 fn dbu_field(ui: &mut egui::Ui, label: &str, v: &mut i64, tech: &Tech) {
-    let l = ui.label(label);
+    let l = ui.label(t(label));
     let mut x = um(*v, tech);
     let step = um(tech.grid.max(1), tech);
     if ui.add(egui::DragValue::new(&mut x).speed(step).range(0.0..=100.0).suffix(" µm")).labelled_by(l.id).changed() {

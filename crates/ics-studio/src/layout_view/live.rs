@@ -1,6 +1,7 @@
 //! Live DRC: the rule deck re-checked around every edit on a worker thread, violations shown
 //! as they appear, and quick fixes (Ctrl+.) that are themselves verified before they are offered.
 
+use crate::i18n::{t, tf};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -245,7 +246,7 @@ impl LayoutEditor {
                 match self.live.violations.iter().min_by_key(|v| d(v)) {
                     Some(v) => v.clone(),
                     None => {
-                        self.note(true, "No live DRC violations");
+                        self.note(true, t("No live DRC violations"));
                         return;
                     }
                 }
@@ -261,7 +262,7 @@ impl LayoutEditor {
     pub(super) fn apply_fix(&mut self, l: &mut Layout, fix: &Fix) {
         self.history.push(l);
         drc_fix::apply(l, fix);
-        self.note(true, format!("Applied: {}", fix.title));
+        self.note(true, tf("Applied: {}", &[&fix.title]));
     }
 
     /// Apply the best fix of every live violation as one undoable edit (see [`drc_fix::fix_all`]).
@@ -274,7 +275,7 @@ impl LayoutEditor {
             self.history.push(l);
             *l = after;
         }
-        self.note(!done.is_empty(), format!("Fix all: {} fix(es) applied", done.len()));
+        self.note(!done.is_empty(), tf("Fix all: {} fix(es) applied", &[&done.len().to_string()]));
         done.len()
     }
 
@@ -284,7 +285,7 @@ impl LayoutEditor {
         let at = self.live.quick_at.unwrap_or(rect.center()) + Vec2::new(12.0, 12.0);
         let mut open = true;
         let mut picked = None;
-        let shown = egui::Window::new(egui::RichText::new("Quick Fix").size(14.0).strong())
+        let shown = egui::Window::new(egui::RichText::new(t("Quick Fix")).size(14.0).strong())
             .id(egui::Id::unique("lay_form_quickfix"))
             .collapsible(false)
             .resizable(false)
@@ -293,7 +294,7 @@ impl LayoutEditor {
             .open(&mut open)
             .show(ctx, |ui| {
                 ui.label(egui::RichText::new(&v.rule).strong());
-                ui.label(&v.description);
+                ui.label(crate::i18n::t_text(&v.description));
                 ui.label(
                     egui::RichText::new(format!(
                         "at ({}, {})",
@@ -305,10 +306,14 @@ impl LayoutEditor {
                 );
                 ui.separator();
                 if fixes.is_empty() {
-                    ui.label("No automatic fix: the geometry is inside a placed cell or the rule is global.");
+                    ui.label(t("No automatic fix: the geometry is inside a placed cell or the rule is global."));
                 }
                 for (k, f) in fixes.iter().enumerate() {
-                    let side = if f.new_violations == 0 { "clean".to_string() } else { format!("+{} new", f.new_violations) };
+                    let side = if f.new_violations == 0 {
+                        t("clean").to_string()
+                    } else {
+                        tf("+{} new", &[&f.new_violations.to_string()])
+                    };
                     let b = egui::Button::new(&f.title).shortcut_text(side);
                     if ui.add_sized([ui.available_width(), 22.0], b).clicked() {
                         picked = Some(k);
@@ -350,7 +355,7 @@ impl LayoutEditor {
         }
         if let Some((v, sr)) = hovered {
             painter.rect_stroke(sr, 1.0, Stroke::new(2.0, pal.warning), StrokeKind::Outside);
-            let text = format!("{}: {}   Ctrl+. quick fix", v.rule, v.description);
+            let text = tf("{}: {}   Ctrl+. quick fix", &[&v.rule, &crate::i18n::t_text(&v.description)]);
             let font = egui::FontId::proportional(12.0);
             let galley = painter.layout_no_wrap(text, font, pal.text);
             let pos = Pos2::new(sr.left(), sr.top() - galley.size().y - 6.0).max(rect.left_top() + Vec2::splat(4.0));
@@ -361,11 +366,11 @@ impl LayoutEditor {
         }
         let n = self.live.violations.len();
         let (label, color) = if self.live.running() {
-            ("Live DRC: checking…".to_string(), pal.text_weak)
+            (t("Live DRC: checking…").to_string(), pal.text_weak)
         } else if n == 0 {
-            ("Live DRC: clean".to_string(), pal.ok)
+            (t("Live DRC: clean").to_string(), pal.ok)
         } else {
-            (format!("Live DRC: {n} violation(s)"), pal.warning)
+            (tf("Live DRC: {} violation(s)", &[&n.to_string()]), pal.warning)
         };
         painter.text(
             rect.right_bottom() + Vec2::new(-10.0, -8.0),

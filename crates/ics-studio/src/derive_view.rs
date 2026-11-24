@@ -212,7 +212,7 @@ impl DeriveWizard {
                         action = Some(DeriveAction::Start(from, plan, self.layout, self.keep_power));
                     }
                     if !self.error.is_empty() {
-                        ui.colored_label(theme::palette(ui.ctx()).danger, &self.error);
+                        ui.colored_label(theme::palette(ui.ctx()).danger, crate::i18n::t_text(&self.error));
                     }
                 });
                 ui.separator();
@@ -404,10 +404,10 @@ impl DeriveWizard {
         if !o.passed {
             ui.add_space(8.0);
             ui.label(
-                RichText::new(
+                RichText::new(t(
                     "Try a larger simulation budget, let more parameters change, or relax a target. The Verification \
                      window explains each failing spec.",
-                )
+                ))
                 .color(pal.text_weak),
             );
         }

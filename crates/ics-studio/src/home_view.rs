@@ -58,6 +58,15 @@ pub fn welcome(ui: &mut egui::Ui, recent: &[PathBuf], q: &mut Vec<Command>) {
                 ui.add_space(28.0);
                 theme::section(ui, t("Start"));
                 ui.horizontal_wrapped(|ui| {
+                    if action_card(
+                        ui,
+                        Icon::Schematic,
+                        t("Learn IC design"),
+                        t("Course with quizzes and live checks"),
+                        pal.simulation,
+                    ) {
+                        q.push(Command::Learn(None));
+                    }
                     if action_card(ui, Icon::Simulation, t("Take the tutorial"), t("New here? 10 guided steps"), pal.ok) {
                         q.push(Command::Tutorial);
                     }

@@ -31,6 +31,15 @@ The picture above zooms in four steps:
 **Full-custom design**, the kind IC Studio is built for, works at the cell and transistor
 level: you choose every transistor and draw (or generate) every shape.
 
+<!-- quiz
+? At which level does full-custom design, the kind IC Studio is built for, work?
+- The wafer: placing copies of the chip
+- The die floorplan only
++ The cell and transistor: every transistor and every shape
+- Software that runs on the finished chip
+> Full-custom design chooses each transistor's W and L and draws (or generates) every shape. The fab handles the wafer; floorplanning is the level above the cells.
+-->
+
 ## How a chip is designed
 
 ![The design loop: schematic, simulate, generate layout, route, DRC and LVS, extract parasitics, simulate again](../images/design-loop.svg)
@@ -52,6 +61,24 @@ level: you choose every transistor and draw (or generate) every shape.
 
 Steps 2 to 6 repeat until the specification is met. IC Studio keeps all of them on one
 design database, so going round the loop is a few key presses.
+
+<!-- quiz
+? A layout passes DRC. What does LVS check in addition?
+- That the shapes are wide enough and far enough apart
++ That the drawing is the same circuit as the schematic
+- That the circuit meets its speed specification
+- That the GDSII file can be read by the fab
+> DRC checks the geometry against the design rules; LVS extracts the circuit from the layout and compares it with the schematic. Speed is a simulation question.
+-->
+
+<!-- quiz
+? Why is the circuit simulated again after parasitic extraction?
+- Because the first simulation was not accurate enough
++ To see the effect of the real wires' resistance and capacitance
+- Because the fab requires two simulations
+- To check the design rules
+> The schematic has ideal wires. Extraction adds the resistance and capacitance of the drawn wiring, which make the circuit slower.
+-->
 
 ## The course
 
@@ -116,6 +143,12 @@ further reading.
 - **Keep IC Studio open** next to the text ([Installation](../install.md)). Every theory
   chapter ends with a "Try it" box that opens a demo cell so you can see the idea in a
   simulation straight away.
+- **Or read it inside IC Studio**: **Help › Learn IC Design…** (or the *Learn IC design*
+  card on the welcome page) opens this course in a window next to the canvas, in the
+  language of the UI (English or Korean). There the "Try it" buttons run the step in the
+  app, each section ends with a short quiz, and the hands-on chapters check your own cell
+  live (devices placed, operating region, measured delay or gain, DRC and LVS). Your
+  progress is kept between sessions.
 - **Do the exercises.** Changing one number and predicting what will happen before you
   press `F5` is the fastest way to build intuition.
 - Everything uses the **generic 180 nm technology** that new projects start with. It is
@@ -129,6 +162,14 @@ gains) was simulated with IC Studio's built-in engine on the generic technology,
 should see the same numbers on your screen, give or take the last digit.
 
 </div>
+
+<!-- try: Open the demo project | demo -->
+
+<!-- quiz
+? What is the supply voltage of the generic technology the course uses, in volts?
+= 1.8 ±0.01 V
+> The generic 180 nm technology has a 1.8 V supply, a 180 nm minimum gate length and a 0.45 V threshold voltage.
+-->
 
 Ready? Start with [Circuits in ten minutes](circuits.md), or jump straight to
 [the MOSFET](mosfet.md) if you know your Ohm's law.

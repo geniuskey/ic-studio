@@ -1,6 +1,7 @@
 //! Layout compare: the cell XOR-ed against its last saved version or a git revision, with the
 //! added and removed geometry drawn on the canvas and stepped through one piece at a time.
 
+use crate::i18n::{t, tf};
 use eframe::egui::{self, Rect, Stroke, StrokeKind};
 use ics_core::geom::IRect;
 use ics_core::hier::LayoutSource;
@@ -24,7 +25,7 @@ impl LayoutEditor {
     /// Compare the cell with `rev` (a git revision) or, for `None`, its saved version on disk.
     pub(super) fn compare_with(&mut self, l: &Layout, cx: &LayCtx, rev: Option<&str>) {
         let Some(root) = cx.src.root.clone() else {
-            self.note(false, "Save the project first: there is nothing to compare with");
+            self.note(false, t("Save the project first: there is nothing to compare with"));
             return;
         };
         let old: Result<Project, String> = match rev {
@@ -34,19 +35,22 @@ impl LayoutEditor {
         let old = match old {
             Ok(p) => p,
             Err(e) => {
-                self.note(false, format!("Compare: {}", e.lines().next().unwrap_or_default()));
+                self.note(false, tf("Compare: {}", &[e.lines().next().unwrap_or_default()]));
                 return;
             }
         };
         let empty = Layout::default();
         let before = old.layout(cx.cell).unwrap_or(&empty);
         let diff = layout_diff::diff(before, &old, l, cx.src);
-        let against = rev.unwrap_or("saved").to_string();
+        let against = rev.unwrap_or(t("saved")).to_string();
         let pieces = diff.pieces();
         let msg = if diff.is_empty() {
-            format!("No layout differences against {against}")
+            tf("No layout differences against {}", &[&against])
         } else {
-            format!("{} differing piece(s) on {} layer(s) against {against}", pieces.len(), diff.layers.len())
+            tf(
+                "{} differing piece(s) on {} layer(s) against {}",
+                &[&pieces.len().to_string(), &diff.layers.len().to_string(), &against],
+            )
         };
         self.note(true, msg);
         self.compare = Some(CompareView { against, diff, pieces, at: 0 });
@@ -87,9 +91,9 @@ impl LayoutEditor {
             }
         }
         let text = if c.diff.is_empty() {
-            format!("Compare with {}: identical", c.against)
+            tf("Compare with {}: identical", &[&c.against])
         } else {
-            format!("Compare with {}: {} piece(s)   green added, red removed", c.against, c.pieces.len())
+            tf("Compare with {}: {} piece(s)   green added, red removed", &[&c.against, &c.pieces.len().to_string()])
         };
         painter.text(
             rect.left_bottom() + egui::vec2(10.0, -8.0),
@@ -104,11 +108,11 @@ impl LayoutEditor {
     pub(super) fn compare_panel(&mut self, ui: &mut egui::Ui, cx: &LayCtx) {
         let Some(c) = &self.compare else { return };
         ui.add_space(6.0);
-        theme::section(ui, &format!("Compare with {}", c.against));
+        theme::section(ui, &tf("Compare with {}", &[&c.against]));
         let names = |l: usize| cx.tech.layers.get(l).map_or(format!("#{l}"), |d| d.name.clone());
         let lines = c.diff.summary(&names, cx.tech.dbu_per_um);
         if lines.is_empty() {
-            ui.label("No differences");
+            ui.label(t("No differences"));
         }
         for line in lines.iter().take(40) {
             ui.label(egui::RichText::new(line).small());
@@ -116,8 +120,8 @@ impl LayoutEditor {
         let mut next = false;
         let mut close = false;
         ui.horizontal(|ui| {
-            next = !c.pieces.is_empty() && ui.button("Next difference").clicked();
-            close = ui.button("Close").clicked();
+            next = !c.pieces.is_empty() && ui.button(t("Next difference")).clicked();
+            close = ui.button(t("Close")).clicked();
         });
         if next {
             self.next_difference();

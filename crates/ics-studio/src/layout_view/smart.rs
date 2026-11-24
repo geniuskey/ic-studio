@@ -1,6 +1,7 @@
 //! Constraint-driven editing: symmetry / alignment / fixed constraints kept through every edit,
 //! inferred from the schematic, drawn on the canvas, and compaction that respects them.
 
+use crate::i18n::{t, tf};
 use std::collections::BTreeSet;
 
 use eframe::egui::{self, Rect, Stroke};
@@ -43,7 +44,7 @@ impl LayoutEditor {
         let followed = constraints::enforce(l, cx.src, &moved);
         if !followed.is_empty() {
             cx.touched();
-            self.note(true, format!("Constraints: {} item(s) followed", followed.len()));
+            self.note(true, tf("Constraints: {} item(s) followed", &[&followed.len().to_string()]));
         }
     }
 
@@ -54,11 +55,11 @@ impl LayoutEditor {
 
     pub(super) fn constrain_symmetry(&mut self, l: &mut Layout, cx: &mut LayCtx, axis: Axis) -> bool {
         if self.selection.len() < 2 {
-            self.note(false, "Select the items to make symmetric");
+            self.note(false, t("Select the items to make symmetric"));
             return false;
         }
         let Some(c) = constraints::symmetry_of(l, cx.src, &self.selection, axis) else {
-            self.note(false, "No symmetric pairing: every item needs a partner near its mirror image");
+            self.note(false, t("No symmetric pairing: every item needs a partner near its mirror image"));
             return false;
         };
         let desc = c.describe(cx.tech.dbu_per_um);
@@ -71,7 +72,7 @@ impl LayoutEditor {
 
     pub(super) fn constrain_align(&mut self, l: &mut Layout, cx: &mut LayCtx, edge: Edge) -> bool {
         if self.selection.len() < 2 {
-            self.note(false, "Select the items to align");
+            self.note(false, t("Select the items to align"));
             return false;
         }
         let c = Constraint::Align { edge, items: self.selection.iter().copied().collect() };
@@ -85,19 +86,19 @@ impl LayoutEditor {
 
     pub(super) fn constrain_fixed(&mut self, l: &mut Layout) -> bool {
         if self.selection.is_empty() {
-            self.note(false, "Select the items to fix in place");
+            self.note(false, t("Select the items to fix in place"));
             return false;
         }
         let c = Constraint::Fixed { items: self.selection.iter().copied().collect() };
         self.add_constraint(l, c);
-        self.note(true, format!("Fixed {} item(s) in place", self.selection.len()));
+        self.note(true, tf("Fixed {} item(s) in place", &[&self.selection.len().to_string()]));
         true
     }
 
     pub(super) fn infer_constraints(&mut self, l: &mut Layout, cx: &mut LayCtx) -> bool {
         let circuit = cx.src.circuit(cx.cell).ok();
         let Some(sch) = circuit.as_deref() else {
-            self.note(false, "Inferring constraints needs a schematic view of this cell");
+            self.note(false, t("Inferring constraints needs a schematic view of this cell"));
             return false;
         };
         let before = l.clone();
@@ -107,7 +108,7 @@ impl LayoutEditor {
             self.history.push(l);
             *l = after;
         }
-        self.note(n > 0, format!("Inferred {n} symmetry constraint(s) from matched devices"));
+        self.note(n > 0, tf("Inferred {} symmetry constraint(s) from matched devices", &[&n.to_string()]));
         n > 0
     }
 
@@ -124,7 +125,7 @@ impl LayoutEditor {
         self.history.push(l);
         let n = l.constraints.len() - keep.len();
         l.constraints = keep;
-        self.note(true, format!("Removed {n} constraint(s)"));
+        self.note(true, tf("Removed {} constraint(s)", &[&n.to_string()]));
         true
     }
 
@@ -143,17 +144,18 @@ impl LayoutEditor {
         }
         let ext = first.zip(last);
         if after == *l {
-            self.note(false, "Compaction: nothing can move closer");
+            self.note(false, t("Compaction: nothing can move closer"));
             return false;
         }
         self.history.push(l);
         *l = after;
         let area = |r: ics_core::geom::IRect| r.width() as f64 * r.height() as f64;
         let msg = match ext {
-            Some((b, a)) if area(b) > 0.0 => {
-                format!("Compacted: {moved} group move(s), area {:.0}% of before", 100.0 * area(a) / area(b))
-            }
-            _ => format!("Compacted: {moved} group move(s)"),
+            Some((b, a)) if area(b) > 0.0 => tf(
+                "Compacted: {} group move(s), area {}% of before",
+                &[&moved.to_string(), &format!("{:.0}", 100.0 * area(a) / area(b))],
+            ),
+            _ => tf("Compacted: {} group move(s)", &[&moved.to_string()]),
         };
         self.note(true, msg);
         true
@@ -219,7 +221,7 @@ impl LayoutEditor {
             return false;
         }
         ui.add_space(6.0);
-        theme::section(ui, "Constraints");
+        theme::section(ui, t("Constraints"));
         let errs = constraints::errors(l, cx.src);
         let mut remove = None;
         let mut select = None;
@@ -230,13 +232,18 @@ impl LayoutEditor {
                 if err > 0 {
                     text = text.color(theme::palette(ui.ctx()).warning);
                 }
-                if ui.link(text).on_hover_text("Select its items").clicked() {
+                if ui.link(text).on_hover_text(t("Select its items")).clicked() {
                     select = Some(k);
                 }
-                if err > 0 && ui.small_button("Snap").on_hover_text(format!("Off by {} nm; move the items back", err)).clicked() {
+                if err > 0
+                    && ui
+                        .small_button(t("Snap"))
+                        .on_hover_text(tf("Off by {} nm; move the items back", &[&err.to_string()]))
+                        .clicked()
+                {
                     snap = Some(k);
                 }
-                if ui.small_button("x").on_hover_text("Remove the constraint").clicked() {
+                if ui.small_button("x").on_hover_text(t("Remove the constraint")).clicked() {
                     remove = Some(k);
                 }
             });

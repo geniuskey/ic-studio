@@ -6,6 +6,7 @@ use ics_core::Project;
 use ics_core::stream_map;
 use ics_core::tech::{StreamMapEntry, Tech};
 
+use crate::i18n::{t, tf};
 use crate::theme::{self, Palette};
 
 #[derive(Default)]
@@ -32,8 +33,8 @@ impl StreamMapEditor {
         let n = rows.len();
         self.rows = rows;
         self.status = Some(match warnings.first() {
-            None => (true, format!("Read {n} row(s)")),
-            Some(w) => (false, format!("Read {n} row(s), skipped {} line(s): {w}", warnings.len())),
+            None => (true, tf("Read {} row(s)", &[&n.to_string()])),
+            Some(w) => (false, tf("Read {} row(s), skipped {} line(s): {}", &[&n.to_string(), &warnings.len().to_string(), w])),
         });
         n
     }
@@ -90,35 +91,40 @@ impl StreamMapEditor {
     fn toolbar(&mut self, ui: &mut egui::Ui, tech: &Tech, pal: &Palette) -> Option<Vec<StreamMapEntry>> {
         let mut apply = None;
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Stream Layer Map").strong().color(pal.text_strong));
+            ui.label(RichText::new(t("Stream Layer Map")).strong().color(pal.text_strong));
             ui.label(RichText::new(format!("· {}", tech.name)).color(pal.text_weak));
             if self.rows != self.baseline {
-                ui.label(RichText::new("● not applied").color(pal.warning));
+                ui.label(RichText::new(t("● not applied")).color(pal.warning));
             }
             ui.separator();
             if ui
-                .button("Load map file…")
-                .on_hover_text("Read a Virtuoso layer map (layer purpose streamLayer datatype)")
+                .button(t("Load map file…"))
+                .on_hover_text(t("Read a Virtuoso layer map (layer purpose streamLayer datatype)"))
                 .clicked()
-                && let Some(path) = rfd::FileDialog::new().add_filter("Layer map", &["map", "layermap", "txt"]).pick_file()
+                && let Some(path) = rfd::FileDialog::new().add_filter(t("Layer map"), &["map", "layermap", "txt"]).pick_file()
             {
                 match std::fs::read_to_string(&path) {
                     Ok(text) => {
                         self.load_text(&text, tech);
                     }
-                    Err(e) => self.status = Some((false, format!("Cannot read {}: {e}", path.display()))),
+                    Err(e) => {
+                        self.status = Some((false, tf("Cannot read {}: {}", &[&path.display().to_string(), &e.to_string()])))
+                    }
                 }
             }
-            if ui.button("Save map file…").clicked()
+            if ui.button(t("Save map file…")).clicked()
                 && let Some(path) = rfd::FileDialog::new().set_file_name(format!("{}.layermap", tech.name)).save_file()
             {
                 let text = stream_map::write(&self.draft(tech));
                 self.status = Some(match std::fs::write(&path, text) {
-                    Ok(()) => (true, format!("Wrote {}", path.display())),
-                    Err(e) => (false, format!("Cannot write {}: {e}", path.display())),
+                    Ok(()) => (true, tf("Wrote {}", &[&path.display().to_string()])),
+                    Err(e) => (false, tf("Cannot write {}: {}", &[&path.display().to_string(), &e.to_string()])),
                 });
             }
-            if ui.button("From technology").on_hover_text("One row per layer with the technology's own stream numbers").clicked()
+            if ui
+                .button(t("From technology"))
+                .on_hover_text(t("One row per layer with the technology's own stream numbers"))
+                .clicked()
             {
                 self.rows = tech
                     .layers
@@ -131,15 +137,15 @@ impl StreamMapEditor {
                     })
                     .collect();
             }
-            if ui.button("Clear").on_hover_text("No map: layers use their own stream numbers").clicked() {
+            if ui.button(t("Clear")).on_hover_text(t("No map: layers use their own stream numbers")).clicked() {
                 self.rows.clear();
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let changed = self.rows != self.baseline;
-                let b = egui::Button::new(RichText::new("Apply").strong().color(theme::on_fill(pal.accent))).fill(pal.accent);
+                let b = egui::Button::new(RichText::new(t("Apply")).strong().color(theme::on_fill(pal.accent))).fill(pal.accent);
                 if ui.add_enabled(changed, b).clicked() {
                     self.baseline = self.rows.clone();
-                    self.status = Some((true, "Applied to the technology".into()));
+                    self.status = Some((true, t("Applied to the technology").into()));
                     apply = Some(self.rows.clone());
                 }
                 if let Some((ok, s)) = &self.status {
@@ -168,7 +174,7 @@ impl StreamMapEditor {
                         .width(170.0)
                         .selected_text(if known { RichText::new(shown) } else { RichText::new(shown).color(pal.danger) })
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut row.layer, String::new(), "(drop on import)");
+                            ui.selectable_value(&mut row.layer, String::new(), t("(drop on import)"));
                             for l in &tech.layers {
                                 ui.selectable_value(&mut row.layer, l.name.clone(), l.name.as_str());
                             }
@@ -178,21 +184,21 @@ impl StreamMapEditor {
                     ui.add(egui::DragValue::new(&mut row.stream_layer).range(0..=u16::MAX)).labelled_by(hs.id);
                     ui.add(egui::DragValue::new(&mut row.datatype).range(0..=u16::MAX)).labelled_by(hd.id);
                     ui.checkbox(&mut row.text, "")
-                        .on_hover_text(
+                        .on_hover_text(t(
                             "Texts only (Virtuoso purpose label): read onto the layer, its labels written as this pair",
-                        )
+                        ))
                         .labelled_by(ht.id);
-                    if ui.small_button("Remove").clicked() {
+                    if ui.small_button(t("Remove")).clicked() {
                         remove = Some(i);
                     }
                     ui.end_row();
                 }
             });
             if self.rows.is_empty() {
-                ui.label(RichText::new("No map rows: every layer uses its own stream numbers.").color(pal.text_weak));
+                ui.label(RichText::new(t("No map rows: every layer uses its own stream numbers.")).color(pal.text_weak));
             }
             ui.add_space(6.0);
-            if ui.button("+ Row").clicked() {
+            if ui.button(t("+ Row")).clicked() {
                 let layer = tech.layers.first().map(|l| l.name.clone()).unwrap_or_default();
                 self.rows.push(StreamMapEntry { layer, stream_layer: 0, datatype: 0, text: false });
             }
@@ -204,8 +210,8 @@ impl StreamMapEditor {
 }
 
 fn preview(ui: &mut egui::Ui, draft: &Tech, pal: &Palette) {
-    theme::section(ui, "Written as");
-    ui.label(RichText::new("Stream numbers each layer gets on export").small().color(pal.text_weak));
+    theme::section(ui, t("Written as"));
+    ui.label(RichText::new(t("Stream numbers each layer gets on export")).small().color(pal.text_weak));
     let pairs = stream_map::export_pairs(draft);
     egui::ScrollArea::vertical().id_salt("sm_preview_scroll").show(ui, |ui| {
         egui::Grid::new("sm_preview_grid").striped(true).num_columns(2).spacing([16.0, 3.0]).show(ui, |ui| {

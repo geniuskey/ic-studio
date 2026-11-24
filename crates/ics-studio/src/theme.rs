@@ -105,6 +105,11 @@ const CJK_FONTS: &[&str] = &[
     "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
 ];
 
+/// The bytes of the first system CJK font (see [`CJK_FONTS`]), for drawing figures.
+pub fn cjk_font_bytes() -> Option<Vec<u8>> {
+    CJK_FONTS.iter().find_map(|p| std::fs::read(p).ok())
+}
+
 /// Use the monospace font (Hack) as a fallback for UI text so arrows and geometric
 /// symbols render instead of tofu, and a system CJK font after it when there is one.
 pub fn setup_fonts(ctx: &egui::Context) {

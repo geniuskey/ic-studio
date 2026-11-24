@@ -329,6 +329,9 @@ pub enum Command {
     UserGuide,
     /// Start the interactive tutorial for first-time users.
     Tutorial,
+    /// Open the Learn window, at a chapter (index into `learn::CHAPTERS`) or where the user
+    /// left off.
+    Learn(Option<usize>),
     About,
     /// Look for a newer release on GitHub and show the update dialog.
     CheckForUpdates,
@@ -373,6 +376,9 @@ struct Settings {
     beginner: bool,
     /// UI language (Korean needs a system font with Hangul).
     lang: crate::i18n::Lang,
+    /// Progress through the Learn course.
+    #[serde(default)]
+    learn: crate::learn::Progress,
 }
 
 impl Default for Settings {
@@ -391,6 +397,7 @@ impl Default for Settings {
             mos_body_pin: true,
             beginner: true,
             lang: crate::i18n::Lang::En,
+            learn: Default::default(),
         }
     }
 }
@@ -695,7 +702,7 @@ const SHORTCUTS: &[ShortcutGroup] = &[
             ("Z / Shift+Z", "Zoom box, zoom out"),
             ("[ / ]", "Zoom in, out at the cursor"),
             ("W / Shift+W", "Previous, next view"),
-            ("F", "Fit"),
+            ("F", "Fit view"),
             ("Shift+K", "Clear rulers"),
             ("Shift+S", "Split shapes along a line"),
             ("Shift+F / Mod+F", "All levels, top level only"),
@@ -732,6 +739,21 @@ fn localize_demo_notes(p: &mut Project) {
             c.notes = ko.to_string();
         }
     }
+}
+
+/// A Learn check on the user's design: the cell of that name, its last simulation and its
+/// last DRC and LVS.
+fn learn_check(
+    project: Option<&Project>,
+    sims: &HashMap<CellRef, SimState>,
+    lay_eds: &HashMap<CellRef, LayoutEditor>,
+    c: &crate::learn::Check,
+) -> crate::learn::CheckState {
+    let r = project.and_then(|p| p.all_cells().find(|(_, x)| x.name == c.cell).map(|(r, _)| r));
+    let cell = r.as_ref().and_then(|r| project?.cell(r));
+    let results = r.as_ref().and_then(|r| sims.get(r)?.results.as_ref());
+    let verify = r.as_ref().and_then(|r| lay_eds.get(r)).map(|e| &e.verify);
+    crate::learn_view::evaluate(c, cell, results, verify.and_then(|v| v.drc.as_ref()), verify.and_then(|v| v.lvs.as_ref()))
 }
 
 fn menu_item(ui: &mut egui::Ui, enabled: bool, label: &str, why: &str) -> bool {
@@ -856,6 +878,7 @@ pub struct IcStudio {
     /// A SKILL evaluation running in the background, on a copy of the project.
     skill_job: Option<SkillJob>,
     tutorial: crate::tutorial::Tutorial,
+    learn: crate::learn_view::LearnView,
     /// Installed extensions ([`ics_mcp::ext`]).
     extensions: ics_mcp::ext::Registry,
     ext_manager: crate::ext_view::ExtensionManager,
@@ -976,6 +999,7 @@ impl IcStudio {
             skill_forms: vec![],
             skill_job: None,
             tutorial: Default::default(),
+            learn: Default::default(),
             extensions: ics_mcp::ext::Registry::load(),
             ext_manager: Default::default(),
             ext_tx,
@@ -1954,6 +1978,7 @@ impl IcStudio {
                 }
             }
             Command::Tutorial => self.tutorial.start(),
+            Command::Learn(chapter) => self.learn.show(chapter, &self.settings.learn),
             Command::About => self.dialog = Some(Dialog::About),
             Command::CheckForUpdates => {
                 if !matches!(self.updater.state, update::State::Installed { .. }) {
@@ -2107,7 +2132,7 @@ impl IcStudio {
         let summary = check.summary();
         let clean = check.is_clean();
         for i in &check.issues {
-            self.info(format!("Check against source: {}", i.message()));
+            self.info(tf("Check against source: {}", &[&crate::i18n::t_text(&i.message())]));
         }
         let ed = self.lay_eds.entry(r.clone()).or_default();
         ed.verify.source = Some(check);
@@ -3359,16 +3384,19 @@ impl IcStudio {
     fn virtuoso_job_window(&mut self, ctx: &egui::Context) {
         let Some(job) = &self.virtuoso_job else { return };
         let mut cancel = false;
-        egui::Window::new("Virtuoso")
+        egui::Window::new("Virtuoso") // i18n: ignore
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::RIGHT_BOTTOM, [-12.0, -36.0])
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    ui.label(format!("Dumping {} in batch mode: {:.0} s", job.what, job.started.elapsed().as_secs_f32()));
+                    ui.label(tf(
+                        "Dumping {} in batch mode: {} s",
+                        &[&job.what, &format!("{:.0}", job.started.elapsed().as_secs_f32())],
+                    ));
                 });
-                cancel = ui.button("Cancel").clicked();
+                cancel = ui.button(t("Cancel")).clicked();
             });
         if cancel {
             self.queue.push(Command::CancelVirtuoso);
@@ -3576,16 +3604,16 @@ impl IcStudio {
         let Some(job) = &self.skill_job else { return };
         let secs = job.started.elapsed().as_secs_f32();
         let what = match &job.kind {
-            SkillJobKind::Ciw => "CIW command".to_string(),
+            SkillJobKind::Ciw => t("CIW command").to_string(),
             SkillJobKind::Load(p) => p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().to_string()),
-            SkillJobKind::Form => "form callback".to_string(),
+            SkillJobKind::Form => t("form callback").to_string(),
         };
         let mut cancel = false;
         egui::Modal::new(egui::Id::unique("skill_running")).show(ctx, |ui| {
-            ui.heading("Running SKILL");
+            ui.heading(t("Running SKILL"));
             ui.label(format!("{what}: {secs:.1} s"));
             ui.add_space(6.0);
-            cancel = ui.button("Cancel").clicked();
+            cancel = ui.button(t("Cancel")).clicked();
         });
         if cancel {
             self.queue.push(Command::CancelSkill);
@@ -3708,7 +3736,7 @@ impl IcStudio {
                     }
                 });
                 if ui
-                    .button("Save Examples to Folder…")
+                    .button(t("Save Examples to Folder…"))
                     .on_hover_text(t("Write the example projects, one folder per topic"))
                     .clicked()
                 {
@@ -3878,25 +3906,25 @@ impl IcStudio {
                 {
                     q.push(Command::RunSimulation);
                 }
-                if menu_item(ui, has_sch, "Export Netlist…", NEED_SCH) {
+                if menu_item(ui, has_sch, t("Export Netlist…"), NEED_SCH) {
                     q.push(Command::ExportNetlist);
                 }
                 ui.separator();
-                if menu_item(ui, has_sch, "Corner / Sweep Manager…", NEED_SCH) {
+                if menu_item(ui, has_sch, t("Corner / Sweep Manager…"), NEED_SCH) {
                     q.push(Command::SweepManager);
                 }
-                if adv && menu_item(ui, has_sch, "Monte Carlo…", NEED_SCH) {
+                if adv && menu_item(ui, has_sch, t("Monte Carlo…"), NEED_SCH) {
                     q.push(Command::MonteCarlo);
                 }
-                if menu_item(ui, has_sch, "Optimizer…", NEED_SCH) {
+                if menu_item(ui, has_sch, t("Optimizer…"), NEED_SCH) {
                     q.push(Command::Optimizer);
                 }
-                if menu_item(ui, has_sch, "Derive New Design…", NEED_SCH)
+                if menu_item(ui, has_sch, t("Derive New Design…"), NEED_SCH)
                     && let Some(r) = self.active.clone()
                 {
                     q.push(Command::DeriveDialog(r));
                 }
-                if menu_item(ui, has_project, "Verification…", NEED_PROJECT) {
+                if menu_item(ui, has_project, t("Verification…"), NEED_PROJECT) {
                     q.push(Command::Verification);
                 }
                 ui.separator();
@@ -3913,10 +3941,10 @@ impl IcStudio {
                 if ui.button(t("Pixel Optics…")).clicked() {
                     q.push(Command::PixelOptics);
                 }
-                if menu_item(ui, has_sch, "Silicon Correlation…", NEED_SCH) {
+                if menu_item(ui, has_sch, t("Silicon Correlation…"), NEED_SCH) {
                     q.push(Command::SiliconCorrelation);
                 }
-                if menu_item(ui, has_lay, "Process Emulation…", NEED_LAY) {
+                if menu_item(ui, has_lay, t("Process Emulation…"), NEED_LAY) {
                     q.push(Command::ProcessEmulation);
                 }
                 if ui.button(t("Process Data…")).clicked() {
@@ -3924,44 +3952,44 @@ impl IcStudio {
                 }
             });
             ui.menu_button(t("Verify"), |ui| {
-                if menu_item(ui, has_lay, "Run DRC", NEED_LAY) {
+                if menu_item(ui, has_lay, t("Run DRC"), NEED_LAY) {
                     q.push(Command::RunDrc);
                 }
-                if menu_item(ui, has_lay, "Extract Nets", NEED_LAY) {
+                if menu_item(ui, has_lay, t("Extract Nets"), NEED_LAY) {
                     q.push(Command::ExtractNets);
                 }
-                if adv && menu_item(ui, has_lay, "Schematic from Layout", NEED_LAY) {
+                if adv && menu_item(ui, has_lay, t("Schematic from Layout"), NEED_LAY) {
                     q.push(Command::SchematicFromLayout);
                 }
-                if adv && menu_item(ui, has_lay, "Pixel Circuit…", NEED_LAY) {
+                if adv && menu_item(ui, has_lay, t("Pixel Circuit…"), NEED_LAY) {
                     q.push(Command::PixelCircuit);
                 }
-                if menu_item(ui, has_lay && has_sch, "Run LVS", "Open a cell with a schematic and a layout first") {
+                if menu_item(ui, has_lay && has_sch, t("Run LVS"), t("Open a cell with a schematic and a layout first")) {
                     q.push(Command::RunLvs);
                 }
                 if lay && ui.add(egui::Button::new(t("Mark Net")).shortcut_text("Shift+N")).clicked() {
                     q.push(Command::Lay(LayAction::MarkNet));
                 }
-                if adv && menu_item(ui, has_lay, "Run Sign-off Runset", NEED_LAY) {
+                if adv && menu_item(ui, has_lay, t("Run Sign-off Runset"), NEED_LAY) {
                     q.push(Command::RunSignoff(None));
                 }
-                if adv && menu_item(ui, has_lay, "Import Sign-off Results…", NEED_LAY) {
+                if adv && menu_item(ui, has_lay, t("Import Sign-off Results…"), NEED_LAY) {
                     q.push(Command::ImportSignoffResults(None));
                 }
                 ui.separator();
-                if menu_item(ui, has_sch, "Generate Layout from Schematic", NEED_SCH) {
+                if menu_item(ui, has_sch, t("Generate Layout from Schematic"), NEED_SCH) {
                     q.push(Command::GenerateLayout);
                 }
-                if menu_item(ui, has_lay, "Route Flylines", NEED_LAY) {
+                if menu_item(ui, has_lay, t("Route Flylines"), NEED_LAY) {
                     q.push(Command::RouteFlylines);
                 }
-                if menu_item(ui, has_lay && has_sch, "Check Against Source", NEED_SCH) {
+                if menu_item(ui, has_lay && has_sch, t("Check Against Source"), NEED_SCH) {
                     q.push(Command::CheckAgainstSource);
                 }
-                if menu_item(ui, has_lay && has_sch, "Update Components and Nets", NEED_SCH) {
+                if menu_item(ui, has_lay && has_sch, t("Update Components and Nets"), NEED_SCH) {
                     q.push(Command::UpdateFromSource(false));
                 }
-                if adv && menu_item(ui, has_lay && has_sch, "Update and Delete Extra Devices", NEED_SCH) {
+                if adv && menu_item(ui, has_lay && has_sch, t("Update and Delete Extra Devices"), NEED_SCH) {
                     q.push(Command::UpdateFromSource(true));
                 }
             });
@@ -3973,35 +4001,35 @@ impl IcStudio {
                     q.push(Command::AiModels);
                 }
                 ui.separator();
-                if menu_item(ui, has_sch, "Check Schematic", NEED_SCH) {
+                if menu_item(ui, has_sch, t("Check Schematic"), NEED_SCH) {
                     q.push(Command::CheckSchematic(false));
                 }
-                if menu_item(ui, has_sch, "Place Cell Instance…", NEED_SCH) {
+                if menu_item(ui, has_sch, t("Place Cell Instance…"), NEED_SCH) {
                     q.push(Command::PlaceCellDialog);
                 }
-                if menu_item(ui, has_sch, "Update Cell Instance Pins", NEED_SCH) {
+                if menu_item(ui, has_sch, t("Update Cell Instance Pins"), NEED_SCH) {
                     q.push(Command::UpdateCellInstances);
                 }
-                if adv && menu_item(ui, has_sch, "Edit Symbol Pins…", NEED_SCH) {
+                if adv && menu_item(ui, has_sch, t("Edit Symbol Pins…"), NEED_SCH) {
                     q.push(Command::EditSymbolDialog);
                 }
-                if menu_item(ui, has_project, "Hierarchy Browser…", NEED_PROJECT) {
+                if menu_item(ui, has_project, t("Hierarchy Browser…"), NEED_PROJECT) {
                     q.push(Command::HierarchyBrowser);
                 }
-                if menu_item(ui, has_project, "Net Browser…", NEED_PROJECT) {
+                if menu_item(ui, has_project, t("Net Browser…"), NEED_PROJECT) {
                     q.push(Command::NetBrowser);
                 }
                 if !adv {
                     return;
                 }
                 ui.menu_button(t("Layout Generators"), |ui| {
-                    if menu_item(ui, has_project, "Guard Ring…", NEED_PROJECT) {
+                    if menu_item(ui, has_project, t("Guard Ring…"), NEED_PROJECT) {
                         q.push(Command::GuardRing);
                     }
-                    if menu_item(ui, has_project, "Via Array…", NEED_PROJECT) {
+                    if menu_item(ui, has_project, t("Via Array…"), NEED_PROJECT) {
                         q.push(Command::ViaArray);
                     }
-                    if menu_item(ui, has_project, "Matched Placement…", NEED_PROJECT) {
+                    if menu_item(ui, has_project, t("Matched Placement…"), NEED_PROJECT) {
                         q.push(Command::MatchedPlacement);
                     }
                 });
@@ -4009,50 +4037,50 @@ impl IcStudio {
                 if ui.button(t("DRC Rule Designer…")).clicked() {
                     q.push(Command::RuleDesigner);
                 }
-                if menu_item(ui, has_project, "PCell Designer…", NEED_PROJECT) {
+                if menu_item(ui, has_project, t("PCell Designer…"), NEED_PROJECT) {
                     q.push(Command::PCellDesigner);
                 }
                 ui.menu_button(t("DRC Deck"), |ui| {
                     let linked = self.project.as_ref().and_then(Project::drc_deck_path);
                     if let Some(f) = &linked {
-                        ui.label(format!("Shared: {}", f.display()));
+                        ui.label(tf("Shared: {}", &[&f.display().to_string()]));
                         ui.separator();
                     }
-                    if menu_item(ui, has_project, "Import Deck…", NEED_PROJECT) {
+                    if menu_item(ui, has_project, t("Import Deck…"), NEED_PROJECT) {
                         q.push(Command::ImportDrcDeck(None));
                     }
-                    if menu_item(ui, has_project, "Export Deck…", NEED_PROJECT) {
+                    if menu_item(ui, has_project, t("Export Deck…"), NEED_PROJECT) {
                         q.push(Command::ExportDrcDeck(None));
                     }
                     ui.separator();
-                    if menu_item(ui, has_project, "Link Shared Deck…", NEED_PROJECT) {
+                    if menu_item(ui, has_project, t("Link Shared Deck…"), NEED_PROJECT) {
                         q.push(Command::LinkDrcDeck(None));
                     }
-                    let why = if has_project { "The technology is not linked to a shared deck" } else { NEED_PROJECT };
-                    if menu_item(ui, linked.is_some(), "Reload Shared Deck", why) {
+                    let why = if has_project { t("The technology is not linked to a shared deck") } else { NEED_PROJECT };
+                    if menu_item(ui, linked.is_some(), t("Reload Shared Deck"), why) {
                         q.push(Command::ReloadDrcDeck);
                     }
-                    if menu_item(ui, linked.is_some(), "Unlink Shared Deck", why) {
+                    if menu_item(ui, linked.is_some(), t("Unlink Shared Deck"), why) {
                         q.push(Command::UnlinkDrcDeck);
                     }
                 });
-                if menu_item(ui, has_project, "Stream Layer Map…", NEED_PROJECT) {
+                if menu_item(ui, has_project, t("Stream Layer Map…"), NEED_PROJECT) {
                     q.push(Command::StreamMap);
                 }
-                if menu_item(ui, has_project, "Layer Display…", NEED_PROJECT) {
+                if menu_item(ui, has_project, t("Layer Display…"), NEED_PROJECT) {
                     q.push(Command::LayerDisplay(None));
                 }
-                if menu_item(ui, has_project, "Dummy Fill…", NEED_PROJECT) {
+                if menu_item(ui, has_project, t("Dummy Fill…"), NEED_PROJECT) {
                     q.push(Command::DummyFill);
                 }
-                if menu_item(ui, has_project, "OPC…", NEED_PROJECT) {
+                if menu_item(ui, has_project, t("OPC…"), NEED_PROJECT) {
                     q.push(Command::Opc);
                 }
                 ui.separator();
                 if ui.button(t("SKILL CIW")).clicked() {
                     q.push(Command::Ciw);
                 }
-                if menu_item(ui, has_project, "Load SKILL (.il)…", NEED_PROJECT) {
+                if menu_item(ui, has_project, t("Load SKILL (.il)…"), NEED_PROJECT) {
                     q.push(Command::LoadSkill(None));
                 }
             });
@@ -4063,6 +4091,9 @@ impl IcStudio {
                 Self::extensions_menu(&self.extensions, ui, has_project, q);
             }
             ui.menu_button(t("Help"), |ui| {
+                if ui.button(t("Learn IC Design…")).clicked() {
+                    q.push(Command::Learn(None));
+                }
                 if ui.button(t("Interactive Tutorial")).clicked() {
                     q.push(Command::Tutorial);
                 }
@@ -4102,7 +4133,7 @@ impl IcStudio {
                     ui.label(RichText::new(&r.cell));
                 }
                 if self.dirty {
-                    ui.label(RichText::new("●").color(pal.warning)).on_hover_text("Unsaved changes");
+                    ui.label(RichText::new("●").color(pal.warning)).on_hover_text(t("Unsaved changes"));
                 }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -4226,7 +4257,7 @@ impl IcStudio {
                 }
             }
             if !any {
-                ui.label(RichText::new("No cell matches").color(pal.text_weak));
+                ui.label(RichText::new(t("No cell matches")).color(pal.text_weak));
             }
             return;
         }
@@ -4254,22 +4285,20 @@ impl IcStudio {
                     }
                     resp.context_menu(|ui| {
                         ui.label(
-                            RichText::new(format!(
+                            RichText::new(tf(
                                 "{} · {} cell(s) · {}",
-                                lib.name,
-                                lib.cells.len(),
-                                if gds { "GDSII file" } else { "JSON" }
+                                &[&lib.name, &lib.cells.len().to_string(), if gds { t("GDSII file") } else { "JSON" }],
                             ))
                             .small()
                             .color(pal.text_weak),
                         );
                         ui.separator();
-                        if ui.button("New cell…").clicked() {
+                        if ui.button(t("New cell…")).clicked() {
                             self.queue.push(Command::NewCellInLibrary(lib.name.clone()));
                         }
                         let tops = p.library_tops(&lib.name);
                         ui.add_enabled_ui(!tops.is_empty(), |ui| {
-                            ui.menu_button("Open top cell layout", |ui| {
+                            ui.menu_button(t("Open top cell layout"), |ui| {
                                 egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
                                     for t in &tops {
                                         if ui.button(&t.cell).clicked() {
@@ -4280,26 +4309,26 @@ impl IcStudio {
                             });
                         });
                         ui.separator();
-                        if ui.add_enabled(!tops.is_empty(), egui::Button::new("Export GDSII…")).clicked() {
+                        if ui.add_enabled(!tops.is_empty(), egui::Button::new(t("Export GDSII…"))).clicked() {
                             self.queue.push(Command::ExportLibraryStream(lib.name.clone(), StreamFormat::Gds));
                         }
-                        if ui.add_enabled(!tops.is_empty(), egui::Button::new("Export OASIS…")).clicked() {
+                        if ui.add_enabled(!tops.is_empty(), egui::Button::new(t("Export OASIS…"))).clicked() {
                             self.queue.push(Command::ExportLibraryStream(lib.name.clone(), StreamFormat::Oasis));
                         }
                         let mut store_gds = gds;
                         if ui
-                            .checkbox(&mut store_gds, "Store as one GDSII file")
-                            .on_hover_text("Save the library's layouts in a single .gds file instead of JSON cell directories")
+                            .checkbox(&mut store_gds, t("Store as one GDSII file"))
+                            .on_hover_text(t("Save the library's layouts in a single .gds file instead of JSON cell directories"))
                             .changed()
                         {
                             let storage = if store_gds { LibStorage::Gds } else { LibStorage::Json };
                             self.queue.push(Command::SetLibraryStorage(lib.name.clone(), storage));
                         }
                         ui.separator();
-                        if ui.button("Rename…").clicked() {
+                        if ui.button(t("Rename…")).clicked() {
                             self.queue.push(Command::RenameLibraryDialog(lib.name.clone()));
                         }
-                        if ui.button("Delete…").clicked() {
+                        if ui.button(t("Delete…")).clicked() {
                             self.queue.push(Command::DeleteLibraryConfirm(lib.name.clone()));
                         }
                     });
@@ -4339,7 +4368,7 @@ impl IcStudio {
                                         icon,
                                         if exists { color } else { pal.text_weak.gamma_multiply(0.5) },
                                     );
-                                    let text = RichText::new(vk.label()).color(if exists { pal.text } else { pal.text_weak });
+                                    let text = RichText::new(t(vk.label())).color(if exists { pal.text } else { pal.text_weak });
                                     let is_open = active && self.workspace == ws;
                                     if ui.selectable_label(is_open, text).clicked() {
                                         self.queue.push(if exists {
@@ -4349,7 +4378,7 @@ impl IcStudio {
                                         });
                                     }
                                     if !exists {
-                                        ui.label(RichText::new("+ create").small().color(pal.text_weak));
+                                        ui.label(RichText::new(t("+ create")).small().color(pal.text_weak));
                                     }
                                 });
                             }
@@ -4384,7 +4413,8 @@ impl IcStudio {
                             if resp.middle_clicked() {
                                 self.queue.push(Command::CloseTab(t.clone()));
                             }
-                            let resp = resp.on_hover_text(format!("{t}\nMiddle-click to close, right-click for more"));
+                            let resp = resp
+                                .on_hover_text(format!("{t}\n{}", crate::i18n::t("Middle-click to close, right-click for more")));
                             Self::cell_menu(self.project.as_ref(), &mut self.queue, &resp, &t, Some(self.tabs.len()));
                             if ui.add(egui::Button::new(RichText::new("×").color(pal.text_weak)).frame(false).small()).clicked()
                             {
@@ -4469,9 +4499,9 @@ impl IcStudio {
         ui.centered_and_justified(|ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(ui.available_height() / 3.0);
-                ui.label(RichText::new(format!("{} has no {} view", r.cell, vk.label())).size(16.0).color(pal.text_weak));
+                ui.label(RichText::new(tf("{} has no {} view", &[&r.cell, t(vk.label())])).size(16.0).color(pal.text_weak));
                 ui.add_space(8.0);
-                if ui.button(format!("Create {} view", vk.label())).clicked() {
+                if ui.button(tf("Create {} view", &[t(vk.label())])).clicked() {
                     self.queue.push(Command::CreateView(r.clone(), vk));
                 }
             });
@@ -4482,7 +4512,9 @@ impl IcStudio {
         let pal = theme::palette(ui.ctx());
         ui.centered_and_justified(|ui| {
             ui.label(
-                RichText::new(theme::kbd("Open a cell from the Explorer, or create one with ⌘N")).size(15.0).color(pal.text_weak),
+                RichText::new(theme::kbd(t("Open a cell from the Explorer, or create one with ⌘N")))
+                    .size(15.0)
+                    .color(pal.text_weak),
             );
         });
     }
@@ -4594,7 +4626,8 @@ impl IcStudio {
                             icons::divider(ui);
                             ui.label(RichText::new(ed.tool.name()).color(pal.schematic));
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.button(RichText::new("▶ Simulate").color(pal.simulation)).on_hover_text("F5").clicked() {
+                                if ui.button(RichText::new(t("▶ Simulate")).color(pal.simulation)).on_hover_text("F5").clicked()
+                                {
                                     self.queue.push(Command::RunSimulation);
                                 }
                             });
@@ -4739,10 +4772,10 @@ impl IcStudio {
                             }
                             icons::divider(ui);
                             ui.label(RichText::new(ed.tool.name()).color(pal.layout));
-                            ui.label(RichText::new(format!("on {}", tech.layers[ed.active_layer].name)).color(pal.text_weak));
+                            ui.label(RichText::new(tf("on {}", &[&tech.layers[ed.active_layer].name])).color(pal.text_weak));
                             if let Some(c) = cx.context {
                                 icons::divider(ui);
-                                ui.label(RichText::new(format!("Editing in place in {}", c.root.cell)).color(pal.accent));
+                                ui.label(RichText::new(tf("Editing in place in {}", &[&c.root.cell])).color(pal.accent));
                                 if icons::button(ui, Icon::Return, false, true, "Return: leave edit-in-place (Shift+B)").clicked()
                                 {
                                     ed.requests.push(LayRequest::Return);
@@ -4919,7 +4952,7 @@ impl IcStudio {
                 });
                 if let Some(deck) = deck {
                     theme::aside(egui::Panel::right("sim_netlist").resizable(true).default_size(340.0), ui, |ui| {
-                        theme::section(ui, "Netlist");
+                        theme::section(ui, t("Netlist"));
                         egui::ScrollArea::both().show(ui, |ui| {
                             ui.add(egui::Label::new(RichText::new(deck).monospace().size(11.5)).selectable(true));
                         });
@@ -4956,12 +4989,16 @@ impl IcStudio {
                                 ui.label(RichText::new(format!("x {}  y {}", c.x, c.y)).small().monospace());
                             }
                             ui.label(
-                                RichText::new(format!("zoom {:.0}%", ed.view.scale / 22.0 * 100.0)).small().color(pal.text_weak),
+                                RichText::new(tf("zoom {}%", &[&format!("{:.0}", ed.view.scale / 22.0 * 100.0)]))
+                                    .small()
+                                    .color(pal.text_weak),
                             );
-                            ui.label(RichText::new(format!("{} selected", ed.selection.len())).small().color(pal.text_weak));
+                            ui.label(
+                                RichText::new(tf("{} selected", &[&ed.selection.len().to_string()])).small().color(pal.text_weak),
+                            );
                             if matches!(ed.tool, SchTool::Wire) {
                                 ui.label(
-                                    RichText::new("click to route · / flips corner · Esc ends").small().color(pal.text_weak),
+                                    RichText::new(t("click to route · / flips corner · Esc ends")).small().color(pal.text_weak),
                                 );
                             }
                         }
@@ -4999,19 +5036,29 @@ impl IcStudio {
                             ui.label(RichText::new(format!("Cmd: {}", ed.tool.name())).small().monospace().color(pal.layout));
                             ui.separator();
                             let [ml, mm, mr] = ed.mouse_hints();
-                            ui.label(RichText::new(format!("mouse L: {ml}   M: {mm}   R: {mr}")).small().color(pal.text_weak))
-                                .on_hover_text("What each mouse button does now");
+                            ui.label(
+                                RichText::new(tf("mouse L: {}   M: {}   R: {}", &[t(ml), t(mm), t(mr)]))
+                                    .small()
+                                    .color(pal.text_weak),
+                            )
+                            .on_hover_text(t("What each mouse button does now"));
                             let s = ed.stats;
                             let txt = format!(
-                                "{} shapes drawn{}",
-                                fmt_count(s.drawn as u64),
-                                if s.truncated { " (limit)" } else { "" }
+                                "{}{}",
+                                tf("{} shapes drawn", &[&fmt_count(s.drawn as u64)]),
+                                if s.truncated { format!(" {}", t("(limit)")) } else { String::new() }
                             );
                             ui.label(RichText::new(txt).small().color(if s.truncated { pal.warning } else { pal.text_weak }));
                             if let Some((what, t)) = ed.verify.running() {
                                 ui.separator();
                                 ui.add(egui::Spinner::new().size(12.0));
-                                ui.label(RichText::new(format!("Running {}… {:.1} s", what.name(), t.as_secs_f64())).small());
+                                ui.label(
+                                    RichText::new(tf(
+                                        "Running {}… {} s",
+                                        &[crate::i18n::t(what.name()), &format!("{:.1}", t.as_secs_f64())],
+                                    ))
+                                    .small(),
+                                );
                             }
                         }
                     }
@@ -5022,8 +5069,8 @@ impl IcStudio {
                 ui.label(RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).small().color(pal.text_weak));
                 if let Some(r) = self.updater.available() {
                     let txt = match self.updater.state {
-                        update::State::Installed { .. } => "Restart to update".to_string(),
-                        _ => format!("Update {} available", r.version),
+                        update::State::Installed { .. } => t("Restart to update").to_string(),
+                        _ => tf("Update {} available", &[&r.version]),
                     };
                     if ui.link(RichText::new(txt).small().color(pal.accent)).clicked() {
                         self.queue.push(Command::CheckForUpdates);
@@ -5032,16 +5079,24 @@ impl IcStudio {
                 ui.separator();
                 if let Some(b) = &self.bridge {
                     let hover = match &b.last {
-                        Some((t, tool)) => {
-                            format!("{} tool call(s) from ics mcp; last: {tool}, {:.0} s ago", b.calls, t.elapsed().as_secs_f64())
-                        }
-                        None => "Waiting for tool calls from ics mcp (Claude Code)".to_string(),
+                        Some((t, tool)) => tf(
+                            "{} tool call(s) from ics mcp; last: {}, {} s ago",
+                            &[&b.calls.to_string(), tool, &format!("{:.0}", t.elapsed().as_secs_f64())],
+                        ),
+                        None => t("Waiting for tool calls from ics mcp (Claude Code)").to_string(),
                     };
-                    ui.label(RichText::new("● MCP live").small().color(pal.ok)).on_hover_text(hover);
+                    ui.label(RichText::new(t("● MCP live")).small().color(pal.ok)).on_hover_text(hover);
                     ui.separator();
                     if let Some(j) = &b.job {
-                        let queued = if b.waiting.is_empty() { String::new() } else { format!(" ({} queued)", b.waiting.len()) };
-                        let txt = format!("MCP: {} running… {:.1} s{queued}", j.tool, j.started.elapsed().as_secs_f64());
+                        let queued = if b.waiting.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" {}", tf("({} queued)", &[&b.waiting.len().to_string()]))
+                        };
+                        let txt = tf(
+                            "MCP: {} running… {} s{}",
+                            &[&j.tool, &format!("{:.1}", j.started.elapsed().as_secs_f64()), &queued],
+                        );
                         ui.label(RichText::new(txt).small());
                         ui.add(egui::Spinner::new().size(12.0));
                         ui.separator();
@@ -5049,7 +5104,7 @@ impl IcStudio {
                 }
                 let (txt, col) = match &self.ngspice {
                     Some(v) => (format!("● {v}"), pal.ok),
-                    None => ("○ ngspice not found".to_string(), pal.text_weak),
+                    None => (t("○ ngspice not found").to_string(), pal.text_weak),
                 };
                 ui.label(RichText::new(txt).small().color(col));
                 ui.separator();
@@ -5059,7 +5114,7 @@ impl IcStudio {
                 }
                 if ui
                     .add(
-                        egui::Label::new(RichText::new(if self.show_console { "▾ Console" } else { "▸ Console" }).small())
+                        egui::Label::new(RichText::new(if self.show_console { t("▾ Console") } else { t("▸ Console") }).small())
                             .sense(Sense::click()),
                     )
                     .clicked()
@@ -5079,7 +5134,7 @@ impl IcStudio {
                                     .truncate()
                                     .sense(Sense::click()),
                             )
-                            .on_hover_text("Click to show the console");
+                            .on_hover_text(t("Click to show the console"));
                         if l.clicked() {
                             self.show_console = true;
                             self.bottom_tab = BottomTab::Console;
@@ -5103,25 +5158,25 @@ impl IcStudio {
             .collect();
         let count = problems.len() + findings.iter().filter(|f| f.severity != ics_core::sch_check::Severity::Info).count();
         ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.bottom_tab, BottomTab::Console, "Console");
+            ui.selectable_value(&mut self.bottom_tab, BottomTab::Console, t("Console"));
             if ui
                 .selectable_value(&mut self.bottom_tab, BottomTab::Ciw, "CIW")
-                .on_hover_text("SKILL command interpreter")
+                .on_hover_text(t("SKILL command interpreter"))
                 .clicked()
             {
                 self.ciw.request_focus();
             }
-            let ptxt = if count == 0 { "Problems".to_string() } else { format!("Problems ({count})") };
+            let ptxt = if count == 0 { t("Problems").to_string() } else { tf("Problems ({})", &[&count.to_string()]) };
             ui.selectable_value(&mut self.bottom_tab, BottomTab::Problems, ptxt);
-            ui.selectable_value(&mut self.bottom_tab, BottomTab::Netlist, "Netlist");
+            ui.selectable_value(&mut self.bottom_tab, BottomTab::Netlist, t("Netlist"));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button("×").clicked() {
                     self.show_console = false;
                 }
-                if self.bottom_tab == BottomTab::Console && ui.small_button("Clear").clicked() {
+                if self.bottom_tab == BottomTab::Console && ui.small_button(t("Clear")).clicked() {
                     self.log.clear();
                 }
-                if self.bottom_tab == BottomTab::Ciw && ui.small_button("Clear").clicked() {
+                if self.bottom_tab == BottomTab::Ciw && ui.small_button(t("Clear")).clicked() {
                     self.ciw.clear();
                 }
             });
@@ -5159,7 +5214,7 @@ impl IcStudio {
                 let mut pick = None;
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     if problems.is_empty() && findings.is_empty() {
-                        ui.label(RichText::new("No problems detected in the active schematic.").color(pal.text_weak));
+                        ui.label(RichText::new(t("No problems detected in the active schematic.")).color(pal.text_weak));
                     }
                     for f in &findings {
                         use ics_core::sch_check::Severity;
@@ -5171,8 +5226,11 @@ impl IcStudio {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(tag).monospace().small().color(c));
                             ui.label(RichText::new(f.code).monospace().small().color(pal.text_weak));
-                            let r = ui.add(egui::Label::new(RichText::new(&f.message).color(c)).sense(egui::Sense::click()));
-                            if r.on_hover_text("Select in the schematic").clicked() {
+                            let r = ui.add(
+                                egui::Label::new(RichText::new(crate::i18n::t_text(&f.message)).color(c))
+                                    .sense(egui::Sense::click()),
+                            );
+                            if r.on_hover_text(t("Select in the schematic")).clicked() {
                                 pick = Some(f.instances.clone());
                             }
                         });
@@ -5199,158 +5257,163 @@ impl IcStudio {
 
     fn palette_commands(&self) -> Vec<(String, &'static str, Command)> {
         let examples =
-            examples::TOPICS.iter().map(|t| (format!("Open example: {}", t.title), "", Command::OpenExample(t.name.into())));
+            examples::TOPICS.iter().map(|t| (tf("Open example: {}", &[t.title]), "", Command::OpenExample(t.name.into())));
         let mut v: Vec<(String, &'static str, Command)> = vec![
-            ("Run simulation".into(), "F5", Command::RunSimulation),
-            ("Save project".into(), "⌘S", Command::Save),
-            ("Save project as…".into(), "⇧⌘S", Command::SaveAs),
-            ("Open project…".into(), "⌘O", Command::OpenProjectDialog),
-            ("New project…".into(), "", Command::NewProjectDialog),
-            ("New demo project".into(), "", Command::NewDemoProject),
-            ("Save example projects to a folder…".into(), "", Command::SaveExamples),
-            ("New cell…".into(), "⌘N", Command::NewCellDialog),
-            ("Run DRC".into(), "", Command::RunDrc),
-            ("Extract nets".into(), "", Command::ExtractNets),
-            ("Schematic from layout (pixels: PD / TG / RST / SF / SEL)".into(), "", Command::SchematicFromLayout),
-            ("Pixel circuit: conversion gain, full well, lag, noise, dark current".into(), "", Command::PixelCircuit),
-            ("Run LVS".into(), "", Command::RunLvs),
-            ("IR drop / EM analysis".into(), "", Command::IrDrop(None)),
-            ("DRC rule designer".into(), "", Command::RuleDesigner),
-            ("PCell designer".into(), "", Command::PCellDesigner),
-            ("PCell designer: make a PCell from the active layout".into(), "", Command::PCellFromActive),
-            ("MOS symbol: body pin (4-terminal)".into(), "", Command::MosSymbol(true)),
-            ("MOS symbol: arrow on source, body hidden (3-terminal)".into(), "", Command::MosSymbol(false)),
-            ("DRC deck: import from a file".into(), "", Command::ImportDrcDeck(None)),
-            ("DRC deck: export to a file".into(), "", Command::ExportDrcDeck(None)),
-            ("DRC deck: link a shared deck file (common to several projects)".into(), "", Command::LinkDrcDeck(None)),
-            ("DRC deck: reload the shared deck".into(), "", Command::ReloadDrcDeck),
-            ("DRC deck: unlink the shared deck".into(), "", Command::UnlinkDrcDeck),
-            ("Stream layer map (GDSII / OASIS layer numbers)".into(), "", Command::StreamMap),
-            ("Layer display (fill, stipple, outline, line style)".into(), "", Command::LayerDisplay(None)),
-            ("Dummy fill (metal density)".into(), "", Command::DummyFill),
-            ("OPC (optical proximity correction)".into(), "", Command::Opc),
-            ("Waveform calculator".into(), "", Command::Calculator),
-            ("Pixel optics (QE, crosstalk, photocurrent)".into(), "", Command::PixelOptics),
-            ("Run pixel optics model".into(), "", Command::RunPixelOptics),
-            ("Pixel device model into the technology's photodiode".into(), "", Command::ApplyPixelDevice),
-            ("Load measured QE…".into(), "", Command::LoadMeasuredQe(None)),
-            ("Fit pixel stack to measured QE".into(), "", Command::FitPixelStack),
-            ("Pixel stack of the open cell from the PDK cross section".into(), "", Command::PixelStackFromPdk),
-            ("Corner / sweep manager".into(), "", Command::SweepManager),
-            ("Verification (all tests)".into(), "", Command::Verification),
-            ("Run verification".into(), "", Command::RunVerification),
-            ("Monte Carlo (process and mismatch of device models)".into(), "", Command::MonteCarlo),
-            ("Run Monte Carlo".into(), "", Command::RunMonteCarlo),
-            ("Silicon correlation (measured curves, model fitting)".into(), "", Command::SiliconCorrelation),
-            ("Process emulation (cross-section of the layout)".into(), "", Command::ProcessEmulation),
-            ("Process data (WAT / PCM, SPC, corners)".into(), "", Command::ProcessData),
-            ("Fit the correlation parameters to the measurements".into(), "", Command::FitSilicon),
-            ("Stop Monte Carlo".into(), "", Command::StopMonteCarlo),
-            ("Optimizer (size devices to meet specs)".into(), "", Command::Optimizer),
-            ("Results browser (compare runs)".into(), "", Command::ResultsBrowser),
-            ("Check schematic".into(), "", Command::CheckSchematic(false)),
-            ("Place cell instance (hierarchical schematic)".into(), "Shift+I", Command::PlaceCellDialog),
-            ("Return to the parent schematic".into(), "Shift+B", Command::ReturnSchematic),
-            ("Update cell instance pins".into(), "", Command::UpdateCellInstances),
-            ("Edit symbol pins (side and order)".into(), "", Command::EditSymbolDialog),
-            ("Check and save".into(), "", Command::CheckSchematic(true)),
-            ("Net browser".into(), "", Command::NetBrowser),
-            ("Hierarchy browser".into(), "", Command::HierarchyBrowser),
-            ("Create guard ring".into(), "", Command::GuardRing),
-            ("Create via array".into(), "", Command::ViaArray),
-            ("Matched placement (common centroid / interdigitated)".into(), "", Command::MatchedPlacement),
-            ("Run corner / parametric sweep".into(), "", Command::RunSweep),
-            ("Run sign-off runset (KLayout / Calibre / netgen)".into(), "", Command::RunSignoff(None)),
-            ("Import sign-off results (Calibre / KLayout / netgen)".into(), "", Command::ImportSignoffResults(None)),
-            ("Generate layout from schematic".into(), "", Command::GenerateLayout),
-            ("Route flylines".into(), "", Command::RouteFlylines),
-            ("Check layout against source (schematic)".into(), "", Command::CheckAgainstSource),
-            ("Update components and nets from schematic".into(), "", Command::UpdateFromSource(false)),
-            ("Update from schematic and delete extra devices".into(), "", Command::UpdateFromSource(true)),
-            ("Export cell GDSII…".into(), "", Command::ExportGds),
-            ("Export library GDSII…".into(), "", Command::ExportLibraryGds),
-            ("Export cell OASIS…".into(), "", Command::ExportOasis),
-            ("Export library OASIS…".into(), "", Command::ExportLibraryOasis),
-            ("Import GDSII / OASIS…".into(), "", Command::ImportGds(None)),
-            ("Import GDSII / OASIS with Virtuoso layer map…".into(), "", Command::ImportGdsWithLayerMap(None, None)),
-            ("Export cell LEF abstract…".into(), "", Command::ExportLefDef(false)),
-            ("Export cell DEF…".into(), "", Command::ExportLefDef(true)),
-            ("Import LEF abstracts…".into(), "", Command::ImportLefDef(false, None)),
-            ("Import DEF placement…".into(), "", Command::ImportLefDef(true, None)),
-            ("Import technology (KLayout .lyp)…".into(), "", Command::ImportTech),
-            ("Load PDK…".into(), "", Command::LoadPdk(None)),
-            ("Load SKILL (.il)…".into(), "", Command::LoadSkill(None)),
-            ("Manage extensions…".into(), "", Command::Extensions),
-            ("Reload extensions".into(), "", Command::ReloadExtensions),
-            ("SKILL command interpreter (CIW)".into(), "", Command::Ciw),
-            ("Design copilot (AI chat)".into(), "", Command::Copilot),
-            ("AI models (provider, model, API key)…".into(), "", Command::AiModels),
-            ("Export SPICE netlist…".into(), "", Command::ExportNetlist),
-            ("Import CDL netlist (Virtuoso)…".into(), "", Command::ImportCdl(None)),
-            ("Import Virtuoso library (dump or cds.lib)…".into(), "", Command::ImportVirtuoso(None)),
-            ("Save Virtuoso dump script (icsDump.il)…".into(), "", Command::SaveDumpSkill(None)),
-            ("Export Virtuoso schematic (SKILL)…".into(), "", Command::ExportSkill),
-            ("Toggle light / dark theme".into(), "", Command::ToggleTheme),
-            ("Toggle console".into(), "⌘J", Command::ToggleConsole),
-            ("Fit view".into(), "F", Command::FitView),
-            ("Settings".into(), "⌘,", Command::Settings),
-            ("Keyboard shortcuts".into(), "F1", Command::Shortcuts),
-            ("Start the interactive tutorial".into(), "", Command::Tutorial),
-            ("Open user guide (web)".into(), "", Command::UserGuide),
-            ("About IC Studio".into(), "", Command::About),
-            ("Check for updates".into(), "", Command::CheckForUpdates),
-            ("Add IC Studio MCP server to Claude Code".into(), "", Command::AddMcpToClaudeCode),
-            ("Copy MCP server config".into(), "", Command::CopyMcpConfig),
+            (t("Run simulation").into(), "F5", Command::RunSimulation),
+            (t("Save project").into(), "⌘S", Command::Save),
+            (t("Save project as…").into(), "⇧⌘S", Command::SaveAs),
+            (t("Open project…").into(), "⌘O", Command::OpenProjectDialog),
+            (t("New project…").into(), "", Command::NewProjectDialog),
+            (t("New demo project").into(), "", Command::NewDemoProject),
+            (t("Save example projects to a folder…").into(), "", Command::SaveExamples),
+            (t("New cell…").into(), "⌘N", Command::NewCellDialog),
+            (t("Run DRC").into(), "", Command::RunDrc),
+            (t("Extract nets").into(), "", Command::ExtractNets),
+            (t("Schematic from layout (pixels: PD / TG / RST / SF / SEL)").into(), "", Command::SchematicFromLayout),
+            (t("Pixel circuit: conversion gain, full well, lag, noise, dark current").into(), "", Command::PixelCircuit),
+            (t("Run LVS").into(), "", Command::RunLvs),
+            (t("IR drop / EM analysis").into(), "", Command::IrDrop(None)),
+            (t("DRC rule designer").into(), "", Command::RuleDesigner),
+            (t("PCell designer").into(), "", Command::PCellDesigner),
+            (t("PCell designer: make a PCell from the active layout").into(), "", Command::PCellFromActive),
+            (t("MOS symbol: body pin (4-terminal)").into(), "", Command::MosSymbol(true)),
+            (t("MOS symbol: arrow on source, body hidden (3-terminal)").into(), "", Command::MosSymbol(false)),
+            (t("DRC deck: import from a file").into(), "", Command::ImportDrcDeck(None)),
+            (t("DRC deck: export to a file").into(), "", Command::ExportDrcDeck(None)),
+            (t("DRC deck: link a shared deck file (common to several projects)").into(), "", Command::LinkDrcDeck(None)),
+            (t("DRC deck: reload the shared deck").into(), "", Command::ReloadDrcDeck),
+            (t("DRC deck: unlink the shared deck").into(), "", Command::UnlinkDrcDeck),
+            (t("Stream layer map (GDSII / OASIS layer numbers)").into(), "", Command::StreamMap),
+            (t("Layer display (fill, stipple, outline, line style)").into(), "", Command::LayerDisplay(None)),
+            (t("Dummy fill (metal density)").into(), "", Command::DummyFill),
+            (t("OPC (optical proximity correction)").into(), "", Command::Opc),
+            (t("Waveform calculator").into(), "", Command::Calculator),
+            (t("Pixel optics (QE, crosstalk, photocurrent)").into(), "", Command::PixelOptics),
+            (t("Run pixel optics model").into(), "", Command::RunPixelOptics),
+            (t("Pixel device model into the technology's photodiode").into(), "", Command::ApplyPixelDevice),
+            (t("Load measured QE…").into(), "", Command::LoadMeasuredQe(None)),
+            (t("Fit pixel stack to measured QE").into(), "", Command::FitPixelStack),
+            (t("Pixel stack of the open cell from the PDK cross section").into(), "", Command::PixelStackFromPdk),
+            (t("Corner / sweep manager").into(), "", Command::SweepManager),
+            (t("Verification (all tests)").into(), "", Command::Verification),
+            (t("Run verification").into(), "", Command::RunVerification),
+            (t("Monte Carlo (process and mismatch of device models)").into(), "", Command::MonteCarlo),
+            (t("Run Monte Carlo").into(), "", Command::RunMonteCarlo),
+            (t("Silicon correlation (measured curves, model fitting)").into(), "", Command::SiliconCorrelation),
+            (t("Process emulation (cross-section of the layout)").into(), "", Command::ProcessEmulation),
+            (t("Process data (WAT / PCM, SPC, corners)").into(), "", Command::ProcessData),
+            (t("Fit the correlation parameters to the measurements").into(), "", Command::FitSilicon),
+            (t("Stop Monte Carlo").into(), "", Command::StopMonteCarlo),
+            (t("Optimizer (size devices to meet specs)").into(), "", Command::Optimizer),
+            (t("Results browser (compare runs)").into(), "", Command::ResultsBrowser),
+            (t("Check schematic").into(), "", Command::CheckSchematic(false)),
+            (t("Place cell instance (hierarchical schematic)").into(), "Shift+I", Command::PlaceCellDialog),
+            (t("Return to the parent schematic").into(), "Shift+B", Command::ReturnSchematic),
+            (t("Update cell instance pins").into(), "", Command::UpdateCellInstances),
+            (t("Edit symbol pins (side and order)").into(), "", Command::EditSymbolDialog),
+            (t("Check and save").into(), "", Command::CheckSchematic(true)),
+            (t("Net browser").into(), "", Command::NetBrowser),
+            (t("Hierarchy browser").into(), "", Command::HierarchyBrowser),
+            (t("Create guard ring").into(), "", Command::GuardRing),
+            (t("Create via array").into(), "", Command::ViaArray),
+            (t("Matched placement (common centroid / interdigitated)").into(), "", Command::MatchedPlacement),
+            (t("Run corner / parametric sweep").into(), "", Command::RunSweep),
+            (t("Run sign-off runset (KLayout / Calibre / netgen)").into(), "", Command::RunSignoff(None)),
+            (t("Import sign-off results (Calibre / KLayout / netgen)").into(), "", Command::ImportSignoffResults(None)),
+            (t("Generate layout from schematic").into(), "", Command::GenerateLayout),
+            (t("Route flylines").into(), "", Command::RouteFlylines),
+            (t("Check layout against source (schematic)").into(), "", Command::CheckAgainstSource),
+            (t("Update components and nets from schematic").into(), "", Command::UpdateFromSource(false)),
+            (t("Update from schematic and delete extra devices").into(), "", Command::UpdateFromSource(true)),
+            (t("Export cell GDSII…").into(), "", Command::ExportGds),
+            (t("Export library GDSII…").into(), "", Command::ExportLibraryGds),
+            (t("Export cell OASIS…").into(), "", Command::ExportOasis),
+            (t("Export library OASIS…").into(), "", Command::ExportLibraryOasis),
+            (t("Import GDSII / OASIS…").into(), "", Command::ImportGds(None)),
+            (t("Import GDSII / OASIS with Virtuoso layer map…").into(), "", Command::ImportGdsWithLayerMap(None, None)),
+            (t("Export cell LEF abstract…").into(), "", Command::ExportLefDef(false)),
+            (t("Export cell DEF…").into(), "", Command::ExportLefDef(true)),
+            (t("Import LEF abstracts…").into(), "", Command::ImportLefDef(false, None)),
+            (t("Import DEF placement…").into(), "", Command::ImportLefDef(true, None)),
+            (t("Import technology (KLayout .lyp)…").into(), "", Command::ImportTech),
+            (t("Load PDK…").into(), "", Command::LoadPdk(None)),
+            (t("Load SKILL (.il)…").into(), "", Command::LoadSkill(None)),
+            (t("Manage extensions…").into(), "", Command::Extensions),
+            (t("Reload extensions").into(), "", Command::ReloadExtensions),
+            (t("SKILL command interpreter (CIW)").into(), "", Command::Ciw),
+            (t("Design copilot (AI chat)").into(), "", Command::Copilot),
+            (t("AI models (provider, model, API key)…").into(), "", Command::AiModels),
+            (t("Export SPICE netlist…").into(), "", Command::ExportNetlist),
+            (t("Import CDL netlist (Virtuoso)…").into(), "", Command::ImportCdl(None)),
+            (t("Import Virtuoso library (dump or cds.lib)…").into(), "", Command::ImportVirtuoso(None)),
+            (t("Save Virtuoso dump script (icsDump.il)…").into(), "", Command::SaveDumpSkill(None)),
+            (t("Export Virtuoso schematic (SKILL)…").into(), "", Command::ExportSkill),
+            (t("Toggle light / dark theme").into(), "", Command::ToggleTheme),
+            (t("Toggle console").into(), "⌘J", Command::ToggleConsole),
+            (t("Fit view").into(), "F", Command::FitView),
+            (t("Settings").into(), "⌘,", Command::Settings),
+            (t("Keyboard shortcuts").into(), "F1", Command::Shortcuts),
+            (t("Start the interactive tutorial").into(), "", Command::Tutorial),
+            (t("Learn IC Design…").into(), "", Command::Learn(None)),
+            (t("Open user guide (web)").into(), "", Command::UserGuide),
+            (t("About IC Studio").into(), "", Command::About),
+            (t("Check for updates").into(), "", Command::CheckForUpdates),
+            (t("Add IC Studio MCP server to Claude Code").into(), "", Command::AddMcpToClaudeCode),
+            (t("Copy MCP server config").into(), "", Command::CopyMcpConfig),
         ];
         v.extend(examples);
         if let Some(r) = &self.active {
-            v.push((format!("Copy {r} as a new cell (start a new design from it)…"), "", Command::CopyCellDialog(r.clone())));
             v.push((
-                format!("Derive a new design from {r} (new targets, sized and laid out)…"),
+                tf("Copy {} as a new cell (start a new design from it)…", &[&r.to_string()]),
+                "",
+                Command::CopyCellDialog(r.clone()),
+            ));
+            v.push((
+                tf("Derive a new design from {} (new targets, sized and laid out)…", &[&r.to_string()]),
                 "",
                 Command::DeriveDialog(r.clone()),
             ));
         }
         if crate::i18n::korean_available() {
-            v.push(("Language: English".into(), "", Command::SetLanguage(crate::i18n::Lang::En)));
+            v.push((t("Language: English").into(), "", Command::SetLanguage(crate::i18n::Lang::En)));
             v.push((
-                format!("Language: Korean ({})", crate::i18n::Lang::Ko.label()),
+                tf("Language: Korean ({})", &[crate::i18n::Lang::Ko.label()]),
                 "",
                 Command::SetLanguage(crate::i18n::Lang::Ko),
             ));
         }
         v.push(if self.settings.beginner {
-            ("Beginner mode: off (show every tool in the menus)".into(), "", Command::BeginnerMode(false))
+            (t("Beginner mode: off (show every tool in the menus)").into(), "", Command::BeginnerMode(false))
         } else {
-            ("Beginner mode: on (menus with the everyday design flow)".into(), "", Command::BeginnerMode(true))
+            (t("Beginner mode: on (menus with the everyday design flow)").into(), "", Command::BeginnerMode(true))
         });
         for (e, c) in self.extensions.commands() {
             v.push((format!("{}: {}", e.manifest.extension.name, c.title), "", Command::RunExtension(e.id().to_string(), c.id)));
         }
         for (label, file) in self.extensions.pdks() {
-            v.push((format!("Load PDK: {label}"), "", Command::LoadPdk(Some(file))));
+            v.push((tf("Load PDK: {}", &[&label]), "", Command::LoadPdk(Some(file))));
         }
         if self.workspace == Workspace::Schematic && self.active.is_some() {
             for a in SchAction::PALETTE {
-                v.push((format!("Schematic: {}", a.name()), "", Command::Sch(*a)));
+                v.push((tf("Schematic: {}", &[t(&a.name())]), "", Command::Sch(*a)));
             }
         }
         if self.workspace == Workspace::Layout && self.active.is_some() {
             for (menu, items) in LayAction::MENUS {
                 for a in items.iter().flatten() {
-                    v.push((format!("Layout {menu}: {}", a.name()), a.key(), Command::Lay(*a)));
+                    v.push((tf("Layout {}: {}", &[t(menu), t(a.name())]), a.key(), Command::Lay(*a)));
                 }
             }
         }
         for (i, w) in Workspace::ALL.iter().enumerate() {
             let sc: &'static str = ["⌘1", "⌘2", "⌘3", "⌘4"][i];
-            v.push((format!("Go to {} workspace", w.name()), sc, Command::SetWorkspace(*w)));
+            v.push((tf("Go to {} workspace", &[t(w.name())]), sc, Command::SetWorkspace(*w)));
         }
         if let Some(p) = &self.project
             && let Some(lib) = self.palette_library()
             && let Some(l) = p.libraries.iter().find(|l| l.name == lib)
         {
-            let name = |what: &str| format!("Library {lib}: {what}");
+            let name = |what: &str| tf("Library {}: {}", &[&lib, t(what)]);
             v.push((name("new cell…"), "", Command::NewCellInLibrary(lib.clone())));
             v.push((name("export GDSII…"), "", Command::ExportLibraryStream(lib.clone(), StreamFormat::Gds)));
             v.push((name("export OASIS…"), "", Command::ExportLibraryStream(lib.clone(), StreamFormat::Oasis)));
@@ -5363,7 +5426,7 @@ impl IcStudio {
             v.push((name("delete…"), "", Command::DeleteLibraryConfirm(lib.clone())));
             for t in p.library_tops(&lib) {
                 v.push((
-                    format!("Library {lib}: open top cell {} · layout", t.cell),
+                    tf("Library {}: open top cell {} · layout", &[&lib, &t.cell]),
                     "",
                     Command::OpenCell(t, Some(Workspace::Layout)),
                 ));
@@ -5372,10 +5435,18 @@ impl IcStudio {
         if let Some(p) = &self.project {
             for (r, c) in p.all_cells() {
                 if c.schematic.is_some() {
-                    v.push((format!("Open {} · schematic", r), "", Command::OpenCell(r.clone(), Some(Workspace::Schematic))));
+                    v.push((
+                        tf("Open {} · schematic", &[&r.to_string()]),
+                        "",
+                        Command::OpenCell(r.clone(), Some(Workspace::Schematic)),
+                    ));
                 }
                 if c.layout.is_some() {
-                    v.push((format!("Open {} · layout", r), "", Command::OpenCell(r.clone(), Some(Workspace::Layout))));
+                    v.push((
+                        tf("Open {} · layout", &[&r.to_string()]),
+                        "",
+                        Command::OpenCell(r.clone(), Some(Workspace::Layout)),
+                    ));
                 }
             }
         }
@@ -5422,7 +5493,7 @@ impl IcStudio {
             ui.set_width(520.0);
             let r = ui.add(
                 egui::TextEdit::singleline(&mut st.query)
-                    .hint_text("Type a command or cell name…")
+                    .hint_text(t("Type a command or cell name…"))
                     .desired_width(f32::INFINITY)
                     .font(FontId::proportional(15.0)),
             );
@@ -5463,7 +5534,7 @@ impl IcStudio {
                     }
                 }
                 if items.is_empty() {
-                    ui.label(RichText::new("No matching commands").color(pal.text_weak));
+                    ui.label(RichText::new(t("No matching commands")).color(pal.text_weak));
                 }
             });
         });
@@ -5729,14 +5800,14 @@ impl IcStudio {
                     });
                 }
                 Dialog::ConfirmDelete(r) => {
-                    ui.heading("Delete cell?");
-                    ui.label(format!("'{r}' and all of its views will be deleted; its files go when the project is saved."));
+                    ui.heading(t("Delete cell?"));
+                    ui.label(tf("'{}' and all of its views will be deleted; its files go when the project is saved.", &[&r.to_string()]));
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if ui.button("Cancel").clicked() {
+                        if ui.button(t("Cancel")).clicked() {
                             close = true;
                         }
-                        if ui.button(RichText::new("Delete").color(pal.danger)).clicked() {
+                        if ui.button(RichText::new(t("Delete")).color(pal.danger)).clicked() {
                             let r = r.clone();
                             if let Some(p) = self.project.as_mut() {
                                 self.hier.clear();
@@ -5752,8 +5823,8 @@ impl IcStudio {
                     });
                 }
                 Dialog::RenameLibrary { lib, name, error } => {
-                    ui.heading("Rename library");
-                    let l = ui.label("New name");
+                    ui.heading(t("Rename library"));
+                    let l = ui.label(t("New name"));
                     let r = ui.text_edit_singleline(name).labelled_by(l.id);
                     if !r.has_focus() && error.is_empty() && name == lib {
                         r.request_focus();
@@ -5763,10 +5834,10 @@ impl IcStudio {
                     }
                     let enter = ui.input(|i| i.key_pressed(Key::Enter));
                     ui.horizontal(|ui| {
-                        if ui.button("Cancel").clicked() {
+                        if ui.button(t("Cancel")).clicked() {
                             close = true;
                         }
-                        if (ui.button("Rename").clicked() || enter)
+                        if (ui.button(t("Rename")).clicked() || enter)
                             && let Some(p) = self.project.as_mut()
                         {
                             let new = name.trim().to_string();
@@ -5784,22 +5855,23 @@ impl IcStudio {
                     });
                 }
                 Dialog::ConfirmDeleteLibrary(lib) => {
-                    ui.heading("Delete library?");
+                    ui.heading(t("Delete library?"));
                     let (cells, users) = self.project.as_ref().map_or((0, 0), |p| {
                         (p.libraries.iter().find(|l| &l.name == lib).map_or(0, |l| l.cells.len()), p.library_users(lib))
                     });
-                    ui.label(format!(
-                        "Library '{lib}' and its {cells} cell(s) will be deleted; the files go when the project is saved."
+                    ui.label(tf(
+                        "Library '{}' and its {} cell(s) will be deleted; the files go when the project is saved.",
+                        &[lib, &cells.to_string()],
                     ));
                     if users > 0 {
-                        ui.colored_label(pal.danger, format!("{users} instance(s) in other libraries place its cells."));
+                        ui.colored_label(pal.danger, tf("{} instance(s) in other libraries place its cells.", &[&users.to_string()]));
                     }
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if ui.button("Cancel").clicked() {
+                        if ui.button(t("Cancel")).clicked() {
                             close = true;
                         }
-                        if ui.button(RichText::new("Delete").color(pal.danger)).clicked() {
+                        if ui.button(RichText::new(t("Delete")).color(pal.danger)).clicked() {
                             let lib = lib.clone();
                             if let Some(p) = self.project.as_mut() {
                                 match p.delete_library(&lib) {
@@ -5816,14 +5888,14 @@ impl IcStudio {
                     });
                 }
                 Dialog::Unsaved { then } => {
-                    ui.heading("Unsaved changes");
-                    ui.label("The current project has unsaved changes.");
+                    ui.heading(t("Unsaved changes"));
+                    ui.label(t("The current project has unsaved changes."));
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if ui.button("Cancel").clicked() {
+                        if ui.button(t("Cancel")).clicked() {
                             close = true;
                         }
-                        if ui.button(RichText::new("Discard").color(pal.danger)).clicked() {
+                        if ui.button(RichText::new(t("Discard")).color(pal.danger)).clicked() {
                             self.dirty = false;
                             if let Some(root) = self.project.as_ref().and_then(|p| p.root.as_deref()) {
                                 crate::recovery::discard(root);
@@ -5831,7 +5903,7 @@ impl IcStudio {
                             self.queue.push((**then).clone());
                             close = true;
                         }
-                        if ui.button(RichText::new("Save").strong()).clicked() {
+                        if ui.button(RichText::new(t("Save")).strong()).clicked() {
                             if self.save(false) {
                                 self.queue.push((**then).clone());
                             } else if let Some(Dialog::SaveConflict { then: after, .. }) = &mut self.dialog {
@@ -5842,8 +5914,8 @@ impl IcStudio {
                     });
                 }
                 Dialog::PlaceCell { filter } => {
-                    ui.heading("Place cell instance");
-                    let l = ui.label("Filter");
+                    ui.heading(t("Place cell instance"));
+                    let l = ui.label(t("Filter"));
                     ui.text_edit_singleline(filter).labelled_by(l.id);
                     let here = self.active.clone();
                     let f = filter.to_ascii_lowercase();
@@ -5866,28 +5938,28 @@ impl IcStudio {
                         })
                         .unwrap_or_default();
                     ui.label(
-                        RichText::new("Cells whose schematic has pins (labels marked as pins)").small().color(pal.text_weak),
+                        RichText::new(t("Cells whose schematic has pins (labels marked as pins)")).small().color(pal.text_weak),
                     );
                     egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
                         if cells.is_empty() {
-                            ui.label(RichText::new("No cell with schematic pins").small());
+                            ui.label(RichText::new(t("No cell with schematic pins")).small());
                         }
                         for (r, n) in cells {
-                            if ui.button(format!("{r}  ({n} pins)")).clicked() {
+                            if ui.button(tf("{}  ({} pins)", &[&r.to_string(), &n.to_string()])).clicked() {
                                 self.queue.push(Command::PlaceCell(r));
                                 close = true;
                             }
                         }
                     });
                     ui.add_space(6.0);
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(t("Cancel")).clicked() {
                         close = true;
                     }
                 }
                 Dialog::EditSymbol { cell, pins } => {
                     use ics_core::schematic::{PinSide, SymbolSpec};
-                    ui.heading(format!("Symbol pins of {cell}"));
-                    ui.label(RichText::new("The side and order of each pin on the box other schematics place").small().color(pal.text_weak));
+                    ui.heading(tf("Symbol pins of {}", &[&cell.to_string()]));
+                    ui.label(RichText::new(t("The side and order of each pin on the box other schematics place")).small().color(pal.text_weak));
                     let mut swap: Option<(usize, usize)> = None;
                     egui::Grid::new("symbol_pins").num_columns(4).spacing([10.0, 6.0]).show(ui, |ui| {
                         let n = pins.len();
@@ -5902,10 +5974,10 @@ impl IcStudio {
                                 })
                                 .response
                                 .labelled_by(l.id);
-                            if ui.add_enabled(k > 0, egui::Button::new("Up")).clicked() {
+                            if ui.add_enabled(k > 0, egui::Button::new(t("Up"))).clicked() {
                                 swap = Some((k, k - 1));
                             }
-                            if ui.add_enabled(k + 1 < n, egui::Button::new("Down")).clicked() {
+                            if ui.add_enabled(k + 1 < n, egui::Button::new(t("Down"))).clicked() {
                                 swap = Some((k, k + 1));
                             }
                             ui.end_row();
@@ -5939,11 +6011,11 @@ impl IcStudio {
                     }
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        if ui.button("Cancel").clicked() {
+                        if ui.button(t("Cancel")).clicked() {
                             close = true;
                         }
-                        let reset = ui.button("Default").clicked();
-                        if (ui.button(RichText::new("Apply").strong()).clicked() || reset)
+                        let reset = ui.button(t("Default")).clicked();
+                        if (ui.button(RichText::new(t("Apply")).strong()).clicked() || reset)
                             && let Some(p) = self.project.as_mut()
                             && let Some(sch) = p.cell_mut(cell).and_then(|c| c.schematic.as_mut())
                         {
@@ -5961,38 +6033,39 @@ impl IcStudio {
                     });
                 }
                 Dialog::Recover { dir, root, saved } => {
-                    ui.heading("Recover unsaved changes?");
+                    ui.heading(t("Recover unsaved changes?"));
                     let ago = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map_or(0, |d| d.as_secs())
                         .saturating_sub(*saved);
                     let when = if ago < 120 {
-                        format!("{ago} s ago")
+                        tf("{} s ago", &[&ago.to_string()])
                     } else if ago < 7200 {
-                        format!("{} min ago", ago / 60)
+                        tf("{} min ago", &[&(ago / 60).to_string()])
                     } else {
-                        format!("{} h ago", ago / 3600)
+                        tf("{} h ago", &[&(ago / 3600).to_string()])
                     };
-                    ui.label(format!(
-                        "IC Studio closed with unsaved changes to this project. An automatic copy from {when} is newer than the saved files."
+                    ui.label(tf(
+                        "IC Studio closed with unsaved changes to this project. An automatic copy from {} is newer than the saved files.",
+                        &[&when],
                     ));
                     ui.label(
-                        RichText::new("Recover opens the copy; Save then writes it to the project. Discard deletes the copy.")
+                        RichText::new(t("Recover opens the copy; Save then writes it to the project. Discard deletes the copy."))
                             .small()
                             .color(pal.text_weak),
                     );
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if ui.button(RichText::new("Discard copy").color(pal.danger)).clicked() {
+                        if ui.button(RichText::new(t("Discard copy")).color(pal.danger)).clicked() {
                             crate::recovery::discard(root);
                             close = true;
                         }
-                        if ui.button(RichText::new("Recover").strong()).clicked() {
+                        if ui.button(RichText::new(t("Recover")).strong()).clicked() {
                             match crate::recovery::restore(dir, root) {
                                 Ok(p) => {
                                     self.set_project(p);
                                     self.dirty = true;
-                                    self.ok("Recovered the unsaved changes: save to keep them".into());
+                                    self.ok(t("Recovered the unsaved changes: save to keep them").into());
                                 }
                                 Err(e) => self.error(format!("Cannot read the recovery copy: {e}")),
                             }
@@ -6001,10 +6074,10 @@ impl IcStudio {
                     });
                 }
                 Dialog::SaveConflict { files, then } => {
-                    ui.heading("Files changed on disk");
+                    ui.heading(t("Files changed on disk"));
                     ui.label(
-                        "Another program (git, the ics command line, an AI agent) changed these files after the \
-                         project was opened, so nothing was saved:",
+                        t("Another program (git, the ics command line, an AI agent) changed these files after the \
+                         project was opened, so nothing was saved:"),
                     );
                     let root = self.project.as_ref().and_then(|p| p.root.clone()).unwrap_or_default();
                     for f in files.iter().take(8) {
@@ -6012,22 +6085,22 @@ impl IcStudio {
                         ui.label(RichText::new(shown.display().to_string()).monospace().small());
                     }
                     if files.len() > 8 {
-                        ui.label(RichText::new(format!("and {} more", files.len() - 8)).small());
+                        ui.label(RichText::new(tf("and {} more", &[&(files.len() - 8).to_string()])).small());
                     }
                     ui.label(
                         RichText::new(
-                            "Overwrite replaces them with the project in this window. To keep their version, \
-                             cancel and reopen the project.",
+                            t("Overwrite replaces them with the project in this window. To keep their version, \
+                             cancel and reopen the project."),
                         )
                         .small()
                         .color(pal.text_weak),
                     );
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if ui.button("Cancel").clicked() {
+                        if ui.button(t("Cancel")).clicked() {
                             close = true;
                         }
-                        if ui.button(RichText::new("Overwrite").color(pal.danger)).clicked() {
+                        if ui.button(RichText::new(t("Overwrite")).color(pal.danger)).clicked() {
                             if self.save_overwriting()
                                 && let Some(t) = then.take()
                             {
@@ -6038,28 +6111,28 @@ impl IcStudio {
                     });
                 }
                 Dialog::Settings => {
-                    ui.heading("Settings");
+                    ui.heading(t("Settings"));
                     ui.add_space(8.0);
                     egui::Grid::new("settings").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
-                        ui.label("Theme");
+                        ui.label(t("Theme"));
                         ui.horizontal(|ui| {
-                            if ui.radio(self.settings.dark, "Dark").clicked() && !self.settings.dark {
+                            if ui.radio(self.settings.dark, t("Dark")).clicked() && !self.settings.dark {
                                 self.queue.push(Command::ToggleTheme);
                             }
-                            if ui.radio(!self.settings.dark, "Light").clicked() && self.settings.dark {
+                            if ui.radio(!self.settings.dark, t("Light")).clicked() && self.settings.dark {
                                 self.queue.push(Command::ToggleTheme);
                             }
                         });
                         ui.end_row();
-                        ui.label("UI scale");
+                        ui.label(t("UI scale"));
                         if ui.add(egui::Slider::new(&mut self.settings.ui_scale, 0.75..=1.75).step_by(0.05)).drag_stopped() {
                             ctx.set_zoom_factor(self.settings.ui_scale);
                         }
                         ui.end_row();
-                        ui.label("ngspice");
+                        ui.label("ngspice"); // i18n: ignore
                         ui.horizontal(|ui| {
                             ui.add(egui::TextEdit::singleline(&mut self.settings.ngspice_path).desired_width(220.0));
-                            if ui.button("Detect").clicked() {
+                            if ui.button(t("Detect")).clicked() {
                                 self.ngspice = ics_sim::ngspice::detect(&self.settings.ngspice_path);
                             }
                         });
@@ -6067,10 +6140,10 @@ impl IcStudio {
                         ui.label("");
                         match &self.ngspice {
                             Some(v) => ui.colored_label(pal.ok, format!("✔ {v}")),
-                            None => ui.colored_label(pal.text_weak, "not found — built-in engine will be used"),
+                            None => ui.colored_label(pal.text_weak, t("not found — built-in engine will be used")),
                         };
                         ui.end_row();
-                        let il = ui.label("Interaction");
+                        let il = ui.label(t("Interaction"));
                         egui::ComboBox::from_id_salt("interaction")
                             .selected_text(self.settings.interaction.name())
                             .show_ui(ui, |ui| {
@@ -6082,42 +6155,42 @@ impl IcStudio {
                             .labelled_by(il.id)
                             .on_hover_text(self.settings.interaction.describe());
                         ui.end_row();
-                        let ml = ui.label("MOS symbol");
+                        let ml = ui.label(t("MOS symbol"));
                         ui.horizontal(|ui| {
-                            ui.radio_value(&mut self.settings.mos_body_pin, true, "Body pin (4-terminal)")
+                            ui.radio_value(&mut self.settings.mos_body_pin, true, t("Body pin (4-terminal)"))
                                 .labelled_by(ml.id)
-                                .on_hover_text("New NMOS / PMOS devices have a body pin to wire");
-                            ui.radio_value(&mut self.settings.mos_body_pin, false, "Arrow on source (3-terminal)")
+                                .on_hover_text(t("New NMOS / PMOS devices have a body pin to wire"));
+                            ui.radio_value(&mut self.settings.mos_body_pin, false, t("Arrow on source (3-terminal)"))
                                 .labelled_by(ml.id)
-                                .on_hover_text("New NMOS / PMOS devices hide the body: it is on ground (NMOS) or vdd (PMOS), set by the bulk parameter");
+                                .on_hover_text(t("New NMOS / PMOS devices hide the body: it is on ground (NMOS) or vdd (PMOS), set by the bulk parameter"));
                         });
                         ui.end_row();
-                        ui.label("Startup");
-                        ui.checkbox(&mut self.settings.reopen_last, "Reopen last project");
+                        ui.label(t("Startup"));
+                        ui.checkbox(&mut self.settings.reopen_last, t("Reopen last project"));
                         ui.end_row();
                         ui.label("");
-                        ui.checkbox(&mut self.settings.check_updates, "Check for updates");
+                        ui.checkbox(&mut self.settings.check_updates, t("Check for updates"));
                         ui.end_row();
                         ui.label("AI");
-                        if ui.button(format!("AI Models… ({})", self.settings.llm.describe())).clicked() {
+                        if ui.button(tf("AI Models… ({})", &[&self.settings.llm.describe()])).clicked() {
                             self.ai_models.open = true;
                         }
                         ui.end_row();
-                        ui.label("AI agents (MCP)").on_hover_text(
+                        ui.label(t("AI agents (MCP)")).on_hover_text(t(
                             "Let AI agents such as Claude Code drive IC Studio. They start the ics command line tool with ics mcp; \
                              while this window is open they work on its project.",
-                        );
+                        ));
                         ui.horizontal(|ui| {
                             if ui
-                                .button("Add to Claude Code")
-                                .on_hover_text("Runs: claude mcp add --scope user ic-studio -- <folder>/ics mcp")
+                                .button(t("Add to Claude Code"))
+                                .on_hover_text(t("Runs: claude mcp add --scope user ic-studio -- <folder>/ics mcp"))
                                 .clicked()
                             {
                                 self.queue.push(Command::AddMcpToClaudeCode);
                             }
                             if ui
-                                .button("Copy MCP config")
-                                .on_hover_text("JSON for other MCP clients (Cursor, Claude Desktop, ...)")
+                                .button(t("Copy MCP config"))
+                                .on_hover_text(t("JSON for other MCP clients (Cursor, Claude Desktop, ...)"))
                                 .clicked()
                             {
                                 self.queue.push(Command::CopyMcpConfig);
@@ -6126,13 +6199,13 @@ impl IcStudio {
                         ui.end_row();
                     });
                     ui.add_space(8.0);
-                    if ui.button("Close").clicked() {
+                    if ui.button(t("Close")).clicked() {
                         ctx.set_zoom_factor(self.settings.ui_scale);
                         close = true;
                     }
                 }
                 Dialog::Shortcuts => {
-                    ui.heading("Keyboard shortcuts");
+                    ui.heading(t("Keyboard shortcuts"));
                     ui.add_space(6.0);
                     egui::ScrollArea::vertical().max_height(ctx.content_rect().height() * 0.75).show(ui, |ui| {
                         ui.horizontal_top(|ui| {
@@ -6141,13 +6214,13 @@ impl IcStudio {
                                     ui.set_width(400.0);
                                     for (title, rows) in half {
                                         ui.add_space(6.0);
-                                        ui.label(RichText::new(*title).strong().color(pal.accent));
+                                        ui.label(RichText::new(t(title)).strong().color(pal.accent));
                                         egui::Grid::new(title).num_columns(2).min_col_width(170.0).spacing([12.0, 4.0]).show(
                                             ui,
                                             |ui| {
                                                 for (keys, what) in *rows {
                                                     ui.label(RichText::new(keys.replace("Mod+", MOD)).monospace());
-                                                    ui.label(*what);
+                                                    ui.label(t(what));
                                                     ui.end_row();
                                                 }
                                             },
@@ -6159,17 +6232,17 @@ impl IcStudio {
                     });
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
-                        if ui.button("Open user guide").clicked() {
+                        if ui.button(t("Open user guide")).clicked() {
                             self.queue.push(Command::UserGuide);
                         }
-                        if ui.button("Close").clicked() {
+                        if ui.button(t("Close")).clicked() {
                             close = true;
                         }
                     });
                 }
                 Dialog::Update => {
-                    ui.heading("Software update");
-                    ui.label(RichText::new(format!("Installed version {}", update::CURRENT)).color(pal.text_weak));
+                    ui.heading(t("Software update"));
+                    ui.label(RichText::new(tf("Installed version {}", &[update::CURRENT])).color(pal.text_weak));
                     ui.add_space(8.0);
                     let release_notes = |ui: &mut egui::Ui, r: &update::Release| {
                         if !r.notes.trim().is_empty() {
@@ -6177,67 +6250,67 @@ impl IcStudio {
                                 ui.label(RichText::new(r.notes.trim()).small());
                             });
                         }
-                        ui.hyperlink_to("Release page", &r.page);
+                        ui.hyperlink_to(t("Release page"), &r.page);
                     };
                     match &self.updater.state {
                         update::State::Idle | update::State::Checking(_) => {
                             ui.horizontal(|ui| {
                                 ui.add(egui::Spinner::new().size(14.0));
-                                ui.label("Checking GitHub for a newer release…");
+                                ui.label(t("Checking GitHub for a newer release…"));
                             });
                         }
                         update::State::UpToDate => {
-                            ui.colored_label(pal.ok, "IC Studio is up to date.");
+                            ui.colored_label(pal.ok, t("IC Studio is up to date."));
                         }
                         update::State::Available(r) => {
-                            ui.label(RichText::new(format!("IC Studio {} is available.", r.version)).strong());
+                            ui.label(RichText::new(tf("IC Studio {} is available.", &[&r.version])).strong());
                             release_notes(ui, r);
                             ui.add_space(6.0);
                             if r.url.is_none() {
-                                ui.colored_label(pal.warning, "No build for this platform; download it from the release page.");
-                            } else if ui.button(RichText::new("Download and install").strong()).clicked() {
+                                ui.colored_label(pal.warning, t("No build for this platform; download it from the release page."));
+                            } else if ui.button(RichText::new(t("Download and install")).strong()).clicked() {
                                 self.queue.push(Command::InstallUpdate);
                             }
                         }
                         update::State::Downloading { release, .. } => {
-                            ui.label(format!("Downloading IC Studio {}…", release.version));
+                            ui.label(tf("Downloading IC Studio {}…", &[&release.version]));
                             match self.updater.progress() {
                                 Some(f) => ui.add(egui::ProgressBar::new(f).show_percentage()),
                                 None => ui.add(egui::Spinner::new()),
                             };
                         }
                         update::State::Installed { release, .. } => {
-                            ui.colored_label(pal.ok, format!("IC Studio {} is installed.", release.version));
-                            ui.label("Restart to start using it.");
+                            ui.colored_label(pal.ok, tf("IC Studio {} is installed.", &[&release.version]));
+                            ui.label(t("Restart to start using it."));
                             ui.add_space(6.0);
-                            if ui.button(RichText::new("Restart now").strong()).clicked() {
+                            if ui.button(RichText::new(t("Restart now")).strong()).clicked() {
                                 self.queue.push(Command::RestartToUpdate);
                                 close = true;
                             }
                         }
                         update::State::Failed(e) => {
-                            ui.colored_label(pal.danger, format!("Update failed: {e}"));
-                            if ui.button("Try again").clicked() {
+                            ui.colored_label(pal.danger, tf("Update failed: {}", &[&e.to_string()]));
+                            if ui.button(t("Try again")).clicked() {
                                 self.queue.push(Command::CheckForUpdates);
                             }
                         }
                     }
                     ui.add_space(10.0);
-                    if ui.button("Close").clicked() {
+                    if ui.button(t("Close")).clicked() {
                         close = true;
                     }
                 }
                 Dialog::About => {
                     ui.vertical_centered(|ui| {
-                        ui.label(RichText::new("IC Studio").size(26.0).strong());
-                        ui.label(format!("version {}", env!("CARGO_PKG_VERSION")));
+                        ui.label(RichText::new(t("IC Studio")).size(26.0).strong());
+                        ui.label(tf("version {}", &[env!("CARGO_PKG_VERSION")]));
                         ui.add_space(6.0);
-                        ui.label("A modern, open full-custom IC design environment.");
-                        ui.label(RichText::new("Rust · egui/wgpu · ics-core · ics-sim · ngspice").small().color(pal.text_weak));
+                        ui.label(t("A modern, open full-custom IC design environment."));
+                        ui.label(RichText::new("Rust · egui/wgpu · ics-core · ics-sim · ngspice").small().color(pal.text_weak)); // i18n: ignore
                         ui.add_space(6.0);
-                        ui.hyperlink_to("User guide", GUIDE_URL);
+                        ui.hyperlink_to(t("User guide"), GUIDE_URL);
                         ui.add_space(10.0);
-                        if ui.button("Close").clicked() {
+                        if ui.button(t("Close")).clicked() {
                             close = true;
                         }
                     });
@@ -6266,28 +6339,28 @@ impl IcStudio {
                 egui::Frame::popup(ui.style()).inner_margin(12).show(ui, |ui| {
                     ui.set_width(280.0);
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("Update available").strong());
+                        ui.label(RichText::new(t("Update available")).strong());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button("×").on_hover_text("Dismiss").clicked() {
+                            if ui.small_button("×").on_hover_text(t("Dismiss")).clicked() {
                                 self.update_toast = None;
                             }
                         });
                     });
                     ui.label(
-                        RichText::new(format!("IC Studio {v} is available (installed {}).", update::CURRENT))
+                        RichText::new(tf("IC Studio {} is available (installed {}).", &[&v, update::CURRENT]))
                             .color(pal.text_weak),
                     );
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        if ui.button("Update now").clicked() {
+                        if ui.button(t("Update now")).clicked() {
                             self.update_toast = None;
                             self.queue.push(Command::InstallUpdate);
                         }
-                        if ui.button("Release notes").clicked() {
+                        if ui.button(t("Release notes")).clicked() {
                             self.update_toast = None;
                             self.dialog = Some(Dialog::Update);
                         }
-                        if ui.button("Later").clicked() {
+                        if ui.button(t("Later")).clicked() {
                             self.update_toast = None;
                         }
                     });
@@ -6366,6 +6439,16 @@ impl IcStudio {
             workspace: Some(self.workspace),
             inverter,
         }
+    }
+
+    #[doc(hidden)]
+    pub fn learn(&self) -> (&crate::learn_view::LearnView, &crate::learn::Progress) {
+        (&self.learn, &self.settings.learn)
+    }
+
+    #[doc(hidden)]
+    pub fn learn_check(&self, c: &crate::learn::Check) -> crate::learn::CheckState {
+        learn_check(self.project.as_ref(), &self.sims, &self.lay_eds, c)
     }
 
     #[doc(hidden)]
@@ -6845,25 +6928,27 @@ impl IcStudio {
         crate::float::tool_window(ctx, "results_browser", "Results Browser", [420.0, 520.0], &mut open, |ui| {
             let pal = theme::palette(ui.ctx());
             egui::CentralPanel::default().frame(egui::Frame::new().fill(pal.bg_panel).inner_margin(12)).show(ui, |ui| {
-                ui.label(RichText::new("Results Browser").strong().color(pal.text_strong));
+                ui.label(RichText::new(t("Results Browser")).strong().color(pal.text_strong));
                 ui.label(
-                    RichText::new("Checked runs are overlaid (dashed) on the Simulation plots and listed in the measurements.")
-                        .small()
-                        .color(pal.text_weak),
+                    RichText::new(t(
+                        "Checked runs are overlaid (dashed) on the Simulation plots and listed in the measurements.",
+                    ))
+                    .small()
+                    .color(pal.text_weak),
                 );
                 ui.separator();
                 match sim {
                     Some(s) if s.results.is_some() => {
                         let res = s.results.as_ref().unwrap();
                         ui.label(
-                            RichText::new(format!("{} · {} analyses", res.backend, res.datasets.len()))
+                            RichText::new(tf("{} · {} analyses", &[&res.backend.to_string(), &res.datasets.len().to_string()]))
                                 .small()
                                 .color(pal.text_weak),
                         );
                         crate::sim_view::runs_ui(ui, &mut s.label, &mut s.history);
                     }
                     _ => {
-                        ui.label(RichText::new("Simulate the active cell first.").color(pal.text_weak));
+                        ui.label(RichText::new(t("Simulate the active cell first.")).color(pal.text_weak));
                     }
                 }
             });
@@ -6956,7 +7041,7 @@ impl IcStudio {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     ok = ui.button("OK").clicked();
-                    cancel = ui.button("Cancel").clicked();
+                    cancel = ui.button(t("Cancel")).clicked();
                 });
             });
         if !(ok || cancel || !open) {
@@ -7009,18 +7094,19 @@ impl IcStudio {
         let Some((path, libs, found)) = &self.virtuoso_pick else { return };
         let mut pick = None;
         let mut open = true;
-        egui::Window::new("Import Virtuoso Library")
+        egui::Window::new(t("Import Virtuoso Library"))
+            .id(egui::Id::unique("virtuoso_pick"))
             .collapsible(false)
             .pivot(egui::Align2::CENTER_CENTER)
             .default_pos(ctx.content_rect().center())
             .open(&mut open)
             .show(ctx, |ui| {
-                ui.label(format!("Libraries in {}:", path.display()));
+                ui.label(tf("Libraries in {}:", &[&path.display().to_string()]));
                 ui.label(
                     egui::RichText::new(if *found {
-                        "Virtuoso runs in batch mode to dump the library you pick."
+                        t("Virtuoso runs in batch mode to dump the library you pick.")
                     } else {
-                        "Virtuoso was not found (set ICS_VIRTUOSO or add it to the PATH)."
+                        t("Virtuoso was not found (set ICS_VIRTUOSO or add it to the PATH).")
                     })
                     .small()
                     .weak(),
@@ -7298,8 +7384,8 @@ impl IcStudio {
     }
 
     fn extensions_menu(extensions: &ics_mcp::ext::Registry, ui: &mut egui::Ui, has_project: bool, q: &mut Vec<Command>) {
-        ui.menu_button("Extensions", |ui| {
-            if ui.button("Manage Extensions…").clicked() {
+        ui.menu_button(t("Extensions"), |ui| {
+            if ui.button(t("Manage Extensions…")).clicked() {
                 q.push(Command::Extensions);
             }
             let pdks = extensions.pdks();
@@ -7318,7 +7404,7 @@ impl IcStudio {
                 });
             }
             if !pdks.is_empty() {
-                ui.menu_button("Load PDK", |ui| {
+                ui.menu_button(t("Load PDK"), |ui| {
                     for (label, file) in pdks {
                         if menu_item(ui, has_project, &label, NEED_PROJECT) {
                             q.push(Command::LoadPdk(Some(file)));
@@ -7732,6 +7818,14 @@ impl eframe::App for IcStudio {
         self.tutorial.track(&progress);
         let cmds = self.tutorial.window(&ctx, &progress);
         self.queue.extend(cmds);
+        if self.learn.open {
+            let project = self.project.as_ref();
+            let find = |name: &str| -> Option<CellRef> { project?.all_cells().find(|(_, c)| c.name == name).map(|(r, _)| r) };
+            let check = |c: &crate::learn::Check| learn_check(project, &self.sims, &self.lay_eds, c);
+            let env = crate::learn_view::Env { find_cell: &find, check: &check, project_open: project.is_some() };
+            let cmds = self.learn.window(&ctx, &mut self.settings.learn, &env);
+            self.queue.extend(cmds);
+        }
 
         // While a SKILL script runs on a copy of the project, commands wait: its result replaces
         // the project when it ends.

@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver};
 
+use crate::i18n::{t, tf};
 use eframe::egui::{self, Color32, RichText};
 use egui_plot::{Legend, Line, LineStyle, Plot, PlotPoints, Points};
 use ics_core::silicon::{FitParam, Measured, SiliconSetup, Trace};
@@ -160,13 +161,11 @@ impl SiliconView {
             Ok(o) => {
                 let pct = |v: f64| format!("{:.2}%", v * 100.0);
                 let msg = match &o.best {
-                    Some(b) => format!(
-                        "Silicon correlation {cell}: RMS error {} -> {} in {} iteration(s)",
-                        pct(o.start.error()),
-                        pct(b.error()),
-                        o.iterations
+                    Some(b) => tf(
+                        "Silicon correlation {}: RMS error {} -> {} in {} iteration(s)",
+                        &[&cell.to_string(), &pct(o.start.error()), &pct(b.error()), &o.iterations.to_string()],
                     ),
-                    None => format!("Silicon correlation {cell}: RMS error {}", pct(o.start.error())),
+                    None => tf("Silicon correlation {}: RMS error {}", &[&cell.to_string(), &pct(o.start.error())]),
                 };
                 let ok = o.start.traces.iter().all(|t| t.is_ok());
                 self.outcome = Some(o);
@@ -174,7 +173,7 @@ impl SiliconView {
             }
             Err(e) => {
                 self.error = Some(e.clone());
-                (false, format!("Silicon correlation {cell}: {e}"))
+                (false, tf("Silicon correlation {}: {}", &[&cell.to_string(), &e]))
             }
         })
     }
@@ -187,8 +186,8 @@ impl SiliconView {
         let mut changed = false;
         let mut open = self.open;
         let title = match &self.cell {
-            Some(c) => format!("Silicon Correlation: {c}"),
-            None => "Silicon Correlation".into(),
+            Some(c) => format!("{}: {c}", t("Silicon Correlation")),
+            None => t("Silicon Correlation").into(),
         };
         if self.is_running() {
             ctx.request_repaint_after(std::time::Duration::from_millis(200));
@@ -199,20 +198,21 @@ impl SiliconView {
             let columns: Vec<String> = self.data.as_ref().map(|d| d.columns.clone()).unwrap_or_default();
             ui.add_enabled_ui(!running, |ui| {
                 ui.horizontal(|ui| {
-                    let l = ui.label("Measured data");
+                    let l = ui.label(t("Measured data"));
                     let shown = if self.setup.data.is_empty() { "none".to_string() } else { self.setup.data.clone() };
                     ui.label(RichText::new(shown).monospace()).labelled_by(l.id);
-                    if ui.button("Load CSV…").clicked() {
+                    if ui.button(t("Load CSV…")).clicked() {
                         action = Some(SiliconAction::LoadData);
                     }
                     if let Some(d) = &self.data {
                         ui.label(
-                            RichText::new(format!("{} rows, {} columns", d.rows.len(), d.columns.len())).color(pal.text_weak),
+                            RichText::new(tf("{} rows, {} columns", &[&d.rows.len().to_string(), &d.columns.len().to_string()]))
+                                .color(pal.text_weak),
                         );
                     }
                 });
                 ui.horizontal(|ui| {
-                    let l = ui.label("X column");
+                    let l = ui.label(t("X column"));
                     egui::ComboBox::from_id_salt("si_x")
                         .selected_text(self.setup.x.as_str())
                         .show_ui(ui, |ui| {
@@ -222,7 +222,7 @@ impl SiliconView {
                         })
                         .response
                         .labelled_by(l.id);
-                    let l = ui.label("Analysis");
+                    let l = ui.label(t("Analysis"));
                     egui::ComboBox::from_id_salt("si_an")
                         .selected_text(self.setup.analysis.as_str())
                         .width(60.0)
@@ -233,36 +233,37 @@ impl SiliconView {
                         })
                         .response
                         .labelled_by(l.id);
-                    ui.label(RichText::new("its sweep is the x axis").small().color(pal.text_weak));
+                    ui.label(RichText::new(t("its sweep is the x axis")).small().color(pal.text_weak));
                 });
                 ui.add_space(4.0);
-                crate::theme::section(ui, "Traces");
+                crate::theme::section(ui, t("Traces"));
                 let mut remove = None;
                 egui::Grid::new("si_traces").num_columns(6).spacing([6.0, 4.0]).show(ui, |ui| {
                     for h in ["#", "COLUMN", "SIMULATED EXPRESSION", "BIAS", "LOG", ""] {
                         ui.label(RichText::new(h).small().strong().color(pal.text_weak));
                     }
                     ui.end_row();
-                    for (k, t) in self.setup.traces.iter_mut().enumerate() {
+                    for (k, tr) in self.setup.traces.iter_mut().enumerate() {
                         let l = ui.label((k + 1).to_string());
                         egui::ComboBox::from_id_salt(("si_col", k))
-                            .selected_text(t.column.as_str())
+                            .selected_text(tr.column.as_str())
                             .width(110.0)
                             .show_ui(ui, |ui| {
                                 for c in &columns {
-                                    changed |= ui.selectable_value(&mut t.column, c.clone(), c).changed();
+                                    changed |= ui.selectable_value(&mut tr.column, c.clone(), c).changed();
                                 }
                             })
                             .response
                             .labelled_by(l.id)
-                            .on_hover_text("Measured column");
-                        let r = ui.add_sized([150.0, 20.0], egui::TextEdit::singleline(&mut t.expr)).labelled_by(l.id);
-                        changed |= r.on_hover_text("Waveform calculator expression, e.g. -i(vd)").changed();
-                        let r = ui.add_sized([170.0, 20.0], egui::TextEdit::singleline(&mut t.bias)).labelled_by(l.id);
-                        changed |=
-                            r.on_hover_text("Bias of this curve: VG.dc=0.9 (instance parameters or design variables)").changed();
-                        changed |= ui.checkbox(&mut t.log, "").on_hover_text("Compare on a log scale").changed();
-                        if ui.small_button("Remove").clicked() {
+                            .on_hover_text(t("Measured column"));
+                        let r = ui.add_sized([150.0, 20.0], egui::TextEdit::singleline(&mut tr.expr)).labelled_by(l.id);
+                        changed |= r.on_hover_text(t("Waveform calculator expression, e.g. -i(vd)")).changed();
+                        let r = ui.add_sized([170.0, 20.0], egui::TextEdit::singleline(&mut tr.bias)).labelled_by(l.id);
+                        changed |= r
+                            .on_hover_text(t("Bias of this curve: VG.dc=0.9 (instance parameters or design variables)"))
+                            .changed();
+                        changed |= ui.checkbox(&mut tr.log, "").on_hover_text(t("Compare on a log scale")).changed();
+                        if ui.small_button(t("Remove")).clicked() {
                             remove = Some(k);
                         }
                         ui.end_row();
@@ -272,7 +273,7 @@ impl SiliconView {
                     self.setup.traces.remove(k);
                     changed = true;
                 }
-                if ui.button("+ Trace").clicked() {
+                if ui.button(t("+ Trace")).clicked() {
                     let used: Vec<&String> = self.setup.traces.iter().map(|t| &t.column).collect();
                     let next = columns.iter().find(|c| **c != self.setup.x && !used.contains(c)).cloned().unwrap_or_default();
                     let like = self.setup.traces.last().cloned().unwrap_or_default();
@@ -280,7 +281,7 @@ impl SiliconView {
                     changed = true;
                 }
                 ui.add_space(4.0);
-                crate::theme::section(ui, "Parameters");
+                crate::theme::section(ui, t("Parameters"));
                 let mut remove = None;
                 let fitted = self
                     .outcome
@@ -294,10 +295,10 @@ impl SiliconView {
                     for (k, p) in self.setup.params.iter_mut().enumerate() {
                         let l = ui.label((k + 1).to_string());
                         let r = ui.add_sized([170.0, 20.0], egui::TextEdit::singleline(&mut p.target)).labelled_by(l.id);
-                        changed |= r.on_hover_text("model:nmos.vto, M1.w or a design variable").changed();
+                        changed |= r.on_hover_text(t("model:nmos.vto, M1.w or a design variable")).changed();
                         changed |= ui.add_sized([64.0, 20.0], egui::TextEdit::singleline(&mut p.min)).labelled_by(l.id).changed();
                         changed |= ui.add_sized([64.0, 20.0], egui::TextEdit::singleline(&mut p.max)).labelled_by(l.id).changed();
-                        changed |= ui.checkbox(&mut p.log, "").on_hover_text("Search on a log scale").changed();
+                        changed |= ui.checkbox(&mut p.log, "").on_hover_text(t("Search on a log scale")).changed();
                         match &fitted {
                             Some((s, f, se)) if k < s.len() => {
                                 let err = se
@@ -314,7 +315,7 @@ impl SiliconView {
                                 ui.label("");
                             }
                         }
-                        if ui.small_button("Remove").clicked() {
+                        if ui.small_button(t("Remove")).clicked() {
                             remove = Some(k);
                         }
                         ui.end_row();
@@ -324,7 +325,7 @@ impl SiliconView {
                     self.setup.params.remove(k);
                     changed = true;
                 }
-                if ui.button("+ Parameter").clicked() {
+                if ui.button(t("+ Parameter")).clicked() {
                     self.setup.params.push(FitParam {
                         target: "model:nmos.vto".into(),
                         min: "0.2".into(),
@@ -337,20 +338,27 @@ impl SiliconView {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 let ready = self.data.is_some() && !self.setup.traces.is_empty();
-                if ui.add_enabled(!running && ready, egui::Button::new("Compare")).on_hover_text("Simulate and compare").clicked()
+                if ui
+                    .add_enabled(!running && ready, egui::Button::new(t("Compare")))
+                    .on_hover_text(t("Simulate and compare"))
+                    .clicked()
                 {
                     action = Some(SiliconAction::Compare);
                 }
                 let can_fit = ready && !self.setup.params.is_empty();
-                if ui.add_enabled(!running && can_fit, egui::Button::new("Fit")).on_hover_text("Fit the parameters").clicked() {
+                if ui
+                    .add_enabled(!running && can_fit, egui::Button::new(t("Fit")))
+                    .on_hover_text(t("Fit the parameters"))
+                    .clicked()
+                {
                     action = Some(SiliconAction::Fit);
                 }
                 if running {
-                    if ui.button("Stop").clicked() {
+                    if ui.button(t("Stop")).clicked() {
                         self.cancel.store(true, Ordering::Relaxed);
                     }
                     ui.spinner();
-                    ui.label(format!("iteration {}", self.iteration.load(Ordering::Relaxed)));
+                    ui.label(tf("iteration {}", &[&self.iteration.load(Ordering::Relaxed).to_string()]));
                 }
                 if let Some(o) = &self.outcome
                     && let Some(b) = &o.best
@@ -364,11 +372,11 @@ impl SiliconView {
                         .collect();
                     if !inst.is_empty()
                         && let Some(c) = &self.cell
-                        && ui.button("Apply to schematic").on_hover_text("Write the fitted instance parameters").clicked()
+                        && ui.button(t("Apply to schematic")).on_hover_text(t("Write the fitted instance parameters")).clicked()
                     {
                         action = Some(SiliconAction::Apply(c.clone(), inst));
                     }
-                    if !o.cards.is_empty() && ui.button("Copy model cards").clicked() {
+                    if !o.cards.is_empty() && ui.button(t("Copy model cards")).clicked() {
                         ui.ctx().copy_text(o.cards.clone());
                     }
                 }

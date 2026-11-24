@@ -1,6 +1,7 @@
 //! Search and replace (Virtuoso Edit > Search): find the cell's objects by kind, layer, name
 //! and size, select or zoom to them, and change the layer of the shapes found or delete them.
 
+use crate::i18n::{t, tf};
 use eframe::egui;
 use ics_core::geom::IRect;
 use ics_core::layout::{Geometry, Layout};
@@ -116,7 +117,7 @@ fn layer_combo(ui: &mut egui::Ui, id: &str, label: egui::Id, tech: &Tech, v: &mu
         .height(320.0)
         .show_ui(ui, |ui| {
             if any {
-                ui.selectable_value(v, None, "Any layer");
+                ui.selectable_value(v, None, t("Any layer"));
             }
             for (k, d) in tech.layers.iter().enumerate() {
                 ui.selectable_value(v, Some(k), &d.name);
@@ -136,25 +137,25 @@ impl LayoutEditor {
         let mut changed = false;
         let q = &mut self.search.query;
         egui::Grid::new("search_q").num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| {
-            let lb = ui.label("Object");
+            let lb = ui.label(t("Object"));
             egui::ComboBox::from_id_salt("search_kind")
-                .selected_text(q.kind.name())
+                .selected_text(t(q.kind.name()))
                 .show_ui(ui, |ui| {
                     for kd in Kind::ALL {
-                        ui.selectable_value(&mut q.kind, kd, kd.name());
+                        ui.selectable_value(&mut q.kind, kd, t(kd.name()));
                     }
                 })
                 .response
                 .labelled_by(lb.id);
             ui.end_row();
-            let lb = ui.label("Layer");
+            let lb = ui.label(t("Layer"));
             layer_combo(ui, "search_layer", lb.id, tech, &mut q.layer, true);
             ui.end_row();
-            let lb = ui.label("Name contains");
+            let lb = ui.label(t("Name contains"));
             ui.text_edit_singleline(&mut q.text).labelled_by(lb.id);
             ui.end_row();
             let um = |ui: &mut egui::Ui, label: &str, v: &mut i64| {
-                let lb = ui.label(label);
+                let lb = ui.label(t(label));
                 let mut f = *v as f64 / k;
                 ui.add(egui::DragValue::new(&mut f).speed(0.01).range(0.0..=1e6).max_decimals(4).suffix(" µm"))
                     .labelled_by(lb.id);
@@ -166,10 +167,10 @@ impl LayoutEditor {
             um(ui, "Height at least", &mut q.min_h);
             um(ui, "Height at most", &mut q.max_h);
         });
-        ui.checkbox(&mut q.in_view, "Only in the current view");
-        ui.label(egui::RichText::new("Sizes of 0 are not checked; layers match shapes only").small().color(pal.text_weak));
+        ui.checkbox(&mut q.in_view, t("Only in the current view"));
+        ui.label(egui::RichText::new(t("Sizes of 0 are not checked; layers match shapes only")).small().color(pal.text_weak));
         ui.horizontal(|ui| {
-            if ui.button("Search").clicked() {
+            if ui.button(t("Search")).clicked() {
                 let idx = cx.index(l);
                 let q = self.search.query.clone();
                 let v = q.in_view.then_some(view);
@@ -177,10 +178,10 @@ impl LayoutEditor {
                 self.search.next = 0;
                 self.search.searched = true;
             }
-            if ui.add_enabled(!self.search.found.is_empty(), egui::Button::new("Select all")).clicked() {
+            if ui.add_enabled(!self.search.found.is_empty(), egui::Button::new(t("Select all"))).clicked() {
                 self.selection = self.search.found.iter().copied().collect();
             }
-            if ui.add_enabled(!self.search.found.is_empty(), egui::Button::new("Zoom to next")).clicked() {
+            if ui.add_enabled(!self.search.found.is_empty(), egui::Button::new(t("Zoom to next"))).clicked() {
                 let n = self.search.found.len();
                 let id = self.search.found[self.search.next % n];
                 self.search.next = (self.search.next + 1) % n;
@@ -196,19 +197,19 @@ impl LayoutEditor {
             }
         });
         if self.search.searched {
-            ui.label(format!("{} object(s) found", self.search.found.len()));
+            ui.label(tf("{} object(s) found", &[&self.search.found.len().to_string()]));
         }
         let shapes: Vec<u64> = self.search.found.iter().copied().filter(|id| l.shape(*id).is_some()).collect();
         if !shapes.is_empty() {
-            theme::section(ui, "Replace");
+            theme::section(ui, t("Replace"));
             ui.horizontal(|ui| {
-                let lb = ui.label("Layer of found shapes to");
+                let lb = ui.label(t("Layer of found shapes to"));
                 let mut to = Some(self.search.to_layer.min(tech.layers.len().saturating_sub(1)));
                 layer_combo(ui, "search_to_layer", lb.id, tech, &mut to, false);
                 self.search.to_layer = to.unwrap_or(0);
             });
             ui.horizontal(|ui| {
-                if ui.button(format!("Replace in {} shape(s)", shapes.len())).clicked() {
+                if ui.button(tf("Replace in {} shape(s)", &[&shapes.len().to_string()])).clicked() {
                     self.history.push(l);
                     for id in &shapes {
                         if let Some(s) = l.shape_mut(*id) {
@@ -217,14 +218,14 @@ impl LayoutEditor {
                     }
                     changed = true;
                     let name = tech.layers.get(self.search.to_layer).map_or("?", |d| d.name.as_str());
-                    self.note(true, format!("Moved {} shape(s) to {name}", shapes.len()));
+                    self.note(true, tf("Moved {} shape(s) to {}", &[&shapes.len().to_string(), name]));
                 }
-                if ui.button("Delete found").clicked() {
+                if ui.button(t("Delete found")).clicked() {
                     self.history.push(l);
                     for id in &self.search.found {
                         l.remove(*id);
                     }
-                    self.note(true, format!("Deleted {} object(s)", self.search.found.len()));
+                    self.note(true, tf("Deleted {} object(s)", &[&self.search.found.len().to_string()]));
                     self.selection.retain(|id| !self.search.found.contains(id));
                     self.search.found.clear();
                     changed = true;

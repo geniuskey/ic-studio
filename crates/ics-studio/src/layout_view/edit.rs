@@ -1,6 +1,7 @@
 //! Layout editing operations: vertex / edge handles, polygon tool, selection transforms,
 //! Boolean and sizing operations, flatten / make cell, vias and PCells.
 
+use crate::i18n::{t, tf};
 use std::collections::BTreeSet;
 
 use eframe::egui::{self, Pos2, Rect, Stroke, StrokeKind, Vec2};
@@ -509,7 +510,7 @@ impl LayoutEditor {
             }
         }
         self.selection = sel;
-        self.note(true, format!("{before} shape(s) -> {after}"));
+        self.note(true, tf("{} shape(s) -> {}", &[&before.to_string(), &after.to_string()]));
         true
     }
 
@@ -562,7 +563,7 @@ impl LayoutEditor {
     /// Via at a point (single cut) or filling a dragged area.
     pub(super) fn place_via(&mut self, l: &mut Layout, tech: &Tech, at: (i64, i64), area: Option<IRect>) -> bool {
         let Some(def) = tech.vias.get(self.ed.via) else {
-            self.note(false, "The technology defines no vias");
+            self.note(false, t("The technology defines no vias"));
             return false;
         };
         let res = match area {
@@ -598,23 +599,23 @@ impl LayoutEditor {
         let has_shapes = l.shapes.iter().any(|s| self.selection.contains(&s.id));
         let has_insts = l.instances.iter().any(|i| self.selection.contains(&i.id));
         ui.add_space(8.0);
-        theme::section(ui, "Edit");
+        theme::section(ui, t("Edit"));
         ui.horizontal_wrapped(|ui| {
-            if ui.button("Rotate 90°").on_hover_text("Counter-clockwise about the selection centre (Shift+O)").clicked() {
+            if ui.button(t("Rotate 90°")).on_hover_text(t("Counter-clockwise about the selection centre (Shift+O)")).clicked() {
                 changed |= self.transform_selection(l, cx, 0);
             }
-            if ui.button("Flip X").on_hover_text("Mirror left-right").clicked() {
+            if ui.button(t("Flip X")).on_hover_text(t("Mirror left-right")).clicked() {
                 changed |= self.transform_selection(l, cx, 1);
             }
-            if ui.button("Flip Y").on_hover_text("Mirror top-bottom").clicked() {
+            if ui.button(t("Flip Y")).on_hover_text(t("Mirror top-bottom")).clicked() {
                 changed |= self.transform_selection(l, cx, 2);
             }
         });
         ui.horizontal_wrapped(|ui| {
-            if has_insts && ui.button("Flatten").on_hover_text("Replace instances by their contents, one level").clicked() {
+            if has_insts && ui.button(t("Flatten")).on_hover_text(t("Replace instances by their contents, one level")).clicked() {
                 changed |= self.flatten_selection(l, cx.src);
             }
-            if ui.button("Make cell").on_hover_text("Move the selection into a new cell and place it here").clicked()
+            if ui.button(t("Make cell")).on_hover_text(t("Move the selection into a new cell and place it here")).clicked()
                 && let Some(b) = self.selection_bbox(l, cx)
             {
                 let g = cx.tech.grid.max(1);
@@ -624,26 +625,27 @@ impl LayoutEditor {
         });
         if has_shapes {
             ui.horizontal_wrapped(|ui| {
-                if ui.button("Merge").on_hover_text("Union of the selected shapes, per layer (Shift+M)").clicked() {
+                if ui.button(t("Merge")).on_hover_text(t("Union of the selected shapes, per layer (Shift+M)")).clicked() {
                     changed |= self.merge_selection(l);
                 }
-                let lb = ui.label("Size");
+                let lb = ui.label(t("Size"));
                 ui.add(egui::DragValue::new(&mut self.ed.size_um).speed(0.01).max_decimals(3).suffix(" µm")).labelled_by(lb.id);
-                if ui.button("Apply").on_hover_text("Grow (positive) or shrink (negative) the selected shapes").clicked() {
+                if ui.button(t("Apply")).on_hover_text(t("Grow (positive) or shrink (negative) the selected shapes")).clicked() {
                     let d = (self.ed.size_um * cx.tech.dbu_per_um as f64).round() as i64;
                     changed |= self.rewrite_selection(l, d);
                 }
             });
             ui.horizontal_wrapped(|ui| {
-                let lb = ui.label("Chamfer");
+                let lb = ui.label(t("Chamfer"));
                 ui.add(
                     egui::DragValue::new(&mut self.ed.chamfer_um).speed(0.01).range(0.0..=1000.0).max_decimals(3).suffix(" µm"),
                 )
                 .labelled_by(lb.id);
-                if ui.button("Apply").on_hover_text("Cut the convex corners of the selected shapes at 45°").clicked() {
+                if ui.button(t("Apply")).on_hover_text(t("Cut the convex corners of the selected shapes at 45°")).clicked() {
                     changed |= self.chamfer_selection(l, cx);
                 }
-                if ui.button("To polygon").on_hover_text("Convert the selected paths and rectangles to polygons").clicked() {
+                if ui.button(t("To polygon")).on_hover_text(t("Convert the selected paths and rectangles to polygons")).clicked()
+                {
                     changed |= self.convert_to_polygon(l, cx);
                 }
             });
@@ -656,7 +658,7 @@ impl LayoutEditor {
     fn message(&mut self, ui: &mut egui::Ui) {
         let pal = theme::palette(ui.ctx());
         if let Some((ok, m)) = &self.ed.msg {
-            ui.label(egui::RichText::new(m).small().color(if *ok { pal.text_weak } else { pal.warning }));
+            ui.label(egui::RichText::new(t(m)).small().color(if *ok { pal.text_weak } else { pal.warning }));
         }
     }
 
@@ -665,7 +667,7 @@ impl LayoutEditor {
         let tech = cx.tech;
         let mut changed = false;
         let layer_combo = |ui: &mut egui::Ui, id: &str, label: &str, v: &mut usize| {
-            let lb = ui.label(label);
+            let lb = ui.label(t(label));
             egui::ComboBox::from_id_salt(id)
                 .selected_text(tech.layer(*v).map_or("?", |d| d.name.as_str()))
                 .show_ui(ui, |ui| {
@@ -679,19 +681,19 @@ impl LayoutEditor {
         };
         egui::Grid::new("layer_ops").num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| {
             layer_combo(ui, "op_a", "A", &mut self.ed.op_a);
-            let lb = ui.label("Operation");
+            let lb = ui.label(t("Operation"));
             egui::ComboBox::from_id_salt("op_kind")
-                .selected_text(self.ed.op.name())
+                .selected_text(t(self.ed.op.name()))
                 .show_ui(ui, |ui| {
                     for op in LayerOp::ALL {
-                        ui.selectable_value(&mut self.ed.op, op, op.name());
+                        ui.selectable_value(&mut self.ed.op, op, t(op.name()));
                     }
                 })
                 .response
                 .labelled_by(lb.id);
             ui.end_row();
             if self.ed.op == LayerOp::Size {
-                let lb = ui.label("By");
+                let lb = ui.label(t("By"));
                 ui.add(egui::DragValue::new(&mut self.ed.size_um).speed(0.01).max_decimals(3).suffix(" µm")).labelled_by(lb.id);
                 ui.end_row();
             } else {
@@ -699,8 +701,8 @@ impl LayoutEditor {
             }
             layer_combo(ui, "op_out", "Output", &mut self.ed.op_out);
         });
-        ui.checkbox(&mut self.ed.op_flat, "Include hierarchy (flattened)");
-        if ui.button("Run").clicked() {
+        ui.checkbox(&mut self.ed.op_flat, t("Include hierarchy (flattened)"));
+        if ui.button(t("Run")).clicked() {
             changed |= self.layer_op(l, cx);
         }
         if self.selection.is_empty() {
@@ -712,16 +714,16 @@ impl LayoutEditor {
     /// Via picker for the via tool.
     pub(super) fn via_panel(&mut self, ui: &mut egui::Ui, tech: &Tech) {
         let pal = theme::palette(ui.ctx());
-        theme::section(ui, "Via");
+        theme::section(ui, t("Via"));
         if tech.vias.is_empty() {
-            ui.label(egui::RichText::new("The technology defines no vias").small().color(pal.warning));
+            ui.label(egui::RichText::new(t("The technology defines no vias")).small().color(pal.warning));
             return;
         }
         self.ed.via = self.ed.via.min(tech.vias.len() - 1);
         for (i, v) in tech.vias.iter().enumerate() {
             ui.selectable_value(&mut self.ed.via, i, format!("{}  ({} / {} / {})", v.name, v.bottom, v.cut, v.top));
         }
-        ui.label(egui::RichText::new("Click for a single cut, drag to fill an area").small().color(pal.text_weak));
+        ui.label(egui::RichText::new(t("Click for a single cut, drag to fill an area")).small().color(pal.text_weak));
         self.message(ui);
         ui.add_space(4.0);
     }
@@ -729,7 +731,7 @@ impl LayoutEditor {
     /// PCell picker and parameters for the instance tool.
     pub(super) fn pcell_panel(&mut self, ui: &mut egui::Ui, tech: &Tech, src: &ics_core::Project) {
         let pal = theme::palette(ui.ctx());
-        theme::section(ui, "PCell");
+        theme::section(ui, t("PCell"));
         ui.horizontal_wrapped(|ui| {
             for d in PCell::defaults() {
                 let on = self.ed.pcell.as_ref().map(PCell::kind_name) == Some(d.kind_name());
@@ -741,11 +743,13 @@ impl LayoutEditor {
         });
         let masters = src.template_masters();
         if !masters.is_empty() {
-            ui.label(egui::RichText::new("Designed PCells").small().color(pal.text_weak));
+            ui.label(egui::RichText::new(t("Designed PCells")).small().color(pal.text_weak));
             ui.horizontal_wrapped(|ui| {
                 for (r, def) in masters {
                     let on = matches!(&self.ed.pcell, Some(PCell::Template { def: d, .. }) if d.name == def.name);
-                    let resp = ui.selectable_label(on, def.name.as_str()).on_hover_text(format!("PCell Designer master {r}"));
+                    let resp = ui
+                        .selectable_label(on, def.name.as_str())
+                        .on_hover_text(tf("PCell Designer master {}", &[&r.to_string()]));
                     if resp.clicked() {
                         self.ed.pcell =
                             if on { None } else { Some(PCell::Template { def: Box::new(def.clone()), values: vec![] }) };
@@ -758,7 +762,7 @@ impl LayoutEditor {
             pcell_params(ui, p, tech, "place");
             match p.generate(tech) {
                 Ok(_) => {
-                    ui.label(egui::RichText::new(format!("Click to place {}", p.variant_name())).small().color(pal.text_weak));
+                    ui.label(egui::RichText::new(tf("Click to place {}", &[&p.variant_name()])).small().color(pal.text_weak));
                 }
                 Err(e) => {
                     ui.label(egui::RichText::new(e).small().color(pal.warning));
@@ -775,7 +779,7 @@ pub(super) fn pcell_params(ui: &mut egui::Ui, p: &mut PCell, tech: &Tech, salt: 
     let k = tech.dbu_per_um as f64;
     let before = p.clone();
     let len = |ui: &mut egui::Ui, label: &str, v: &mut i64| {
-        let lb = ui.label(label);
+        let lb = ui.label(t(label));
         let mut f = *v as f64 / k;
         ui.add(egui::DragValue::new(&mut f).speed(0.01).range(0.0..=1000.0).max_decimals(3).suffix(" µm")).labelled_by(lb.id);
         let nv = ((f * k / tech.grid as f64).round() as i64) * tech.grid;
@@ -786,18 +790,18 @@ pub(super) fn pcell_params(ui: &mut egui::Ui, p: &mut PCell, tech: &Tech, salt: 
     };
     egui::Grid::new(("pcell_params", salt)).num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| match p {
         PCell::Mos { pmos, w, l, fingers, device } => {
-            ui.label("Type");
+            ui.label(t("Type"));
             ui.label(if *pmos { "PMOS" } else { "NMOS" });
             ui.end_row();
             let kind = if *pmos { ics_core::tech::MosType::Pmos } else { ics_core::tech::MosType::Nmos };
             let options: Vec<&str> = tech.devices.iter().filter(|d| d.kind == kind).map(|d| d.name.as_str()).collect();
             if !options.is_empty() {
-                let lb = ui.label("Device");
-                let shown = if device.is_empty() { format!("default ({})", options[0]) } else { device.clone() };
+                let lb = ui.label(t("Device"));
+                let shown = if device.is_empty() { tf("default ({})", &[options[0]]) } else { device.clone() };
                 egui::ComboBox::from_id_salt(("pcell_device", salt))
                     .selected_text(shown)
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(device, String::new(), format!("default ({})", options[0]));
+                        ui.selectable_value(device, String::new(), tf("default ({})", &[options[0]]));
                         for o in options.iter().skip(1) {
                             ui.selectable_value(device, o.to_string(), *o);
                         }
@@ -808,7 +812,7 @@ pub(super) fn pcell_params(ui: &mut egui::Ui, p: &mut PCell, tech: &Tech, salt: 
             }
             len(ui, "W", w);
             len(ui, "L", l);
-            let lb = ui.label("Fingers");
+            let lb = ui.label(t("Fingers"));
             ui.add(egui::DragValue::new(fingers).range(1..=64)).labelled_by(lb.id);
             ui.end_row();
         }
@@ -829,11 +833,11 @@ pub(super) fn pcell_params(ui: &mut egui::Ui, p: &mut PCell, tech: &Tech, salt: 
             }
         }
         PCell::RingPath { points, closed, width, .. } => {
-            ui.label("Vertices");
+            ui.label(t("Vertices"));
             ui.label(points.len().to_string());
             ui.end_row();
             ui.label("");
-            ui.checkbox(closed, "Closed");
+            ui.checkbox(closed, t("Closed"));
             ui.end_row();
             len(ui, "Ring width", width);
         }

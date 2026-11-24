@@ -40,6 +40,12 @@ SPICE에서 1단계는 **동작점(operating point)** 해석이고, 2단계는 �
 동작점 시뮬레이션 후 IC Studio는 **Operating Point** 탭에 모든 트랜지스터의 `gm`과 `gds`를
 나열합니다. 이 값을 읽는 것이 아날로그 설계의 절반입니다.
 
+<!-- quiz
+? 포화 영역의 트랜지스터가 V<sub>ov</sub> = 0.2 V에서 I<sub>D</sub> = 20 µA를 흘립니다. g<sub>m</sub>은 몇 µS일까요?
+= 200 ±5 µS
+> g<sub>m</sub> = 2·I<sub>D</sub> / V<sub>ov</sub> = 2 · 20 µA / 0.2 V = 200 µS입니다.
+-->
+
 ## 공통 소스 증폭기
 
 ![공통 소스 증폭기: 게이트의 10 mV 사인파가 드레인에서 반전된 70 mV 사인파가 되는 모습](../../images/learn-cs-amp.svg)
@@ -59,17 +65,32 @@ A_v = v_out / v_in = −g_m · (R_D ∥ r_o)
 ```
 
 마이너스 부호는 출력이 반전된다는 뜻입니다. W/L = 2 µm / 1 µm를 V<sub>GS</sub> = 0.7 V로
-바이어스하고 R<sub>D</sub> = 50 kΩ로 하면, 시뮬레이터는 g<sub>m</sub> = 150 µS, r<sub>o</sub> =
-714 kΩ를 구하므로 A<sub>v</sub> = −150 µS × 46.7 kΩ ≈ **−7.0**(17 dB)입니다. 바로 이 회로를
+바이어스하고 R<sub>D</sub> = 50 kΩ로 하면, 시뮬레이터는 g<sub>m</sub> = 145 µS, r<sub>o</sub> =
+1.43 MΩ를 구하므로 A<sub>v</sub> = −145 µS × 48.3 kΩ ≈ **−7.0**(17 dB)입니다. 바로 이 회로를
 [다음 튜토리얼](tutorial-amplifier.md)에서 만들어 봅니다.
+
+<!-- quiz
+? 같은 증폭기(g<sub>m</sub> = 145 µS, r<sub>o</sub> = 1.43 MΩ)에 R<sub>D</sub> = 30 kΩ을 쓰면 이득의 크기 |A<sub>v</sub>|는 얼마일까요?
+= 4.3 ±0.2
+> R<sub>D</sub> ∥ r<sub>o</sub> = 30 k · 1430 k / 1460 k ≈ 29.4 kΩ이므로 |A<sub>v</sub>| = 145 µS · 29.4 kΩ ≈ 4.3입니다.
+-->
 
 ### 바이어스 고르기
 
 출력은 M1이 포화 영역(V<sub>DS</sub> > V<sub>ov</sub>)에 머무는 동안 위아래로 흔들릴 수 있는 곳에
-있어야 합니다. I<sub>D</sub> = 18.7 µA이면 R<sub>D</sub>에서 0.94 V가 떨어지고 V<sub>out</sub> ≈
-0.86 V가 남습니다. V<sub>ov</sub> = 0.25 V와 1.8 V 사이의 넉넉한 위치입니다. R<sub>D</sub>를 키우면
+있어야 합니다. I<sub>D</sub> = 18.1 µA이면 R<sub>D</sub>에서 0.91 V가 떨어지고 V<sub>out</sub> ≈
+0.89 V가 남습니다. V<sub>ov</sub> = 0.25 V와 1.8 V 사이의 넉넉한 위치입니다. R<sub>D</sub>를 키우면
 이득은 커지지만 V<sub>out</sub>이 내려가다가 결국 M1이 트라이오드 영역으로 떨어지고 이득이
 무너집니다. 이득, 출력 스윙, 전력은 언제나 서로 맞바꾸는 관계입니다.
+
+<!-- quiz
+? R<sub>D</sub>를 훨씬 크게, 예를 들어 100 kΩ으로 하면 어떻게 될까요?
+- 이득이 비례해서 계속 커진다
++ V<sub>out</sub>이 떨어져 M1이 트라이오드에 들어가고 이득이 무너진다
+- M1이 꺼진다
+- 대역폭이 커진다
+> R<sub>D</sub>에는 I<sub>D</sub>·R<sub>D</sub>가 걸립니다. 100 kΩ이면 약 1.8 V, 즉 전원 전압 전체가 걸려 V<sub>DS</sub>가 V<sub>ov</sub> 아래로 떨어집니다. M1은 여전히 전류를 흘리지만 트라이오드에서는 더 이상 전류원으로 동작하지 않습니다.
+-->
 
 ## 대역폭
 
@@ -81,15 +102,21 @@ A_v = v_out / v_in = −g_m · (R_D ∥ r_o)
 f_-3dB = 1 / (2π · (R_D ∥ r_o) · C_L)
 ```
 
-부하가 100 fF이면 f<sub>-3dB</sub> ≈ 34 MHz입니다(시뮬레이션: 35 MHz). 그 위에서는 이득이 디케이드당
+부하가 100 fF이면 f<sub>-3dB</sub> ≈ 33 MHz입니다(시뮬레이션: 33 MHz). 그 위에서는 이득이 디케이드당
 20 dB씩 떨어지다가 <strong>단위 이득 주파수(unity-gain frequency)</strong>에서 1(0 dB)이 됩니다.
 
 ```text
-f_u ≈ |A_v| · f_-3dB ≈ g_m / (2π · C_L)       ≈ 240 MHz
+f_u ≈ |A_v| · f_-3dB ≈ g_m / (2π · C_L)       ≈ 230 MHz
 ```
 
 **이득-대역폭 곱(gain-bandwidth product)** g<sub>m</sub>/C<sub>L</sub>은 쓰는 전류와 구동하는
 커패시턴스로 정해집니다. 이득을 더 얻으면 대역폭이 줄어듭니다.
+
+<!-- quiz
+? g<sub>m</sub> = 145 µS가 C<sub>L</sub> = 200 fF를 구동하면 단위 이득 주파수 f<sub>u</sub>는 몇 MHz일까요?
+= 115 ±5 MHz
+> f<sub>u</sub> ≈ g<sub>m</sub> / (2π · C<sub>L</sub>) = 145 µS / (2π · 200 fF) ≈ 115 MHz입니다. 부하가 두 배면 이득-대역폭은 절반입니다.
+-->
 
 ## 전류 미러
 
@@ -110,9 +137,15 @@ M1은 **다이오드 연결(diode-connected)**(게이트를 드레인에 연결)
 V<sub>GS</sub>를 정합니다. M2는 같은 V<sub>GS</sub>를 가지므로 포화 영역에서 같은 전류, 또는
 (W<sub>2</sub>/L<sub>2</sub>)/(W<sub>1</sub>/L<sub>1</sub>)배의 전류를 흘립니다.
 
-시뮬레이션(둘 다 2 µm / 1 µm, I<sub>ref</sub> = 20 µA)에서 출력 전류는 0.9 V에서 20.3 µA이고,
-출력 전압에 따라 (r<sub>o</sub> 때문에) 천천히 늘어 0.5 V에서 19.7 µA, 1.8 V에서 21.7 µA가 됩니다.
+시뮬레이션(둘 다 2 µm / 1 µm, I<sub>ref</sub> = 20 µA)에서 출력 전류는 0.9 V에서 20.1 µA이고,
+출력 전압에 따라 (r<sub>o</sub> 때문에) 천천히 늘어 0.5 V에서 19.8 µA, 1.8 V에서 20.8 µA가 됩니다.
 약 0.26 V(V<sub>ov</sub>) 아래로 내려가면 M2가 포화 영역을 벗어나 전류가 무너집니다.
+
+<!-- quiz
+? 미러에서 M1은 2 µm / 1 µm 그대로 두고 M2를 4 µm / 1 µm로 만듭니다. I<sub>ref</sub> = 20 µA이면 출력 전류는 몇 µA일까요?
+= 40 ±2 µA
+> I<sub>out</sub> = I<sub>ref</sub> · (W<sub>2</sub>/L<sub>2</sub>) / (W<sub>1</sub>/L<sub>1</sub>) = 20 µA · 2 = 40 µA이고, r<sub>o</sub> 때문에 출력 전압이 높으면 조금 더 큽니다.
+-->
 
 ## 차동 쌍과 OTA
 
@@ -125,9 +158,9 @@ amplifier)가 됩니다.
 A_v = g_m1 · (r_o2 ∥ r_o4)
 ```
 
-데모 `ota5t`(입력 쌍 2 µm / 0.5 µm, 미러 4 µm / 0.5 µm, 꼬리 전류 11.5 µA)의 이득은 약 **121**
-(42 dB)입니다. g<sub>m</sub> = 117 µS, g<sub>ds2</sub> + g<sub>ds4</sub> = 0.97 µS입니다. 두 번째
-이득단을 더하면 약 80 dB의 `ota2s`가 됩니다.
+데모 `ota5t`(입력 쌍 2 µm / 0.5 µm, 미러 4 µm / 0.5 µm, 꼬리 전류 11.3 µA)의 이득은 약 **121**
+(42 dB)입니다. g<sub>m</sub> = 117 µS, g<sub>ds2</sub> + g<sub>ds4</sub> = 0.96 µS입니다. 두 번째
+이득단을 더하면 약 83 dB의 `ota2s`가 됩니다.
 
 ## 매칭과 변동
 
@@ -143,6 +176,12 @@ A_v = g_m1 · (r_o2 ∥ r_o4)
 아날로그 트랜지스터는 디지털보다 크게 만들고, 매칭 기법으로 레이아웃합니다
 ([회로에서 실리콘으로](layout-basics.md#자주-보게-될-레이아웃-기법) 참고). IC Studio의 **Monte
 Carlo**가 이 변동을 시뮬레이션합니다.
+
+<!-- quiz
+? A<sub>Vt</sub> = 5 mV·µm일 때 2 µm × 2 µm 트랜지스터의 σ(V<sub>th</sub>)는 몇 mV일까요?
+= 2.5 ±0.1 mV
+> σ = 5 mV·µm / √(4 µm²) = 2.5 mV입니다. 2 µm × 1 µm 예에서 L을 두 배로 하면 σ는 √2로 나뉩니다.
+-->
 
 ## 한 바퀴로 보는 아날로그 설계
 
@@ -165,5 +204,11 @@ ic-studio --demo --cell current_mirror --workspace simulation
 트랜지스터의 동작점을 볼 수 있습니다.
 
 </div>
+
+<!-- try: current_mirror 시뮬레이션 | simulate current_mirror -->
+
+<!-- try: ota5t 시뮬레이션 | simulate ota5t -->
+
+<!-- try: ota5t 회로도 열기 | open ota5t schematic -->
 
 다음: [실습: 증폭기](tutorial-amplifier.md).

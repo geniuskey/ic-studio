@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Receiver};
 
+use crate::i18n::{t, tf};
 use eframe::egui::{self, RichText};
 use egui_plot::{Bar, BarChart, Plot};
 use ics_core::sim_setup::{McMeasure, McSetup};
@@ -132,7 +133,7 @@ impl MonteCarlo {
             }
             Err(e) => {
                 self.error = Some(e.clone());
-                (false, format!("Monte Carlo: {e}"))
+                (false, crate::i18n::tf("Monte Carlo: {}", &[&crate::i18n::t_text(&e)]))
             }
         })
     }
@@ -149,16 +150,16 @@ impl MonteCarlo {
         }
         let mut open = self.open;
         let title = match &self.cell {
-            Some(c) => format!("Monte Carlo: {c}"),
-            None => "Monte Carlo".into(),
+            Some(c) => tf("Monte Carlo: {}", &[&c.to_string()]),
+            None => t("Monte Carlo").into(),
         };
         crate::float::tool_window(ctx, "monte_carlo", &title, [620.0, 620.0], &mut open, |ui| {
             let running = self.is_running();
             ui.add_enabled_ui(!running, |ui| {
                 egui::Grid::new("mc_spec").num_columns(4).min_col_width(80.0).spacing([8.0, 4.0]).show(ui, |ui| {
-                    let l = ui.label("Runs");
+                    let l = ui.label(t("Runs"));
                     changed |= ui.add(egui::DragValue::new(&mut self.setup.runs).range(1..=100_000)).labelled_by(l.id).changed();
-                    let l = ui.label("Seed");
+                    let l = ui.label(t("Seed"));
                     changed |= ui.add(egui::DragValue::new(&mut self.setup.seed)).labelled_by(l.id).changed();
                     ui.end_row();
                     let measured = self.process.is_some();
@@ -177,9 +178,9 @@ impl MonteCarlo {
                         let replaced = (measured && k < 2) || (measured_mm && k >= 2);
                         let r = ui.add_enabled(!replaced, edit).labelled_by(l.id);
                         let hint = match (replaced, k < 2) {
-                            (true, true) => "Replaced by the technology's measured process variation",
-                            (true, false) => "Replaced by the technology's measured mismatch",
-                            _ => hint,
+                            (true, true) => t("Replaced by the technology's measured process variation"),
+                            (true, false) => t("Replaced by the technology's measured mismatch"),
+                            _ => t(hint),
                         };
                         changed |= r.on_hover_text(hint).changed();
                         if k % 2 == 1 {
@@ -188,26 +189,30 @@ impl MonteCarlo {
                     }
                 });
                 if let Some(m) = &self.mismatch {
-                    let src = if m.source.is_empty() { "matched pairs" } else { m.source.as_str() };
+                    let src = if m.source.is_empty() { t("matched pairs") } else { m.source.as_str() };
                     let txt: Vec<String> =
                         m.devices.iter().map(|d| format!("{} Avt {:.2} mV·µm", d.device, d.avt * 1e9)).collect();
-                    ui.label(RichText::new(format!("Mismatch: measured ({src}): {}", txt.join(", "))).small())
-                        .on_hover_text("Pelgrom pair coefficients; each device is drawn with Avt / √(2 W L) about its nominal");
+                    ui.label(RichText::new(tf("Mismatch: measured ({}): {}", &[src, &txt.join(", ")])).small()).on_hover_text(t(
+                        "Pelgrom pair coefficients; each device is drawn with Avt / √(2 W L) about its nominal",
+                    ));
                 }
                 if let Some(v) = &self.process {
-                    let src = if v.source.is_empty() { "silicon" } else { v.source.as_str() };
-                    ui.label(RichText::new(format!("Global variation: measured ({src}): {}", v.params.join(", "))).small())
+                    let src = if v.source.is_empty() { t("silicon") } else { v.source.as_str() };
+                    ui.label(RichText::new(tf("Global variation: measured ({}): {}", &[src, &v.params.join(", ")])).small())
                         .on_hover_text(
                             (0..v.params.len())
                                 .map(|i| {
-                                    format!("{}: {} sigma {}", v.params[i], format_eng(v.mean[i], ""), format_eng(v.sigma(i), ""))
+                                    tf(
+                                        "{}: {} sigma {}",
+                                        &[&v.params[i], &format_eng(v.mean[i], ""), &format_eng(v.sigma(i), "")],
+                                    )
                                 })
                                 .collect::<Vec<_>>()
                                 .join("\n"),
                         );
                 }
                 ui.add_space(4.0);
-                ui.label(RichText::new("Measurements").strong());
+                ui.label(RichText::new(t("Measurements")).strong());
                 let mut remove = None;
                 egui::Grid::new("mc_measures").num_columns(3).spacing([6.0, 4.0]).show(ui, |ui| {
                     for (k, m) in self.setup.measures.iter_mut().enumerate() {
@@ -223,8 +228,8 @@ impl MonteCarlo {
                             .response
                             .labelled_by(l.id);
                         let r = ui.add(egui::TextEdit::singleline(&mut m.expr).desired_width(300.0)).labelled_by(l.id);
-                        changed |= r.on_hover_text("Waveform calculator expression with a scalar result").changed();
-                        if ui.small_button("x").on_hover_text("Remove").clicked() {
+                        changed |= r.on_hover_text(t("Waveform calculator expression with a scalar result")).changed();
+                        if ui.small_button("x").on_hover_text(t("Remove")).clicked() {
                             remove = Some(k);
                         }
                         ui.end_row();
@@ -234,7 +239,7 @@ impl MonteCarlo {
                     self.setup.measures.remove(k);
                     changed = true;
                 }
-                if ui.button("+ Measurement").on_hover_text("e.g. dc: cross(v(out),0.9) or op: v(out)").clicked() {
+                if ui.button(t("+ Measurement")).on_hover_text(t("e.g. dc: cross(v(out),0.9) or op: v(out)")).clicked() {
                     self.setup.measures.push(McMeasure { analysis: "op".into(), expr: "v(out)".into() });
                     changed = true;
                 }
@@ -242,17 +247,21 @@ impl MonteCarlo {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 let ready = self.setup.measures.iter().any(|m| !m.expr.trim().is_empty());
-                if ui.add_enabled(!running && ready, egui::Button::new("Run")).clicked() {
+                if ui.add_enabled(!running && ready, egui::Button::new(t("Run"))).clicked() {
                     run = true;
                 }
                 if let Some(done) = progress {
-                    if ui.button("Stop").on_hover_text("Stop after the current sample and keep the results so far").clicked() {
+                    if ui
+                        .button(t("Stop"))
+                        .on_hover_text(t("Stop after the current sample and keep the results so far"))
+                        .clicked()
+                    {
                         stop = true;
                     }
                     let total = self.setup.runs.max(1);
                     ui.add(
                         egui::ProgressBar::new(done as f32 / total as f32)
-                            .text(format!("{done} / {total} samples"))
+                            .text(tf("{} / {} samples", &[&done.to_string(), &total.to_string()]))
                             .desired_width(220.0),
                     );
                 }
@@ -265,7 +274,7 @@ impl MonteCarlo {
             ui.separator();
             egui::Grid::new("mc_stats").striped(true).num_columns(7).show(ui, |ui| {
                 for h in ["measure", "n", "mean", "sigma", "min", "max", "failed"] {
-                    ui.label(RichText::new(h).strong());
+                    ui.label(RichText::new(t(h)).strong());
                 }
                 ui.end_row();
                 for (k, (m, s)) in self.measured.iter().zip(&res.stats).enumerate() {
@@ -281,12 +290,12 @@ impl MonteCarlo {
                 }
             });
             if let Some((run, e)) = res.failed.first() {
-                ui.colored_label(pal.danger, format!("run {run}: {e}")).on_hover_text("First failed run");
+                ui.colored_label(pal.danger, tf("run {}: {}", &[&run.to_string(), e])).on_hover_text(t("First failed run"));
             }
             let values: Vec<f64> = res.values.get(self.selected).map(|v| v.iter().map(|p| p.1).collect()).unwrap_or_default();
             let Some(m) = self.measured.get(self.selected) else { return };
             if values.is_empty() {
-                ui.label(RichText::new("No values for this measurement").weak());
+                ui.label(RichText::new(t("No values for this measurement")).weak());
                 return;
             }
             let (bars, width) = histogram(&values, 20);

@@ -11,6 +11,7 @@ use ics_core::pixel_circuit::{INJECT_ELECTRONS, PixelCircuit, Testbench, classif
 use ics_core::{CellRef, Project};
 use ics_sim::pixel::PixelMetrics;
 
+use crate::i18n::{t, tf};
 use crate::theme::{self, Palette};
 
 /// Pixels characterised per run (an array has many identical ones).
@@ -154,42 +155,42 @@ impl PixelCircuitView {
     fn ui(&mut self, ui: &mut egui::Ui, pal: &Palette) -> bool {
         let mut run = false;
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Image sensor pixels").strong().color(pal.text_strong));
+            ui.label(RichText::new(t("Image sensor pixels")).strong().color(pal.text_strong));
             match &self.cell {
                 Some(c) => ui.label(RichText::new(format!("· {c}")).color(pal.text_weak)),
-                None => ui.label(RichText::new("· open a layout cell").color(pal.warning)),
+                None => ui.label(RichText::new(t("· open a layout cell")).color(pal.warning)),
             };
         });
         ui.label(
-            RichText::new(
+            RichText::new(t(
                 "Photodiodes and the transistors around them, found by connectivity; each pixel simulated alone with the \
                  technology's models.",
-            )
+            ))
             .small()
             .color(pal.text_weak),
         );
         ui.separator();
-        theme::section(ui, "Bench");
+        theme::section(ui, t("Bench"));
         egui::Grid::new("pixc_bench").num_columns(8).spacing([10.0, 4.0]).show(ui, |ui| {
-            let l = ui.label("Temperature (C)");
+            let l = ui.label(t("Temperature (C)"));
             ui.add(egui::DragValue::new(&mut self.temp).range(-55.0..=150.0).speed(1.0)).labelled_by(l.id);
-            let l = ui.label("Supply (V)");
+            let l = ui.label(t("Supply (V)"));
             ui.add(egui::DragValue::new(&mut self.vdd).range(0.5..=5.0).speed(0.05)).labelled_by(l.id);
-            let l = ui.label("Column C (pF)");
+            let l = ui.label(t("Column C (pF)"));
             ui.add(egui::DragValue::new(&mut self.ccol_pf).range(0.01..=100.0).speed(0.1)).labelled_by(l.id);
-            let l = ui.label("CDS interval (µs)");
+            let l = ui.label(t("CDS interval (µs)"));
             ui.add(egui::DragValue::new(&mut self.cds_us).range(0.01..=1000.0).speed(0.1)).labelled_by(l.id);
             ui.end_row();
         });
         ui.horizontal(|ui| {
             let busy = self.is_running();
             let has = self.extraction.as_ref().is_some_and(|e| !e.1.pixels.is_empty());
-            if ui.add_enabled(has && !busy, egui::Button::new("Characterize")).clicked() {
+            if ui.add_enabled(has && !busy, egui::Button::new(t("Characterize"))).clicked() {
                 run = true;
             }
             if busy {
                 ui.spinner();
-                ui.label(RichText::new("simulating…").color(pal.text_weak));
+                ui.label(RichText::new(t("simulating…")).color(pal.text_weak));
             }
         });
         if let Some(e) = &self.error {
@@ -200,12 +201,12 @@ impl PixelCircuitView {
             ui.label(RichText::new(w).color(pal.warning));
         }
         if !self.results.is_empty() {
-            theme::section(ui, "Pixels");
+            theme::section(ui, t("Pixels"));
             egui::Grid::new("pixc_pixels").striped(true).num_columns(7).spacing([14.0, 4.0]).show(ui, |ui| {
                 for h in
                     ["Pixel", "FD reset (V)", "C_FD (fF)", "CG FD (µV/e-)", "CG col (µV/e-)", "SF gain", "Read noise CDS (e-)"]
                 {
-                    ui.label(RichText::new(h).strong());
+                    ui.label(RichText::new(t(h)).strong());
                 }
                 ui.end_row();
                 for (k, r) in &self.results {
@@ -226,11 +227,11 @@ impl PixelCircuitView {
                     ui.end_row();
                 }
             });
-            theme::section(ui, "Photodiodes");
+            theme::section(ui, t("Photodiodes"));
             egui::Grid::new("pixc_pds").striped(true).num_columns(8).spacing([14.0, 4.0]).show(ui, |ui| {
-                let lag = format!("Lag of {INJECT_ELECTRONS:.0} (e-)");
+                let lag = tf("Lag of {} (e-)", &[&format!("{INJECT_ELECTRONS:.0}")]);
                 for h in ["Pixel", "Photodiode", "Reset (V)", "C (fF)", lag.as_str(), "Full well (e-)", "Dark (e-/s)", "Pinned"] {
-                    ui.label(RichText::new(h).strong());
+                    ui.label(RichText::new(t(h)).strong());
                 }
                 ui.end_row();
                 for (k, m) in self.results.iter().filter_map(|(k, r)| r.as_ref().ok().map(|m| (k, m))) {
@@ -260,7 +261,10 @@ impl PixelCircuitView {
                 );
             }
         }
-        theme::section(ui, &format!("Recognised ({} photodiodes, {} pixels)", x.photodiodes.len(), pc.pixels.len()));
+        theme::section(
+            ui,
+            &tf("Recognised ({} photodiodes, {} pixels)", &[&x.photodiodes.len().to_string(), &pc.pixels.len().to_string()]),
+        );
         ui.label(RichText::new(report).monospace().small());
         run
     }

@@ -5,6 +5,7 @@ use ics_core::fill::{self, FillParams, FillReport};
 use ics_core::tech::Tech;
 use ics_core::{CellRef, IRect, Project};
 
+use crate::i18n::{t, tf};
 use crate::theme::{self, Palette};
 
 #[derive(Default)]
@@ -67,18 +68,18 @@ impl FillTool {
     fn ui(&mut self, ui: &mut egui::Ui, project: &Project, active: Option<&CellRef>, pal: &Palette) -> bool {
         let tech = &project.tech;
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Dummy Fill").strong().color(pal.text_strong));
+            ui.label(RichText::new(t("Dummy Fill")).strong().color(pal.text_strong));
             match active {
                 Some(c) => ui.label(RichText::new(format!("· {c}")).color(pal.text_weak)),
-                None => ui.label(RichText::new("· open a layout cell").color(pal.warning)),
+                None => ui.label(RichText::new(t("· open a layout cell")).color(pal.warning)),
             };
         });
         ui.separator();
         let Some(p) = self.params.as_mut() else { return false };
         let before = p.clone();
-        theme::section(ui, "Layer");
+        theme::section(ui, t("Layer"));
         ui.horizontal(|ui| {
-            let l = ui.label("Fill layer");
+            let l = ui.label(t("Fill layer"));
             let name = tech.layer(p.layer).map_or("?", |d| d.name.as_str());
             let mut layer = p.layer;
             egui::ComboBox::from_id_salt("fill_layer")
@@ -93,32 +94,33 @@ impl FillTool {
             if layer != p.layer {
                 *p = FillParams::for_layer(tech, layer);
             }
-            if ui.button("Defaults").on_hover_text("Reset to values derived from the layer rules and its density rule").clicked()
+            if ui
+                .button(t("Defaults"))
+                .on_hover_text(t("Reset to values derived from the layer rules and its density rule"))
+                .clicked()
             {
                 *p = FillParams::for_layer(tech, p.layer);
             }
         });
         if let Some(r) = fill::density_rule(tech, p.layer) {
             ui.label(
-                RichText::new(format!(
-                    "Density rule: {:.0}% – {:.0}% in {} µm windows",
-                    r.min * 100.0,
-                    r.max * 100.0,
-                    um(r.window, tech)
+                RichText::new(tf(
+                    "Density rule: {}% – {}% in {} µm windows",
+                    &[&format!("{:.0}", r.min * 100.0), &format!("{:.0}", r.max * 100.0), &um(r.window, tech).to_string()],
                 ))
                 .small()
                 .color(pal.text_weak),
             );
         } else {
-            ui.label(RichText::new("No density rule on this layer in the DRC deck").small().color(pal.text_weak));
+            ui.label(RichText::new(t("No density rule on this layer in the DRC deck")).small().color(pal.text_weak));
         }
-        theme::section(ui, "Shapes");
+        theme::section(ui, t("Shapes"));
         egui::Grid::new("fill_geom").num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| {
             dbu_field(ui, "Square size", &mut p.size, tech);
             dbu_field(ui, "Spacing", &mut p.spacing, tech);
             dbu_field(ui, "Keepout", &mut p.keepout, tech);
         });
-        ui.label(RichText::new("Avoid shapes on").small().color(pal.text_weak));
+        ui.label(RichText::new(t("Avoid shapes on")).small().color(pal.text_weak));
         ui.horizontal_wrapped(|ui| {
             for (k, d) in tech.layers.iter().enumerate() {
                 let mut on = p.avoid.contains(&k);
@@ -131,28 +133,28 @@ impl FillTool {
                 }
             }
         });
-        theme::section(ui, "Density");
+        theme::section(ui, t("Density"));
         let mut targeted = p.target.is_some();
-        ui.checkbox(&mut targeted, "Stop at a target density per window").on_hover_text("Off: fill every free position");
+        ui.checkbox(&mut targeted, t("Stop at a target density per window")).on_hover_text(t("Off: fill every free position"));
         if targeted != p.target.is_some() {
             p.target = targeted.then_some(0.3);
         }
-        if let Some(t) = p.target.as_mut() {
+        if let Some(tgt) = p.target.as_mut() {
             egui::Grid::new("fill_density").num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| {
-                let l = ui.label("Target");
-                let mut pct = *t * 100.0;
+                let l = ui.label(t("Target"));
+                let mut pct = *tgt * 100.0;
                 ui.add(egui::DragValue::new(&mut pct).range(1.0..=95.0).speed(0.5).suffix(" %")).labelled_by(l.id);
-                *t = pct / 100.0;
+                *tgt = pct / 100.0;
                 ui.end_row();
                 dbu_field(ui, "Window", &mut p.window, tech);
                 dbu_field(ui, "Step", &mut p.step, tech);
             });
         }
-        theme::section(ui, "Area");
+        theme::section(ui, t("Area"));
         let mut whole = self.region.is_none();
         ui.horizontal(|ui| {
-            ui.radio_value(&mut whole, true, "Whole cell");
-            ui.radio_value(&mut whole, false, "Region");
+            ui.radio_value(&mut whole, true, t("Whole cell"));
+            ui.radio_value(&mut whole, false, t("Region"));
         });
         if whole {
             self.region = None;
@@ -184,15 +186,15 @@ impl FillTool {
         let mut add = false;
         ui.horizontal(|ui| {
             if ui
-                .add_enabled(active.is_some(), egui::Button::new("Preview"))
-                .on_hover_text("Compute the fill without changing the layout")
+                .add_enabled(active.is_some(), egui::Button::new(t("Preview")))
+                .on_hover_text(t("Compute the fill without changing the layout"))
                 .clicked()
                 && let Some(c) = active
             {
                 self.preview = Some((c.clone(), self.run(project, c)));
             }
-            let b = egui::Button::new(RichText::new("Add Fill").strong().color(theme::on_fill(pal.layout))).fill(pal.layout);
-            add = ui.add_enabled(active.is_some(), b).on_hover_text("Add the fill squares to the cell (undoable)").clicked();
+            let b = egui::Button::new(RichText::new(t("Add Fill")).strong().color(theme::on_fill(pal.layout))).fill(pal.layout);
+            add = ui.add_enabled(active.is_some(), b).on_hover_text(t("Add the fill squares to the cell (undoable)")).clicked();
         });
         if let Some((c, r)) = &self.preview {
             ui.add_space(6.0);
@@ -222,18 +224,20 @@ pub fn summary(rep: &FillReport) -> String {
 fn report(ui: &mut egui::Ui, cell: &CellRef, rep: &FillReport, pal: &Palette) {
     egui::Frame::new().fill(pal.bg_widget).corner_radius(6).inner_margin(8).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.label(RichText::new(format!("Preview · {cell}")).strong());
+        ui.label(RichText::new(tf("Preview · {}", &[&cell.to_string()])).strong());
         ui.label(summary(rep));
-        ui.label(RichText::new(format!("{} free position(s)", rep.candidates)).small().color(pal.text_weak));
+        ui.label(RichText::new(tf("{} free position(s)", &[&rep.candidates.to_string()])).small().color(pal.text_weak));
         if let Some((lo, hi)) = rep.limits {
             let ok = rep.windows_below + rep.windows_above == 0;
-            let t = format!(
-                "Rule {:.0}% – {:.0}%: {}",
-                lo * 100.0,
-                hi * 100.0,
-                if ok { "every window passes" } else { "some windows fail" }
+            let msg = tf(
+                "Rule {}% – {}%: {}",
+                &[
+                    &format!("{:.0}", lo * 100.0),
+                    &format!("{:.0}", hi * 100.0),
+                    t(if ok { "every window passes" } else { "some windows fail" }),
+                ],
             );
-            ui.label(RichText::new(t).color(if ok { pal.ok } else { pal.warning }));
+            ui.label(RichText::new(msg).color(if ok { pal.ok } else { pal.warning }));
         }
     });
 }
@@ -248,7 +252,7 @@ fn snap(v: f64, tech: &Tech) -> i64 {
 }
 
 fn dbu_field(ui: &mut egui::Ui, label: &str, v: &mut i64, tech: &Tech) {
-    let l = ui.label(label);
+    let l = ui.label(t(label));
     let mut x = um(*v, tech);
     let step = um(tech.grid.max(1), tech);
     if ui.add(egui::DragValue::new(&mut x).speed(step).range(0.0..=1e4).suffix(" µm")).labelled_by(l.id).changed() {
