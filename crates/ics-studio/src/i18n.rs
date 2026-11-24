@@ -177,7 +177,8 @@ mod tests {
                     walk(&p, root, out);
                 } else if p.extension().is_some_and(|x| x == "rs") {
                     let rel = p.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
-                    out.push((rel, std::fs::read_to_string(&p).unwrap()));
+                    // Windows checkouts have CRLF line ends; the scanner reads LF.
+                    out.push((rel, std::fs::read_to_string(&p).unwrap().replace("\r\n", "\n")));
                 }
             }
         }
@@ -456,7 +457,8 @@ mod tests {
     fn core_messages() -> Vec<(String, String)> {
         let mut out = vec![];
         for (file, src) in CORE_SOURCES {
-            let src = src.split("#[cfg(test)]").next().unwrap_or(src);
+            let src = src.replace("\r\n", "\n");
+            let src = src.split("#[cfg(test)]").next().unwrap_or(&src);
             // Text between `// i18n: off` and `// i18n: on` (generated decks and netlists) is
             // not shown to the user as a message.
             let mut kept = String::new();
