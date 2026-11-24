@@ -57,7 +57,7 @@ cargo run --release -- --demo
 ### `ota2s` <span class="ics-tag">자동 P&amp;R</span> <span class="ics-tag">아날로그</span>
 
 2단 OTA입니다. 입력 차동쌍과 전류 미러를 인식해 단위 핑거로 나누고, 더미와 함께
-common-centroid 순서로 배치한 뒤 배선합니다. 개루프 이득은 약 80 dB입니다.
+common-centroid 순서로 배치한 뒤 배선합니다. 개루프 이득은 약 83 dB입니다.
 
 </div>
 
@@ -107,7 +107,7 @@ common-centroid 순서로 배치한 뒤 배선합니다. 개루프 이득은 약
 라인은 poly2)로 이루어집니다. 각 셀은 트랜지스터와 층간 커패시터, 즉 플로팅 게이트의 등가 회로로
 추출됩니다. 저장된 전하는 플로팅 게이트의 초기 전압(`.ic`)이며, 스트링은 NAND 읽기를
 시뮬레이션합니다. 다른 워드 라인에 V_read = 4.5 V, 선택한 워드 라인에 0 V를 걸면 프로그램된
-셀은 비트 라인을 1 V로 유지하고 소거된 셀은 약 0.25 V까지 방전합니다. 셀(0.9 × 0.42 µm)은 BSIM4
+셀은 비트 라인을 1 V로 유지하고 소거된 셀은 약 0.23 V까지 방전합니다. 셀(0.9 × 0.42 µm)은 BSIM4
 모델을 쓰며, 전하를 보존하는 커패시턴스 모델이라 읽기를 거쳐도 플로팅 게이트 전하가 유지됩니다.
 
 </div>
@@ -141,7 +141,7 @@ common-centroid 순서로 배치한 뒤 배선합니다. 개루프 이득은 약
 | 셀 | 보여 주는 내용 |
 |---|---|
 | `full_adder` | 자동 배치 배선된 28T 미러 전가산기, 모든 입력 조합에 대한 과도 해석 |
-| `ota2s` | common-centroid 매칭을 적용해 자동 P&R한 2단 OTA, AC 개루프 이득 약 80 dB |
+| `ota2s` | common-centroid 매칭을 적용해 자동 P&R한 2단 OTA, AC 개루프 이득 약 83 dB |
 | `cmos_inverter` | 손으로 그린 레이아웃의 인버터, LVS가 의도적인 차이(PMOS W, 부하 커패시터)를 보고 |
 | `rc_lowpass` | RC 저역 통과 필터(fc 약 159 kHz): OP, AC, 과도 해석 |
 | `diode_clipper` | 저항과 션트 다이오드 클리퍼: 과도 해석과 DC 스윕 |
@@ -150,10 +150,10 @@ common-centroid 순서로 배치한 뒤 배선합니다. 개루프 이득은 약
 | `ring_osc5` | 완전히 배선된 5단 링 발진기, 레이아웃 기생 성분을 넣으면 눈에 띄게 느려짐 |
 | `current_mirror` | 20 µA 기준 전류의 NMOS 전류 미러: 출력의 DC 스윕 |
 | `ota5t` | 5 트랜지스터 OTA: AC 개루프 이득 약 42 dB |
-| `ota_miller` | 밀러 보상 2단 OTA(Cc와 영점 상쇄 저항 Rz, 1 pF 부하): 80 dB, 36 MHz, 위상 여유 84°. 회로도만 |
+| `ota_miller` | 밀러 보상 2단 OTA(Cc와 영점 상쇄 저항 Rz, 1 pF 부하): 82 dB, 36 MHz, 위상 여유 84°. 회로도만 |
 | `ota_cascode` | 텔레스코픽 캐스코드 OTA, 자동 P&R: 한 단으로 87 dB, 모든 소자가 포화 영역 |
-| `comparator` | 개방 루프 비교기(OTA, 이득 단, 인버터), 자동 P&R: 50 mV 오버드라이브에서 지연 4.1 ns / 2.3 ns |
-| `ldo` | LDO 레귤레이터, 1 mA에서 1.8 V → 1.2 V: 오차 증폭기, 400 µm PMOS 패스 소자, R1 / R2 분압기. 1 MHz에서 전원 제거비 45 dB. 회로도만 |
+| `comparator` | 개방 루프 비교기(OTA, 이득 단, 인버터), 자동 P&R: 50 mV 오버드라이브에서 지연 4.1 ns / 2.2 ns |
+| `ldo` | LDO 레귤레이터, 1 mA에서 1.8 V → 1.2 V: 오차 증폭기, 400 µm PMOS 패스 소자, R1 / R2 분압기. 1 MHz에서 전원 제거비 44 dB. 회로도만 |
 | `sram6t` | DRC와 LVS를 통과한 6T SRAM 비트 셀: 과도 해석으로 쓰기와 유지 |
 | `sram_array` | `sram6t`의 8 × 8 어레이 |
 | `dram1t1c` | MOS 저장 커패시터를 쓴 평면 1T1C DRAM 셀, DRC와 LVS 통과: 1과 0의 쓰기, 프리차지, 전하 공유 읽기 |
@@ -246,7 +246,7 @@ common-centroid 순서로 배치한 뒤 배선합니다. 개루프 이득은 약
    미러가 양 끝에 더미 핑거를 두고 `ABBA`로 배치됩니다.
 3. **Verify > Route Flylines** 후 **Run LVS**. LVS는 단위 핑거를 다시 회로도의 일곱 소자로 병합하고
    더미는 무시합니다.
-4. `Ctrl+3`과 `F5`를 누릅니다. AC 플롯에 약 80 dB의 개루프 이득이 표시됩니다.
+4. `Ctrl+3`과 `F5`를 누릅니다. AC 플롯에 약 83 dB의 개루프 이득이 표시됩니다.
 
 <div class="callout say">
 

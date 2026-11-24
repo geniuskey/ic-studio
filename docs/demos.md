@@ -59,7 +59,7 @@ clean.
 ### `ota2s` <span class="ics-tag">auto P&amp;R</span> <span class="ics-tag">analog</span>
 
 A two-stage OTA. The input pair and the current mirror are recognised, split into unit
-fingers, placed in common-centroid order with dummies, then routed. About 80 dB
+fingers, placed in common-centroid order with dummies, then routed. About 83 dB
 open-loop gain.
 
 </div>
@@ -113,7 +113,7 @@ select gates. Each cell extracts as a transistor and its interpoly capacitor, th
 equivalent circuit. The stored charge is the initial floating-gate voltage (`.ic`), and the
 string simulates a NAND read: V_read = 4.5 V on the other word lines, 0 V on the selected one.
 The programmed cell keeps the bit line at 1 V and the erased one discharges it to about
-0.25 V. The cell (0.9 × 0.42 µm) uses a BSIM4 model, whose charge-conserving capacitances
+0.23 V. The cell (0.9 × 0.42 µm) uses a BSIM4 model, whose charge-conserving capacitances
 keep each floating gate's charge through the reads.
 
 </div>
@@ -148,7 +148,7 @@ rendering keeps pan and zoom smooth.
 | Cell | What it shows |
 |---|---|
 | `full_adder` | 28T mirror full adder, placed and routed automatically; transient over all input combinations |
-| `ota2s` | Two-stage OTA, auto P&R with common-centroid matching; about 80 dB open-loop gain in AC |
+| `ota2s` | Two-stage OTA, auto P&R with common-centroid matching; about 83 dB open-loop gain in AC |
 | `cmos_inverter` | Inverter with a hand-drawn layout; LVS reports deliberate findings (PMOS W, load cap) |
 | `rc_lowpass` | RC low-pass filter (fc about 159 kHz): OP, AC and transient |
 | `diode_clipper` | Resistor and shunt diode clipper: transient and DC sweep |
@@ -157,10 +157,10 @@ rendering keeps pan and zoom smooth.
 | `ring_osc5` | 5-stage ring oscillator, fully routed; slows down visibly with layout parasitics |
 | `current_mirror` | NMOS current mirror with a 20 µA reference: DC sweep of the output |
 | `ota5t` | 5-transistor OTA: about 42 dB open-loop gain in AC |
-| `ota_miller` | Two-stage Miller-compensated OTA (Cc with nulling resistor Rz, 1 pF load): 80 dB, 36 MHz, 84° phase margin; schematic only |
+| `ota_miller` | Two-stage Miller-compensated OTA (Cc with nulling resistor Rz, 1 pF load): 82 dB, 36 MHz, 84° phase margin; schematic only |
 | `ota_cascode` | Telescopic cascode OTA, auto P&R: 87 dB in one stage, every device in saturation |
-| `comparator` | Open-loop comparator (OTA, gain stage, inverter), auto P&R: 4.1 ns / 2.3 ns delay at 50 mV overdrive |
-| `ldo` | Low-dropout regulator, 1.8 V to 1.2 V at 1 mA: error amplifier, 400 µm PMOS pass device, R1 / R2 divider; 45 dB supply rejection at 1 MHz; schematic only |
+| `comparator` | Open-loop comparator (OTA, gain stage, inverter), auto P&R: 4.1 ns / 2.2 ns delay at 50 mV overdrive |
+| `ldo` | Low-dropout regulator, 1.8 V to 1.2 V at 1 mA: error amplifier, 400 µm PMOS pass device, R1 / R2 divider; 44 dB supply rejection at 1 MHz; schematic only |
 | `sram6t` | 6T SRAM bit cell, DRC and LVS clean: transient write and hold |
 | `sram_array` | 8 × 8 array of `sram6t` |
 | `dram1t1c` | Planar 1T1C DRAM cell with a MOS storage capacitor, DRC and LVS clean: write, precharge and charge-sharing read of a 1 and a 0 |
@@ -257,7 +257,7 @@ Shows that the generator understands analog structure, not only connectivity.
    at both ends.
 3. **Verify > Route Flylines**, then **Run LVS**. LVS merges the unit fingers back into
    the seven schematic devices and ignores the dummies.
-4. Press `Ctrl+3` and `F5`. The AC plot shows about 80 dB of open-loop gain.
+4. Press `Ctrl+3` and `F5`. The AC plot shows about 83 dB of open-loop gain.
 
 <div class="callout say">
 

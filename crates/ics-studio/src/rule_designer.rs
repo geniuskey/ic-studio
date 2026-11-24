@@ -2127,7 +2127,7 @@ fn finding_row(ui: &mut egui::Ui, f: &Finding, tech: &Tech, names: &[String], pa
     };
     ui.horizontal_wrapped(|ui| {
         ui.label(RichText::new(tag).small().strong().color(c));
-        ui.label(RichText::new(&f.message).small().color(pal.text));
+        ui.label(RichText::new(crate::i18n::t_text(&f.message)).small().color(pal.text));
         f.fix.as_ref().is_some_and(|x| ui.small_button(x.label(tech, names)).clicked())
     })
     .inner

@@ -79,8 +79,8 @@ impl Ciw {
             Ok(r) => self.push(CiwKind::Value, r.value.clone()),
             Err(e) => {
                 let msg = match &e.file {
-                    Some(f) => format!("*Error* {f}:{}: {}", e.line, e.message),
-                    None => format!("*Error* {}", e.message),
+                    Some(f) => format!("*Error* {f}:{}: {}", e.line, crate::i18n::t_text(&e.message)),
+                    None => format!("*Error* {}", crate::i18n::t_text(&e.message)),
                 };
                 self.push(CiwKind::Error, msg);
             }

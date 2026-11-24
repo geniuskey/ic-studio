@@ -502,9 +502,9 @@ impl State {
             Task::FormOk(form, fields) => {
                 let mut src = String::new();
                 for f in fields.iter().filter(|f| f.kind != FieldKind::Label) {
-                    src += &format!("{}->{}->value = {}\n", form.symbol, f.name, f.skill_value());
+                    src += &format!("{}->{}->value = {}\n", form.symbol, f.name, f.skill_value()); // i18n: ignore
                 }
-                src += &format!("hiiFormOk({})\n", form.symbol);
+                src += &format!("hiiFormOk({})\n", form.symbol); // i18n: ignore
                 self.eval_here(project, &src, None, current, stack_budget, cancel)
             }
             Task::Load(path) => {
@@ -2617,7 +2617,7 @@ impl<'p> Interp<'p> {
                         }
                     }
                 }
-                Value::Func(f) => s.push_str(&format!("funobj:{}", f.name)),
+                Value::Func(f) => s.push_str(&format!("funobj:{}", f.name)), // i18n: ignore
                 Value::Obj(o) => {
                     let (cv, id) = match o {
                         Obj::Cv(c) => (*c, 0),
@@ -2625,9 +2625,9 @@ impl<'p> Interp<'p> {
                     };
                     s.push_str(&format!("db:0x{:08x}", ((cv as u64 + 1) << 24) | id));
                 }
-                Value::Table(t) => s.push_str(&format!("table:{}", t.borrow().name)),
+                Value::Table(t) => s.push_str(&format!("table:{}", t.borrow().name)), // i18n: ignore
                 Value::Port(0) => s.push_str("port:\"*stdout*\""),
-                Value::Port(k) => s.push_str(&format!("port:\"file{k}\"")),
+                Value::Port(k) => s.push_str(&format!("port:\"file{k}\"")), // i18n: ignore
             }
         }
     }
@@ -4165,7 +4165,7 @@ impl<'p> Interp<'p> {
         let symbol = match self.get_prop(form, &Name::from("hiFormSym"))? {
             Value::Sym(n) => n.to_string(),
             _ => {
-                let n = format!("icsForm{}", self.globals.len());
+                let n = format!("icsForm{}", self.globals.len()); // i18n: ignore
                 self.globals.insert(n.as_str().into(), form.clone());
                 n
             }

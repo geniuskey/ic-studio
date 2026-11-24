@@ -315,7 +315,7 @@ writes them to `Documents/IC Studio/Examples`.
 | `aps4t` | 5.6 µm 4T image sensor pixel (transfer gate, floating diffusion, reset, source follower, row select) over an n+ / p-sub photodiode with 41 % fill factor, DRC and LVS clean; transient reset, integration and transfer |
 | `pixel_array` | 8 × 8 pixel array (AREF) of `aps4t` with labelled transfer / reset / select rows and column lines |
 | `full_adder` | 28T mirror full adder, placed and routed automatically from its netlist (no hand-drawn layout), DRC and LVS clean; transient over all eight input combinations |
-| `ota2s` | Two-stage OTA, auto P&R: common-centroid input pair and mirror with dummies, every net maze-routed, DRC and LVS clean; about 80 dB open-loop gain in AC |
+| `ota2s` | Two-stage OTA, auto P&R: common-centroid input pair and mirror with dummies, every net maze-routed, DRC and LVS clean; about 83 dB open-loop gain in AC |
 | `inv_chain` | Four placed `cmos_inverter` instances |
 | `inv_array` | 16 × 8 array (AREF) of inverters |
 | `inv_tiles` | 8 × 8 array of `inv_array`: 8192 inverters, two levels of hierarchy |

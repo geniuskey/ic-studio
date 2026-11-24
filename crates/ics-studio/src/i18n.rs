@@ -416,6 +416,9 @@ mod tests {
         ("ics-sim/calc.rs", include_str!("../../ics-sim/src/calc.rs")),
         ("ics-sim/optimize.rs", include_str!("../../ics-sim/src/optimize.rs")),
         ("ics-sim/verify.rs", include_str!("../../ics-sim/src/verify.rs")),
+        ("ics-core/pcell_design.rs", include_str!("../../ics-core/src/pcell_design.rs")),
+        ("ics-core/rule_design.rs", include_str!("../../ics-core/src/rule_design.rs")),
+        ("ics-core/skill.rs", include_str!("../../ics-core/src/skill.rs")),
     ];
 
     /// A Rust format string as `t_text` sees the text it makes: every `{…}` argument as `{}`.

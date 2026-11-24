@@ -1946,6 +1946,7 @@ fn skill_str(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
+// i18n: off
 /// The expression as SKILL computing a float, with the semantics of [`Expr::eval`].
 pub fn skill_expr(e: &Expr) -> String {
     let b = |c: String| format!("if({c} 1.0 0.0)");
@@ -1983,6 +1984,7 @@ pub fn skill_expr(e: &Expr) -> String {
         }
     }
 }
+// i18n: on
 
 fn skill_of(text: &str, what: &str) -> Result<String, String> {
     parse_expr(text).map(|e| skill_expr(&e)).map_err(|e| format!("{what} '{text}': {e}"))
@@ -2173,8 +2175,8 @@ impl Template {
         .to_vec();
         for (k, op) in self.ops.iter().enumerate() {
             match op {
-                Op::Stretch { .. } => locals.push(format!("icsA{k}")),
-                Op::Repeat { .. } => locals.extend([format!("icsR{k}"), format!("icsRa{k}")]),
+                Op::Stretch { .. } => locals.push(format!("icsA{k}")), // i18n: ignore
+                Op::Repeat { .. } => locals.extend([format!("icsR{k}"), format!("icsRa{k}")]), // i18n: ignore
                 _ => {}
             }
         }
@@ -2189,6 +2191,7 @@ impl Template {
         s.push_str(SKILL_ENGINE);
         // The drawing: list(kind layer points extra home).
         s.push_str("    ;; The drawing: list(kind layer points extra)\n    icsItems = list(\n");
+        // i18n: off
         let pts = |p: &[(i64, i64)]| {
             p.iter().map(|(x, y)| format!("list({} {})", skill_int(*x), skill_int(*y))).collect::<Vec<_>>().join(" ")
         };
@@ -2204,6 +2207,7 @@ impl Template {
             };
             let _ = writeln!(s, "      {line}");
         }
+        // i18n: on
         for i in &self.source.instances {
             if i.array.is_some() {
                 warnings.push(format!("instance of {} is an array: exported as its first element", i.cell));
@@ -2246,10 +2250,12 @@ impl Template {
                 return Ok("nil".into());
             }
             let names: Vec<String> = ls.iter().map(|&l| lname(l).map(|n| skill_str(&n))).collect::<Result<_, _>>()?;
+            // i18n: off
             Ok(format!("list({})", names.join(" ")))
         };
         let _ = writeln!(s, "    icsFixed = {}", layers(&self.fixed)?);
         let rect = |r: &IRect| format!("list({} {} {} {})", skill_int(r.x0), skill_int(r.y0), skill_int(r.x1), skill_int(r.y1));
+        // i18n: on
         for (k, op) in self.ops.iter().enumerate() {
             match op {
                 Op::Stretch { at, .. } => {
@@ -2365,11 +2371,13 @@ impl Template {
                         let _ = writeln!(s, "      icsA{j} = funcall(icsSh icsA{j})");
                     }
                     Op::Repeat { axis: a2, at, .. } => {
+                        // i18n: off
                         let r = format!("icsR{j}");
                         let m = match axis {
                             Axis::X => format!("list(funcall(icsSh nth(0 {r})) nth(1 {r}) funcall(icsSh nth(2 {r})) nth(3 {r}))"),
                             Axis::Y => format!("list(nth(0 {r}) funcall(icsSh nth(1 {r})) nth(2 {r}) funcall(icsSh nth(3 {r})))"),
                         };
+                        // i18n: on
                         let _ = writeln!(s, "      {r} = {m}");
                         if a2 == axis && at.is_some() {
                             let _ = writeln!(s, "      icsRa{j} = funcall(icsSh icsRa{j})");
