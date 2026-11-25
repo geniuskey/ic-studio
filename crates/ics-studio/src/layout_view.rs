@@ -3592,7 +3592,8 @@ impl LayoutEditor {
         if self.selection.is_empty() {
             // Nothing selected: verification first; the Boolean layer operations fold below it.
             self.compare_panel(ui, cx);
-            self.verify_panel(ui, l, cx);
+            let v = ui.scope(|ui| self.verify_panel(ui, l, cx));
+            crate::spot::mark(ui.ctx(), "lay.verify", v.response.rect);
             ui.add_space(12.0);
             let ops = egui::CollapsingHeader::new(t("Layer operations"))
                 .id_salt("lay_layer_ops")
@@ -3622,7 +3623,8 @@ impl LayoutEditor {
                 self.layout_changed();
             }
             self.compare_panel(ui, cx);
-            self.verify_panel(ui, l, cx);
+            let v = ui.scope(|ui| self.verify_panel(ui, l, cx));
+            crate::spot::mark(ui.ctx(), "lay.verify", v.response.rect);
         }
         (changed, open)
     }

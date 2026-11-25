@@ -171,6 +171,10 @@ V_M = (V_th,n + r · (V_DD − |V_th,p|)) / (1 + r),   r = √(k'_p·W_p/L_p / (
 
 With W<sub>p</sub> = 4·W<sub>n</sub>, r = 1 and V<sub>M</sub> = V<sub>DD</sub>/2 exactly.
 
+In IC Studio's Learn window, sliders here let you change the two widths and watch V<sub>M</sub> move along the transfer curve.
+
+<!-- explore: inverter -->
+
 <!-- quiz
 ? Which PMOS width puts V<sub>M</sub> at V<sub>DD</sub>/2 with a 1 µm NMOS?
 - 1 µm

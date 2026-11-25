@@ -13,6 +13,7 @@
 - [실습: 인버터 레이아웃](learn/tutorial-layout.md)
 - [아날로그 기본 블록](learn/analog-basics.md)
 - [실습: 증폭기 설계](learn/tutorial-amplifier.md)
+- [실습: 동작하는 설계에서 시작하기](learn/tutorial-derive.md)
 - [용어집](learn/glossary.md)
 
 # 시작하기

@@ -147,6 +147,10 @@ I_D  = ½ · 280µ · (2/1) · 0.25² = 17.5 µA      (simulator: 18.1 µA, with
 
 You will meet this exact transistor again in the [amplifier tutorial](tutorial-amplifier.md).
 
+In IC Studio's Learn window, sliders here let you move W, L and the voltages and watch the current and the region change.
+
+<!-- explore: mosfet -->
+
 <!-- quiz
 ? The worked example's NMOS (k' = 280 µA/V², W/L = 2 µm / 1 µm) gets V<sub>GS</sub> = 0.95 V. What drain current does the square law predict, in µA?
 = 70 ±2 µA

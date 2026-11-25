@@ -13,6 +13,7 @@
 - [Hands-on: lay out the inverter](learn/tutorial-layout.md)
 - [Analog building blocks](learn/analog-basics.md)
 - [Hands-on: an amplifier](learn/tutorial-amplifier.md)
+- [Hands-on: start from a working design](learn/tutorial-derive.md)
 - [Glossary](learn/glossary.md)
 
 # Getting started

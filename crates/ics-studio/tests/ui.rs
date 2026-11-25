@@ -2713,6 +2713,73 @@ fn copilot_plan_mode_agent() {
     assert!(!seen[2]["systemInstruction"].to_string().contains("PLAN MODE is on"));
 }
 
+/// Tutor mode: edits are refused, `ui_state` tells the tutor what the user sees, and a
+/// `guide_step` points at the window and waits until its check passes on the user's own action
+/// (here: the user runs the simulation), or until the user presses I'm stuck.
+#[test]
+fn copilot_tutor_guides_step_by_step() {
+    use ics_studio::copilot::{Entry, GuideAnswer};
+    use serde_json::json;
+    let calls = |c: serde_json::Value| json!({"candidates": [{"content": {"role": "model", "parts": c}}]});
+    let script = vec![
+        calls(json!([{"functionCall": {"name": "ui_state", "args": {}}},
+            {"functionCall": {"name": "route", "args": {"cell": "cmos_inverter"}}}])),
+        calls(json!([{"text": "First, simulate the inverter."}, {"functionCall": {"name": "guide_step", "args": {
+            "instruction": "Press Run Simulation.", "why": "The simulator solves the circuit.",
+            "target": "sim.run", "check": "cmos_inverter simulated"}}}])),
+        calls(json!([{"functionCall": {"name": "guide_step", "args": {
+            "instruction": "Find the delay in the Measurements table.", "target": "sim.measurements"}}}])),
+        calls(json!([{"text": "Well done: you measured the delay."}])),
+    ];
+    let script = std::sync::Arc::new(std::sync::Mutex::new(script));
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
+    let mut h = app(demo_args("cmos_inverter", "simulation", false));
+    let (s2, r2) = (script.clone(), seen.clone());
+    h.state_mut().copilot_mut().set_llm(Box::new(move |_, _| Ok(Box::new(Recorded { script: s2.clone(), seen: r2.clone() }))));
+    h.state_mut().command(Command::AskTutor("Teach me to simulate the inverter".into()));
+    let wait = |h: &mut Harness<'_, IcStudio>, what: &str, f: &dyn Fn(&mut Harness<'_, IcStudio>) -> bool| {
+        let t = std::time::Instant::now();
+        while !f(h) && t.elapsed() < Duration::from_secs(60) {
+            std::thread::sleep(Duration::from_millis(10));
+            h.step();
+        }
+        assert!(f(h), "{what}: {:?}", h.state_mut().copilot_mut().log);
+    };
+    wait(&mut h, "first step", &|h| h.state_mut().copilot_mut().guide.is_some());
+    h.run_steps(3);
+    assert!(h.state_mut().copilot_mut().tutor, "AskTutor turns tutor mode on");
+    assert!(ics_studio::spot::rect(&h.ctx, "sim.run").is_some(), "the Run Simulation button is marked");
+    assert_eq!(ics_studio::spot::target(&h.ctx).as_deref(), Some("sim.run"));
+    shot(&mut h, "copilot_tutor_step");
+    {
+        let cp = h.state_mut().copilot_mut();
+        assert!(cp.log.iter().any(|e| matches!(e, Entry::Tool { name, error: false, result, .. } if name == "ui_state" && result.contains("cmos_inverter"))));
+        assert!(
+            !cp.log.iter().any(|e| matches!(e, Entry::Tool { name, error: false, .. } if name == "route")),
+            "route ran in tutor mode"
+        );
+        assert!(cp.log.iter().any(|e| matches!(e, Entry::Step(s) if s == "Press Run Simulation.")));
+    }
+    // The user does the step; the check passes and the tutor goes on.
+    h.state_mut().command(Command::RunSimulation);
+    wait(&mut h, "second step", &|h| {
+        h.state_mut().copilot_mut().guide.as_ref().is_some_and(|g| g.instruction.starts_with("Find the delay"))
+    });
+    h.run_steps(2);
+    h.state_mut().copilot_mut().guide.as_mut().unwrap().answer = Some(GuideAnswer::Stuck);
+    h.run_steps(2);
+    settle(&mut h, "tutor");
+    let cp = h.state_mut().copilot_mut();
+    assert_eq!(cp.log.last(), Some(&Entry::Assistant("Well done: you measured the delay.".into())));
+    assert!(cp.guide.is_none());
+    let seen = seen.lock().unwrap();
+    assert!(seen[0]["systemInstruction"].to_string().contains("TUTOR MODE is on"));
+    let last_user = |i: usize| seen[i]["contents"].as_array().unwrap().last().unwrap()["parts"].to_string();
+    assert!(last_user(1).contains("tutor mode is on"), "route refused: {}", last_user(1));
+    assert!(last_user(2).contains("\"ended\":\"passed\""), "{}", last_user(2));
+    assert!(last_user(3).contains("I'm stuck"), "{}", last_user(3));
+}
+
 /// A model that streams its answer in two halves, holding the second until released.
 struct Streamy {
     release: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -3022,9 +3089,96 @@ fn learn_course() {
         min: "".into(),
         max: "1p".into(),
     };
-    assert!(matches!(h.state().learn_check(&check(slow)), CheckState::Fail(_)));
+    match h.state().learn_check(&check(slow)) {
+        CheckState::Fail(_, Some(hint)) => assert!(hint.contains("widen"), "advice for a slow gate: {hint}"),
+        other => panic!("a missed delay target fails with advice: {other:?}"),
+    }
     assert!(matches!(h.state().learn_check(&check(CheckKind::DrcClean)), CheckState::Waiting(_)));
     shot(&mut h, "71_learn_after_sim");
+    // Docked at the right side, next to the canvas instead of over it.
+    h.get_by_label("Dock").click_accesskit();
+    h.run_steps(3);
+    assert!(h.state().learn().1.docked);
+    assert!(ics_studio::spot::rect(&h.ctx, "learn").is_some());
+    shot(&mut h, "72_learn_docked");
+}
+
+/// The explorable figures draw in their chapters, the new derive chapter opens, and the
+/// progress report lists every chapter with its quizzes and checks.
+#[test]
+fn learn_explore_and_report() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = app(demo_args("cmos_inverter", "schematic", false));
+    let mos = ics_studio::learn::chapter_index("mosfet").unwrap();
+    h.state_mut().learn_go_to(mos, "a-worked-example");
+    h.run_steps(6);
+    assert!(h.query_by_label("Explore: move the sliders").is_some(), "the MOSFET chapter has an explorable figure");
+    assert!(h.query_all_by_label("V_GS").count() >= 2, "with labelled sliders");
+    shot(&mut h, "73_learn_explore_mosfet");
+    let cmos = ics_studio::learn::chapter_index("cmos-logic").unwrap();
+    h.state_mut().learn_go_to(cmos, "sizing-the-transistors");
+    h.run_steps(6);
+    assert!(h.query_all_by_label("W_p").count() >= 2, "the CMOS chapter has the inverter explorer");
+    shot(&mut h, "74_learn_explore_inverter");
+    // A bold term from the glossary shows its meaning on hover ("Noise margins" starts an
+    // item of the list under this heading; the text is painted, so it is found by position).
+    h.state_mut().learn_go_to(cmos, "the-voltage-transfer-curve");
+    h.run_steps(6);
+    h.ctx.global_style_mut(|s| s.interaction.tooltip_delay = 0.0);
+    let heading = h.get_by_label("The voltage transfer curve").rect();
+    let mut found = false;
+    for dy in (0..400).step_by(6) {
+        h.hover_at(egui::pos2(heading.min.x + 32.0, heading.max.y + dy as f32));
+        h.run_steps(2);
+        if h.query_by_label("From the glossary").is_some() {
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "hovering \"Noise margins\" shows its meaning from the glossary");
+    assert!(h.query_by_label("Noise margin").is_some(), "the tooltip names the term");
+    shot(&mut h, "74b_learn_glossary_hover");
+    let derive = ics_studio::learn::chapter_index("tutorial-derive").unwrap();
+    h.state_mut().learn_go_to(derive, "");
+    h.run_steps(4);
+    shot(&mut h, "75_learn_derive_chapter");
+    let report = h.state().learn_report();
+    assert!(report.starts_with("# Learn IC Design: progress report"), "{report}");
+    for i in 0..ics_studio::learn::CHAPTERS.len() {
+        let title = ics_studio::learn::strip_inline(ics_studio::learn::title(ics_studio::i18n::Lang::En, i));
+        assert!(report.contains(&format!("| {title} |")), "report lists {title}:\n{report}");
+    }
+    assert!(report.contains("cmos_inverter_v2"), "the derive chapter's checks are listed:\n{report}");
+}
+
+/// Every spotlight anchor the guides point at is registered by its widget in the workspace
+/// the anchor names.
+#[test]
+fn spotlight_anchors_are_marked() {
+    use ics_studio::spot::{ANCHORS, rect};
+    let mut h = app(demo_args("cmos_inverter", "simulation", true));
+    settle(&mut h, "simulation");
+    let mut seen = std::collections::BTreeSet::new();
+    let mut look = |h: &mut Harness<'_, IcStudio>| {
+        for a in ANCHORS {
+            if rect(&h.ctx, a.key).is_some() {
+                seen.insert(a.key);
+            }
+        }
+    };
+    for w in [Workspace::Simulation, Workspace::Schematic, Workspace::Layout] {
+        h.state_mut().command(Command::SetWorkspace(w));
+        h.run_steps(3);
+        look(&mut h);
+    }
+    h.state_mut().command(Command::Learn(None));
+    h.run_steps(3);
+    look(&mut h);
+    let mut h = app(LaunchArgs { project: None, demo: false, workspace: None, cell: None, run: false });
+    h.run_steps(3);
+    look(&mut h);
+    let missing: Vec<&str> = ANCHORS.iter().map(|a| a.key).filter(|k| !seen.contains(k) && *k != "tutor.step").collect();
+    assert!(missing.is_empty(), "anchors never drawn: {missing:?}");
 }
 
 /// Requesting focus every frame interrupts IME composition every frame, which on Windows
@@ -3800,6 +3954,14 @@ fn korean_ui_screens() {
     h.state_mut().command(Command::Learn(ics_studio::learn::chapter_index("mosfet")));
     h.run_steps(4);
     shot(&mut h, "64_ko_learn");
+    h.state_mut().learn_go_to(ics_studio::learn::chapter_index("mosfet").unwrap(), "계산-예제");
+    h.run_steps(6);
+    shot(&mut h, "64b_ko_learn_explore");
+    h.state_mut().learn_go_to(ics_studio::learn::chapter_index("tutorial-derive").unwrap(), "");
+    h.run_steps(4);
+    shot(&mut h, "64c_ko_learn_derive");
+    let report = h.state().learn_report();
+    assert!(report.starts_with("# IC 설계 배우기"), "the report is in the UI language:\n{report}");
     // The language is also a setting: switching back to English from the settings dialog.
     let mut h = app(demo_args("cmos_inverter", "schematic", false));
     h.state_mut().command(Command::SetLanguage(ics_studio::i18n::Lang::Ko));

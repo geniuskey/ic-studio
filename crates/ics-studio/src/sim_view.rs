@@ -259,7 +259,9 @@ pub fn setup_panel(
     )
     .fill(fill)
     .min_size(egui::vec2(ui.available_width(), 34.0));
-    if ui.add_enabled(!running, btn).on_hover_text(crate::theme::kbd("F5 / ⌘↩")).clicked() {
+    let b = ui.add_enabled(!running, btn);
+    crate::spot::mark(ui.ctx(), "sim.run", b.rect);
+    if b.on_hover_text(crate::theme::kbd("F5 / ⌘↩")).clicked() {
         run = true;
     }
     ui.add_space(8.0);
@@ -325,7 +327,10 @@ pub fn setup_panel(
         .on_disabled_hover_text(t("This cell has no layout"));
     let setup: &mut SimSetup = &mut cell.sim;
     ui.add_space(6.0);
+    let top = ui.cursor().min;
     theme::section(ui, t("Analyses"));
+    let first = 40.0f32.min(ui.available_height());
+    crate::spot::mark(ui.ctx(), "sim.analyses", egui::Rect::from_min_size(top, egui::vec2(ui.available_width(), first + 20.0)));
     for entry in &mut setup.analyses {
         let title = entry.analysis.title();
         egui::Frame::new()
@@ -744,6 +749,7 @@ fn export_csv(d: &Dataset) -> Result<Option<std::path::PathBuf>, String> {
 /// Results area: dataset tabs, plots, signal browser and measurements.
 pub fn results_panel(ui: &mut egui::Ui, state: &mut SimState) -> Option<String> {
     let pal = theme::palette(ui.ctx());
+    crate::spot::mark(ui.ctx(), "sim.results", ui.max_rect());
     let mut msg = None;
     if let Some((_, t0)) = &state.running {
         ui.centered_and_justified(|ui| {
@@ -816,6 +822,7 @@ pub fn results_panel(ui: &mut egui::Ui, state: &mut SimState) -> Option<String> 
         colors.insert(v.name.clone(), trace[i % trace.len()]);
     }
     theme::aside(egui::Panel::right("signals").resizable(true).default_size(190.0), ui, |ui| {
+        crate::spot::mark(ui.ctx(), "sim.signals", ui.max_rect());
         theme::section(ui, t("Signals"));
         let fl = ui.label(RichText::new(t("Filter")).small().color(pal.text_weak));
         let hint = "v(out)…"; // i18n: ignore
@@ -880,6 +887,7 @@ pub fn results_panel(ui: &mut egui::Ui, state: &mut SimState) -> Option<String> 
         .filter_map(|r| Some((r.label.as_str(), r.results.dataset(&d.analysis)?)))
         .collect();
     egui::Panel::bottom("meas").resizable(true).default_size(110.0).show(ui, |ui| {
+        crate::spot::mark(ui.ctx(), "sim.measurements", ui.max_rect());
         theme::section(ui, t("Measurements"));
         egui::ScrollArea::vertical().show(ui, |ui| measurements(ui, d, sel, &colors, &others));
     });

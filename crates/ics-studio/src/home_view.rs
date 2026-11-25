@@ -31,6 +31,52 @@ fn action_card(ui: &mut egui::Ui, icon: Icon, title: &str, sub: &str, color: egu
     r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
 }
 
+/// The first thing a newcomer sees: where to begin, in the order that works (a short tour of the
+/// app, then the course, with the tutor to ask when stuck).
+fn start_here(ui: &mut egui::Ui, q: &mut Vec<Command>) {
+    let pal = theme::palette(ui.ctx());
+    egui::Frame::new()
+        .fill(pal.simulation.gamma_multiply(0.10))
+        .stroke(Stroke::new(1.0, pal.simulation.gamma_multiply(0.5)))
+        .corner_radius(10)
+        .inner_margin(egui::Margin::symmetric(18, 14))
+        .show(ui, |ui| {
+            ui.set_max_width(720.0);
+            ui.label(RichText::new(t("New to chip design? Start here")).size(18.0).strong().color(pal.text_strong));
+            ui.add_space(2.0);
+            ui.label(
+                RichText::new(t(
+                    "No semiconductor background needed. Take the 5-minute tour of the app, then follow the course: \
+                     from what a chip is to your own inverter and amplifier, with quizzes and live checks of your design.",
+                ))
+                .color(pal.text_weak),
+            );
+            ui.add_space(8.0);
+            ui.horizontal_wrapped(|ui| {
+                let course = ui.add(
+                    egui::Button::new(RichText::new(t("Start the course")).strong().color(theme::on_fill(pal.simulation)))
+                        .fill(pal.simulation),
+                );
+                crate::spot::mark(ui.ctx(), "home.learn", course.rect);
+                if course.clicked() {
+                    q.push(Command::Learn(Some(0)));
+                }
+                if ui
+                    .button(t("5-minute app tour"))
+                    .on_hover_text(t("10 guided steps around the app, with the demo inverter"))
+                    .clicked()
+                {
+                    q.push(Command::Tutorial);
+                }
+                ui.label(
+                    RichText::new(t("Stuck? Tools › Design Copilot has a Tutor mode that guides you step by step."))
+                        .small()
+                        .color(pal.text_weak),
+                );
+            });
+        });
+}
+
 pub fn welcome(ui: &mut egui::Ui, recent: &[PathBuf], q: &mut Vec<Command>) {
     let pal = theme::palette(ui.ctx());
     egui::ScrollArea::vertical().show(ui, |ui| {
@@ -55,25 +101,23 @@ pub fn welcome(ui: &mut egui::Ui, recent: &[PathBuf], q: &mut Vec<Command>) {
                         }
                     });
                 }
-                ui.add_space(28.0);
+                ui.add_space(24.0);
+                start_here(ui, q);
+                ui.add_space(20.0);
                 theme::section(ui, t("Start"));
                 ui.horizontal_wrapped(|ui| {
-                    if action_card(
-                        ui,
-                        Icon::Schematic,
-                        t("Learn IC design"),
-                        t("Course with quizzes and live checks"),
-                        pal.simulation,
-                    ) {
-                        q.push(Command::Learn(None));
-                    }
-                    if action_card(ui, Icon::Simulation, t("Take the tutorial"), t("New here? 10 guided steps"), pal.ok) {
-                        q.push(Command::Tutorial);
-                    }
-                    if action_card(ui, Icon::Library, t("Open demo project"), t("Auto P&R, OTA, SRAM, pixels"), pal.accent) {
+                    let demo = ui.scope(|ui| {
+                        action_card(ui, Icon::Library, t("Open demo project"), t("Auto P&R, OTA, SRAM, pixels"), pal.accent)
+                    });
+                    crate::spot::mark(ui.ctx(), "home.demo", demo.response.rect);
+                    if demo.inner {
                         q.push(Command::NewDemoProject);
                     }
-                    if action_card(ui, Icon::Cell, t("New project…"), t("Empty, generic 180 nm PDK"), pal.schematic) {
+                    let new = ui.scope(|ui| {
+                        action_card(ui, Icon::Cell, t("New project…"), t("Empty, generic 180 nm PDK"), pal.schematic)
+                    });
+                    crate::spot::mark(ui.ctx(), "home.new_project", new.response.rect);
+                    if new.inner {
                         q.push(Command::NewProjectDialog);
                     }
                     if action_card(ui, Icon::Home, t("Open project…"), t("Browse for a project folder"), pal.layout) {

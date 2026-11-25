@@ -45,6 +45,8 @@ pub struct Env<'a> {
     pub find_cell: &'a dyn Fn(&str) -> Option<CellRef>,
     pub check: &'a dyn Fn(&Check) -> CheckState,
     pub project_open: bool,
+    /// Names of the open project's cells, to pick the one a check looks at.
+    pub cells: &'a [String],
 }
 
 #[derive(Default)]
@@ -64,6 +66,9 @@ pub struct LearnView {
     goto: Option<String>,
     toc: bool,
     figures: HashMap<String, FigureState>,
+    /// Cells the user picked for the course's cell names (`my_inv` → `inverter1`).
+    pub aliases: HashMap<String, String>,
+    explore: HashMap<String, crate::explore_view::State>,
 }
 
 /// A figure on screen: its texture and what it shows.
@@ -113,6 +118,13 @@ impl LearnView {
         self.go(self.chapter + 1, String::new(), progress);
     }
 
+    /// Show a chapter at a heading (`slug`).
+    #[doc(hidden)]
+    pub fn go_to(&mut self, chapter: usize, anchor: &str, progress: &mut Progress) {
+        self.open = true;
+        self.go(chapter, anchor.to_string(), progress);
+    }
+
     fn go(&mut self, chapter: usize, anchor: String, progress: &mut Progress) {
         self.chapter = chapter.min(CHAPTERS.len() - 1);
         self.goto = Some(anchor);
@@ -122,7 +134,7 @@ impl LearnView {
     /// The Learn window; returns the commands its buttons ran.
     pub fn window(&mut self, ctx: &egui::Context, progress: &mut Progress, env: &Env) -> Vec<Command> {
         let mut q = vec![];
-        if !self.open {
+        if !self.open || progress.docked {
             return q;
         }
         let mut open = true;
@@ -139,9 +151,31 @@ impl LearnView {
                 // The height follows the screen: the reading area is as tall as fits, the
                 // chapter navigation stays visible below it.
                 let body = (screen.height() - 200.0).clamp(220.0, 760.0);
+                crate::spot::mark(ui.ctx(), "learn", ui.max_rect());
                 self.contents(ui, progress, env, &mut q, body)
             });
         self.open &= open;
+        if self.open {
+            progress.last = Some(CHAPTERS[self.chapter].id.to_string());
+        }
+        q
+    }
+
+    /// The course docked at the side of the main window (`progress.docked`).
+    pub fn panel(&mut self, ui: &mut egui::Ui, progress: &mut Progress, env: &Env) -> Vec<Command> {
+        let mut q = vec![];
+        let pal = theme::palette(ui.ctx());
+        crate::spot::mark(ui.ctx(), "learn", ui.max_rect());
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(t("Learn IC Design")).strong().color(pal.text_strong));
+            ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                if ui.small_button("×").on_hover_text(t("Close")).clicked() {
+                    self.open = false;
+                }
+            });
+        });
+        let body = (ui.available_height() - 50.0).max(160.0);
+        self.contents(ui, progress, env, &mut q, body);
         if self.open {
             progress.last = Some(CHAPTERS[self.chapter].id.to_string());
         }
@@ -152,7 +186,18 @@ impl LearnView {
         let pal = theme::palette(ui.ctx());
         let lang = i18n::current();
         let n = CHAPTERS.len();
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
+            let (dock, tip) = if progress.docked {
+                (t("Float"), t("Show the course in its own window"))
+            } else {
+                (t("Dock"), t("Show the course at the right side, next to the canvas instead of over it"))
+            };
+            if ui.small_button(dock).on_hover_text(tip).clicked() {
+                progress.docked = !progress.docked;
+                if progress.docked {
+                    self.toc = false;
+                }
+            }
             let toc = if self.toc { t("Hide contents") } else { t("Contents") };
             if ui.small_button(toc).clicked() {
                 self.toc = !self.toc;
@@ -172,17 +217,20 @@ impl LearnView {
                     progress.done.remove(id);
                 }
             }
-            ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                ui.label(
-                    RichText::new(tf("{} of {} chapters done", &[&progress.chapters_done().to_string(), &n.to_string()]))
-                        .small()
-                        .color(pal.text_weak),
-                );
-                ui.add(
-                    egui::ProgressBar::new(progress.chapters_done() as f32 / n as f32).desired_width(80.0).desired_height(6.0),
-                )
+            if ui
+                .small_button(t("Report…"))
+                .on_hover_text(t("Save a progress report: chapters done, quizzes and checks"))
+                .clicked()
+            {
+                q.push(Command::ExportLearnReport);
+            }
+            ui.add(egui::ProgressBar::new(progress.chapters_done() as f32 / n as f32).desired_width(60.0).desired_height(6.0))
                 .on_hover_text(t("Chapters marked as done"));
-            });
+            ui.label(
+                RichText::new(tf("{} of {} chapters done", &[&progress.chapters_done().to_string(), &n.to_string()]))
+                    .small()
+                    .color(pal.text_weak),
+            );
         });
         ui.separator();
         ui.horizontal_top(|ui| {
@@ -258,6 +306,7 @@ impl LearnView {
         let lang = i18n::current();
         let mut link = None;
         let mut quiz_n = 0;
+        let gloss = CHAPTERS[self.chapter].id != "glossary";
         for block in learn::blocks(lang, self.chapter) {
             match block {
                 Block::Heading { level, text, slug } => {
@@ -274,7 +323,7 @@ impl LearnView {
                     ui.add_space(2.0);
                 }
                 Block::Para(text) => {
-                    link = link.or(inline(ui, text, None));
+                    link = link.or(inline_with(ui, text, None, gloss));
                     ui.add_space(6.0);
                 }
                 Block::List { ordered, items } => {
@@ -287,7 +336,7 @@ impl LearnView {
                         ui.horizontal_top(|ui| {
                             ui.add_space(6.0 + 16.0 * d as f32);
                             ui.add_sized(Vec2::new(18.0, 14.0), egui::Label::new(RichText::new(bullet).color(pal.text_weak)));
-                            ui.vertical(|ui| link = link.take().or(inline(ui, text, None)));
+                            ui.vertical(|ui| link = link.take().or(inline_with(ui, text, None, gloss)));
                         });
                     }
                     ui.add_space(6.0);
@@ -311,7 +360,7 @@ impl LearnView {
                                 for h in head {
                                     ui.vertical(|ui| {
                                         ui.set_max_width(w);
-                                        link = link.take().or(inline(ui, &format!("**{h}**"), None));
+                                        link = link.take().or(inline_with(ui, &format!("**{h}**"), None, false));
                                     });
                                 }
                                 ui.end_row();
@@ -319,7 +368,7 @@ impl LearnView {
                                     for c in row {
                                         ui.vertical(|ui| {
                                             ui.set_max_width(w);
-                                            link = link.take().or(inline(ui, c, None));
+                                            link = link.take().or(inline_with(ui, c, None, gloss));
                                         });
                                     }
                                     ui.end_row();
@@ -334,7 +383,7 @@ impl LearnView {
                         ui,
                         |ui| {
                             ui.set_width(ui.available_width());
-                            link = link.take().or(inline(ui, text, None));
+                            link = link.take().or(inline_with(ui, text, None, gloss));
                         },
                     );
                     ui.add_space(6.0);
@@ -346,12 +395,24 @@ impl LearnView {
                 Block::Rule => {
                     ui.separator();
                 }
+                Block::Explore(name) => crate::explore_view::show(ui, name, self.explore.entry(name.clone()).or_default()),
                 Block::Try { label, action } => try_button(ui, label, action, env, q),
-                Block::Check(c) => check_row(ui, c, &(env.check)(c)),
+                Block::Check(c) => {
+                    let mut c = c.clone();
+                    let course = c.cell.clone();
+                    if let Some(a) = self.aliases.get(&course) {
+                        c.cell = a.clone();
+                    }
+                    let state = (env.check)(&c);
+                    let title = learn::strip_inline(learn::title(lang, self.chapter));
+                    if let Some(pick) = check_row(ui, &c, &course, &state, env, q, &title) {
+                        self.aliases.insert(course, pick);
+                    }
+                }
                 Block::Quiz(quiz) => {
                     let key = Progress::quiz_key(self.chapter, quiz_n);
                     let state = self.quizzes.entry((self.chapter, quiz_n)).or_default();
-                    if let Some(right) = quiz_card(ui, quiz, state, progress.quiz.get(&key).copied(), quiz_n) {
+                    if let Some(right) = quiz_card(ui, quiz, state, progress.quiz.get(&key).copied(), quiz_n, q) {
                         progress.quiz.insert(key, right);
                     }
                     quiz_n += 1;
@@ -365,6 +426,11 @@ impl LearnView {
 /// Inline Markdown: `**bold**`, `*italic*`, `` `code` ``, `[links](x.md#a)`,
 /// `<sub>`/`<sup>` and `<br>`. Returns the link clicked.
 fn inline(ui: &mut egui::Ui, text: &str, color: Option<Color32>) -> Option<Link> {
+    inline_with(ui, text, color, true)
+}
+
+/// [`inline`], with the glossary's meaning shown on bold terms (`gloss`).
+fn inline_with(ui: &mut egui::Ui, text: &str, color: Option<Color32>, gloss: bool) -> Option<Link> {
     let pal = theme::palette(ui.ctx());
     let base = egui::TextStyle::Body.resolve(ui.style());
     let color = color.unwrap_or(pal.text);
@@ -393,10 +459,23 @@ fn inline(ui: &mut egui::Ui, text: &str, color: Option<Color32>) -> Option<Link>
         };
     let mut rest = text;
     let mut plain = String::new();
+    // Bold runs: their characters, bytes and text (a term looked up in the glossary).
+    let mut bolds: Vec<(std::ops::Range<usize>, std::ops::Range<usize>, String)> = vec![];
     macro_rules! flush {
         () => {
             if !plain.is_empty() {
+                let (c0, b0) = (chars, job.text.len());
                 push(&mut job, &plain, bold, italic, false, small, false, &mut chars);
+                if bold {
+                    match bolds.last_mut() {
+                        Some(last) if last.0.end == c0 => {
+                            last.0.end = chars;
+                            last.1.end = job.text.len();
+                            last.2.push_str(&plain);
+                        }
+                        _ => bolds.push((c0..chars, b0..job.text.len(), plain.clone())),
+                    }
+                }
                 plain.clear();
             }
         };
@@ -461,9 +540,32 @@ fn inline(ui: &mut egui::Ui, text: &str, color: Option<Color32>) -> Option<Link>
         }
     }
     flush!();
+    let glossary = learn::glossary(i18n::current());
+    let terms: Vec<(std::ops::Range<usize>, &(String, String))> =
+        if gloss { bolds.iter().filter_map(|(c, _, text)| Some((c.clone(), glossary.lookup(text)?))).collect() } else { vec![] };
+    for (c, b, _) in &bolds {
+        if terms.iter().any(|(r, _)| r == c) {
+            for sec in job.sections.iter_mut().filter(|s| {
+                s.byte_range.start >= egui::text::ByteIndex(b.start) && s.byte_range.end <= egui::text::ByteIndex(b.end)
+            }) {
+                sec.format.underline = Stroke::new(1.0, pal.text_weak);
+            }
+        }
+    }
     let sense = if links.is_empty() { Sense::hover() } else { Sense::click() };
     let (pos, galley, resp) = egui::Label::new(job).sense(sense).layout_in_ui(ui);
     ui.painter().galley(pos, galley.clone(), color);
+    let hovered = resp.hover_pos().map(|p| galley.cursor_from_pos(p - pos).index.0);
+    if let Some(at) = hovered
+        && let Some((_, (term, meaning))) = terms.iter().find(|(r, _)| r.contains(&at))
+    {
+        resp.clone().on_hover_ui_at_pointer(|ui| {
+            ui.set_max_width(340.0);
+            ui.label(RichText::new(term).strong().color(pal.text_strong));
+            inline_with(ui, meaning, None, false);
+            ui.label(RichText::new(t("From the glossary")).small().color(pal.text_weak));
+        });
+    }
     if links.is_empty() {
         return None;
     }
@@ -629,12 +731,56 @@ fn try_button(ui: &mut egui::Ui, label: &str, action: &Action, env: &Env, q: &mu
     ui.add_space(6.0);
 }
 
-fn check_row(ui: &mut egui::Ui, c: &Check, state: &CheckState) {
+/// Where a check's result is found or made: the place to point at, and the workspace showing it.
+fn check_anchor(c: &Check, state: &CheckState) -> (&'static str, Workspace) {
+    use learn::CheckKind as K;
+    let waiting = matches!(state, CheckState::Waiting(_));
+    match &c.kind {
+        K::Schematic { .. } => ("sch.library", Workspace::Schematic),
+        K::Layout => ("ws.layout", Workspace::Layout),
+        K::Simulated => ("sim.run", Workspace::Simulation),
+        K::Measure { .. } if waiting => ("sim.run", Workspace::Simulation),
+        K::Measure { .. } => ("sim.measurements", Workspace::Simulation),
+        K::Region { .. } if waiting => ("sim.run", Workspace::Simulation),
+        K::Region { .. } => ("sim.results", Workspace::Simulation),
+        K::DrcClean => ("lay.run_drc", Workspace::Layout),
+        K::LvsClean => ("lay.verify", Workspace::Layout),
+    }
+}
+
+/// What to say about the place a check points at.
+fn anchor_note(c: &Check, state: &CheckState) -> String {
+    use learn::CheckKind as K;
+    let waiting = matches!(state, CheckState::Waiting(_));
+    match &c.kind {
+        K::Schematic { .. } => t("Pick a device here, then click on the canvas to place it.").into(),
+        K::Layout => t("The layout of the cell opens here.").into(),
+        K::Simulated => t("Press this to simulate (F5).").into(),
+        K::Measure { .. } | K::Region { .. } if waiting => t("Press this to simulate (F5).").into(),
+        K::Measure { .. } => t("The measured values are in this table.").into(),
+        K::Region { device, .. } => tf("The Operating Point tab lists every transistor with its region. Look at {}.", &[device]),
+        K::DrcClean => t("Run the design rule check here.").into(),
+        K::LvsClean => t("Run LVS here and read the differences below.").into(),
+    }
+}
+
+/// A check on the user's design; returns a cell the user picked to check instead of
+/// `course` (the cell name the chapter uses).
+fn check_row(
+    ui: &mut egui::Ui,
+    c: &Check,
+    course: &str,
+    state: &CheckState,
+    env: &Env,
+    q: &mut Vec<Command>,
+    chapter: &str,
+) -> Option<String> {
     let pal = theme::palette(ui.ctx());
-    let (col, mark, detail) = match state {
-        CheckState::Pass(d) => (pal.ok, true, d),
-        CheckState::Fail(d) => (pal.danger, false, d),
-        CheckState::Waiting(d) => (pal.text_weak, false, d),
+    let mut pick = None;
+    let (col, mark, detail, hint) = match state {
+        CheckState::Pass(d) => (pal.ok, true, d, None),
+        CheckState::Fail(d, h) => (pal.danger, false, d, h.as_ref()),
+        CheckState::Waiting(d) => (pal.text_weak, false, d, None),
     };
     egui::Frame::new()
         .stroke(Stroke::new(1.0, col.gamma_multiply(0.6)))
@@ -642,7 +788,7 @@ fn check_row(ui: &mut egui::Ui, c: &Check, state: &CheckState) {
         .inner_margin(egui::Margin::symmetric(10, 6))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
+            ui.horizontal_top(|ui| {
                 let (r, p) = ui.allocate_painter(Vec2::splat(16.0), Sense::hover());
                 let ctr = r.rect.center();
                 if mark {
@@ -659,14 +805,89 @@ fn check_row(ui: &mut egui::Ui, c: &Check, state: &CheckState) {
                         ui.label(RichText::new(&c.label).strong());
                     });
                     ui.label(RichText::new(detail).small().color(pal.text_weak));
+                    if let Some(h) = hint {
+                        ui.horizontal_top(|ui| {
+                            ui.label(RichText::new(t("What to try:")).small().strong().color(pal.warning));
+                            ui.add(egui::Label::new(RichText::new(h).small()).wrap());
+                        });
+                    }
+                    let cell = (env.find_cell)(&c.cell);
+                    // The course names its cells (my_inv); the user may have named theirs otherwise.
+                    if cell.is_none() && env.project_open && !env.cells.is_empty() {
+                        ui.horizontal_wrapped(|ui| {
+                            let l = ui.label(RichText::new(t("Or check another cell:")).small().color(pal.text_weak));
+                            let shown = if c.cell == course { t("choose…").to_string() } else { c.cell.clone() };
+                            egui::ComboBox::from_id_salt(("learn_check_cell", course, &c.label))
+                                .selected_text(shown)
+                                .show_ui(ui, |ui| {
+                                    for name in env.cells {
+                                        if ui.selectable_label(*name == c.cell, name).clicked() {
+                                            pick = Some(name.clone());
+                                        }
+                                    }
+                                })
+                                .response
+                                .labelled_by(l.id);
+                        });
+                    } else if c.cell != course {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(
+                                RichText::new(tf("Checking {} (the course calls it {})", &[&c.cell, course]))
+                                    .small()
+                                    .color(pal.text_weak),
+                            );
+                            if ui.small_button(t("Use the course name")).clicked() {
+                                pick = Some(course.to_string());
+                            }
+                        });
+                    }
+                    if !mark {
+                        ui.horizontal_wrapped(|ui| {
+                            let (key, ws) = check_anchor(c, state);
+                            if ui
+                                .small_button(t("Show me where"))
+                                .on_hover_text(t("Point at the place in the window where this is done"))
+                                .clicked()
+                            {
+                                match &cell {
+                                    Some(r) => q.push(Command::OpenCell(r.clone(), Some(ws))),
+                                    None => q.push(Command::SetWorkspace(ws)),
+                                }
+                                crate::spot::point(ui.ctx(), key, &anchor_note(c, state), Some(8.0));
+                            }
+                            if ui
+                                .small_button(t("Ask the tutor"))
+                                .on_hover_text(t("The copilot in Tutor mode guides you through it step by step"))
+                                .clicked()
+                            {
+                                let mut ask = tf(
+                                    "I am working on the Learn chapter \"{}\". The check \"{}\" on my cell {} says: {}.",
+                                    &[chapter, &c.label, &c.cell, detail],
+                                );
+                                if let Some(h) = hint {
+                                    ask += &format!(" {}", tf("The advice shown is: {}", &[h]));
+                                }
+                                ask += &format!(" {}", t("Guide me step by step so I can fix it myself, and explain why."));
+                                q.push(Command::AskTutor(ask));
+                            }
+                        });
+                    }
                 });
             });
         });
     ui.add_space(6.0);
+    pick
 }
 
 /// A quiz; returns whether a submitted answer was right.
-fn quiz_card(ui: &mut egui::Ui, quiz: &learn::Quiz, s: &mut QuizState, before: Option<bool>, n: usize) -> Option<bool> {
+fn quiz_card(
+    ui: &mut egui::Ui,
+    quiz: &learn::Quiz,
+    s: &mut QuizState,
+    before: Option<bool>,
+    n: usize,
+    q: &mut Vec<Command>,
+) -> Option<bool> {
     let pal = theme::palette(ui.ctx());
     let mut submitted = None;
     egui::Frame::new()
@@ -740,6 +961,22 @@ fn quiz_card(ui: &mut egui::Ui, quiz: &learn::Quiz, s: &mut QuizState, before: O
                 {
                     ui.label(RichText::new(tf("Answer: {}", &[&format!("{value} {unit}")])).small().color(pal.text_weak));
                 }
+                if !right
+                    && ui
+                        .small_button(t("Ask the tutor why"))
+                        .on_hover_text(t("The copilot in Tutor mode explains the idea behind the question"))
+                        .clicked()
+                {
+                    let mine = match &quiz.answer {
+                        Answer::Choice { options, .. } => s.choice.map(|i| learn::strip_inline(&options[i])).unwrap_or_default(),
+                        Answer::Number { unit, .. } => format!("{} {unit}", s.text.trim()),
+                    };
+                    q.push(Command::AskTutor(tf(
+                        "In the Learn course I answered the quiz question \"{}\" with \"{}\", which is wrong. Help me \
+                         understand why, step by step, with a question I can think about rather than just the answer.",
+                        &[&learn::strip_inline(&quiz.question), &mine],
+                    )));
+                }
             }
         });
     ui.add_space(8.0);
@@ -791,10 +1028,19 @@ pub fn evaluate(
                 Err(e) if res.dataset(analysis).is_none() => {
                     CheckState::Waiting(tf("Add a {} analysis and simulate again ({}).", &[analysis, &e]))
                 }
-                Err(e) => CheckState::Fail(e),
+                Err(e) => {
+                    let hint = ics_core::advice::error_advice(&e).map(|a| i18n::t_text(a).to_string());
+                    CheckState::Fail(i18n::t_text(&e).to_string(), hint)
+                }
                 Ok(v) => {
                     let text = tf("measured {} (target {})", &[&ics_core::units::format_eng(v, ""), &limits]);
-                    if spec.check(v).unwrap_or(true) { CheckState::Pass(text) } else { CheckState::Fail(text) }
+                    if spec.check(v).unwrap_or(true) {
+                        CheckState::Pass(text)
+                    } else {
+                        let hint = ics_core::advice::spec_miss(min, max, v)
+                            .map(|m| i18n::t_text(&ics_core::advice::spec_advice(expr, m)).to_string());
+                        CheckState::Fail(text, hint)
+                    }
                 }
             }
         }
@@ -804,23 +1050,37 @@ pub fn evaluate(
                 return CheckState::Waiting(tf("Enable the operating point analysis and simulate {}.", &[&c.cell]));
             };
             match op.devices.iter().find(|d| d.name.eq_ignore_ascii_case(device)) {
-                None => CheckState::Fail(tf("No device {} in the operating point.", &[device])),
+                None => CheckState::Fail(
+                    tf("No device {} in the operating point.", &[device]),
+                    Some(t("Device names come from the schematic: select the transistor and read its name in the inspector.").into()),
+                ),
                 Some(d) => {
                     let got = d.region.clone().unwrap_or_else(|| "?".into());
                     let text = tf("{} is in {}", &[device, &got]);
-                    if got.eq_ignore_ascii_case(region) { CheckState::Pass(text) } else { CheckState::Fail(text) }
+                    if got.eq_ignore_ascii_case(region) {
+                        CheckState::Pass(text)
+                    } else {
+                        let hint = ics_core::advice::mos_advice(&got, &d.values).map(|a| i18n::t_text(&a).to_string());
+                        CheckState::Fail(text, hint)
+                    }
                 }
             }
         }
         K::DrcClean => match drc {
             None => CheckState::Waiting(t("Run DRC on the layout.").into()),
             Some(r) if r.violations.is_empty() => CheckState::Pass(t("DRC clean.").into()),
-            Some(r) => CheckState::Fail(tf("{} DRC violation(s)", &[&r.violations.len().to_string()])),
+            Some(r) => CheckState::Fail(
+                tf("{} DRC violation(s)", &[&r.violations.len().to_string()]),
+                Some(t("Click a violation in the Verify panel to zoom to it. Ctrl+. offers quick fixes, and Fix All repairs the cell in one step.").into()),
+            ),
         },
         K::LvsClean => match lvs {
             None => CheckState::Waiting(t("Run LVS on the layout.").into()),
             Some(r) if r.matched => CheckState::Pass(t("Layout matches the schematic.").into()),
-            Some(r) => CheckState::Fail(tf("LVS: {} difference(s)", &[&r.errors.len().to_string()])),
+            Some(r) => CheckState::Fail(
+                tf("LVS: {} difference(s)", &[&r.errors.len().to_string()]),
+                Some(t("The Verify panel lists each difference: a device missing or extra in the layout, different sizes, or a net that is open (not connected) or shorted to another.").into()),
+            ),
         },
     }
 }
@@ -828,6 +1088,18 @@ pub fn evaluate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The tutor requests carry quotes, which the translation scanner skips: check them here.
+    #[test]
+    fn tutor_requests_are_translated() {
+        for k in [
+            "I am working on the Learn chapter \"{}\". The check \"{}\" on my cell {} says: {}.",
+            "In the Learn course I answered the quiz question \"{}\" with \"{}\", which is wrong. Help me \
+             understand why, step by step, with a question I can think about rather than just the answer.",
+        ] {
+            assert!(crate::i18n_ko::all().any(|(e, _)| *e == k), "no Korean for {k}");
+        }
+    }
 
     #[test]
     fn every_figure_is_built_in() {

@@ -216,6 +216,8 @@ Open the demo `ota5t` (five-transistor OTA) and `ota2s` (two-stage OTA):
 
 You now know the whole flow. Next steps:
 
+- [Start from a working design](tutorial-derive.md): the way most real designs begin, a
+  copy of one that works, resized for new targets.
 - The rest of this guide documents every tool: [Simulation](../simulation.md),
   [Layout](../layout.md), [Verification](../verification.md) and the
   [Tools](../tools.md) (calculator, sweeps, Monte Carlo, optimizer).

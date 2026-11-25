@@ -131,6 +131,12 @@ current mirrors and the differential pair.</p>
 <p>Bias and simulate a common-source amplifier, read its gain and bandwidth from a Bode
 plot, and explore the OTA demos.</p>
 </div>
+<div class="ics-card">
+<span class="ics-icon">9</span>
+<h3><a href="tutorial-derive.html">Hands-on: start from a working design</a></h3>
+<p>Make a faster inverter from the demo one: read its specs and notes, set new targets,
+let the Derive wizard size and lay it out, and judge what else changed.</p>
+</div>
 </div>
 
 A [glossary](glossary.md) explains every term used in the course, with pointers for
@@ -143,12 +149,24 @@ further reading.
 - **Keep IC Studio open** next to the text ([Installation](../install.md)). Every theory
   chapter ends with a "Try it" box that opens a demo cell so you can see the idea in a
   simulation straight away.
-- **Or read it inside IC Studio**: **Help › Learn IC Design…** (or the *Learn IC design*
-  card on the welcome page) opens this course in a window next to the canvas, in the
-  language of the UI (English or Korean). There the "Try it" buttons run the step in the
-  app, each section ends with a short quiz, and the hands-on chapters check your own cell
-  live (devices placed, operating region, measured delay or gain, DRC and LVS). Your
-  progress is kept between sessions.
+- **Or read it inside IC Studio**: **Help › Learn IC Design…** (or **Start the course** on
+  the welcome page) opens this course in a window next to the canvas, in the language of
+  the UI (English or Korean); **Dock** puts it at the right side so it does not cover the
+  canvas. There the "Try it" buttons run the step in the app, each section ends with a
+  short quiz, and the hands-on chapters check your own cell live (devices placed,
+  operating region, measured delay or gain, DRC and LVS). Your progress is kept between
+  sessions.
+- **When a check fails**, it says what to try. **Show me where** points at the place in the
+  window where the step is done, and **Ask the tutor** opens the copilot in Tutor mode
+  (it needs an AI model, set in **Tools › AI Models…**): it gives you one step at a time,
+  points at what to click, checks your work as you go and edits nothing itself. If your
+  cell has another name than the course's (`my_inv`), pick it under the check.
+- **In the app, play with the equations**: the MOSFET and CMOS chapters have sliders for
+  W, L and the voltages that redraw the curves as you move them. Hover an underlined term
+  for its meaning from the [glossary](glossary.md). **Report…** saves your progress
+  (chapters, quizzes, checks) as a Markdown file, for a teacher or for yourself.
+- **New to the app itself?** The 5-minute tour walks you round the windows with the demo
+  inverter, pointing at each button.
 - **Do the exercises.** Changing one number and predicting what will happen before you
   press `F5` is the fastest way to build intuition.
 - Everything uses the **generic 180 nm technology** that new projects start with. It is
@@ -162,6 +180,8 @@ gains) was simulated with IC Studio's built-in engine on the generic technology,
 should see the same numbers on your screen, give or take the last digit.
 
 </div>
+
+<!-- try: Take the 5-minute app tour | tutorial -->
 
 <!-- try: Open the demo project | demo -->
 

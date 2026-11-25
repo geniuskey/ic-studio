@@ -37,6 +37,8 @@ struct Step {
     body: &'static str,
     hint: &'static str,
     spot: Option<Workspace>,
+    /// The place in the window the step is done at ([`crate::spot::ANCHORS`]).
+    anchor: Option<&'static str>,
     done: fn(&Progress) -> bool,
     show: fn(&CellRef) -> Vec<Command>,
 }
@@ -48,6 +50,7 @@ const STEPS: &[Step] = &[
                Open them to have a real circuit to explore.",
         hint: "Home › Open demo project, or File › New Demo Project",
         spot: Some(Workspace::Home),
+        anchor: Some("home.demo"),
         done: |p| p.inverter.is_some(),
         show: |_| vec![],
     },
@@ -57,6 +60,7 @@ const STEPS: &[Step] = &[
                one PMOS and one NMOS transistor between vdd and ground.",
         hint: "Explorer › work › cmos_inverter › Schematic",
         spot: Some(Workspace::Schematic),
+        anchor: Some("explorer"),
         done: |p| p.at(Workspace::Schematic),
         show: |r| vec![Command::OpenCell(r.clone(), Some(Workspace::Schematic))],
     },
@@ -66,6 +70,7 @@ const STEPS: &[Step] = &[
                on the right, where you can edit them. Scroll to pan, Ctrl+wheel to zoom, F to fit.",
         hint: "Click a transistor",
         spot: None,
+        anchor: Some("sch.canvas"),
         done: |p| p.on_inverter && p.selected,
         show: |r| vec![Command::OpenCell(r.clone(), Some(Workspace::Schematic))],
     },
@@ -75,6 +80,7 @@ const STEPS: &[Step] = &[
                ngspice when it is installed. The analyses are set up in the cell's simulation settings.",
         hint: "F5 or ⌘↩, or Simulation › Run",
         spot: Some(Workspace::Simulation),
+        anchor: Some("sim.run"),
         done: |p| p.on_inverter && p.simulated,
         show: |r| vec![Command::OpenCell(r.clone(), None), Command::RunSimulation],
     },
@@ -84,6 +90,7 @@ const STEPS: &[Step] = &[
                then open the Waveform Calculator to measure delays, rise times or averages.",
         hint: "Simulation › Waveform Calculator…",
         spot: Some(Workspace::Simulation),
+        anchor: Some("menu.simulation"),
         done: |p| p.calculator,
         show: |r| vec![Command::OpenCell(r.clone(), Some(Workspace::Simulation)), Command::Calculator],
     },
@@ -93,6 +100,7 @@ const STEPS: &[Step] = &[
                the generic 180 nm technology. Layout coordinates are in nanometres.",
         hint: "⌘4, or the Layout icon on the left",
         spot: Some(Workspace::Layout),
+        anchor: Some("ws.layout"),
         done: |p| p.at(Workspace::Layout),
         show: |r| vec![Command::OpenCell(r.clone(), Some(Workspace::Layout))],
     },
@@ -102,6 +110,7 @@ const STEPS: &[Step] = &[
                in the Verify panel and marked on the canvas.",
         hint: "Verify › Run DRC",
         spot: Some(Workspace::Layout),
+        anchor: Some("lay.run_drc"),
         done: |p| p.on_inverter && p.drc,
         show: |r| vec![Command::OpenCell(r.clone(), Some(Workspace::Layout)), Command::RunDrc],
     },
@@ -112,6 +121,7 @@ const STEPS: &[Step] = &[
                the schematic, so the layout has no counterpart. Other differences would mean a wiring error.",
         hint: "Verify › Run LVS",
         spot: Some(Workspace::Layout),
+        anchor: Some("menu.verify"),
         done: |p| p.on_inverter && p.lvs,
         show: |r| vec![Command::OpenCell(r.clone(), Some(Workspace::Layout)), Command::RunLvs],
     },
@@ -123,6 +133,7 @@ const STEPS: &[Step] = &[
                sizes the copy to meet it and lays it out. The original stays as it was.",
         hint: "Schematic › right panel › Derive a new design from this…",
         spot: Some(Workspace::Schematic),
+        anchor: Some("sch.design"),
         done: |p| p.derived,
         show: |r| vec![Command::OpenCell(r.clone(), Some(Workspace::Schematic)), Command::DeriveDialog(r.clone())],
     },
@@ -132,6 +143,7 @@ const STEPS: &[Step] = &[
                \"export gds\", and press Enter.",
         hint: "⌘K, or the search box at the top right",
         spot: None,
+        anchor: Some("palette"),
         done: |p| p.palette,
         show: |_| vec![Command::CommandPalette],
     },
@@ -163,6 +175,11 @@ impl Tutorial {
     /// The workspace button the current step points at.
     pub fn spotlight(&self) -> Option<Workspace> {
         self.open.then(|| STEPS.get(self.step)?.spot).flatten()
+    }
+
+    /// The place the current step points at, while the guide is open.
+    pub fn anchor(&self) -> Option<&'static str> {
+        self.open.then(|| STEPS.get(self.step)?.anchor).flatten()
     }
 
     /// Completes the current step once the user has done it, and moves on.

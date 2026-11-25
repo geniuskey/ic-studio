@@ -164,6 +164,10 @@ V_M = (V_th,n + r · (V_DD − |V_th,p|)) / (1 + r),   r = √(k'_p·W_p/L_p / (
 
 W<sub>p</sub> = 4·W<sub>n</sub>이면 r = 1이 되고 V<sub>M</sub>은 정확히 V<sub>DD</sub>/2입니다.
 
+IC Studio의 Learn 창에서는 이 자리의 슬라이더로 두 폭을 바꾸며 V<sub>M</sub>이 전달 곡선을 따라 움직이는 것을 볼 수 있습니다.
+
+<!-- explore: inverter -->
+
 <!-- quiz
 ? NMOS가 1 µm일 때 V<sub>M</sub>을 V<sub>DD</sub>/2에 두는 PMOS 폭은 얼마일까요?
 - 1 µm

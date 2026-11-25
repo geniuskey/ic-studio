@@ -377,6 +377,7 @@ impl LayoutEditor {
         theme::section(ui, t("Design Rule Check"));
         ui.horizontal(|ui| {
             let run = ui.add_enabled(idle, egui::Button::new(t("▶ Run DRC")));
+            crate::spot::mark(ui.ctx(), "lay.run_drc", run.rect);
             if run.on_hover_text(t("Run the rule deck on the flattened cell")).clicked() {
                 self.start_verification(Verify::Drc, l, cx, ui.ctx());
             }

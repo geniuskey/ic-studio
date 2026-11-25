@@ -10,7 +10,7 @@
 
 | 도구 | Virtuoso 대응 기능 | 대상 |
 |---|---|---|
-| Design Copilot, AI Models | - | [MCP](mcp.md) 도구로 열린 프로젝트를 다루고, 이 매뉴얼을 바탕으로 사용법 질문에도 답하는 AI 에이전트. AI Models에서 제공자, 모델, API 키를 설정 |
+| [Design Copilot](#design-copilot), AI Models | - | [MCP](mcp.md) 도구로 열린 프로젝트를 다루고, 이 매뉴얼을 바탕으로 사용법 질문에도 답하는 AI 에이전트. AI Models에서 제공자, 모델, API 키를 설정 |
 | [Optimizer](#optimizer) | ADE GXL Optimization | 활성 셀의 회로도와 스펙 |
 | [Waveform Calculator](#waveform-calculator) | ViVA Calculator | 활성 셀의 시뮬레이션 결과 |
 | [Corner / Sweep Manager](#corner--sweep-manager) | ADE Explorer | 활성 셀의 회로도 |
@@ -27,6 +27,27 @@
 | [Dummy Fill](#dummy-fill) | Metal fill | 활성 레이아웃 |
 | [OPC](#opc) | 광근접 보정(Optical proximity correction) | 활성 레이아웃 |
 | SKILL CIW, Load SKILL (.il) | CIW | 프로젝트([SKILL 스크립트](layout.md#skill-스크립트) 참고) |
+
+## Design Copilot
+
+**도구 › 설계 Copilot…**은 [MCP 서버](mcp.md)와 같은 도구로 열린 프로젝트를 다루는 AI 채팅을
+엽니다. 모델이 필요합니다. **도구 › AI 모델…**에서 제공자(Gemini, OpenAI, Anthropic Claude 또는
+Ollama 같은 로컬 서버를 포함한 OpenAI 호환 서버), 모델, API 키를 설정합니다. 창 위쪽에 세 가지
+모드가 있습니다.
+
+- **대신 하기**: Copilot이 작업(배치와 배선, DRC 수정, 스펙에 맞춘 크기 조정, 새 설계 파생)을
+  직접 하고, 모든 편집이 실시간으로 보이며 되돌릴 수 있습니다.
+- **계획 모드**: 읽기 전용 도구로 조사한 뒤 번호 붙은 계획을 보여 줍니다. 승인하기 전에는 아무것도
+  편집하지 않습니다.
+- **튜터**: 배우기용입니다. Copilot은 아무것도 편집하지 않고, 작업을 작은 단계로 나누어 한 번에
+  하나씩 알려 줍니다. 각 단계는 창에서 그 작업을 하는 곳을 가리키고(안내 문구와 함께 깜빡이는
+  테두리), 메시지 입력란 위에 **내가 할 단계**로 표시되며, 내 설계에서 확인 조건이 통과하면 저절로
+  끝납니다(셀이 생김, 시뮬레이션을 실행함, 트랜지스터가 포화 영역에 있음, 이득이 목표를 넘음,
+  DRC 통과 등). 확인 조건이 없는 단계는 **완료**를 누르고, **막혔어요**를 누르면 힌트를 받습니다.
+  입력한 내용은 답으로 튜터에게 전달됩니다. 시뮬레이션 전에 결과를 예측해 보라고 묻기도 합니다.
+
+[Learn 강좌](learn/index.md)에서 실패한 확인 항목이나 틀린 퀴즈 아래의 **튜터에게 묻기**를 누르면
+그 질문으로 Copilot이 튜터 모드로 열립니다.
 
 ## Waveform Calculator
 

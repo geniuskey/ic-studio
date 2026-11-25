@@ -10,7 +10,7 @@ back; the choice is remembered per tool. Every tool is also in the command palet
 
 | Tool | Virtuoso counterpart | Works on |
 |---|---|---|
-| Design Copilot, AI Models | - | An AI agent working on the open project through the [MCP](mcp.md) tools, which also answers how-to questions from this manual; AI Models sets its provider, model and API key |
+| [Design Copilot](#design-copilot), AI Models | - | An AI agent working on the open project through the [MCP](mcp.md) tools, which also answers how-to questions from this manual; AI Models sets its provider, model and API key |
 | [Optimizer](#optimizer) | ADE GXL Optimization | Active cell's schematic and specs |
 | [Waveform Calculator](#waveform-calculator) | ViVA Calculator | Simulation results of the active cell |
 | [Corner / Sweep Manager](#corner--sweep-manager) | ADE Explorer | Active cell's schematic |
@@ -27,6 +27,30 @@ back; the choice is remembered per tool. Every tool is also in the command palet
 | [Dummy Fill](#dummy-fill) | Metal fill | Active layout |
 | [OPC](#opc) | Optical proximity correction | Active layout |
 | SKILL CIW, Load SKILL (.il) | CIW | The project (see [SKILL scripts](layout.md#skill-scripts)) |
+
+## Design Copilot
+
+**Tools › Design Copilot…** opens an AI chat that works on the open project through the
+same tools as the [MCP server](mcp.md). It needs a model: **Tools › AI Models…** sets the
+provider (Gemini, OpenAI, Anthropic Claude or any OpenAI-compatible server, including a
+local one such as Ollama), the model and the API key. Three modes sit at the top of the
+window:
+
+- **Do it**: the copilot does the task (place and route, fix DRC, size for a spec, derive a
+  new design) and every edit appears live and stays undoable.
+- **Plan mode**: it investigates with read-only tools and presents a numbered plan; nothing
+  is edited until you approve it.
+- **Tutor**: for learning. The copilot edits nothing; it splits the task into small steps
+  and gives you one at a time. Each step points at the place in the window where it is done
+  (a pulsing outline with the instruction), shows up as **Your step** above the message box,
+  and finishes by itself when its check passes on your design (the cell exists, the
+  simulation ran, a transistor is in saturation, the gain meets a target, DRC is clean).
+  **Done** says you finished a step that has no check, **I'm stuck** asks for a hint, and
+  anything you type goes to the tutor as your answer. Before a simulation it may ask you to
+  predict the result.
+
+In the [Learn course](learn/index.md), **Ask the tutor** under a failed check or a wrong
+quiz answer opens the copilot in Tutor mode with that question.
 
 ## Waveform Calculator
 

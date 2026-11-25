@@ -303,6 +303,8 @@ pub enum Command {
     CopilotApprove,
     /// Stop the copilot's running request.
     CopilotStop,
+    /// Ask the copilot in Tutor mode (it guides the user step by step and edits nothing).
+    AskTutor(String),
     /// Run a Cadence SKILL (.il) script on the project; `None` asks for the file.
     LoadSkill(Option<PathBuf>),
     /// Open the Extensions window (installed extensions, install, update, remove).
@@ -339,6 +341,8 @@ pub enum Command {
     /// Open the Learn window, at a chapter (index into `learn::CHAPTERS`) or where the user
     /// left off.
     Learn(Option<usize>),
+    /// Save a Markdown report of the Learn course progress: chapters, quizzes and checks.
+    ExportLearnReport,
     About,
     /// Look for a newer release on GitHub and show the update dialog.
     CheckForUpdates,
@@ -1900,6 +1904,18 @@ impl IcStudio {
             Command::CopilotAsk(q) => self.copilot_reply(ctx, crate::copilot::Reply::Text(q)),
             Command::CopilotApprove => self.copilot_reply(ctx, crate::copilot::Reply::Approve),
             Command::CopilotStop => self.copilot.stop(),
+            Command::AskTutor(q) => {
+                if let Some(g) = self.copilot.guide.as_mut() {
+                    self.copilot.log.push(crate::copilot::Entry::User(q.clone()));
+                    g.answer = Some(crate::copilot::GuideAnswer::Said(q));
+                } else if self.copilot.busy() {
+                    self.copilot.open = true;
+                    self.warn(t("The copilot is still working; ask again when it is done.").into());
+                } else {
+                    (self.copilot.tutor, self.copilot.plan_mode) = (true, false);
+                    self.copilot_reply(ctx, crate::copilot::Reply::Text(q));
+                }
+            }
             Command::SelectInstance(name) => {
                 let Some(r) = self.active.clone() else { return };
                 let id = self
@@ -1996,6 +2012,21 @@ impl IcStudio {
             }
             Command::Tutorial => self.tutorial.start(),
             Command::Learn(chapter) => self.learn.show(chapter, &self.settings.learn),
+            Command::ExportLearnReport => {
+                let report = self.learn_report();
+                let Some(path) = rfd::FileDialog::new()
+                    .add_filter("Markdown", &["md"])
+                    .set_file_name("learn-progress.md")
+                    .set_title(t("Save the Learn progress report"))
+                    .save_file()
+                else {
+                    return;
+                };
+                match std::fs::write(&path, report) {
+                    Ok(()) => self.ok(tf("Wrote the progress report to {}", &[&path.display().to_string()])),
+                    Err(e) => self.error(format!("{}: {e}", path.display())),
+                }
+            }
             Command::About => self.dialog = Some(Dialog::About),
             Command::CheckForUpdates => {
                 if !matches!(self.updater.state, update::State::Installed { .. }) {
@@ -3738,7 +3769,7 @@ impl IcStudio {
         let lay = self.workspace == Workspace::Layout && self.active.is_some();
         egui::MenuBar::new().ui(ui, |ui| {
             let adv = !self.settings.beginner;
-            ui.menu_button(t("File"), |ui| {
+            let menu_rect = ui.menu_button(t("File"), |ui| {
                 if ui.button(t("New Project…")).clicked() {
                     q.push(Command::NewProjectDialog);
                 }
@@ -3871,7 +3902,8 @@ impl IcStudio {
                 if ui.add(egui::Button::new(t("Quit")).shortcut_text(theme::kbd("⌘Q"))).clicked() {
                     q.push(Command::Quit);
                 }
-            });
+            }).response.rect;
+            crate::spot::mark(ui.ctx(), "menu.file", menu_rect);
             ui.menu_button(t("Edit"), |ui| {
                 if ui.add(egui::Button::new(t("Undo")).shortcut_text(theme::kbd(if lay { "u / ⌘Z" } else { "⌘Z" }))).clicked() {
                     q.push(Command::Undo);
@@ -3915,7 +3947,7 @@ impl IcStudio {
             if lay {
                 ui.menu_button(t("Create"), |ui| lay_menu_items(ui, "Create", q));
             }
-            ui.menu_button(t("Simulation"), |ui| {
+            let menu_rect = ui.menu_button(t("Simulation"), |ui| {
                 if ui
                     .add_enabled(has_sch, egui::Button::new(t("Run")).shortcut_text("F5"))
                     .on_disabled_hover_text(NEED_SCH)
@@ -3967,8 +3999,9 @@ impl IcStudio {
                 if ui.button(t("Process Data…")).clicked() {
                     q.push(Command::ProcessData);
                 }
-            });
-            ui.menu_button(t("Verify"), |ui| {
+            }).response.rect;
+            crate::spot::mark(ui.ctx(), "menu.simulation", menu_rect);
+            let menu_rect = ui.menu_button(t("Verify"), |ui| {
                 if menu_item(ui, has_lay, t("Run DRC"), NEED_LAY) {
                     q.push(Command::RunDrc);
                 }
@@ -4009,7 +4042,8 @@ impl IcStudio {
                 if adv && menu_item(ui, has_lay && has_sch, t("Update and Delete Extra Devices"), NEED_SCH) {
                     q.push(Command::UpdateFromSource(true));
                 }
-            });
+            }).response.rect;
+            crate::spot::mark(ui.ctx(), "menu.verify", menu_rect);
             ui.menu_button(t("Tools"), |ui| {
                 if ui.button(t("Design Copilot…")).clicked() {
                     q.push(Command::Copilot);
@@ -4107,7 +4141,7 @@ impl IcStudio {
             if adv {
                 Self::extensions_menu(&self.extensions, ui, has_project, q);
             }
-            ui.menu_button(t("Help"), |ui| {
+            let menu_rect = ui.menu_button(t("Help"), |ui| {
                 if ui.button(t("Learn IC Design…")).clicked() {
                     q.push(Command::Learn(None));
                 }
@@ -4138,7 +4172,8 @@ impl IcStudio {
                 if ui.button(t("About IC Studio")).clicked() {
                     q.push(Command::About);
                 }
-            });
+            }).response.rect;
+            crate::spot::mark(ui.ctx(), "menu.help", menu_rect);
             // breadcrumb
             ui.add_space(16.0);
             if let Some(p) = &self.project {
@@ -4156,7 +4191,9 @@ impl IcStudio {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let b = egui::Button::new(RichText::new(theme::kbd(&format!("🔍  {}   ⌘K", t("Search commands…")))).color(pal.text_weak))
                     .min_size(Vec2::new(220.0, 22.0));
-                if ui.add(b).clicked() {
+                let r = ui.add(b);
+                crate::spot::mark(ui.ctx(), "palette", r.rect);
+                if r.clicked() {
                     q.push(Command::CommandPalette);
                 }
             });
@@ -4170,6 +4207,7 @@ impl IcStudio {
         for w in Workspace::ALL {
             let active = self.workspace == w;
             let (r, p) = ui.allocate_painter(Vec2::new(ui.available_width(), 48.0), Sense::click());
+            crate::spot::mark(ui.ctx(), crate::spot::workspace_key(w), r.rect);
             let color = w.color(&pal);
             if spot == Some(w) {
                 let t = ui.input(|i| i.time);
@@ -4571,6 +4609,7 @@ impl IcStudio {
                 ed.bulk_nets = bulk_nets.clone();
                 if let Some(sch) = cell.schematic.as_mut() {
                     theme::aside(egui::Panel::left("sch_tools").resizable(true).default_size(220.0), ui, |ui| {
+                        crate::spot::mark(ui.ctx(), "sch.library", ui.max_rect());
                         egui::ScrollArea::vertical().show(ui, |ui| device_palette(ui, ed));
                     });
                     self.settings.mos_body_pin = ed.mos_body_pin;
@@ -4583,9 +4622,12 @@ impl IcStudio {
                     let specs = &cell.sim.sweep.specs;
                     let q = &mut self.queue;
                     theme::aside(egui::Panel::right("sch_inspector").resizable(true).default_size(250.0), ui, |ui| {
+                        crate::spot::mark(ui.ctx(), "sch.inspector", ui.max_rect());
                         egui::ScrollArea::vertical().show(ui, |ui| {
                             if ed.selection.is_empty() {
-                                changed |= crate::guide_view::design_panel(ui, &r, notes, specs, q);
+                                let d = ui.scope(|ui| crate::guide_view::design_panel(ui, &r, notes, specs, q));
+                                crate::spot::mark(ui.ctx(), "sch.design", d.response.rect);
+                                changed |= d.inner;
                             }
                             changed |= ed.inspector(ui, sch);
                         });
@@ -4646,14 +4688,16 @@ impl IcStudio {
                             icons::divider(ui);
                             ui.label(RichText::new(ed.tool.name()).color(pal.schematic));
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.button(RichText::new(t("▶ Simulate")).color(pal.simulation)).on_hover_text("F5").clicked()
-                                {
+                                let b = ui.button(RichText::new(t("▶ Simulate")).color(pal.simulation)).on_hover_text("F5");
+                                crate::spot::mark(ui.ctx(), "sch.run", b.rect);
+                                if b.clicked() {
                                     self.queue.push(Command::RunSimulation);
                                 }
                             });
                         });
                     });
                     egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| {
+                        crate::spot::mark(ui.ctx(), "sch.canvas", ui.max_rect());
                         let out = ed.canvas(ui, sch, op.as_ref());
                         changed |= out.changed;
                         for req in out.requests {
@@ -4807,6 +4851,7 @@ impl IcStudio {
                         });
                     });
                     egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| {
+                        crate::spot::mark(ui.ctx(), "lay.canvas", ui.max_rect());
                         changed |= ed.canvas(ui, l, &mut cx).changed;
                     });
                 }
@@ -5378,6 +5423,7 @@ impl IcStudio {
             (t("Keyboard shortcuts").into(), "F1", Command::Shortcuts),
             (t("Start the interactive tutorial").into(), "", Command::Tutorial),
             (t("Learn IC Design…").into(), "", Command::Learn(None)),
+            (t("Learn progress report…").into(), "", Command::ExportLearnReport),
             (t("Open user guide (web)").into(), "", Command::UserGuide),
             (t("About IC Studio").into(), "", Command::About),
             (t("Check for updates").into(), "", Command::CheckForUpdates),
@@ -6344,6 +6390,308 @@ impl IcStudio {
         }
     }
 
+    /// A copilot tool the app answers itself ([`crate::copilot::APP_TOOLS`]).
+    fn serve_app_tool(&mut self, ctx: &egui::Context, c: Pending) {
+        match c.tool.as_str() {
+            "ui_state" => {
+                let _ = c.reply.send(ToolResult { text: self.ui_state().to_string(), is_error: false });
+            }
+            "guide_step" => {
+                if self.copilot.guide.is_some() {
+                    let _ = c.reply.send(ToolResult::error("a step is already waiting for the user; give one step at a time"));
+                    return;
+                }
+                match crate::copilot::parse_guide(&c.arguments) {
+                    Err(e) => {
+                        let _ = c.reply.send(ToolResult::error(e));
+                    }
+                    Ok((instruction, why, target, check)) => {
+                        self.copilot.log.push(crate::copilot::Entry::Step(instruction.clone()));
+                        if let Some(key) = &target {
+                            crate::spot::point(ctx, key, &instruction, None);
+                        }
+                        self.copilot.guide = Some(crate::copilot::Guide {
+                            instruction,
+                            why,
+                            target,
+                            check,
+                            status: String::new(),
+                            passed: false,
+                            answer: None,
+                            reply: c.reply,
+                        });
+                    }
+                }
+            }
+            other => {
+                let _ = c.reply.send(ToolResult::error(format!("unknown app tool {other}")));
+            }
+        }
+    }
+
+    /// The state of a tutor's step check: passed, and what it says.
+    fn guide_check(&self, c: &crate::copilot::GuideCheck) -> (bool, String) {
+        use crate::copilot::GuideCheck as G;
+        use crate::learn::CheckState as S;
+        let active = self.active.as_ref().and_then(|r| Some((r, self.project.as_ref()?.cell(r)?)));
+        match c {
+            G::Design(check) => match learn_check(self.project.as_ref(), &self.sims, &self.lay_eds, check) {
+                S::Pass(d) => (true, d),
+                S::Fail(d, _) | S::Waiting(d) => (false, d),
+            },
+            G::Workspace(w) => (self.workspace == *w, tf("Workspace: {}", &[t(self.workspace.name())])),
+            G::Open(cell, ws) => {
+                let on = active.is_some_and(|(_, c)| c.name == *cell) && ws.is_none_or(|w| w == self.workspace);
+                (on, if on { tf("{} is open.", &[cell]) } else { tf("Open {}.", &[cell]) })
+            }
+            G::Exists(cell) => {
+                let there = self.project.as_ref().is_some_and(|p| p.all_cells().any(|(_, c)| c.name == *cell));
+                (there, if there { tf("{} exists.", &[cell]) } else { tf("Create the cell {} first.", &[cell]) })
+            }
+            G::Selected => {
+                let any = self.active.as_ref().is_some_and(|r| {
+                    self.sch_eds.get(r).is_some_and(|e| !e.selection.is_empty())
+                        || self.lay_eds.get(r).is_some_and(|e| !e.selection.is_empty())
+                });
+                (any, if any { t("Selected.").into() } else { t("Nothing selected yet.").into() })
+            }
+        }
+    }
+
+    /// Follow the tutor's step: point at its target, check it every frame, and answer the
+    /// copilot once it passes or the user answers.
+    fn track_guide(&mut self, ctx: &egui::Context) {
+        use crate::copilot::GuideAnswer;
+        let Some(g) = &self.copilot.guide else { return };
+        if !self.copilot.busy() {
+            // The run ended (stopped or failed): the step has nobody to report to.
+            self.copilot.guide = None;
+            crate::spot::clear(ctx);
+            return;
+        }
+        let check = g.check.clone();
+        let (passed, status) = check.as_ref().map_or((false, String::new()), |c| self.guide_check(c));
+        let target = g.target.clone();
+        if let Some(key) = &target
+            && crate::spot::rect(ctx, key).is_none()
+            && let Some(w) = crate::spot::anchor(key).and_then(|a| a.workspace)
+            && w != self.workspace
+        {
+            // Not on screen: point at the workspace that shows it.
+            crate::spot::point_now(ctx, crate::spot::workspace_key(w));
+        }
+        let Some(g) = self.copilot.guide.as_mut() else { return };
+        g.passed = passed;
+        g.status = status.clone();
+        let answer = if passed { Some(None) } else { g.answer.take().map(Some) };
+        let Some(answer) = answer else {
+            ctx.request_repaint_after(Duration::from_millis(300));
+            return;
+        };
+        let g = self.copilot.guide.take().expect("guide");
+        crate::spot::clear(ctx);
+        let mut out = serde_json::Map::new();
+        let ended = match &answer {
+            None => "passed",
+            Some(GuideAnswer::Done) => "the user pressed Done",
+            Some(GuideAnswer::Stuck) => {
+                "the user pressed I'm stuck: give a hint (the idea first, then where, then the exact action)"
+            }
+            Some(GuideAnswer::Said(_)) => "the user wrote a message instead of finishing the step",
+        };
+        out.insert("ended".into(), ended.into());
+        if let Some(GuideAnswer::Said(t)) = &answer {
+            out.insert("user_says".into(), t.clone().into());
+        }
+        if check.is_some() {
+            out.insert("check".into(), serde_json::json!({"passed": passed, "detail": status}));
+        }
+        out.insert("ui_state".into(), self.ui_state());
+        if passed {
+            self.copilot.log.push(crate::copilot::Entry::Notice(tf("Step done: {}", &[&status])));
+        }
+        let _ = g.reply.send(ToolResult { text: serde_json::Value::Object(out).to_string(), is_error: false });
+    }
+
+    /// The Learn course, in its window or docked in `ui`.
+    fn learn_ui(&mut self, ctx: &egui::Context, ui: Option<&mut egui::Ui>) -> Vec<Command> {
+        let project = self.project.as_ref();
+        let find = |name: &str| -> Option<CellRef> { project?.all_cells().find(|(_, c)| c.name == name).map(|(r, _)| r) };
+        let check = |c: &crate::learn::Check| learn_check(project, &self.sims, &self.lay_eds, c);
+        let cells: Vec<String> = project.map(|p| p.all_cells().map(|(_, c)| c.name.clone()).collect()).unwrap_or_default();
+        let env = crate::learn_view::Env { find_cell: &find, check: &check, project_open: project.is_some(), cells: &cells };
+        match ui {
+            Some(ui) => self.learn.panel(ui, &mut self.settings.learn, &env),
+            None => self.learn.window(ctx, &mut self.settings.learn, &env),
+        }
+    }
+
+    /// What the user sees, for the copilot (`ui_state`).
+    fn ui_state(&self) -> serde_json::Value {
+        use serde_json::json;
+        let mut v = serde_json::Map::new();
+        v.insert("workspace".into(), self.workspace.name().into());
+        v.insert("project_open".into(), self.project.is_some().into());
+        if let Some(p) = &self.project {
+            v.insert("cells".into(), p.all_cells().map(|(r, _)| r.to_string()).take(80).collect::<Vec<_>>().into());
+        }
+        if let Some((r, cell)) = self.active.as_ref().and_then(|r| Some((r, self.project.as_ref()?.cell(r)?))) {
+            let mut a = serde_json::Map::new();
+            a.insert("cell".into(), r.to_string().into());
+            if let Some(sch) = &cell.schematic {
+                let devices: Vec<String> = sch
+                    .instances
+                    .iter()
+                    .filter(|i| {
+                        !matches!(i.kind, ics_core::schematic::DeviceKind::Ground | ics_core::schematic::DeviceKind::Supply)
+                    })
+                    .map(|i| i.name.clone())
+                    .collect();
+                a.insert("schematic_devices".into(), devices.into());
+                a.insert("wires".into(), sch.wires.len().into());
+                if let Some(ed) = self.sch_eds.get(r) {
+                    let sel: Vec<String> = ed
+                        .selection
+                        .iter()
+                        .map(|o| match o {
+                            ics_core::schematic::SchObj::Instance(id) => {
+                                sch.instances.iter().find(|i| i.id == *id).map_or("device".into(), |i| i.name.clone())
+                            }
+                            ics_core::schematic::SchObj::Wire(_) => "wire".into(),
+                            ics_core::schematic::SchObj::Label(_) => "net label".into(),
+                        })
+                        .collect();
+                    a.insert("schematic_selection".into(), sel.into());
+                }
+            }
+            a.insert("has_layout".into(), cell.layout.is_some().into());
+            if let Some(sim) = self.sims.get(r) {
+                let mut s = serde_json::Map::new();
+                s.insert("running".into(), sim.is_running().into());
+                if let Some(e) = &sim.error {
+                    s.insert("error".into(), e.clone().into());
+                }
+                if let Some(res) = &sim.results {
+                    s.insert("analyses".into(), res.datasets.iter().map(|d| d.analysis.clone()).collect::<Vec<_>>().into());
+                    if let Some(op) = res.dataset("op") {
+                        let regions: serde_json::Map<String, serde_json::Value> =
+                            op.devices.iter().filter_map(|d| Some((d.name.clone(), d.region.clone()?.into()))).collect();
+                        s.insert("regions".into(), regions.into());
+                    }
+                    s.insert("tab_shown".into(), sim.tab.clone().into());
+                }
+                a.insert("simulation".into(), s.into());
+            }
+            if let Some(ed) = self.lay_eds.get(r) {
+                if let Some(d) = &ed.verify.drc {
+                    a.insert("drc_violations".into(), d.violations.len().into());
+                }
+                if let Some(l) = &ed.verify.lvs {
+                    a.insert("lvs".into(), json!({"matched": l.matched, "differences": l.errors.len()}));
+                }
+            }
+            v.insert("active".into(), a.into());
+        }
+        if self.learn.open {
+            v.insert("learn".into(), self.learn_state());
+        }
+        if self.tutorial.open && !self.tutorial.finished() {
+            v.insert("tutorial_step".into(), (self.tutorial.step + 1).into());
+        }
+        if let Some(g) = &self.copilot.guide {
+            v.insert("waiting_step".into(), g.instruction.clone().into());
+        }
+        v.into()
+    }
+
+    /// The Learn chapter open, its checks and the quizzes answered wrong.
+    fn learn_state(&self) -> serde_json::Value {
+        use crate::learn::{Block, CHAPTERS, CheckState};
+        let lang = crate::i18n::current();
+        let i = self.learn.chapter;
+        let mut checks = vec![];
+        for b in crate::learn::blocks(lang, i) {
+            if let Block::Check(c) = b {
+                let mut c = c.clone();
+                if let Some(a) = self.learn.aliases.get(&c.cell) {
+                    c.cell = a.clone();
+                }
+                let (state, detail) = match learn_check(self.project.as_ref(), &self.sims, &self.lay_eds, &c) {
+                    CheckState::Pass(d) => ("passed", d),
+                    CheckState::Fail(d, _) => ("failed", d),
+                    CheckState::Waiting(d) => ("not yet", d),
+                };
+                checks.push(serde_json::json!({"check": c.label, "cell": c.cell, "state": state, "detail": detail}));
+            }
+        }
+        let prefix = format!("{}#", CHAPTERS[i].id);
+        let wrong: Vec<&String> =
+            self.settings.learn.quiz.iter().filter(|(k, ok)| k.starts_with(&prefix) && !**ok).map(|(k, _)| k).collect();
+        serde_json::json!({
+            "chapter": crate::learn::strip_inline(crate::learn::title(lang, i)),
+            "page": format!("{}learn/{}", if lang == crate::i18n::Lang::Ko { "ko/" } else { "" }, CHAPTERS[i].id),
+            "checks": checks,
+            "quizzes_wrong": wrong,
+            "chapters_done": self.settings.learn.chapters_done(),
+        })
+    }
+
+    /// The Learn progress as Markdown, in the UI language: per chapter whether it is done,
+    /// the quizzes answered right, and the state of its checks on the user's design now.
+    pub fn learn_report(&self) -> String {
+        use crate::learn::{Block, CHAPTERS, CheckState};
+        use std::fmt::Write;
+        let lang = crate::i18n::current();
+        let p = &self.settings.learn;
+        let mut out = String::new();
+        let _ = writeln!(out, "# {}\n", t("Learn IC Design: progress report"));
+        let project = self.project.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| t("no project open").to_string());
+        let _ = writeln!(out, "- {}: {}", t("Project"), project);
+        let _ =
+            writeln!(out, "- {}\n", tf("{} of {} chapters done", &[&p.chapters_done().to_string(), &CHAPTERS.len().to_string()]));
+        let _ = writeln!(out, "| {} | {} | {} | {} |", t("Chapter"), t("Done"), t("Quizzes right"), t("Checks passed"));
+        out.push_str("|---|---|---|---|\n");
+        let mut details = String::new();
+        for (i, c) in CHAPTERS.iter().enumerate() {
+            let title = crate::learn::strip_inline(crate::learn::title(lang, i));
+            let blocks = crate::learn::blocks(lang, i);
+            let quizzes = blocks.iter().filter(|b| matches!(b, Block::Quiz(_))).count();
+            let prefix = format!("{}#", c.id);
+            let right = p.quiz.iter().filter(|(k, ok)| k.starts_with(&prefix) && **ok).count();
+            let (mut checks, mut passed) = (0, 0);
+            let mut lines = String::new();
+            for b in blocks {
+                let Block::Check(check) = b else { continue };
+                let mut check = check.clone();
+                if let Some(a) = self.learn.aliases.get(&check.cell) {
+                    check.cell = a.clone();
+                }
+                checks += 1;
+                let (mark, detail) = match learn_check(self.project.as_ref(), &self.sims, &self.lay_eds, &check) {
+                    CheckState::Pass(d) => {
+                        passed += 1;
+                        ("✓", d)
+                    }
+                    CheckState::Fail(d, _) => ("×", d),
+                    CheckState::Waiting(d) => ("…", d),
+                };
+                let _ = writeln!(lines, "- {mark} {} (`{}`): {detail}", crate::learn::strip_inline(&check.label), check.cell);
+            }
+            let done = if p.done.contains(c.id) { "✓" } else { "" };
+            let quiz = if quizzes > 0 { format!("{right} / {quizzes}") } else { "–".into() };
+            let check = if checks > 0 { format!("{passed} / {checks}") } else { "–".into() };
+            let _ = writeln!(out, "| {title} | {done} | {quiz} | {check} |");
+            if !lines.is_empty() {
+                let _ = writeln!(details, "\n## {title}\n\n{lines}");
+            }
+        }
+        if !details.is_empty() {
+            let _ = writeln!(out, "\n{}", t("Checks on the design, as it is now:"));
+            out.push_str(&details);
+        }
+        out
+    }
+
     /// What the user has done of the tutorial's steps.
     fn tutorial_progress(&self) -> crate::tutorial::Progress {
         let inverter = self.project.as_ref().and_then(|p| {
@@ -6369,6 +6717,11 @@ impl IcStudio {
             workspace: Some(self.workspace),
             inverter,
         }
+    }
+
+    #[doc(hidden)]
+    pub fn learn_go_to(&mut self, chapter: usize, anchor: &str) {
+        self.learn.go_to(chapter, anchor, &mut self.settings.learn);
     }
 
     #[doc(hidden)]
@@ -7420,7 +7773,16 @@ impl IcStudio {
 
     /// What the copilot is told about the session.
     fn copilot_context(&self) -> String {
-        let Some(p) = &self.project else { return "No project is open.".into() };
+        let learn = if self.learn.open {
+            let lang = crate::i18n::current();
+            format!(
+                "\nThe user has the Learn course open at the chapter \"{}\" (ui_state has its checks).",
+                crate::learn::strip_inline(crate::learn::title(lang, self.learn.chapter))
+            )
+        } else {
+            String::new()
+        };
+        let Some(p) = &self.project else { return format!("No project is open.{learn}") };
         let mut s = format!(
             "Open project: {} (technology {}, {} cells{}).",
             p.name,
@@ -7460,7 +7822,7 @@ Cells (views):";
                 s += &format!(" ({})", c.description.trim());
             }
         }
-        s
+        s + &learn
     }
 
     pub fn ciw(&self) -> &Ciw {
@@ -7618,10 +7980,16 @@ impl eframe::App for IcStudio {
                     }
                 })
                 .collect();
+            let (app, calls): (Vec<Pending>, Vec<Pending>) =
+                calls.into_iter().partition(|c| crate::copilot::APP_TOOLS.contains(&c.tool.as_str()));
+            for c in app {
+                self.serve_app_tool(ctx, c);
+            }
             if !calls.is_empty() {
                 self.bridge_queue().extend(calls);
             }
         }
+        self.track_guide(ctx);
         self.serve_extensions();
         self.serve_bridge(ctx);
         if self.is_busy() {
@@ -7657,6 +8025,7 @@ impl eframe::App for IcStudio {
                 .frame(egui::Frame::new().fill(pal.bg_sidebar).inner_margin(10)),
             ui,
             |ui| {
+                crate::spot::mark(ui.ctx(), "explorer", ui.max_rect());
                 egui::ScrollArea::vertical().show(ui, |ui| self.explorer(ui));
             },
         );
@@ -7667,6 +8036,17 @@ impl eframe::App for IcStudio {
                 .size_range(60.0..=500.0)
                 .frame(egui::Frame::new().fill(pal.bg_panel).inner_margin(egui::Margin::symmetric(10, 6)))
                 .show(ui, |ui| self.console(ui));
+        }
+        if self.learn.open && self.settings.learn.docked {
+            egui::Panel::right("learn_dock")
+                .resizable(true)
+                .default_size(460.0)
+                .size_range(320.0..=900.0)
+                .frame(egui::Frame::new().fill(pal.bg_sidebar).inner_margin(10).stroke(Stroke::new(1.0, pal.border)))
+                .show(ui, |ui| {
+                    let cmds = self.learn_ui(&ctx, Some(ui));
+                    self.queue.extend(cmds);
+                });
         }
         egui::CentralPanel::default().frame(egui::Frame::new().fill(pal.bg_panel)).show(ui, |ui| {
             crate::float::set_work_area(ui.ctx(), ui.max_rect());
@@ -7749,14 +8129,15 @@ impl eframe::App for IcStudio {
         self.tutorial.track(&progress);
         let cmds = self.tutorial.window(&ctx, &progress);
         self.queue.extend(cmds);
-        if self.learn.open {
-            let project = self.project.as_ref();
-            let find = |name: &str| -> Option<CellRef> { project?.all_cells().find(|(_, c)| c.name == name).map(|(r, _)| r) };
-            let check = |c: &crate::learn::Check| learn_check(project, &self.sims, &self.lay_eds, c);
-            let env = crate::learn_view::Env { find_cell: &find, check: &check, project_open: project.is_some() };
-            let cmds = self.learn.window(&ctx, &mut self.settings.learn, &env);
+        if self.learn.open && !self.settings.learn.docked {
+            let cmds = self.learn_ui(&ctx, None);
             self.queue.extend(cmds);
         }
+        let tutorial_spot = self.tutorial.anchor();
+        if let Some(key) = tutorial_spot {
+            crate::spot::point_now(&ctx, key);
+        }
+        crate::spot::paint(&ctx, pal.warning, pal.bg_panel, pal.text_strong);
 
         // While a SKILL script runs on a copy of the project, commands wait: its result replaces
         // the project when it ends.

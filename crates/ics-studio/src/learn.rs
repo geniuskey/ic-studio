@@ -14,6 +14,9 @@
 //! -->
 //! ```
 //!
+//! `<!-- explore: mosfet -->` places an explorable figure (sliders and a live curve, see
+//! `explore_view`).
+//!
 //! A numeric quiz answers with `= 10 ±0.5 ns` instead of the `-`/`+` options. The label of a
 //! `try` or `check` and the text of a quiz are in the file's language; the part after `|`
 //! and the answers are the same in both languages (a test checks).
@@ -53,6 +56,7 @@ pub const CHAPTERS: &[Chapter] = &[
     chapter!("tutorial-layout"),
     chapter!("analog-basics"),
     chapter!("tutorial-amplifier"),
+    chapter!("tutorial-derive"),
     chapter!("glossary"),
 ];
 
@@ -123,6 +127,8 @@ pub enum Block {
     },
     Quiz(Quiz),
     Check(Check),
+    /// An explorable figure (`explore_view::NAMES`): sliders and a live curve.
+    Explore(String),
     Rule,
 }
 
@@ -203,7 +209,8 @@ pub enum CheckKind {
 #[derive(Debug, Clone, PartialEq)]
 pub enum CheckState {
     Pass(String),
-    Fail(String),
+    /// What is wrong, and what to try (plain-language advice).
+    Fail(String, Option<String>),
     /// Not possible to tell yet (no such cell, not simulated, ...): what to do first.
     Waiting(String),
 }
@@ -218,6 +225,8 @@ pub struct Progress {
     pub quiz: BTreeMap<String, bool>,
     /// The chapter last open.
     pub last: Option<String>,
+    /// The window is docked at the right side of the main window instead of floating.
+    pub docked: bool,
 }
 
 impl Progress {
@@ -280,6 +289,67 @@ pub fn strip_inline(text: &str) -> String {
         rest = &rest[c.len_utf8()..];
     }
     out
+}
+
+/// The glossary chapter's terms, for the hover help on terms in the other chapters.
+pub struct Glossary {
+    /// The term as written and its meaning (inline Markdown).
+    pub terms: Vec<(String, String)>,
+    /// Lower-case names (the bold term, its parenthesised aliases) to `terms`.
+    keys: BTreeMap<String, usize>,
+}
+
+fn gloss_key(s: &str) -> String {
+    strip_inline(s).trim().to_lowercase()
+}
+
+impl Glossary {
+    fn new(blocks: &[Block]) -> Glossary {
+        let mut g = Glossary { terms: vec![], keys: BTreeMap::new() };
+        for b in blocks {
+            let Block::Table { rows, .. } = b else { continue };
+            for row in rows {
+                let [term, meaning, ..] = row.as_slice() else { continue };
+                let i = g.terms.len();
+                g.terms.push((strip_inline(term), meaning.clone()));
+                let mut names: Vec<&str> = vec![];
+                for (n, part) in term.split("**").enumerate() {
+                    if n % 2 == 1 {
+                        names.push(part);
+                    } else if let Some(inner) = part.split_once('(').and_then(|(_, r)| r.split_once(')')).map(|(x, _)| x) {
+                        names.extend(inner.split(','));
+                    }
+                }
+                for name in names {
+                    for part in std::iter::once(name).chain(name.split([',', '/'])) {
+                        let k = gloss_key(part);
+                        if k.chars().count() >= 2 {
+                            g.keys.entry(k).or_insert(i);
+                        }
+                    }
+                }
+            }
+        }
+        g
+    }
+
+    /// The entry of a term as it appears in a chapter (also its plural).
+    pub fn lookup(&self, text: &str) -> Option<&(String, String)> {
+        let k = gloss_key(text);
+        let i = self.keys.get(&k).or_else(|| {
+            let singular = k.strip_suffix("es").filter(|s| s.ends_with('s')).or_else(|| k.strip_suffix('s'))?;
+            self.keys.get(singular)
+        })?;
+        self.terms.get(*i)
+    }
+}
+
+/// The glossary in `lang`.
+pub fn glossary(lang: Lang) -> &'static Glossary {
+    static EN: OnceLock<Glossary> = OnceLock::new();
+    static KO: OnceLock<Glossary> = OnceLock::new();
+    let cell = if lang == Lang::Ko { &KO } else { &EN };
+    cell.get_or_init(|| Glossary::new(chapter_index("glossary").map_or(&[], |i| blocks(lang, i))))
 }
 
 /// Split a directive's arguments on blanks, keeping `"quoted strings"` whole.
@@ -429,6 +499,14 @@ fn directive(comment: &str) -> Option<Result<Block, String>> {
     match kind.trim() {
         "try" => Some(parse_action(args).map(|action| Block::Try { label: label.trim().to_string(), action })),
         "check" => Some(parse_check(label, args).map(Block::Check)),
+        "explore" => {
+            let name = args.trim();
+            Some(if crate::explore_view::NAMES.contains(&name) {
+                Ok(Block::Explore(name.to_string()))
+            } else {
+                Err(format!("unknown explorable figure '{name}'"))
+            })
+        }
         _ => None,
     }
 }
@@ -587,6 +665,7 @@ pub fn skeleton(blocks: &[Block]) -> Vec<String> {
             Block::Image { path, .. } => Some(format!("image {}", path.rsplit('/').next().unwrap_or(path))),
             Block::Try { action, .. } => Some(format!("try {action:?}")),
             Block::Check(c) => Some(format!("check {} {:?}", c.cell, c.kind)),
+            Block::Explore(name) => Some(format!("explore {name}")),
             Block::Quiz(q) => Some(match &q.answer {
                 Answer::Choice { options, correct } => format!("quiz {} options, #{correct}", options.len()),
                 Answer::Number { value, tol, unit } => format!("quiz = {value} ±{tol} {unit}"),
@@ -654,6 +733,19 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn glossary_terms() {
+        let g = glossary(Lang::En);
+        assert!(g.terms.len() > 50);
+        assert!(g.lookup("MOSFET").is_some_and(|(_, m)| m.contains("field-effect")));
+        assert_eq!(g.lookup("transistors").map(|(t, _)| t.as_str()), g.lookup("transistor").map(|(t, _)| t.as_str()));
+        assert!(g.lookup("diffusion").is_some_and(|(t, _)| t.starts_with("Active")));
+        assert!(g.lookup("V<sub>th</sub>").is_some() || g.lookup("threshold voltage").is_some());
+        let ko = glossary(Lang::Ko);
+        assert!(ko.lookup("문턱 전압").is_some(), "Korean aliases are looked up");
+        assert!(ko.lookup("MOSFET").is_some());
     }
 
     /// Links between chapters point at chapters and headings that exist, in both languages.

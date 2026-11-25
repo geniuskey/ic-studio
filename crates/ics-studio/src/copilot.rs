@@ -5,6 +5,12 @@
 //! Besides the design tools the agent has its own: `update_todos` keeps a task list the window
 //! shows, `ask_user` pauses the run until the user answers, and `exit_plan_mode` presents a plan
 //! for approval. In plan mode only read-only tools run, so the agent investigates and plans first.
+//!
+//! Tutor mode is for learners: edits are refused, and the copilot teaches by giving one step at a
+//! time with `guide_step`. The app points at the place in the window ([`crate::spot`]), shows the
+//! step in the chat and answers the call when the step's check passes on the user's design, or
+//! when the user presses Done or I'm stuck or writes something. `ui_state` tells the tutor what
+//! the user sees.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,6 +21,11 @@ use eframe::egui;
 use ics_mcp::ToolResult;
 use ics_mcp::bridge::Pending;
 use serde_json::{Map, Value, json};
+
+/// How long a tutor's step waits for the user.
+const STEP_TIMEOUT: Duration = Duration::from_secs(4 * 3600);
+/// Tools the app answers itself (not the MCP tools): what the user sees, and a tutor's step.
+pub const APP_TOOLS: [&str; 2] = ["ui_state", "guide_step"];
 
 /// Model turns per request before the copilot pauses.
 const MAX_TURNS: usize = 40;
@@ -65,6 +76,8 @@ pub enum Entry {
     },
     /// A plan presented for approval.
     Plan(String),
+    /// A tutor's step for the user to do.
+    Step(String),
     Notice(String),
     Error(String),
 }
@@ -139,6 +152,88 @@ pub struct Copilot {
     pub ext: ics_mcp::ext::Registry,
     /// Name of the active cell, for the starter suggestions.
     pub active_cell: Option<String>,
+    /// Teach instead of doing: edits are refused and the copilot guides the user step by step.
+    pub tutor: bool,
+    /// The tutor's step the user is working on; the app answers it.
+    pub guide: Option<Guide>,
+}
+
+/// What finishes a tutor's step, besides the user saying so.
+#[derive(Debug, Clone, PartialEq)]
+pub enum GuideCheck {
+    /// A check on a cell, as the Learn course writes them (`my_inv simulated`).
+    Design(crate::learn::Check),
+    /// The user is in this workspace.
+    Workspace(crate::app::Workspace),
+    /// The cell is the active one (in that workspace).
+    Open(String, Option<crate::app::Workspace>),
+    /// The project has a cell of this name.
+    Exists(String),
+    /// Something is selected in the active schematic or layout.
+    Selected,
+}
+
+/// How the user answered a step.
+#[derive(Debug, Clone, PartialEq)]
+pub enum GuideAnswer {
+    Done,
+    Stuck,
+    Said(String),
+}
+
+/// A tutor's step waiting for the user.
+pub struct Guide {
+    pub instruction: String,
+    pub why: String,
+    /// The anchor pointed at ([`crate::spot::ANCHORS`]).
+    pub target: Option<String>,
+    pub check: Option<GuideCheck>,
+    /// What the check says now.
+    pub status: String,
+    pub passed: bool,
+    /// Set by the window; the app replies with it.
+    pub answer: Option<GuideAnswer>,
+    pub reply: Sender<ToolResult>,
+}
+
+/// Parse `guide_step` arguments: the step, or what is wrong with them.
+pub fn parse_guide(args: &Map<String, Value>) -> Result<(String, String, Option<String>, Option<GuideCheck>), String> {
+    let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::trim).unwrap_or_default().to_string();
+    let instruction = s("instruction");
+    if instruction.is_empty() {
+        return Err("instruction is required: one action for the user, in plain words".into());
+    }
+    let target = Some(s("target")).filter(|t| !t.is_empty());
+    if let Some(t) = &target
+        && crate::spot::anchor(t).is_none()
+    {
+        return Err(format!("unknown target '{t}'; use one of the listed anchors or leave it out"));
+    }
+    let check = Some(s("check")).filter(|c| !c.is_empty()).map(|c| parse_guide_check(&c)).transpose()?;
+    Ok((instruction, s("why"), target, check))
+}
+
+fn parse_guide_check(c: &str) -> Result<GuideCheck, String> {
+    use crate::app::Workspace;
+    let w: Vec<&str> = c.split_whitespace().collect();
+    let ws = |n: Option<&&str>| -> Result<Option<Workspace>, String> {
+        Ok(match n.map(|s| s.to_ascii_lowercase()) {
+            None => None,
+            Some(n) => Some(
+                Workspace::ALL
+                    .into_iter()
+                    .find(|w| w.name().eq_ignore_ascii_case(&n))
+                    .ok_or_else(|| format!("unknown workspace '{n}' (home, schematic, simulation, layout)"))?,
+            ),
+        })
+    };
+    Ok(match (w.first().copied(), w.get(1).copied()) {
+        (Some("workspace"), Some(_)) => GuideCheck::Workspace(ws(w.get(1))?.unwrap_or(Workspace::Home)),
+        (Some("open"), Some(cell)) => GuideCheck::Open(cell.to_string(), ws(w.get(2))?),
+        (Some("selected"), None) => GuideCheck::Selected,
+        (Some(cell), Some("exists")) => GuideCheck::Exists(cell.to_string()),
+        _ => GuideCheck::Design(crate::learn::parse_check("", c)?),
+    })
 }
 
 /// Starter requests shown while the conversation is empty: (button text, request sent), in
@@ -180,6 +275,30 @@ pub fn suggestions(cell: Option<&str>) -> Vec<(String, String)> {
     }
 }
 
+/// Starter requests in tutor mode.
+pub fn tutor_suggestions(cell: Option<&str>) -> Vec<(String, String)> {
+    use crate::i18n::{t, tf};
+    let mut v = vec![
+        (
+            t("Teach me to design an inverter").to_string(),
+            t("I am new to chip design. Teach me to design a CMOS inverter step by step: I want to place the transistors, \
+               wire them, simulate and measure it myself.")
+            .to_string(),
+        ),
+        (
+            t("Help me with my Learn chapter").to_string(),
+            t("Look at the Learn chapter I have open and help me through its next step.").to_string(),
+        ),
+    ];
+    if let Some(c) = cell {
+        v.push((
+            tf("Walk me through {}", &[c]),
+            tf("Walk me through {} part by part: show me each device on the canvas and explain what it does.", &[c]),
+        ));
+    }
+    v
+}
+
 impl Default for Copilot {
     fn default() -> Self {
         Self {
@@ -191,6 +310,8 @@ impl Default for Copilot {
             open_settings: false,
             plan_mode: false,
             active_cell: None,
+            tutor: false,
+            guide: None,
             history: vec![],
             wait: None,
             events: None,
@@ -230,6 +351,31 @@ fn agent_declarations() -> Vec<Value> {
             }, "required": ["question"]},
         }),
         json!({
+            "name": "ui_state",
+            "description": "What the user sees right now: the workspace, the active cell and what is selected, the last \
+                simulation of the active cell (analyses, errors, transistor regions), DRC / LVS results, the Learn chapter \
+                open with the state of its checks and the quizzes answered wrong, and the tutorial step. Call it first \
+                when teaching, and whenever you are unsure what the user did.",
+            "parametersJsonSchema": {"type": "object", "properties": {}},
+        }),
+        json!({
+            "name": "guide_step",
+            "description": format!("Give the user ONE step to do themselves and wait until it is done. The window points \
+                at `target` with your instruction and shows the step in the chat with Done and I'm stuck buttons. The \
+                result says how the step ended: the check passed (\"passed\"), the user pressed Done or I'm stuck, or \
+                what they wrote; it includes ui_state. Checks: '<cell> exists', 'open <cell> [schematic|simulation|layout]', \
+                'workspace <name>', 'selected', '<cell> schematic <devices>', '<cell> layout', '<cell> simulated', \
+                '<cell> region <device> <saturation|triode|cutoff>', '<cell> measure <op|dc|ac|tran> \"<calculator \
+                expression>\" <min> <max>' (SPICE numbers, \"\" for no limit), '<cell> drc', '<cell> lvs'. Targets: {}.",
+                crate::spot::ANCHORS.iter().map(|a| format!("{} ({})", a.key, a.what)).collect::<Vec<_>>().join("; ")),
+            "parametersJsonSchema": {"type": "object", "properties": {
+                "instruction": {"type": "string", "description": "One action, in plain words and the user's language, e.g. 'Click NMOS in the Device Library, then click on the canvas to place it.'"},
+                "why": {"type": "string", "description": "One sentence on why this step matters."},
+                "target": {"type": "string", "enum": crate::spot::ANCHORS.iter().map(|a| a.key).collect::<Vec<_>>()},
+                "check": {"type": "string", "description": "When the step is done, in the check syntax above. Leave it out when no check fits; the user then presses Done."}
+            }, "required": ["instruction"]},
+        }),
+        json!({
             "name": "exit_plan_mode",
             "description": "In plan mode: present the finished plan for the user's approval. The plan is a numbered list \
                 of concrete steps naming the cells, tools and target values, and how each result is verified. After \
@@ -257,10 +403,44 @@ pub fn declarations_with(ext: Vec<Value>) -> Vec<Value> {
 
 /// Whether a design tool call leaves the project unchanged.
 fn read_only(name: &str, args: &Map<String, Value>) -> bool {
-    READ_ONLY.contains(&name) || (name == "optimize" && args.get("apply") != Some(&Value::Bool(true)))
+    READ_ONLY.contains(&name)
+        || APP_TOOLS.contains(&name)
+        || (name == "optimize" && args.get("apply") != Some(&Value::Bool(true)))
 }
 
-fn system_prompt(context: &str, plan_mode: bool) -> String {
+const TUTOR: &str = "TUTOR MODE is on. The user is learning IC design, often with no background in semiconductors, \
+and wants to do the work with their own hands. You are a patient tutor, not an agent: edits are refused, the user makes \
+them.\n\
+How to teach:\n\
+1. Call ui_state first to see where the user is (workspace, open cell, Learn chapter and its checks, last simulation).\n\
+2. Split the task into small steps and give ONE at a time with guide_step: a single concrete action in plain words, the \
+target to point at, and a check that passes when it is done. guide_step waits for the user and tells you how the step \
+ended. Never give several actions in one step.\n\
+3. After each step say in one or two sentences what just happened and why it matters, then give the next step.\n\
+4. Before a simulation, ask the user to predict the result (ask_user with 2-4 options), then compare with what they get.\n\
+5. When the user is stuck, hint in three levels: first the idea, then where in the window, then the exact action. For a \
+quiz, lead them to the answer with a question instead of giving it.\n\
+6. Explain every term the first time you use it (saturation, gm, threshold, netlist ...), with short sentences and \
+everyday comparisons. Use the user's own numbers from the tools and the course; never invent results.\n\
+7. Let the user press the buttons (simulate, DRC, LVS) through guide_step; use the read-only tools only to diagnose.\n\
+8. The course in the app (Help > Learn IC Design) covers the theory: docs_search / docs_read with pages under learn/ \
+(or ko/learn/) give its text and numbers. Point the user to the right chapter.\n\
+9. End with a short recap of what the user learned and one thing to try next.";
+
+fn system_prompt(context: &str, plan_mode: bool, tutor: bool) -> String {
+    if tutor {
+        return format!(
+            "You are the tutor of IC Studio, a full-custom IC design environment (schematic, SPICE simulation, layout, \
+             DRC/LVS), working next to the user's window: through the tools you see their project and results, and \
+             through guide_step you point at the window and wait for them.\n\n{TUTOR}\n\n\
+             Questions about using IC Studio (menus, buttons, shortcuts): answer from the user manual with docs_search \
+             and docs_read, with its exact menu paths; never invent a menu or button.\n\n\
+             Keep formatting light: plain sentences, short lists, **bold** for key numbers, `inline code` for cell, net \
+             and device names. No tables or headings.\n\n\
+             Language: write everything (steps, questions, explanations) in the language of the user's latest message; \
+             if it is Korean, write Korean throughout.\n\n{context}"
+        );
+    }
     let mode = if plan_mode {
         "PLAN MODE is on. Only read-only tools run (project_info, get_netlist, layout_summary, flylines, simulate, \
          run_drc, run_lvs, extract, optimize without apply, ...); edits are refused. Investigate the design, ask the \
@@ -355,6 +535,7 @@ struct Run {
     history: Vec<Value>,
     system: String,
     plan_mode: bool,
+    tutor: bool,
     tools: Sender<Pending>,
     events: Sender<Event>,
     wake: egui::Context,
@@ -380,6 +561,7 @@ impl Run {
         } else {
             self.wake.request_repaint();
             let start = Instant::now();
+            let limit = if name == "guide_step" { STEP_TIMEOUT } else { TOOL_TIMEOUT };
             loop {
                 match rx.recv_timeout(Duration::from_millis(200)) {
                     Ok(r) => break r,
@@ -387,7 +569,7 @@ impl Run {
                     Err(RecvTimeoutError::Timeout) if self.cancelled() => {
                         break ToolResult::error("cancelled by the user; the call may still finish in the app");
                     }
-                    Err(RecvTimeoutError::Timeout) if start.elapsed() > TOOL_TIMEOUT => {
+                    Err(RecvTimeoutError::Timeout) if start.elapsed() > limit => {
                         break ToolResult::error("the tool call timed out");
                     }
                     Err(RecvTimeoutError::Timeout) => {}
@@ -493,6 +675,10 @@ impl Run {
                             continue;
                         }
                         "exit_plan_mode" => json!({"result": "plan mode is off; go ahead with the work"}),
+                        _ if self.tutor && !read_only(&name, &args) && !self.ext.read_only(&name) => json!({"error": format!(
+                            "tutor mode is on, so '{name}' did not run: the user makes the edits. Give them the step \
+                             with guide_step instead."
+                        )}),
                         _ if self.plan_mode && !read_only(&name, &args) && !self.ext.read_only(&name) => json!({"error": format!(
                             "plan mode is on, so '{name}' did not run: only read-only tools work. Put this step in the \
                              plan and present it with exit_plan_mode."
@@ -605,8 +791,9 @@ impl Copilot {
         let run = Run {
             llm,
             history,
-            system: system_prompt(context, self.plan_mode),
-            plan_mode: self.plan_mode,
+            system: system_prompt(context, self.plan_mode && !self.tutor, self.tutor),
+            plan_mode: self.plan_mode && !self.tutor,
+            tutor: self.tutor,
             tools: tool_tx,
             events: ev_tx,
             wake: ctx.clone(),
@@ -685,6 +872,7 @@ impl Copilot {
                     format!("Question: {text}{o}")
                 }
                 Entry::Plan(t) => format!("Plan:\n{t}"),
+                Entry::Step(t) => format!("Step: {t}"),
                 Entry::Notice(t) => t.clone(),
                 Entry::Error(t) => format!("Error: {t}"),
             });
@@ -754,6 +942,11 @@ impl Copilot {
             Entry::Plan(t) => {
                 Self::card(ui, id, "Plan", pal.accent.gamma_multiply(0.08), pal.accent, t, |ui| {
                     crate::chat::markdown(ui, id, t, pal);
+                });
+            }
+            Entry::Step(text) => {
+                Self::card(ui, id, t("Tutor step"), pal.ok.gamma_multiply(0.10), pal.ok, text, |ui| {
+                    crate::chat::markdown(ui, id, text, pal);
                 });
             }
             Entry::Notice(t) => {
@@ -831,6 +1024,43 @@ impl Copilot {
         send
     }
 
+    /// The tutor's current step, with the buttons that answer it.
+    fn step_card(&mut self, ui: &mut egui::Ui, pal: &crate::theme::Palette) {
+        let Some(g) = self.guide.as_mut() else { return };
+        egui::Frame::new()
+            .fill(pal.ok.gamma_multiply(0.10))
+            .stroke(egui::Stroke::new(1.0, pal.ok.gamma_multiply(0.6)))
+            .corner_radius(6)
+            .inner_margin(egui::Margin::symmetric(10, 8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                crate::spot::mark(ui.ctx(), "tutor.step", ui.max_rect());
+                ui.label(egui::RichText::new(t("Your step")).small().strong().color(pal.ok));
+                ui.add(egui::Label::new(egui::RichText::new(&g.instruction).color(pal.text_strong)).wrap());
+                if !g.why.is_empty() {
+                    ui.add(egui::Label::new(egui::RichText::new(&g.why).small().color(pal.text_weak)).wrap());
+                }
+                if !g.status.is_empty() {
+                    let col = if g.passed { pal.ok } else { pal.text_weak };
+                    ui.label(egui::RichText::new(&g.status).small().color(col));
+                }
+                ui.horizontal_wrapped(|ui| {
+                    if let Some(key) = &g.target
+                        && ui.small_button(t("Show me where")).clicked()
+                    {
+                        crate::spot::point(ui.ctx(), key, &g.instruction, None);
+                    }
+                    if ui.button(t("Done")).on_hover_text(t("Tell the tutor you did this step")).clicked() {
+                        g.answer = Some(GuideAnswer::Done);
+                    }
+                    if ui.button(t("I'm stuck")).on_hover_text(t("Ask for a hint")).clicked() {
+                        g.answer = Some(GuideAnswer::Stuck);
+                    }
+                });
+            });
+        ui.add_space(4.0);
+    }
+
     /// The chat window. Returns what the user sends.
     pub fn window(&mut self, ctx: &egui::Context, llm: &LlmSettings) -> Option<Reply> {
         let mut open = self.open;
@@ -844,8 +1074,31 @@ impl Copilot {
                 }
             });
             ui.horizontal(|ui| {
-                ui.add_enabled(!busy, egui::Checkbox::new(&mut self.plan_mode, t("Plan mode")))
-                    .on_hover_text(t("Investigate with read-only tools and present a plan for approval before editing anything"));
+                ui.add_enabled_ui(!busy, |ui| {
+                    let (agent, plan, tutor) = (!self.plan_mode && !self.tutor, self.plan_mode && !self.tutor, self.tutor);
+                    if ui
+                        .selectable_label(agent, t("Do it"))
+                        .on_hover_text(t("The copilot does the task on the project, and you watch every change"))
+                        .clicked()
+                    {
+                        (self.plan_mode, self.tutor) = (false, false);
+                    }
+                    if ui
+                        .selectable_label(plan, t("Plan mode"))
+                        .on_hover_text(t("Investigate with read-only tools and present a plan for approval before editing anything"))
+                        .clicked()
+                    {
+                        (self.plan_mode, self.tutor) = (true, false);
+                    }
+                    if ui
+                        .selectable_label(tutor, t("Tutor"))
+                        .on_hover_text(t("Learn by doing: the copilot gives one step at a time, points at where to click and checks your work; it edits nothing itself"))
+                        .clicked()
+                    {
+                        (self.plan_mode, self.tutor) = (false, true);
+                    }
+                });
+                ui.separator();
                 if ui.add_enabled(!busy, egui::Button::new(t("Clear"))).clicked() {
                     self.clear();
                 }
@@ -866,7 +1119,18 @@ impl Copilot {
             egui::Panel::bottom(egui::Id::unique("copilot_composer"))
                 .resizable(false)
                 .frame(egui::Frame::new().inner_margin(egui::Margin { top: 6, ..Default::default() }))
-                .show(ui, |ui| send = self.composer(ui, busy, waiting));
+                .show(ui, |ui| {
+                    self.step_card(ui, &pal);
+                    let guiding = self.guide.is_some();
+                    let said = self.composer(ui, busy && !guiding, waiting);
+                    match (said, self.guide.as_mut()) {
+                        (Some(Reply::Text(text)), Some(g)) => {
+                            self.log.push(Entry::User(text.clone()));
+                            g.answer = Some(GuideAnswer::Said(text));
+                        }
+                        (said, _) => send = said,
+                    }
+                });
             egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| {
                 if let Some(t) = self.log_view(ui, busy, &pal) {
                     send = Some(Reply::Text(t));
@@ -899,7 +1163,12 @@ impl Copilot {
                 );
                 ui.add_space(6.0);
                 ui.label(egui::RichText::new(crate::i18n::t("Try:")).weak());
-                for (label, request) in suggestions(self.active_cell.as_deref()) {
+                let starters = if self.tutor {
+                    tutor_suggestions(self.active_cell.as_deref())
+                } else {
+                    suggestions(self.active_cell.as_deref())
+                };
+                for (label, request) in starters {
                     if ui.add_enabled(!busy, egui::Button::new(label)).on_hover_text(&request).clicked() {
                         picked = Some(request);
                     }
@@ -914,7 +1183,9 @@ impl Copilot {
                     crate::chat::markdown(ui, id, &self.streaming, pal);
                 });
             }
-            if busy {
+            if busy && self.guide.is_some() {
+                ui.label(egui::RichText::new(t("Waiting for you to do the step below…")).weak());
+            } else if busy {
                 ui.horizontal(|ui| {
                     ui.add(egui::Spinner::new());
                     let now = self.todos.iter().find(|t| t.status == TodoStatus::InProgress);
