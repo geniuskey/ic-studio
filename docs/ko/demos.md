@@ -23,7 +23,7 @@ cargo run --release -- --demo
 
 | 주제 | 셀 |
 |---|---|
-| `getting_started` | `cmos_inverter`, `rc_lowpass`, `diode_clipper`, `devices` |
+| `getting_started` | `cmos_inverter`, `nmos_curves`, `rc_lowpass`, `diode_clipper`, `devices` |
 | `analog` | `current_mirror`, `ota5t`, `ota2s`, `ota_miller`, `ota_cascode`, `comparator`, `ldo`, `bandgap` |
 | `digital` | `nand2`, `nor2`, `ring_osc5`, `full_adder` |
 | `memory_and_pixels` | `sram6t`, `sram_array`, `dram1t1c`, `dram_array`, `nand_string`, `nand_array`, `aps4t`, `pixel_array`, `aps2s`, `bayer_fdti`, `bayer_fdti_pc`, `bayer_fdti_ctx`, `bayer_fdti_ctx_pc` |
@@ -144,6 +144,7 @@ common-centroid 순서로 배치한 뒤 배선합니다. 개루프 이득은 약
 | `ota2s` | common-centroid 매칭을 적용해 자동 P&R한 2단 OTA, AC 개루프 이득 약 83 dB |
 | `cmos_inverter` | 손으로 그린 레이아웃의 인버터, LVS가 의도적인 차이(PMOS W, 부하 커패시터)를 보고 |
 | `rc_lowpass` | RC 저역 통과 필터(fc 약 159 kHz): OP, AC, 과도 해석 |
+| `nmos_curves` | 테스트벤치 위의 NMOS 하나: 게이트 전압마다 출력 특성 곡선 하나(DC 스윕과 스윕 관리자) |
 | `diode_clipper` | 저항과 션트 다이오드 클리퍼: 과도 해석과 DC 스윕 |
 | `nand2` | 2입력 NAND: 회로도와 배선된 PCell 레이아웃, DRC와 LVS 통과 |
 | `nor2` | 2입력 NOR: 회로도와 배선된 PCell 레이아웃, DRC와 LVS 통과 |

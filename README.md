@@ -300,6 +300,7 @@ writes them to `Documents/IC Studio/Examples`.
 |---|---|
 | `cmos_inverter` | Inverter with a hand-drawn layout; LVS reports its deliberate findings (PMOS W, load cap) |
 | `rc_lowpass` | RC low-pass filter (fc ≈ 159 kHz): op, AC and transient |
+| `nmos_curves` | One NMOS on a test bench: its output curves, one per gate voltage (DC sweep and sweep manager) |
 | `diode_clipper` | Resistor and shunt diode clipper: transient and DC sweep |
 | `nand2` | 2-input NAND: schematic plus routed PCell layout, DRC and LVS clean |
 | `nor2` | 2-input NOR: schematic plus routed PCell layout, DRC and LVS clean |

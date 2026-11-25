@@ -220,18 +220,21 @@ the first thing an analog designer does after every change.
 
 <div class="callout say">
 
-**Try it:** plot the output curves yourself. Create a cell with one NMOS (`W` = `1u`,
-`L` = `180n`), a voltage source on its gate and one on its drain, and ground on source and
-body. Rename the sources `VG` and `VD` in the inspector's **Name** field and give `VG` a
-**DC value** of `1.2`. In the Simulation workspace, enable **DC Sweep** of
-`VD` from `0` to `1.8` and plot `i(VD)`. You get the 1.2 V curve from the figure above
-(the current comes out negative: SPICE counts current flowing *into* the source's `+`
-terminal). Then open **Simulation > Corner / Sweep Manager…**, add the variable `VG.dc` with the
-values `0.8 1.0 1.2 1.4 1.6 1.8` and press **Run Sweep**: **Overlay** draws the whole
-family.
+**Try it:** the demo cell `nmos_curves` is this transistor on a test bench: one NMOS
+(`W` = `1u`, `L` = `180n`), a source `VG` on its gate at 1.2 V and a source `VD` on its
+drain, swept from 0 to 1.8 V. Simulate it and open the **DC Sweep** tab: `i(vd)` is the
+1.2 V curve of the figure above (negative, because SPICE counts the current flowing *into*
+a source's `+` terminal). Then open **Simulation > Corner / Sweep Manager…**: it is already
+set to step `VG.dc` through `0.8 1.0 1.2 1.4 1.6 1.8`; press **Run Sweep** and **Overlay**
+draws the whole family. Change **Width (W)** to `2u` and run again: every current doubles.
 
 </div>
 
-<!-- try: Create a new cell | new-cell -->
+<!-- try: Open the NMOS test bench | open nmos_curves schematic -->
+
+<!-- try: Simulate nmos_curves | simulate nmos_curves -->
+
+After the [inverter tutorial](tutorial-inverter.md), when you have drawn a circuit, build
+this test bench yourself in a new cell: it is the first thing to do with any new transistor.
 
 Next: [CMOS logic](cmos-logic.md), where NMOS and PMOS are paired into logic gates.

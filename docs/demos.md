@@ -24,7 +24,7 @@ unless `--force`) and `ics examples` lists them.
 
 | Topic | Cells |
 |---|---|
-| `getting_started` | `cmos_inverter`, `rc_lowpass`, `diode_clipper`, `devices` |
+| `getting_started` | `cmos_inverter`, `nmos_curves`, `rc_lowpass`, `diode_clipper`, `devices` |
 | `analog` | `current_mirror`, `ota5t`, `ota2s`, `ota_miller`, `ota_cascode`, `comparator`, `ldo`, `bandgap` |
 | `digital` | `nand2`, `nor2`, `ring_osc5`, `full_adder` |
 | `memory_and_pixels` | `sram6t`, `sram_array`, `dram1t1c`, `dram_array`, `nand_string`, `nand_array`, `aps4t`, `pixel_array`, `aps2s`, `bayer_fdti`, `bayer_fdti_pc`, `bayer_fdti_ctx`, `bayer_fdti_ctx_pc` |
@@ -151,6 +151,7 @@ rendering keeps pan and zoom smooth.
 | `ota2s` | Two-stage OTA, auto P&R with common-centroid matching; about 83 dB open-loop gain in AC |
 | `cmos_inverter` | Inverter with a hand-drawn layout; LVS reports deliberate findings (PMOS W, load cap) |
 | `rc_lowpass` | RC low-pass filter (fc about 159 kHz): OP, AC and transient |
+| `nmos_curves` | One NMOS on a test bench: its output curves, one per gate voltage (DC sweep and sweep manager) |
 | `diode_clipper` | Resistor and shunt diode clipper: transient and DC sweep |
 | `nand2` | 2-input NAND: schematic plus routed PCell layout, DRC and LVS clean |
 | `nor2` | 2-input NOR: schematic plus routed PCell layout, DRC and LVS clean |

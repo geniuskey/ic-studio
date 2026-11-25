@@ -197,6 +197,57 @@ pub fn rc_lowpass() -> Cell {
     }
 }
 
+/// One NMOS between a gate source `VG` and a drain source `VD`: the output curves of the
+/// MOSFET chapter (DC sweep of VD, the sweep manager steps VG).
+pub fn nmos_curves() -> Cell {
+    let mut s = Schematic::default();
+    let o = Orient::default();
+    let m = s.add_instance(DeviceKind::Nmos, Pt::new(10, 10), o);
+    set(&mut s, m, &[("w", "1u"), ("l", "180n")]);
+    // Source and body to ground.
+    s.add_instance(DeviceKind::Ground, Pt::new(11, 12), o);
+    wires(&mut s, &[(12, 10), (12, 12), (11, 12)]);
+    // Gate source.
+    let vg = s.add_instance(DeviceKind::VSource, Pt::new(2, 12), o);
+    set(&mut s, vg, &[("dc", "1.2")]);
+    s.instance_mut(vg).expect("instance").name = "VG".into();
+    s.add_instance(DeviceKind::Ground, Pt::new(2, 14), o);
+    wires(&mut s, &[(2, 10), (8, 10)]);
+    s.add_label("g", Pt::new(5, 10));
+    // Drain source.
+    let vd = s.add_instance(DeviceKind::VSource, Pt::new(16, 10), o);
+    set(&mut s, vd, &[("dc", "1.8")]);
+    s.instance_mut(vd).expect("instance").name = "VD".into();
+    s.add_instance(DeviceKind::Ground, Pt::new(16, 12), o);
+    wires(&mut s, &[(11, 8), (16, 8)]);
+    s.add_label("d", Pt::new(14, 8));
+    let mut sim = SimSetup::default();
+    sim.set_enabled("op", true);
+    sim.set_enabled("dc", true);
+    if let Some(Analysis::Dc { source, start, stop, step }) = sim.get_mut("dc") {
+        *source = "VD".into();
+        *start = "0".into();
+        *stop = "1.8".into();
+        *step = "10m".into();
+    }
+    // The family of curves: one per gate voltage.
+    sim.sweep.vars = vec![crate::sweep::SweepVar { name: "VG.dc".into(), values: "0.8 1.0 1.2 1.4 1.6 1.8".into() }];
+    Cell {
+        name: "nmos_curves".into(),
+        description: "One NMOS (1u/180n): its output curves I_D(V_DS) for several V_GS".into(),
+        notes: "What it is: a test bench for one NMOS. VG sets the gate voltage, VD sweeps the drain from 0 to 1.8 V.\n\
+                How to read it: the DC Sweep tab plots i(VD), the drain current (negative: SPICE counts the current into a source's + pin). \
+                Below V_DS = V_GS - V_th the current rises with V_DS (triode); above it, it stays almost flat (saturation).\n\
+                To see the family: Simulation > Corner / Sweep Manager runs VG.dc = 0.8 ... 1.8 V and Overlay draws one curve per value.\n\
+                Try: double W and watch the current double; make L longer and watch the flat part get flatter (less channel-length modulation)."
+            .into(),
+        schematic: Some(s),
+        layout: None,
+        sim,
+        pcell: None,
+    }
+}
+
 pub fn cmos_inverter() -> Cell {
     let mut s = Schematic::default();
     let o = Orient::default();
@@ -2554,7 +2605,7 @@ pub fn demo_project() -> Project {
     let mut p = Project::new("demo");
     p.description = "Example designs shipped with IC Studio".into();
     let hier = hierarchy_cells(&p.tech, "work");
-    for c in [cmos_inverter(), rc_lowpass(), diode_clipper(), inv(), buffer_tb(), bandgap(), ota_miller(), ldo()]
+    for c in [cmos_inverter(), nmos_curves(), rc_lowpass(), diode_clipper(), inv(), buffer_tb(), bandgap(), ota_miller(), ldo()]
         .into_iter()
         .chain(hier)
     {
@@ -2809,7 +2860,7 @@ pub const TOPICS: [Topic; 5] = [
         title: "Getting started",
         summary: "Simulation, layout, PCells",
         description: "Schematic entry and simulation (op, DC, AC, transient), a hand-drawn inverter layout, the parametric devices",
-        cells: &["cmos_inverter", "rc_lowpass", "diode_clipper", "inv", "buffer_tb", "devices"],
+        cells: &["cmos_inverter", "nmos_curves", "rc_lowpass", "diode_clipper", "inv", "buffer_tb", "devices"],
     },
     Topic {
         name: "analog",
