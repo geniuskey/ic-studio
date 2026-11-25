@@ -6726,14 +6726,14 @@ impl IcStudio {
                 let (mark, detail) = match learn_check(self.project.as_ref(), &self.sims, &self.lay_eds, &check) {
                     CheckState::Pass(d) => {
                         passed += 1;
-                        ("✓", d)
+                        ("OK", d)
                     }
                     CheckState::Fail(d, _) => ("×", d),
                     CheckState::Waiting(d) => ("…", d),
                 };
                 let _ = writeln!(lines, "- {mark} {} (`{}`): {detail}", crate::learn::strip_inline(&check.label), check.cell);
             }
-            let done = if p.done.contains(id) { "✓" } else { "" };
+            let done = if p.done.contains(id) { "OK" } else { "" };
             let quiz = if quizzes > 0 { format!("{right} / {quizzes}") } else { "–".into() };
             let check = if checks > 0 { format!("{passed} / {checks}") } else { "–".into() };
             let _ = writeln!(out, "| {title} | {done} | {quiz} | {check} |");

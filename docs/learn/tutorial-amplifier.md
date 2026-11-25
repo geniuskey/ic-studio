@@ -85,8 +85,8 @@ Check three things, always in this order:
 3. **Output voltage**: 0.89 V, well above V<sub>ov</sub> = 0.25 V and below 1.8 V, so it
    can swing both ways.
 
-Now the predicted gain: g<sub>m</sub> · (R<sub>D</sub> ∥ r<sub>o</sub>) = 145 µS ×
-(50 kΩ ∥ 1.43 MΩ) = **7.0**.
+Now the predicted gain: g<sub>m</sub> · (R<sub>D</sub> || r<sub>o</sub>) = 145 µS ×
+(50 kΩ || 1.43 MΩ) = **7.0**.
 
 <!-- check: M1 is in saturation | my_cs region M1 saturation -->
 

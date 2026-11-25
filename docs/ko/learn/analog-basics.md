@@ -61,7 +61,7 @@ SPICE에서 1단계는 **동작점(operating point)** 해석이고, 2단계는 �
 따라서 <strong>전압 이득(voltage gain)</strong>은 다음과 같습니다.
 
 ```text
-A_v = v_out / v_in = −g_m · (R_D ∥ r_o)
+A_v = v_out / v_in = −g_m · (R_D || r_o)
 ```
 
 마이너스 부호는 출력이 반전된다는 뜻입니다. W/L = 2 µm / 1 µm를 V<sub>GS</sub> = 0.7 V로
@@ -72,7 +72,7 @@ A_v = v_out / v_in = −g_m · (R_D ∥ r_o)
 <!-- quiz
 ? 같은 증폭기(g<sub>m</sub> = 145 µS, r<sub>o</sub> = 1.43 MΩ)에 R<sub>D</sub> = 30 kΩ을 쓰면 이득의 크기 |A<sub>v</sub>|는 얼마일까요?
 = 4.3 ±0.2
-> R<sub>D</sub> ∥ r<sub>o</sub> = 30 k · 1430 k / 1460 k ≈ 29.4 kΩ이므로 |A<sub>v</sub>| = 145 µS · 29.4 kΩ ≈ 4.3입니다.
+> R<sub>D</sub> || r<sub>o</sub> = 30 k · 1430 k / 1460 k ≈ 29.4 kΩ이므로 |A<sub>v</sub>| = 145 µS · 29.4 kΩ ≈ 4.3입니다.
 -->
 
 ### 바이어스 고르기
@@ -94,12 +94,12 @@ A_v = v_out / v_in = −g_m · (R_D ∥ r_o)
 
 ## 대역폭
 
-모든 노드에는 커패시턴스가 있습니다. 증폭기의 출력 노드에서는 R<sub>D</sub> ∥ r<sub>o</sub>가 부하
+모든 노드에는 커패시턴스가 있습니다. 증폭기의 출력 노드에서는 R<sub>D</sub> || r<sub>o</sub>가 부하
 커패시턴스 C<sub>L</sub>과 병렬로 보이며, 앞에서 본 것과 같은 [RC 저역 통과 필터](circuits.md#주파수-응답-데시벨-보드-플롯)가
 됩니다.
 
 ```text
-f_-3dB = 1 / (2π · (R_D ∥ r_o) · C_L)
+f_-3dB = 1 / (2π · (R_D || r_o) · C_L)
 ```
 
 부하가 100 fF이면 f<sub>-3dB</sub> ≈ 33 MHz입니다(시뮬레이션: 33 MHz). 그 위에서는 이득이 디케이드당
@@ -155,7 +155,7 @@ V<sub>GS</sub>를 정합니다. M2는 같은 V<sub>GS</sub>를 가지므로 포�
 amplifier)가 됩니다.
 
 ```text
-A_v = g_m1 · (r_o2 ∥ r_o4)
+A_v = g_m1 · (r_o2 || r_o4)
 ```
 
 데모 `ota5t`(입력 쌍 2 µm / 0.5 µm, 미러 4 µm / 0.5 µm, 꼬리 전류 11.3 µA)의 이득은 약 **121**

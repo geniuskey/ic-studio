@@ -62,7 +62,7 @@ resistor R<sub>D</sub> from the drain to V<sub>DD</sub>.
 So the **voltage gain** is
 
 ```text
-A_v = v_out / v_in = −g_m · (R_D ∥ r_o)
+A_v = v_out / v_in = −g_m · (R_D || r_o)
 ```
 
 The minus sign means the output is inverted. With W/L = 2 µm / 1 µm biased at
@@ -73,7 +73,7 @@ V<sub>GS</sub> = 0.7 V and R<sub>D</sub> = 50 kΩ, the simulator finds g<sub>m</
 <!-- quiz
 ? The same amplifier (g<sub>m</sub> = 145 µS, r<sub>o</sub> = 1.43 MΩ) with R<sub>D</sub> = 30 kΩ: what is the magnitude of its gain |A<sub>v</sub>|?
 = 4.3 ±0.2
-> R<sub>D</sub> ∥ r<sub>o</sub> = 30 k · 1430 k / 1460 k ≈ 29.4 kΩ, so |A<sub>v</sub>| = 145 µS · 29.4 kΩ ≈ 4.3.
+> R<sub>D</sub> || r<sub>o</sub> = 30 k · 1430 k / 1460 k ≈ 29.4 kΩ, so |A<sub>v</sub>| = 145 µS · 29.4 kΩ ≈ 4.3.
 -->
 
 ### Choosing the bias
@@ -96,12 +96,12 @@ each other.
 
 ## Bandwidth
 
-Every node has capacitance. The output node of the amplifier sees R<sub>D</sub> ∥
+Every node has capacitance. The output node of the amplifier sees R<sub>D</sub> ||
 r<sub>o</sub> in parallel with the load capacitance C<sub>L</sub>, which forms the same
 [RC low-pass](circuits.md#frequency-response-decibels-and-bode-plots) as before:
 
 ```text
-f_-3dB = 1 / (2π · (R_D ∥ r_o) · C_L)
+f_-3dB = 1 / (2π · (R_D || r_o) · C_L)
 ```
 
 With 100 fF of load, f<sub>-3dB</sub> ≈ 33 MHz (simulated: 33 MHz). Above it the gain
@@ -159,7 +159,7 @@ amplifies the *difference* between its two inputs and rejects what is common to 
 op-amps:
 
 ```text
-A_v = g_m1 · (r_o2 ∥ r_o4)
+A_v = g_m1 · (r_o2 || r_o4)
 ```
 
 The demo `ota5t` (input pair 2 µm / 0.5 µm, mirror 4 µm / 0.5 µm, 11.3 µA tail) has a gain

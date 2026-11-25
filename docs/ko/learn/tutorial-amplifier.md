@@ -83,7 +83,7 @@ m1  saturation  id=18.13µ  vgs=700m  vds=893.7m  vth=450m  gm=145µ  gds=700n
 3. **출력 전압**: 0.89 V로, V<sub>ov</sub> = 0.25 V보다 충분히 높고 1.8 V보다 낮아 위아래로 흔들릴 수
    있습니다.
 
-이제 예상 이득은 g<sub>m</sub> · (R<sub>D</sub> ∥ r<sub>o</sub>) = 145 µS × (50 kΩ ∥ 1.43 MΩ) =
+이제 예상 이득은 g<sub>m</sub> · (R<sub>D</sub> || r<sub>o</sub>) = 145 µS × (50 kΩ || 1.43 MΩ) =
 **7.0**입니다.
 
 <!-- check: M1이 포화 영역 | my_cs region M1 saturation -->

@@ -1282,6 +1282,11 @@ fn glyph_coverage() {
         include_str!("../src/guide_view.rs"),
         include_str!("../src/learn.rs"),
         include_str!("../src/learn_view.rs"),
+        include_str!("../src/explore_view.rs"),
+        include_str!("../src/spot.rs"),
+        include_str!("../src/home_view.rs"),
+        include_str!("../src/tutorial.rs"),
+        include_str!("../../../docs/learn/tutorial-derive.md"),
         include_str!("../../../docs/learn/index.md"),
         include_str!("../../../docs/learn/circuits.md"),
         include_str!("../../../docs/learn/mosfet.md"),
@@ -1308,8 +1313,26 @@ fn glyph_coverage() {
     });
     ics_studio::theme::setup_fonts(&h.ctx);
     h.run();
-    let missing: Vec<char> =
-        h.ctx.fonts_mut(|f| chars.iter().copied().filter(|c| !f.has_glyph(&egui::FontId::proportional(13.0), *c)).collect());
+    // Hangul and CJK come from the system font of the Korean UI; everything else must be in
+    // the bundled fonts. The system font is left out here so a symbol it happens to have on
+    // this machine (✓ in Apple SD Gothic Neo) does not hide a gap on another.
+    let cjk = |c: char| matches!(c as u32, 0x1100..=0x11FF | 0x3000..=0x9FFF | 0xAC00..=0xD7A3 | 0xFF00..=0xFFEF);
+    let mut bundled = egui::FontDefinitions::default();
+    let mono = bundled.families.get(&egui::FontFamily::Monospace).cloned().unwrap_or_default();
+    if let Some(prop) = bundled.families.get_mut(&egui::FontFamily::Proportional) {
+        prop.extend(mono.into_iter().filter(|f| !prop.contains(f)).collect::<Vec<_>>());
+    }
+    let mut b = Harness::builder().build_ui(|ui| {
+        ui.label("x");
+    });
+    b.ctx.set_fonts(bundled);
+    b.run();
+    let mut missing: Vec<char> = b.ctx.fonts_mut(|f| {
+        chars.iter().copied().filter(|c| !cjk(*c) && !f.has_glyph(&egui::FontId::proportional(13.0), *c)).collect()
+    });
+    missing.extend(h.ctx.fonts_mut(|f| {
+        chars.iter().copied().filter(|c| cjk(*c) && !f.has_glyph(&egui::FontId::proportional(13.0), *c)).collect::<Vec<_>>()
+    }));
     assert!(
         missing.is_empty(),
         "missing glyphs: {}",
