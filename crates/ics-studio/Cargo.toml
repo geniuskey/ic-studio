@@ -1,6 +1,6 @@
 [package]
 name = "ics-studio"
-version = "0.2.14"
+version = "0.2.15"
 edition = "2024"
 license.workspace = true
 
@@ -13,15 +13,15 @@ dirs = "6"
 eframe = { version = "0.37.0", features = ["persistence"] }
 egui = { version = "0.37.0", features = ["monochrome_emoji_fonts"] }
 egui_plot = "0.38.0"
-ics-core = { version = "0.2.14", path = "../ics-core" }
-ics-mcp = { version = "0.2.14", path = "../ics-mcp" }
-ics-sim = { version = "0.2.14", path = "../ics-sim" }
-ics-optics = { version = "0.2.14", path = "../ics-optics" }
+ics-core = { version = "0.2.15", path = "../ics-core" }
+ics-mcp = { version = "0.2.15", path = "../ics-mcp" }
+ics-sim = { version = "0.2.15", path = "../ics-sim" }
+ics-optics = { version = "0.2.15", path = "../ics-optics" }
 rfd = "0.18.0"
 # SHA-256 of downloaded updates (already used by rustls).
 ring = "0.17"
 serde = { version = "1.0.229", features = ["derive"] }
-ics-i18n = { version = "0.2.14", path = "../ics-i18n" }
+ics-i18n = { version = "0.2.15", path = "../ics-i18n" }
 serde_json = "1.0.154"
 ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
 resvg = { version = "0.45.1", default-features = false, features = ["text"] }
