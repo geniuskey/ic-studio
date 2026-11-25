@@ -2151,10 +2151,12 @@ version = "0.2.14"
 dependencies = [
  "clap",
  "ics-core",
+ "ics-i18n",
  "ics-mcp",
  "ics-optics",
  "ics-sim",
  "serde_json",
+ "sys-locale",
 ]
 
 [[package]]
@@ -2168,6 +2170,13 @@ dependencies = [
  "thiserror 2.0.21",
  "toml 0.9.12+spec-1.1.0",
  "toml_edit",
+]
+
+[[package]]
+name = "ics-i18n"
+version = "0.2.14"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -2212,6 +2221,7 @@ dependencies = [
  "egui_kittest",
  "egui_plot",
  "ics-core",
+ "ics-i18n",
  "ics-mcp",
  "ics-optics",
  "ics-sim",

@@ -428,6 +428,7 @@ crates/
               fill_view · opc_view · gen_view · net_view · hier_view · ciw · ext_view
   ics-cli     `ics` command line and `ics mcp`
   ics-mcp     MCP tools, stdio server, live-mode bridge and the extension host (ext)
+  ics-i18n    English/Korean message tables and lookup, shared by the app and the CLI
   python/     `icstudio` Python package (PyO3, built by maturin; outside the workspace)
 ```
 

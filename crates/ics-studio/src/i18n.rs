@@ -1,32 +1,13 @@
 //! UI language. English is the source language: every UI string is written in English and
 //! [`t`] looks up its translation for the chosen language, falling back to the English text.
+//! The tables and the lookup live in `ics-i18n` (shared with the `ics` command line).
 //! Korean needs a system CJK font (see `theme::setup_fonts`); without one the app stays in
 //! English, which is why the Korean table is exempt from the bundled-font glyph check.
 
-use std::collections::HashMap;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use serde::{Deserialize, Serialize};
+pub use ics_i18n::{Lang, current, t, t_text, tf};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Lang {
-    #[default]
-    En,
-    Ko,
-}
-
-impl Lang {
-    pub fn label(self) -> &'static str {
-        match self {
-            Lang::En => "English",
-            Lang::Ko => "한국어",
-        }
-    }
-}
-
-static CURRENT: AtomicU8 = AtomicU8::new(0);
 static CJK: AtomicU8 = AtomicU8::new(0);
 
 /// Record whether a font with Hangul was loaded (Korean is only offered then).
@@ -40,104 +21,7 @@ pub fn korean_available() -> bool {
 
 pub fn set(lang: Lang) {
     let lang = if lang == Lang::Ko && !korean_available() { Lang::En } else { lang };
-    CURRENT.store(lang as u8, Ordering::Relaxed);
-}
-
-pub fn current() -> Lang {
-    if CURRENT.load(Ordering::Relaxed) == 1 { Lang::Ko } else { Lang::En }
-}
-
-fn ko() -> &'static HashMap<&'static str, &'static str> {
-    static MAP: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
-    MAP.get_or_init(|| crate::i18n_ko::all().copied().collect())
-}
-
-/// The translation of an English UI string (the string itself when there is none).
-pub fn t(en: &str) -> &str {
-    match current() {
-        Lang::En => en,
-        Lang::Ko => ko().get(en).copied().unwrap_or(en),
-    }
-}
-
-/// [`t`] for a template with `{}` placeholders, filled with `args` in order.
-pub fn tf(template: &str, args: &[&str]) -> String {
-    let mut out = String::new();
-    let mut rest = t(template);
-    for a in args {
-        match rest.split_once("{}") {
-            Some((head, tail)) => {
-                out.push_str(head);
-                out.push_str(a);
-                rest = tail;
-            }
-            None => break,
-        }
-    }
-    out.push_str(rest);
-    out
-}
-
-/// Translate the known sentences inside a longer text (advice assembled from several
-/// sentences, multi-paragraph notes).
-pub fn t_text(en: &str) -> String {
-    if current() == Lang::En {
-        return en.to_string();
-    }
-    if let Some(v) = ko().get(en) {
-        return v.to_string();
-    }
-    for (k, v) in crate::i18n_ko::templates() {
-        if let Some(args) = match_template(k, en) {
-            let mut out = String::new();
-            let mut rest = *v;
-            for a in &args {
-                if let Some((head, tail)) = rest.split_once("{}") {
-                    out.push_str(head);
-                    // An argument can be a message of its own ("simulation failed: {}").
-                    if a.len() < en.len() {
-                        out.push_str(&t_text(a))
-                    } else {
-                        out.push_str(a)
-                    }
-                    rest = tail;
-                }
-            }
-            out.push_str(rest);
-            return out;
-        }
-    }
-    let mut s = en.to_string();
-    for (k, v) in crate::i18n_ko::SENTENCES {
-        if s.contains(k) {
-            s = s.replace(k, v);
-        }
-    }
-    s
-}
-
-/// The texts filling the `{}` of `template` when `text` is that template filled in.
-fn match_template<'a>(template: &str, text: &'a str) -> Option<Vec<&'a str>> {
-    let parts: Vec<&str> = template.split("{}").collect();
-    if parts.len() < 2 {
-        return None;
-    }
-    let mut rest = text.strip_prefix(parts[0])?;
-    let mut args = vec![];
-    for (k, part) in parts.iter().enumerate().skip(1) {
-        let last = k == parts.len() - 1;
-        let at = if last {
-            if !rest.ends_with(part) {
-                return None;
-            }
-            rest.len() - part.len()
-        } else {
-            rest.find(part)?
-        };
-        args.push(&rest[..at]);
-        rest = &rest[at + part.len()..];
-    }
-    Some(args)
+    ics_i18n::set(lang);
 }
 
 #[cfg(test)]
@@ -316,6 +200,8 @@ mod tests {
         "menu_item(",
         "hint(",
         "ui.collapsing(",
+        "setting_row(",
+        "toggle_switch(",
     ];
 
     /// The English UI text still shown as is: string literals passed straight to egui

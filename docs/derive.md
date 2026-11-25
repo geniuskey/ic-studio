@@ -90,7 +90,8 @@ Every command stays in the command palette (**Ctrl+K** / **⌘K**). Turn it off 
 
 The welcome page switches the interface between English and Korean when a system font with
 Hangul is installed (Malgun Gothic on Windows, Apple SD Gothic Neo on macOS, Noto Sans CJK on
-Linux). The palette has the same switch.
+Linux). **Settings** (Ctrl+, / ⌘,) and the palette have the same switch; the choice is kept
+for the next start.
 
 ## From the command line and agents
 

@@ -3,15 +3,35 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use ics_core::hier::{LayoutSource, descendants};
 use ics_core::units::format_eng;
 use ics_core::{Backend, CellRef, LibStorage, Project};
+use ics_i18n::t_text;
 use ics_sim::{SimOptions, SimResults};
+
+mod i18n;
+
+// Messages go through `i18n::line` (English or Korean); data printed with `{}` alone (JSON,
+// netlists, decks) is left as is. These shadow the standard macros in this file.
+macro_rules! println {
+    () => { std::println!() };
+    ($fmt:literal $($arg:tt)*) => { std::println!("{}", crate::i18n::line($fmt, format!($fmt $($arg)*))) };
+}
+macro_rules! eprintln {
+    () => { std::eprintln!() };
+    ($fmt:literal $($arg:tt)*) => { std::eprintln!("{}", crate::i18n::line($fmt, format!($fmt $($arg)*))) };
+}
+macro_rules! print {
+    ($fmt:literal $($arg:tt)*) => { std::print!("{}", crate::i18n::line($fmt, format!($fmt $($arg)*))) };
+}
 
 #[derive(Parser)]
 #[command(name = "ics", version, about = "IC Studio command line interface")]
 struct Cli {
+    /// Language of messages and help: en or ko (default: ICS_LANG, else the system locale).
+    #[arg(long, global = true, value_name = "LANG")]
+    lang: Option<String>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -1006,7 +1026,7 @@ fn print_drc(rep: &ics_core::drc::DrcReport, deck: &ics_core::drc::Deck, dbu_per
         let Some(first) = vs.first() else { continue };
         let count = rep.capped.iter().find(|(n, _)| *n == rule.name).map_or(vs.len(), |c| c.1);
         total += count;
-        println!("{}: {} ({count})", rule.name, first.description);
+        println!("{}: {} ({count})", rule.name, t_text(&first.description));
         for v in vs.iter().take(SHOWN) {
             let m = v.marker;
             println!("  ({}, {}) - ({}, {}) µm", um(m.x0), um(m.y0), um(m.x1), um(m.y1));
@@ -1196,7 +1216,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 let imp = ics_core::cadence::import_cdl(&text, &p.tech, t.as_deref())?;
                 let target = match (&cell, all) {
                     (Some(c), false) => c.clone(),
-                    _ => format!("work/{}", if imp.flat.top.is_empty() { "cdl" } else { &imp.flat.top }),
+                    _ => format!("work/{}", if imp.flat.top.is_empty() { "cdl" } else { &imp.flat.top }), // i18n: ignore
                 };
                 let r = match resolve(&p, &target) {
                     Ok(r) => r,
@@ -1394,7 +1414,7 @@ fn run(cli: Cli) -> Result<(), String> {
             let mut deck = nl.deck(&r.to_string(), &c.sim);
             if parasitics || c.sim.parasitics {
                 let pl = ics_core::pex::post_layout(&p, &r)?;
-                eprintln!("{}", pl.summary);
+                eprintln!("{}", t_text(&pl.summary));
                 deck = pl.apply(&deck);
             }
             let mut opts = SimOptions { backend: c.sim.backend, ..Default::default() };
@@ -1417,7 +1437,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 && !ics_core::spectre::is_spectre(&deck, None)
             {
                 // A `.scs` deck is Spectre from its first line.
-                deck = format!("* {}\nsimulator lang=spectre\n{deck}", std::path::Path::new(&file).display());
+                deck = format!("* {}\nsimulator lang=spectre\n{deck}", std::path::Path::new(&file).display()); // i18n: ignore
             }
             let deck_dir = std::path::Path::new(&file).parent().map(|d| d.to_path_buf());
             let opts = SimOptions { backend: backend(b), deck_dir, ..Default::default() };
@@ -1467,7 +1487,7 @@ fn run(cli: Cli) -> Result<(), String> {
             let rep = ics_core::route::route(&sch, &mut lay, &p, &p.tech)?;
             p.cell_mut(&r).unwrap().layout = Some(lay);
             p.save().map_err(|e| e.to_string())?;
-            println!("{}", rep.summary());
+            println!("{}", t_text(&rep.summary()));
             let left = ics_core::sdl::ratsnest(&sch, p.layout(&r).unwrap(), &p, &p.tech).len();
             println!("{left} flyline(s) left");
             if !rep.failed.is_empty() {
@@ -1486,14 +1506,14 @@ fn run(cli: Cli) -> Result<(), String> {
                 if rep.changed() {
                     p.save().map_err(|e| e.to_string())?;
                 }
-                println!("{}", rep.summary());
+                println!("{}", t_text(&rep.summary()));
             }
             let lay = p.layout(&r).ok_or("cell has no layout")?;
             let c = ics_core::eco::check(&sch, lay, &p);
             for i in &c.issues {
-                println!("[{}] {}", i.kind(), i.message());
+                println!("[{}] {}", i.kind(), t_text(&i.message()));
             }
-            println!("{}", c.summary());
+            println!("{}", t_text(&c.summary()));
             let bad = c.issues.iter().filter(|i| !(allow_opens && matches!(i, ics_core::eco::Issue::Open { .. }))).count();
             if bad > 0 {
                 return Err(format!("{bad} difference(s) between layout and schematic"));
@@ -1881,7 +1901,7 @@ fn run(cli: Cli) -> Result<(), String> {
                     cap,
                 )?;
                 p.save().map_err(|e| e.to_string())?;
-                eprintln!("{msg}");
+                eprintln!("{}", t_text(&msg));
             }
             if let Some(set) = set {
                 let cur = currents.ok_or("--set needs --lux")?;
@@ -1908,7 +1928,7 @@ fn run(cli: Cli) -> Result<(), String> {
             let r = resolve(&p, &cell)?;
             let text = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
             let rep = ics_core::signoff::import_results(&file, &text, p.tech.dbu_per_um, &r.cell)?;
-            println!("{}", rep.summary());
+            println!("{}", t_text(&rep.summary()));
             if let Some(d) = &rep.drc {
                 let um = |v: i64| v as f64 / p.tech.dbu_per_um as f64;
                 for v in &d.violations {
@@ -1929,7 +1949,7 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             if let Some(l) = &rep.lvs {
                 for m in &l.messages {
-                    println!("  {m}");
+                    println!("  {}", t_text(m));
                 }
                 if l.matched != Some(true) {
                     return Err("LVS failed".into());
@@ -2168,7 +2188,7 @@ fn run(cli: Cli) -> Result<(), String> {
             };
             let run = ics_sim::sweep::run(&p, &r, &opts, &progress)?;
             for n in &run.notes {
-                eprintln!("{n}");
+                eprintln!("{}", t_text(n));
             }
             let conds = run.predict(&specs, samples, 1);
             let plan = run.plan.as_ref().unwrap();
@@ -2409,7 +2429,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 }
             }
             if let (Some(path), false) = (&write_models, cards.is_empty()) {
-                let head = format!("* Model cards fitted to {} ({})\n", cor.setup.data, r);
+                let head = format!("* Model cards fitted to {} ({})\n", cor.setup.data, r); // i18n: ignore
                 std::fs::write(path, head + &cards).map_err(|e| format!("{}: {e}", path.display()))?;
                 eprintln!("wrote {}", path.display());
             }
@@ -2508,7 +2528,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 }
             }
             if let Some(path) = &profile {
-                let mut t = format!("# dopant profile at x = {profile_at} µm (cm^-3; net > 0 is n-type)\nz_um,net");
+                let mut t = format!("# dopant profile at x = {profile_at} µm (cm^-3; net > 0 is n-type)\nz_um,net"); // i18n: ignore
                 for (sp, _) in &s.dopants {
                     t += &format!(",{}", sp.name());
                 }
@@ -2998,7 +3018,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 let mut lay = p.cell_mut(&target).unwrap().layout.take().unwrap_or_default();
                 let res = ics_core::route::route(&sch, &mut lay, &p, &p.tech);
                 p.cell_mut(&target).unwrap().layout = Some(lay);
-                println!("{}", res?.summary());
+                println!("{}", t_text(&res?.summary()));
             }
             p.save().map_err(|e| e.to_string())?;
         }
@@ -3032,6 +3052,7 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             print!("{}", x.spice(&r.to_string(), p.tech.dbu_per_um));
             println!(
+                // i18n: ignore
                 "* {} nets, {} transistors, {} resistors/capacitors, {} bipolar transistors",
                 x.nets.len(),
                 x.devices.len(),
@@ -3092,7 +3113,7 @@ fn run(cli: Cli) -> Result<(), String> {
                         c.sim = sim;
                     }
                     p.save().map_err(|e| e.to_string())?;
-                    println!("* schematic written to {target}");
+                    println!("* schematic written to {target}"); // i18n: ignore
                 }
             }
         }
@@ -3118,7 +3139,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 println!("  net {s} = {l}");
             }
             for e in &rep.errors {
-                println!("{:?}: {}", e.kind, e.message);
+                println!("{:?}: {}", e.kind, t_text(&e.message));
             }
             for w in &rep.warnings {
                 println!("warning: {}", w.message);
@@ -3200,7 +3221,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 if rep.violations.len() > 50 {
                     println!("  ... {} more", rep.violations.len() - 50);
                 }
-                println!("{}", rep.summary(&p.tech));
+                println!("{}", t_text(&rep.summary(&p.tech)));
             }
             if !rep.violations.is_empty() {
                 return Err(format!("{} EM violation(s)", rep.violations.len()));
@@ -3237,7 +3258,7 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             if let Some(l) = &rep.lvs {
                 for m in &l.messages {
-                    println!("{m}");
+                    println!("{}", t_text(m));
                 }
                 failed = l.matched != Some(true);
             }
@@ -3245,7 +3266,7 @@ fn run(cli: Cli) -> Result<(), String> {
             if failed {
                 return Err(rep.summary());
             }
-            println!("{}", rep.summary());
+            println!("{}", t_text(&rep.summary()));
         }
         Cmd::GdsInfo { file } => {
             let t0 = std::time::Instant::now();
@@ -3686,10 +3707,14 @@ fn ext(cmd: ExtCmd) -> Result<(), String> {
 }
 
 fn main() -> ExitCode {
-    match run(Cli::parse()) {
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    i18n::init(&args);
+    let matches = i18n::localize(Cli::command()).get_matches_from(args);
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+    match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("error: {e}");
+            std::eprintln!("{}", i18n::error(&e));
             ExitCode::FAILURE
         }
     }

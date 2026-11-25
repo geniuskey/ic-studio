@@ -12,7 +12,7 @@ extraction and LVS.
 ## Setup
 
 The [release installer](install.md#install-a-release) registers the server with Claude
-Code when `claude` is on the `PATH`. In the app, **File > Settings... > AI agents (MCP)**
+Code when `claude` is on the `PATH`. In the app, **File > Settings... > AI**
 has **Add to Claude Code**, which does the same, and **Copy MCP config**, which copies the JSON
 below for other clients.
 

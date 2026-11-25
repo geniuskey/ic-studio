@@ -41,7 +41,10 @@ PNGs. The UI tests use egui_kittest with a real wgpu renderer (DX12 on Windows).
   `ics_sim::simulate()`.
 - `crates/ics-studio`: the desktop app. It is also a lib target so `tests/ui.rs` can
   drive it.
-- `crates/ics-cli`: the `ics` binary.
+- `crates/ics-cli`: the `ics` binary. Messages and help are translated (`src/i18n.rs`: `--lang`,
+  `ICS_LANG`, system locale); data printed with a bare `{}` (JSON, netlists) is never translated.
+- `crates/ics-i18n`: the English/Korean tables (`src/ko/*`) and lookup (`t`, `tf`, `t_text`)
+  shared by the app and the CLI. Tests in ics-studio and ics-cli fail on text without Korean.
 - `crates/ics-mcp`: MCP tools and stdio server (library), run as `ics mcp`, and the extension
   host (`ext`: `extension.toml`, the stdio protocol, install / index; see `docs/extensions.md`).
 

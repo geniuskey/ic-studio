@@ -146,7 +146,7 @@ IC Studio에는 자체 내장 시뮬레이터가 있으므로 ngspice가 꼭 필
 
 IC Studio는 `/opt/homebrew/bin/ngspice`, `/usr/local/bin/ngspice`, `/usr/bin/ngspice`,
 `C:\Spice64\bin\ngspice.exe`를 차례로 찾은 다음 `PATH`에서 `ngspice`를 찾습니다. 다른 위치를
-쓰려면 **File > Settings...**(`Ctrl+,`)를 열고 **ngspice** 필드에 경로를 입력한 뒤 **Detect**를
+쓰려면 **File > Settings...**(`Ctrl+,`)를 열고 **시뮬레이션 > ngspice 프로그램**에 경로를 입력한 뒤 **Detect**를
 누릅니다. 상태 표시줄과 콘솔에 ngspice를 찾았는지 표시됩니다.
 
 Windows에서 `ngspice.exe`는 GUI 빌드입니다. 감지나 배치(batch) 시뮬레이션이 실패하면 같은 폴더의
@@ -154,17 +154,21 @@ Windows에서 `ngspice.exe`는 GUI 빌드입니다. 감지나 배치(batch) 시�
 
 ## 설정
 
-**File > Settings...**(`Ctrl+,`, **Tools** 메뉴나 액티비티 바 아래쪽의 톱니바퀴로도 열 수 있음):
+**파일 > 설정...**(`Ctrl+,`, **도구** 메뉴나 액티비티 바 아래쪽의 톱니바퀴로도 열 수 있음)을 열면
+왼쪽 사이드바에 페이지 목록이 있는 창이 뜹니다. 사이드바 위쪽 검색창은 모든 페이지에서 이름이나
+설명으로 설정을 찾습니다. **기본값 복원**은 보고 있는 페이지의 설정을 기본값으로 되돌립니다.
 
-| 설정 | 의미 |
+| 페이지 | 설정 |
 |---|---|
-| Theme | Dark 또는 Light (**View > Light Theme / Dark Theme**으로도 전환) |
-| UI scale | 0.75 ~ 1.75 |
-| ngspice | ngspice 실행 파일 경로, **Detect** 버튼 포함 |
-| Interaction | 마우스 프로필: **Virtuoso**(기본값) 또는 **Conventional** ([단축키](shortcuts.md#캔버스-회로도와-레이아웃) 참고) |
-| Startup | **Reopen last project**, 시작 시 **Check for updates** |
-| AI | **AI Models...**: Design Copilot의 공급자, 모델, API 키 |
-| AI agents (MCP) | **Add to Claude Code**는 `ics mcp`를 Claude Code에 등록하고, **Copy MCP config**는 다른 클라이언트용 JSON을 복사함 ([MCP 서버](mcp.md) 참고) |
+| 일반 | 언어(영어 또는 한국어, 한글이 있는 시스템 글꼴 필요), **초보자 모드**, **마지막 프로젝트 다시 열기**, **파일 > 최근 프로젝트** 개수와 **목록 지우기**, Learn 강좌 진도(**진도 초기화**) |
+| 모양 | 테마: 어둡게 또는 밝게(**보기 > 밝은 테마 / 어두운 테마**로도 전환), UI 배율 0.75 ~ 1.75 |
+| 마우스와 키보드 | 마우스 프로필: **Virtuoso 방식**(기본값) 또는 **일반 방식**([단축키](shortcuts.md#캔버스-회로도와-레이아웃) 참고), 단축키 목록 |
+| 회로도 | MOS 심볼(바디 핀 또는 소스에 화살표), 그리드, 시뮬레이션 후 회로도에 동작점 표시 |
+| 레이아웃 | 모든 레이아웃 탭의 기본값: 그리드, 그래비티, 그리는 동안 간격 검사(DRD), 자석, 자동 맞붙이기, 배선을 트랙에 맞춤, 플라이라인. 바꾸면 열려 있는 탭에도 적용되며, 레이아웃 툴바에서는 여전히 탭마다 바꿀 수 있음 |
+| 시뮬레이션 | ngspice 프로그램 경로, **감지** 버튼과 찾았는지 여부 |
+| 저장과 복구 | 자동 저장 주기(끄기, 30초 ~ 10분)와 복구 폴더(**경로 복사**) |
+| AI | **AI 모델...**: Design Copilot의 공급자, 모델, API 키. **Claude Code에 추가**는 `ics mcp`를 Claude Code에 등록하고, **MCP 설정 복사**는 다른 클라이언트용 JSON을 복사함([MCP 서버](mcp.md) 참고) |
+| 업데이트와 정보 | 설치된 버전, **지금 확인**, 시작할 때 **업데이트 확인** |
 
 설정과 최근 프로젝트 목록은 앱이 세션 간에 저장합니다.
 

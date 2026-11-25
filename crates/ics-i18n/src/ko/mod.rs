@@ -1,7 +1,9 @@
-//! Korean UI strings, keyed by the English source text (see `i18n`). Hangul needs a system
+//! Korean strings, keyed by the English source text (see the crate docs). Hangul needs a system
 //! font, so this file is not part of the bundled-font glyph check.
 
 mod app;
+mod cli;
+mod cli_help;
 mod designers;
 pub mod figures;
 mod layout;
@@ -10,13 +12,13 @@ mod sim;
 mod tools;
 
 /// Every table of whole UI strings, one per area of the app.
-pub const PARTS: &[&[(&str, &str)]] = &[KO, app::KO, designers::KO, layout::KO, learn::KO, sim::KO, tools::KO];
+pub const PARTS: &[&[(&str, &str)]] = &[KO, app::KO, cli_help::KO, designers::KO, layout::KO, learn::KO, sim::KO, tools::KO];
 
 mod core;
 
 /// Every template table: the UI's and the core crates' messages.
 pub fn templates() -> impl Iterator<Item = &'static (&'static str, &'static str)> {
-    TEMPLATES.iter().chain(core::TEMPLATES)
+    TEMPLATES.iter().chain(core::TEMPLATES).chain(cli::TEMPLATES)
 }
 
 /// The entries of all [`PARTS`].

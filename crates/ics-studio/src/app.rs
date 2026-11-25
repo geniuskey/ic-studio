@@ -13,6 +13,11 @@ use ics_mcp::{ToolResult, tools};
 use ics_sim::SimOptions;
 use serde::{Deserialize, Serialize};
 
+mod settings;
+
+pub use settings::SettingsPage;
+use settings::{EditorDefaults, SettingsState};
+
 use crate::calc_view::Calculator;
 use crate::canvas::Profile;
 use crate::canvas::View2D;
@@ -325,6 +330,8 @@ pub enum Command {
     ToggleTheme,
     ToggleConsole,
     Settings,
+    /// Open the Settings window at a page.
+    SettingsPage(SettingsPage),
     Shortcuts,
     UserGuide,
     /// Start the interactive tutorial for first-time users.
@@ -379,6 +386,12 @@ struct Settings {
     /// Progress through the Learn course.
     #[serde(default)]
     learn: crate::learn::Progress,
+    /// Defaults of new schematic and layout tabs (grid, snapping, checks while drawing).
+    editors: EditorDefaults,
+    /// Seconds between autosaves of unsaved work to the recovery folder (0 = off).
+    autosave_secs: u32,
+    /// Length of File > Open Recent.
+    recent_max: usize,
 }
 
 impl Default for Settings {
@@ -398,6 +411,9 @@ impl Default for Settings {
             beginner: true,
             lang: crate::i18n::Lang::En,
             learn: Default::default(),
+            editors: Default::default(),
+            autosave_secs: crate::recovery::INTERVAL.as_secs() as u32,
+            recent_max: 10,
         }
     }
 }
@@ -461,7 +477,7 @@ enum Dialog {
         root: std::path::PathBuf,
         saved: u64,
     },
-    Settings,
+    Settings(SettingsState),
     Shortcuts,
     About,
     Update,
@@ -1167,7 +1183,7 @@ impl IcStudio {
         let path = path.to_path_buf();
         self.settings.recent.retain(|p| p != &path);
         self.settings.recent.insert(0, path);
-        self.settings.recent.truncate(10);
+        self.settings.recent.truncate(self.settings.recent_max.max(1));
     }
 
     fn open_project(&mut self, path: &Path) {
@@ -1947,7 +1963,8 @@ impl IcStudio {
                 });
             }
             Command::ToggleConsole => self.show_console = !self.show_console,
-            Command::Settings => self.dialog = Some(Dialog::Settings),
+            Command::Settings => self.dialog = Some(Dialog::Settings(SettingsState::default())),
+            Command::SettingsPage(page) => self.dialog = Some(Dialog::Settings(SettingsState { page, ..Default::default() })),
             Command::Shortcuts => self.dialog = Some(Dialog::Shortcuts),
             Command::UserGuide => ctx.open_url(egui::OpenUrl::new_tab(GUIDE_URL)),
             Command::Extensions => self.ext_manager.open = true,
@@ -4547,6 +4564,9 @@ impl IcStudio {
             Workspace::Schematic => {
                 let op = self.sims.get(&r).and_then(|s| s.op_annotation());
                 let ed = self.sch_eds.entry(r.clone()).or_default();
+                if !ed.configured {
+                    self.settings.editors.apply_sch(ed);
+                }
                 ed.mos_body_pin = self.settings.mos_body_pin;
                 ed.bulk_nets = bulk_nets.clone();
                 if let Some(sch) = cell.schematic.as_mut() {
@@ -4667,6 +4687,9 @@ impl IcStudio {
                 let placeable: Vec<CellRef> = src.all_cells().filter(|(_, c)| c.layout.is_some()).map(|(r, _)| r).collect();
                 let context = eip_context(&self.lay_return, &r);
                 let ed = self.lay_eds.entry(r.clone()).or_default();
+                if !ed.configured {
+                    self.settings.editors.apply_lay(ed);
+                }
                 let orient = context.as_ref().map_or(ics_core::Trans::IDENTITY, |c| c.to_root);
                 if ed.view.orient != orient {
                     ed.view.set_orient(orient);
@@ -6110,100 +6133,7 @@ impl IcStudio {
                         }
                     });
                 }
-                Dialog::Settings => {
-                    ui.heading(t("Settings"));
-                    ui.add_space(8.0);
-                    egui::Grid::new("settings").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
-                        ui.label(t("Theme"));
-                        ui.horizontal(|ui| {
-                            if ui.radio(self.settings.dark, t("Dark")).clicked() && !self.settings.dark {
-                                self.queue.push(Command::ToggleTheme);
-                            }
-                            if ui.radio(!self.settings.dark, t("Light")).clicked() && self.settings.dark {
-                                self.queue.push(Command::ToggleTheme);
-                            }
-                        });
-                        ui.end_row();
-                        ui.label(t("UI scale"));
-                        if ui.add(egui::Slider::new(&mut self.settings.ui_scale, 0.75..=1.75).step_by(0.05)).drag_stopped() {
-                            ctx.set_zoom_factor(self.settings.ui_scale);
-                        }
-                        ui.end_row();
-                        ui.label("ngspice"); // i18n: ignore
-                        ui.horizontal(|ui| {
-                            ui.add(egui::TextEdit::singleline(&mut self.settings.ngspice_path).desired_width(220.0));
-                            if ui.button(t("Detect")).clicked() {
-                                self.ngspice = ics_sim::ngspice::detect(&self.settings.ngspice_path);
-                            }
-                        });
-                        ui.end_row();
-                        ui.label("");
-                        match &self.ngspice {
-                            Some(v) => ui.colored_label(pal.ok, format!("✔ {v}")),
-                            None => ui.colored_label(pal.text_weak, t("not found — built-in engine will be used")),
-                        };
-                        ui.end_row();
-                        let il = ui.label(t("Interaction"));
-                        egui::ComboBox::from_id_salt("interaction")
-                            .selected_text(self.settings.interaction.name())
-                            .show_ui(ui, |ui| {
-                                for p in Profile::ALL {
-                                    ui.selectable_value(&mut self.settings.interaction, p, p.name()).on_hover_text(p.describe());
-                                }
-                            })
-                            .response
-                            .labelled_by(il.id)
-                            .on_hover_text(self.settings.interaction.describe());
-                        ui.end_row();
-                        let ml = ui.label(t("MOS symbol"));
-                        ui.horizontal(|ui| {
-                            ui.radio_value(&mut self.settings.mos_body_pin, true, t("Body pin (4-terminal)"))
-                                .labelled_by(ml.id)
-                                .on_hover_text(t("New NMOS / PMOS devices have a body pin to wire"));
-                            ui.radio_value(&mut self.settings.mos_body_pin, false, t("Arrow on source (3-terminal)"))
-                                .labelled_by(ml.id)
-                                .on_hover_text(t("New NMOS / PMOS devices hide the body: it is on ground (NMOS) or vdd (PMOS), set by the bulk parameter"));
-                        });
-                        ui.end_row();
-                        ui.label(t("Startup"));
-                        ui.checkbox(&mut self.settings.reopen_last, t("Reopen last project"));
-                        ui.end_row();
-                        ui.label("");
-                        ui.checkbox(&mut self.settings.check_updates, t("Check for updates"));
-                        ui.end_row();
-                        ui.label("AI");
-                        if ui.button(tf("AI Models… ({})", &[&self.settings.llm.describe()])).clicked() {
-                            self.ai_models.open = true;
-                        }
-                        ui.end_row();
-                        ui.label(t("AI agents (MCP)")).on_hover_text(t(
-                            "Let AI agents such as Claude Code drive IC Studio. They start the ics command line tool with ics mcp; \
-                             while this window is open they work on its project.",
-                        ));
-                        ui.horizontal(|ui| {
-                            if ui
-                                .button(t("Add to Claude Code"))
-                                .on_hover_text(t("Runs: claude mcp add --scope user ic-studio -- <folder>/ics mcp"))
-                                .clicked()
-                            {
-                                self.queue.push(Command::AddMcpToClaudeCode);
-                            }
-                            if ui
-                                .button(t("Copy MCP config"))
-                                .on_hover_text(t("JSON for other MCP clients (Cursor, Claude Desktop, ...)"))
-                                .clicked()
-                            {
-                                self.queue.push(Command::CopyMcpConfig);
-                            }
-                        });
-                        ui.end_row();
-                    });
-                    ui.add_space(8.0);
-                    if ui.button(t("Close")).clicked() {
-                        ctx.set_zoom_factor(self.settings.ui_scale);
-                        close = true;
-                    }
-                }
+                Dialog::Settings(st) => self.settings_dialog(ui, st, &mut close),
                 Dialog::Shortcuts => {
                     ui.heading(t("Keyboard shortcuts"));
                     ui.add_space(6.0);
@@ -7551,7 +7481,8 @@ Cells (views):";
 
 impl eframe::App for IcStudio {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if let Some(e) = self.autosave.tick(self.project.as_ref(), self.dirty) {
+        let every = (self.settings.autosave_secs > 0).then(|| Duration::from_secs(self.settings.autosave_secs.into()));
+        if let Some(e) = self.autosave.tick(self.project.as_ref(), self.dirty, every) {
             self.warn(format!("Autosave failed: {e}"));
         }
         // Window close with unsaved work.

@@ -154,8 +154,8 @@ backend, install it:
 
 IC Studio looks for `/opt/homebrew/bin/ngspice`, `/usr/local/bin/ngspice`,
 `/usr/bin/ngspice` and `C:\Spice64\bin\ngspice.exe`, then for `ngspice` on the `PATH`.
-To use another location, open **File > Settings...** (`Ctrl+,`), enter the path in the
-**ngspice** field and press **Detect**. The status bar and the console show whether
+To use another location, open **File > Settings...** (`Ctrl+,`), enter the path under
+**Simulation > ngspice program** and press **Detect**. The status bar and the console show whether
 ngspice was found.
 
 On Windows, `ngspice.exe` is the GUI build; if detection or batch simulation fails, point
@@ -164,17 +164,21 @@ the setting at the console binary `ngspice_con.exe` in the same folder.
 ## Settings
 
 **File > Settings...** (`Ctrl+,`, also in the **Tools** menu, or the gear at the bottom of the
-activity bar):
+activity bar) opens a window with a sidebar of pages. The search box at the top of the sidebar
+finds a setting on every page by its name or description. **Restore defaults** resets the
+settings of the page shown.
 
-| Setting | Meaning |
+| Page | Settings |
 |---|---|
-| Theme | Dark or Light (also **View > Light Theme / Dark Theme**) |
-| UI scale | 0.75 to 1.75 |
-| ngspice | Path to the ngspice executable, with **Detect** |
-| Interaction | Mouse profile: **Virtuoso** (default) or **Conventional** (see [Keyboard shortcuts](shortcuts.md#canvas-schematic-and-layout)) |
-| Startup | **Reopen last project**; **Check for updates** on startup |
-| AI | **AI Models...**: provider, model and API key of the Design Copilot |
-| AI agents (MCP) | **Add to Claude Code** registers `ics mcp` with Claude Code; **Copy MCP config** copies the JSON for other clients (see [MCP server](mcp.md)) |
+| General | Language (English or Korean, with a system font that has Hangul); **Beginner mode**; **Reopen last project**; length of **File > Open Recent** and **Clear the list**; progress of the Learn course (**Reset progress**) |
+| Appearance | Theme, Dark or Light (also **View > Light Theme / Dark Theme**); UI scale, 0.75 to 1.75 |
+| Mouse and keyboard | Mouse profile: **Virtuoso style** (default) or **Conventional style** (see [Keyboard shortcuts](shortcuts.md#canvas-schematic-and-layout)); the list of shortcuts |
+| Schematic | MOS symbol (body pin or arrow on source); grid; operating point shown on the schematic after a simulation |
+| Layout | Defaults of every layout tab: grid, gravity, spacing check while drawing (DRD), magnet, auto abut, snap wires to tracks, flylines. A change also applies to the open tabs; the layout toolbar still switches them per tab |
+| Simulation | Path to the ngspice program, with **Detect** and whether it was found |
+| Saving and recovery | Autosave interval (off, 30 s to 10 min) and the recovery folder (**Copy path**) |
+| AI | **AI Models...**: provider, model and API key of the Design Copilot; **Add to Claude Code** registers `ics mcp` with Claude Code, **Copy MCP config** copies the JSON for other clients (see [MCP server](mcp.md)) |
+| Updates and about | Installed version, **Check now**, **Check for updates** on startup |
 
 Settings and the recent-projects list are stored by the app between sessions.
 

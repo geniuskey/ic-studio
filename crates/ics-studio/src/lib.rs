@@ -19,7 +19,7 @@ pub mod hier_view;
 pub mod history;
 pub mod home_view;
 pub mod i18n;
-pub mod i18n_ko;
+pub use ics_i18n::ko as i18n_ko;
 pub mod icons;
 pub mod layout_view;
 pub mod learn;

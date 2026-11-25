@@ -1,5 +1,5 @@
 //! Autosave and crash recovery. While a project has unsaved changes a copy of it is written
-//! every [`INTERVAL`] to a recovery folder outside the project (the project's own files are
+//! every [`INTERVAL`] (Settings > Saving changes it) to a recovery folder outside the project (the project's own files are
 //! only written by Save). Opening the project again after a crash offers the copy; saving or
 //! discarding the changes removes it.
 
@@ -10,7 +10,7 @@ use ics_core::Project;
 use ics_core::project::DiskState;
 use serde::{Deserialize, Serialize};
 
-/// Time between autosaves while there are unsaved changes.
+/// Default time between autosaves while there are unsaved changes.
 pub const INTERVAL: Duration = Duration::from_secs(120);
 
 const INFO: &str = "recovery.json";
@@ -101,9 +101,9 @@ pub struct Autosave {
 }
 
 impl Autosave {
-    /// Start a background copy of `p` when `dirty` has lasted an interval since the last one.
-    /// Returns the error of a finished copy, if any.
-    pub fn tick(&mut self, p: Option<&Project>, dirty: bool) -> Option<String> {
+    /// Start a background copy of `p` when `dirty` has lasted `every` since the last one
+    /// (`None`: autosave is off). Returns the error of a finished copy, if any.
+    pub fn tick(&mut self, p: Option<&Project>, dirty: bool, every: Option<Duration>) -> Option<String> {
         let mut failed = None;
         if self.job.as_ref().is_some_and(|j| j.is_finished())
             && let Some(Err(e)) = self.job.take().and_then(|j| j.join().ok())
@@ -116,7 +116,7 @@ impl Autosave {
         }
         let since = *self.last.get_or_insert_with(Instant::now);
         if self.job.is_none()
-            && since.elapsed() >= INTERVAL
+            && every.is_some_and(|every| since.elapsed() >= every)
             && let Some(p) = p.filter(|p| p.root.is_some())
         {
             let copy = p.clone();

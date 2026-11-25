@@ -3800,5 +3800,52 @@ fn korean_ui_screens() {
     h.state_mut().command(Command::Learn(ics_studio::learn::chapter_index("mosfet")));
     h.run_steps(4);
     shot(&mut h, "64_ko_learn");
-    ics_studio::i18n::set(ics_studio::i18n::Lang::En);
+    // The language is also a setting: switching back to English from the settings dialog.
+    let mut h = app(demo_args("cmos_inverter", "schematic", false));
+    h.state_mut().command(Command::SetLanguage(ics_studio::i18n::Lang::Ko));
+    h.state_mut().command(Command::Settings);
+    h.run_steps(4);
+    shot(&mut h, "65_ko_settings");
+    {
+        use egui_kittest::kittest::Queryable;
+        h.get_by_label("English").click();
+    }
+    h.run_steps(4);
+    assert_eq!(ics_studio::i18n::current(), ics_studio::i18n::Lang::En);
+    shot(&mut h, "66_settings_back_to_english");
+}
+
+/// The Settings window: sidebar pages, a layout default that also reaches the open tab, and
+/// the search across pages.
+#[test]
+fn settings_window() {
+    use egui_kittest::kittest::Queryable;
+    use ics_studio::app::SettingsPage;
+    let r = CellRef::new("work", "cmos_inverter");
+    let mut h = app(demo_args("cmos_inverter", "layout", false));
+    h.run_steps(4);
+    assert!(h.state().layout_editor(&r).unwrap().auto_abut);
+    h.state_mut().command(Command::Settings);
+    h.run_steps(4);
+    shot(&mut h, "settings_general");
+    // "Layout" is also the workspace tab: the page through its command.
+    h.state_mut().command(Command::SettingsPage(SettingsPage::Layout));
+    h.run_steps(4);
+    shot(&mut h, "settings_layout");
+    // The row's label and its switch share the name: the switch is the checkbox.
+    h.get_by_role_and_label(egui::accesskit::Role::CheckBox, "Auto abut").click();
+    h.run_steps(4);
+    assert!(!h.state().layout_editor(&r).unwrap().auto_abut, "the layout default reaches the open tab");
+    h.state_mut().command(Command::SettingsPage(SettingsPage::Saving));
+    h.run_steps(4);
+    shot(&mut h, "settings_saving");
+    h.get_by_label("Search settings").click();
+    h.run_steps(2);
+    h.get_by_label("Search settings").type_text("spacing");
+    h.run_steps(4);
+    shot(&mut h, "settings_search");
+    // Rows of every page whose label or hint mentions spacing; the others are hidden.
+    h.get_by_role_and_label(egui::accesskit::Role::CheckBox, "Spacing check while drawing");
+    h.get_by_role_and_label(egui::accesskit::Role::CheckBox, "Magnet");
+    assert!(h.query_by_label("Autosave").is_none());
 }

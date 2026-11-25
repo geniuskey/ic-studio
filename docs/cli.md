@@ -13,6 +13,11 @@ it with `cargo build --release -p ics-cli` (binary `target/release/ics`) or run 
 - `<CELL>` is `lib/cell` or just the cell name (the first cell with that name is used).
 - Exit code 0 means success. Errors print `error: <message>` to stderr and exit with 1.
 - `ics --help` and `ics <command> --help` describe every option.
+- Messages and help are in English or Korean: `--lang en|ko`, else the `ICS_LANG`
+  environment variable, else the system locale (a Korean Windows or `LANG=ko_KR.UTF-8`
+  gives Korean). Errors then start with `오류:`. `--json` output, netlists and other data
+  stay as they are in every language, as does `ics mcp`. Scripts that read the text output
+  can pin it with `--lang en`.
 
 ## Commands
 

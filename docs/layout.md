@@ -195,7 +195,7 @@ The **Edit** section of the right panel (shown when something is selected) also 
 | Pop-up menu | Middle-click (or right-click when no command point is pending) |
 
 These are the **Virtuoso** interaction profile, the default. With **Conventional**
-(**Settings** > **Interaction**) the wheel zooms and a right drag pans.
+(**Settings** > **Mouse and keyboard**) the wheel zooms and a right drag pans.
 
 Bindkeys go to the canvas while the mouse is over it, and stay with it while one of its
 forms (`q`, `F3`, `e`, `Shift+E`) is open on top, until you click elsewhere in the window.

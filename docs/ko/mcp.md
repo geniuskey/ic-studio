@@ -11,7 +11,7 @@
 ## 설정
 
 [릴리스 설치 프로그램](install.md#릴리스-설치)은 `claude`가 `PATH`에 있으면 서버를 Claude Code에
-등록합니다. 앱의 **File > Settings... > AI agents (MCP)**에는 같은 일을 하는 **Add to Claude
+등록합니다. 앱의 **File > Settings... > AI**에는 같은 일을 하는 **Add to Claude
 Code**와, 다른 클라이언트용으로 아래 JSON을 복사하는 **Copy MCP config**가 있습니다.
 
 직접 등록하려면 다음을 실행합니다.

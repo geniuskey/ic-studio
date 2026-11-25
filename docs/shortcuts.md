@@ -41,7 +41,7 @@ Canvas keys work while the mouse is over the canvas and no text field has focus.
 | `Ctrl+Shift+D` | Duplicate the selection (schematic) |
 | `Shift`/`Ctrl`+click | Add to or remove from the selection |
 
-The mouse follows the **Interaction** profile in **Settings** (`Ctrl+,`). **Virtuoso**
+The mouse follows the profile in **Settings > Mouse and keyboard** (`Ctrl+,`). **Virtuoso**
 (the default) matches the Virtuoso defaults: the wheel pans, `Ctrl`+wheel zooms at the
 mouse and a right drag zooms into a box. **Conventional** zooms with the wheel and pans with
 a right drag. Bindkeys are the same in both.

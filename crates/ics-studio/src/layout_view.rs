@@ -255,6 +255,8 @@ pub struct LayoutEditor {
     pub live: live::LiveDrc,
     pub cursor: Option<(i64, i64)>,
     pub show_grid: bool,
+    /// The app's editor defaults were applied (on the first frame of the tab).
+    pub configured: bool,
     /// Deepest hierarchy level drawn with its contents.
     pub max_depth: u32,
     pub place: Option<CellRef>,
@@ -370,6 +372,7 @@ impl Default for LayoutEditor {
             live: live::LiveDrc::default(),
             cursor: None,
             show_grid: true,
+            configured: false,
             max_depth: 0,
             place: None,
             place_rot: 0,

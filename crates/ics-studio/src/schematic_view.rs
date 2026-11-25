@@ -148,6 +148,8 @@ pub struct SchematicEditor {
     pub cursor: Option<Pt>,
     pub annotate_op: bool,
     pub show_grid: bool,
+    /// The app's editor defaults were applied (on the first frame of the tab).
+    pub configured: bool,
     conn_cache: Option<(Schematic, Connectivity)>,
     /// Actions queued by menus and `Command::Sch`, run by the next canvas frame.
     pub actions: Vec<SchAction>,
@@ -182,6 +184,7 @@ impl Default for SchematicEditor {
             cursor: None,
             annotate_op: true,
             show_grid: true,
+            configured: false,
             conn_cache: None,
             actions: Vec::new(),
             mos_body_pin: true,
