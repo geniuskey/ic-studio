@@ -42,7 +42,7 @@ All targets met on paper. Now verify.
 <!-- try: New cell | new-cell -->
 
 1. `Ctrl+N`, name the cell `my_cs`, **Create**.
-2. Place an NMOS (`N`). Set **Width** `2u` and **Inductance / L** `1u`.
+2. Place an NMOS (`N`). Set **Width (W)** `2u` and **Length (L)** `1u`.
 3. Place a resistor (`R`) above it. Set **Resistance** `50k`, and **Name** `RD`.
 4. Wire: resistor bottom to the NMOS drain; NMOS source and body to a Ground (`G`);
    resistor top to a Supply Net (`S`).
@@ -156,7 +156,7 @@ Predict first, then simulate. Change **Resistance** of `RD` and fill in the tabl
 - At 100 kΩ the resistor drops too much voltage, M1 is pushed into triode, and the gain
   collapses. **Always check the region after a change.**
 
-The **Corner / Sweep Manager** (**Tools** menu, or **Sweep...** in the setup panel) runs
+The **Corner / Sweep Manager** (**Simulation** menu, or **Sweep...** in the setup panel) runs
 this table for you: add the variable `RD.r` with the values `30k 50k 70k 100k`, add two
 specs on the `ac` dataset, `max(db(v(out)))` for the gain and `bandwidth(v(out))` for the
 bandwidth, and press **Run Sweep**.
@@ -184,7 +184,8 @@ Real chips vary. Two quick checks:
    V<sub>th</sub> falls (to 0.35 V), so the current rises to 24 µA and the output drops
    to 0.6 V; and the carrier mobility falls, so g<sub>m</sub> drops to 133 µS. The gain
    falls to about ×6.4 (16.1 dB), just above the spec.
-2. **Monte Carlo**: **Simulation > Monte Carlo...**, add the measurements `op: v(out)`
+2. **Monte Carlo**: **Simulation > Monte Carlo...** (in beginner mode the item is hidden:
+   type "Monte Carlo" in the command search, `Ctrl+K`), add the measurements `op: v(out)`
    and `ac: max(db(v(out)))`, and run 200 samples. The output bias spreads with a σ of
    about **130 mV**, and the gain ranges from 15.1 to 18.1 dB. This sensitivity is the
    weakness of this simple circuit: its bias depends directly on V<sub>th</sub>. Real amplifiers set the bias with a

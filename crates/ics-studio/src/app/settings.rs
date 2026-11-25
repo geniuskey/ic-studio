@@ -428,7 +428,7 @@ impl IcStudio {
                     ui,
                     rows,
                     t("Learn course"),
-                    &tf("{} of {} chapters done", &[&done.to_string(), &crate::learn::CHAPTERS.len().to_string()]),
+                    &tf("{} of {} chapters done", &[&done.to_string(), &crate::learn::count().to_string()]),
                     |ui, _| {
                         if ui.button(t("Open")).clicked() {
                             self.queue.push(Command::Learn(None));

@@ -38,8 +38,8 @@ Library**, with the shortcut key of each device on its tile.
 1. Press `P` and click on the canvas to place a PMOS. It is named `M1`. Press `Esc`.
 2. Press `N` and click below the PMOS to place an NMOS (`M2`), leaving a few grid points
    between them. Press `Esc`.
-3. Click the PMOS. In the inspector on the right, check **Width** is `2u` and
-   **Inductance / L** (the channel length) is `180n`. Click the NMOS: **Width** `1u`,
+3. Click the PMOS. In the inspector on the right, check **Width (W)** is `2u` and
+   **Length (L)** (the channel length) is `180n`. Click the NMOS: **Width (W)** `1u`,
    length `180n`. These are the defaults.
 
 Each MOSFET has four pins: `d` (drain), `g` (gate), `s` (source) and `b` (body). Hover a
@@ -88,19 +88,21 @@ load. These parts form the **testbench**.
 3. **Load**: press `C`, place a capacitor from `out` to ground and set its
    **Capacitance** to `20f`.
 
-Check the **Problems** tab in the bottom panel: it should be empty. If it reports a
+Open the bottom panel (**▸ Console** at the right end of the status bar, or `Ctrl+J`) and
+check its **Problems** tab: it should be empty. If it reports a
 floating net or an unconnected pin, fix the wire it points to (click the finding to
 select the device). The **Netlist** tab now shows something like:
 
 ```spice
-MP out in vdd vdd pmos w=2u l=180n
-MN out in 0 0 nmos w=1u l=180n
-CL out 0 20f
+M1 out in vdd vdd pmos w=2u l=180n
+M2 out in 0 0 nmos w=1u l=180n
+C1 out 0 20f
 VDD vdd 0 DC 1.8
 VIN in 0 DC 0 PULSE(0 1.8 1n 100p 100p 4n 10n)
 ```
 
-(Your device names may differ; the connections are what matter.)
+(The names come from the order you placed the devices: the PMOS first is `M1`, the NMOS
+`M2`. The checks below use these names; if yours differ, read the name in the inspector.)
 
 <!-- check: my_inv has a schematic with the inverter and its testbench (5 devices) | my_inv schematic 5 -->
 
@@ -135,8 +137,8 @@ VIN in 0 DC 0 PULSE(0 1.8 1n 100p 100p 4n 10n)
    `1.8`, **Step** `10m`.
 2. Press `F5` and open the **DC Sweep** tab. Tick `v(in)` and `v(out)` in **Signals**.
 
-You see the transfer curve. To find the switching threshold exactly, open **Tools >
-Waveform Calculator**, choose the `dc` dataset and evaluate:
+You see the transfer curve. To find the switching threshold exactly, open **Simulation >
+Waveform Calculator…**, choose the `dc` dataset and evaluate:
 
 ```text
 cross(v(out) - v(in), 0)
@@ -173,7 +175,9 @@ V<sub>M</sub>, where both transistors are on.
    ```
 
    Each measures from the input crossing 0.9 V (50 % of 1.8 V) to the output crossing
-   0.9 V.
+   0.9 V. The arguments are: the start signal and its level, the end signal and its level,
+   then which edge of each to use. `rise, fall` means "from a *rising* input to the *falling*
+   output it causes", which is t<sub>pHL</sub>.
 
 The rising output is slower: the PMOS is weaker than the NMOS, as the
 [sizing table](cmos-logic.md#sizing-the-transistors) predicted.
@@ -196,7 +200,7 @@ The rising output is slower: the PMOS is weaker than the NMOS, as the
 Predict first: if the PMOS is made twice as wide, what happens to V<sub>M</sub>,
 t<sub>pLH</sub> and t<sub>pHL</sub>?
 
-1. Back in the schematic, select the PMOS and set **Width** to `4u`.
+1. Back in the schematic, select the PMOS and set **Width (W)** to `4u`.
 2. Press `F5`. Calculator results are kept; click each expression in **Results** and
    evaluate it again.
 

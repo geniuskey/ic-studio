@@ -32,7 +32,7 @@ wider transistor carries more current, so it charges the load faster.
 3. Read the notes. They say what the cell is for, why it is sized as it is (the PMOS is
    twice as wide because holes are slower than electrons) and what to change for another
    target: *for a faster gate, scale both W by the same factor and keep the 2:1 ratio*.
-4. Hover the PMOS **Width** in the inspector: the tooltip says what changing it does.
+4. Hover the PMOS **Width (W)** in the inspector: the tooltip says what changing it does.
 
 <!-- quiz
 ? The notes say "scale both W by the same factor". Why both, and not only the NMOS?
@@ -46,7 +46,8 @@ wider transistor carries more current, so it charges the load faster.
 ## Step 2: guess first
 
 Before you let the tool work, estimate on paper. The delay is roughly
-t<sub>p</sub> ≈ C·V<sub>DD</sub> / (2·I), and the current grows with W. Both targets ask for
+t<sub>p</sub> ≈ C·V<sub>DD</sub> / (2·I): the same idea as 0.69·R<sub>on</sub>·C in
+[CMOS logic](cmos-logic.md#delay-why-gates-take-time), with R<sub>on</sub> ≈ V<sub>DD</sub>/I. The current grows with W. Both targets ask for
 about 1.4 times less delay (33 → 25 ps, 47 → 35 ps), so both widths must grow about 1.4
 times; a bit more, because a wider transistor also adds its own drain capacitance to the
 load.

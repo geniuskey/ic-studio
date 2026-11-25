@@ -3151,6 +3151,52 @@ fn learn_explore_and_report() {
     assert!(report.contains("cmos_inverter_v2"), "the derive chapter's checks are listed:\n{report}");
 }
 
+/// A project's own chapters (`<project>/learn/*.md`) come after the course's, with their
+/// checks on the project's cells; the Explorer lists only the chapter's cells while the course
+/// is open.
+#[test]
+fn learn_project_chapters() {
+    use egui_kittest::kittest::Queryable;
+    let dir = std::env::temp_dir().join(format!("ics-ui-learn-project-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    ics_core::examples::demo_project().save_as(&dir).unwrap();
+    std::fs::create_dir_all(dir.join("learn")).unwrap();
+    std::fs::write(
+        dir.join("learn/lab1.md"),
+        "# Lab 1: the NAND gate\n\nOpen the gate and simulate it.\n\n<!-- try: Open nand2 | open nand2 schematic -->\n\n\
+         <!-- check: nand2 has a schematic | nand2 schematic 4 -->\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("learn/lab1.ko.md"), "# 실습 1: NAND 게이트\n\n<!-- try: nand2 열기 | open nand2 schematic -->\n")
+        .unwrap();
+    let args =
+        LaunchArgs { project: Some(dir.clone()), demo: false, workspace: Some("schematic".into()), cell: None, run: false };
+    let mut h = app(args);
+    let n = ics_studio::learn::CHAPTERS.len();
+    assert_eq!(ics_studio::learn::count(), n + 1, "the project's chapter is loaded");
+    assert_eq!(ics_studio::learn::chapter_index("project:lab1"), Some(n));
+    assert_eq!(ics_studio::learn::title(ics_studio::i18n::Lang::En, n), "Lab 1: the NAND gate");
+    assert_eq!(ics_studio::learn::title(ics_studio::i18n::Lang::Ko, n), "실습 1: NAND 게이트");
+    h.state_mut().learn_go_to(n, "");
+    h.run_steps(4);
+    let state = h.state().learn_state();
+    assert_eq!(state["checks"][0]["state"], "passed", "{state}");
+    assert!(h.query_by_label("Only the cells of this chapter").is_some());
+    assert!(h.query_by_label("nand2").is_some(), "the Explorer lists the chapter's cell");
+    assert!(h.query_by_label("ota5t").is_none(), "and not the others");
+    h.get_by_label("Contents").click();
+    h.run_steps(3);
+    assert!(h.query_by_label("This project").is_some());
+    shot(&mut h, "76_learn_project_chapter");
+    h.get_by_label("Only the cells of this chapter").click();
+    h.run_steps(3);
+    assert!(h.query_by_label("ota5t").is_some(), "the whole library again");
+    h.state_mut().command(Command::CloseProject);
+    h.run_steps(2);
+    assert_eq!(ics_studio::learn::count(), n, "closing the project drops its chapters");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Every spotlight anchor the guides point at is registered by its widget in the workspace
 /// the anchor names.
 #[test]

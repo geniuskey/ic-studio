@@ -34,6 +34,7 @@ pub const KO: &[(&str, &str)] = &[
     ("Create the cell {} first.", "먼저 셀 {}을(를) 만드세요."),
     ("Simulate {} (F5) to check this.", "{}을(를) 시뮬레이션(F5)하면 확인됩니다."),
     ("{} of {} devices placed", "소자 {}/{}개 배치됨"),
+    ("{} devices placed (at least {} needed)", "소자 {}개 배치됨 (최소 {}개 필요)"),
     ("The cell has a layout.", "셀에 레이아웃이 있습니다."),
     ("The cell has no layout yet.", "셀에 아직 레이아웃이 없습니다."),
     ("Simulated.", "시뮬레이션 완료."),
@@ -215,4 +216,23 @@ pub const KO: &[(&str, &str)] = &[
     ("triode", "트라이오드"),
     ("saturation", "포화"),
     ("V_ov = {} V", "V_ov = {} V"),
+    ("This project", "이 프로젝트"),
+    (
+        "This chapter has you work in the inspector on the right: dock the course so it does not cover it.",
+        "이 장에서는 오른쪽 인스펙터에서 작업합니다. 강좌가 가리지 않도록 도킹하세요.",
+    ),
+    ("Dock now", "지금 도킹"),
+    ("Read the project's learn folder again", "프로젝트의 learn 폴더를 다시 읽습니다"),
+    ("{} course chapter(s) in {}", "강좌 장 {}개를 읽었습니다: {}"),
+    (
+        "Save the project first: its chapters are read from its learn folder",
+        "먼저 프로젝트를 저장하세요. 프로젝트의 장은 learn 폴더에서 읽습니다",
+    ),
+    ("Reload the project's course chapters", "프로젝트 강좌 장 다시 읽기"),
+    ("Only the cells of this chapter", "이 장의 셀만 보기"),
+    (
+        "While the Learn course is open, list only the cells the chapter uses",
+        "Learn 강좌가 열려 있는 동안 이 장에서 쓰는 셀만 보여 줍니다",
+    ),
+    ("This chapter uses no cell of the project yet", "이 장에서 쓰는 셀이 아직 프로젝트에 없습니다"),
 ];

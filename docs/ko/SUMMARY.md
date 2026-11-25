@@ -23,6 +23,7 @@
 - [데모 갤러리와 스크립트](demos.md)
 - [프로젝트, 라이브러리, 셀](projects.md)
 - [이전 설계에서 시작하기](derive.md)
+- [나만의 강좌 장 만들기](course-authoring.md)
 
 # 설계
 

@@ -69,18 +69,90 @@ impl Chapter {
     }
 }
 
-/// The index of a chapter by its file name (`mosfet` or `mosfet.md`).
+/// A chapter of the open project (`<project>/learn/*.md`), after the course's own: a teacher's
+/// lab or a team's onboarding, with the same directives. `name.ko.md` next to `name.md` is
+/// its Korean version.
+pub struct ProjectChapter {
+    /// `project:<file stem>`, the key of its progress.
+    pub id: &'static str,
+    en: Vec<Block>,
+    ko: Option<Vec<Block>>,
+}
+
+thread_local! {
+    /// The open project's chapters, on the UI thread (one per app; the UI tests run apps in
+    /// parallel threads). Leaked when replaced: they are few and small.
+    static PROJECT: std::cell::RefCell<Vec<&'static ProjectChapter>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The folder of a project's chapters.
+pub fn project_dir(root: &std::path::Path) -> std::path::PathBuf {
+    root.join("learn")
+}
+
+/// Load the chapters of the project at `root` (none: no project), replacing the last ones.
+/// Returns how many were found.
+pub fn load_project_chapters(root: Option<&std::path::Path>) -> usize {
+    let mut found: Vec<&'static ProjectChapter> = vec![];
+    if let Some(dir) = root.map(project_dir)
+        && let Ok(entries) = std::fs::read_dir(&dir)
+    {
+        let mut files: Vec<std::path::PathBuf> = entries
+            .filter_map(|e| Some(e.ok()?.path()))
+            .filter(|p| p.extension().is_some_and(|x| x == "md") && !p.to_string_lossy().ends_with(".ko.md"))
+            .collect();
+        files.sort();
+        for f in files {
+            let Ok(en) = std::fs::read_to_string(&f) else { continue };
+            let stem = f.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+            let ko = std::fs::read_to_string(f.with_extension("ko.md")).ok().map(|s| parse(&s));
+            let id: &'static str = Box::leak(format!("project:{stem}").into_boxed_str());
+            found.push(Box::leak(Box::new(ProjectChapter { id, en: parse(&en), ko })));
+        }
+    }
+    let n = found.len();
+    PROJECT.with_borrow_mut(|p| *p = found);
+    n
+}
+
+fn project_chapter(i: usize) -> Option<&'static ProjectChapter> {
+    let i = i.checked_sub(CHAPTERS.len())?;
+    PROJECT.with_borrow(|p| p.get(i).copied())
+}
+
+/// How many chapters there are: the course's and the open project's.
+pub fn count() -> usize {
+    CHAPTERS.len() + PROJECT.with_borrow(|p| p.len())
+}
+
+/// The id of chapter `i`: its file name, `project:<name>` for the project's.
+pub fn id(i: usize) -> &'static str {
+    CHAPTERS.get(i).map(|c| c.id).or_else(|| project_chapter(i).map(|c| c.id)).unwrap_or("")
+}
+
+/// Whether chapter `i` comes from the open project.
+pub fn is_project(i: usize) -> bool {
+    i >= CHAPTERS.len()
+}
+
+/// The index of a chapter by its file name (`mosfet` or `mosfet.md`; `project:lab1`).
 pub fn chapter_index(id: &str) -> Option<usize> {
     let id = id.strip_suffix(".md").unwrap_or(id);
-    CHAPTERS.iter().position(|c| c.id == id)
+    (0..count()).find(|&i| self::id(i) == id)
 }
 
 /// The parsed blocks of chapter `i` in `lang`.
 pub fn blocks(lang: Lang, i: usize) -> &'static [Block] {
     static EN: OnceLock<Vec<Vec<Block>>> = OnceLock::new();
     static KO: OnceLock<Vec<Vec<Block>>> = OnceLock::new();
+    if let Some(c) = project_chapter(i) {
+        return match (&c.ko, lang) {
+            (Some(ko), Lang::Ko) => ko,
+            _ => &c.en,
+        };
+    }
     let cell = if lang == Lang::Ko { &KO } else { &EN };
-    &cell.get_or_init(|| CHAPTERS.iter().map(|c| parse(c.source(lang))).collect())[i]
+    cell.get_or_init(|| CHAPTERS.iter().map(|c| parse(c.source(lang))).collect()).get(i).map_or(&[], |b| b.as_slice())
 }
 
 /// The chapter title: its first heading.
@@ -91,7 +163,7 @@ pub fn title(lang: Lang, i: usize) -> &'static str {
             Block::Heading { text, .. } => Some(text.as_str()),
             _ => None,
         })
-        .unwrap_or(CHAPTERS[i].id)
+        .unwrap_or(id(i))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -231,7 +303,7 @@ pub struct Progress {
 
 impl Progress {
     pub fn quiz_key(chapter: usize, n: usize) -> String {
-        format!("{}#{n}", CHAPTERS[chapter].id)
+        format!("{}#{n}", id(chapter))
     }
 
     /// The chapter to continue with: the last one open, or the first not done.
@@ -239,12 +311,12 @@ impl Progress {
         self.last
             .as_deref()
             .and_then(chapter_index)
-            .or_else(|| CHAPTERS.iter().position(|c| !self.done.contains(c.id)))
+            .or_else(|| (0..count()).position(|i| !self.done.contains(id(i))))
             .unwrap_or(0)
     }
 
     pub fn chapters_done(&self) -> usize {
-        CHAPTERS.iter().filter(|c| self.done.contains(c.id)).count()
+        (0..count()).filter(|&i| self.done.contains(id(i))).count()
     }
 }
 
@@ -321,7 +393,8 @@ impl Glossary {
                     }
                 }
                 for name in names {
-                    for part in std::iter::once(name).chain(name.split([',', '/'])) {
+                    let bare = name.split('(').next().unwrap_or(name);
+                    for part in [name, bare].into_iter().chain(name.split([',', '/'])) {
                         let k = gloss_key(part);
                         if k.chars().count() >= 2 {
                             g.keys.entry(k).or_insert(i);
@@ -341,6 +414,22 @@ impl Glossary {
             self.keys.get(singular)
         })?;
         self.terms.get(*i)
+    }
+}
+
+/// A term's meaning from the glossary in the UI language, as plain text for a tooltip.
+pub fn glossary_tip(term: &str) -> Option<String> {
+    let (name, meaning) = glossary(crate::i18n::current()).lookup(term)?;
+    Some(format!("{name}: {}", strip_inline(meaning)))
+}
+
+/// Add the glossary's meaning of `term` to a widget's tooltip, after `tip` if any.
+pub fn glossary_hover(resp: eframe::egui::Response, term: &str, tip: Option<&str>) -> eframe::egui::Response {
+    match (tip, glossary_tip(term)) {
+        (Some(a), Some(g)) => resp.on_hover_text(format!("{a}\n\n{g}")),
+        (Some(a), None) => resp.on_hover_text(a),
+        (None, Some(g)) => resp.on_hover_text(g),
+        (None, None) => resp,
     }
 }
 
@@ -656,6 +745,21 @@ pub fn try_parse(md: &str) -> Result<Vec<Block>, String> {
     Ok(out)
 }
 
+/// The cells a chapter works on: those its "Try it" buttons open and its checks look at.
+pub fn chapter_cells(blocks: &[Block]) -> BTreeSet<String> {
+    blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Try {
+                action: Action::Open(c, _) | Action::Simulate(c) | Action::Drc(c) | Action::Lvs(c) | Action::Derive(c),
+                ..
+            } => Some(c.clone()),
+            Block::Check(c) => Some(c.cell.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The language-independent shape of a chapter: its directives with their actions and
 /// answers, and its figures. Both languages of a chapter must have the same.
 pub fn skeleton(blocks: &[Block]) -> Vec<String> {
@@ -743,6 +847,8 @@ mod tests {
         assert_eq!(g.lookup("transistors").map(|(t, _)| t.as_str()), g.lookup("transistor").map(|(t, _)| t.as_str()));
         assert!(g.lookup("diffusion").is_some_and(|(t, _)| t.starts_with("Active")));
         assert!(g.lookup("V<sub>th</sub>").is_some() || g.lookup("threshold voltage").is_some());
+        assert!(g.lookup("operating point").is_some(), "a bold name's own parenthesis is dropped");
+        assert!(g.lookup("gm").is_some() && g.lookup("vth").is_some(), "symbols, as the simulator names them");
         let ko = glossary(Lang::Ko);
         assert!(ko.lookup("문턱 전압").is_some(), "Korean aliases are looked up");
         assert!(ko.lookup("MOSFET").is_some());

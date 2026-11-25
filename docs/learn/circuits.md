@@ -116,7 +116,7 @@ axis. Above its corner, an RC filter loses 20 dB per decade (a factor of 10 in f
 > Above the corner the gain falls by 20 dB per decade, so one decade above it the gain is about −20 dB (a ratio of 0.1).
 -->
 
-## The three main analyses
+## The main analyses
 
 | Analysis | Question it answers | Example |
 |---|---|---|
@@ -137,7 +137,8 @@ axis. Above its corner, an RC filter loses 20 dB per decade (a factor of 10 in f
 ## Reading a SPICE netlist
 
 Underneath every schematic is a **netlist**: one line per device, listing its nodes and
-its value. IC Studio shows it in the **Netlist** tab of the bottom panel. The RC filter:
+its value. IC Studio shows it in the **Netlist** tab of the bottom panel (open it with **▸ Console** at
+the right end of the status bar). The RC filter:
 
 ```spice
 * RC low-pass

@@ -686,9 +686,9 @@ fn op_table(ui: &mut egui::Ui, d: &Dataset) {
                             _ => pal.text_weak,
                         };
                         let l = ui.label(RichText::new(r).small().color(c));
-                        if let Some(a) = ics_core::advice::mos_advice(r, &dev.values) {
-                            l.on_hover_text(crate::i18n::t_text(&a));
-                        }
+                        let advice = ics_core::advice::mos_advice(r, &dev.values).map(|a| crate::i18n::t_text(&a).to_string());
+                        let term = if r == "cutoff" { "cut-off" } else { r.as_str() };
+                        crate::learn::glossary_hover(l, term, advice.as_deref());
                     }
                 });
                 if let Some(r) = &dev.region
@@ -706,7 +706,15 @@ fn op_table(ui: &mut egui::Ui, d: &Dataset) {
                             "p" => "W",
                             _ => "",
                         };
-                        ui.label(RichText::new(format!("{k}={}", format_eng(*v, unit))).monospace().small().color(pal.text_weak));
+                        let l = ui.label(
+                            RichText::new(format!("{k}={}", format_eng(*v, unit))).monospace().small().color(pal.text_weak),
+                        );
+                        let term = match k.as_str() {
+                            "vov" => "overdrive",
+                            "id" => "drain current",
+                            other => other,
+                        };
+                        crate::learn::glossary_hover(l, term, None);
                     }
                 });
                 ui.add_space(4.0);
@@ -792,7 +800,14 @@ pub fn results_panel(ui: &mut egui::Ui, state: &mut SimState) -> Option<String> 
                 "noise" => t("Noise"),
                 other => other,
             };
-            if ui.selectable_label(state.tab == d.analysis, label).clicked() {
+            let term = match d.analysis.as_str() {
+                "op" => "operating point",
+                "dc" => "DC sweep",
+                "ac" => "AC analysis",
+                "tran" => "transient analysis",
+                other => other,
+            };
+            if crate::learn::glossary_hover(ui.selectable_label(state.tab == d.analysis, label), term, None).clicked() {
                 state.tab = d.analysis.clone();
             }
         }

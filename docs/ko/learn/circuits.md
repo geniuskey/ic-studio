@@ -131,7 +131,7 @@ f(-3 dB) = 1 / (2π · R · C)          1 kΩ, 1 nF → 159 kHz
 ## SPICE 넷리스트 읽기
 
 모든 회로도 밑에는 **넷리스트**(netlist)가 있습니다. 소자마다 한 줄씩, 연결된 노드와 값을
-적습니다. IC Studio는 아래 패널의 **Netlist** 탭에 이를 보여 줍니다. RC 필터는 다음과 같습니다.
+적습니다. IC Studio는 아래 패널(상태 표시줄 오른쪽 끝의 **▸ 콘솔**로 엽니다)의 **넷리스트** 탭에 이를 보여 줍니다. RC 필터는 다음과 같습니다.
 
 ```spice
 * RC low-pass
@@ -157,7 +157,7 @@ C1 out 0 1n                                       ; 1 nF from out to ground
 ic-studio --demo --cell rc_lowpass --workspace simulation
 ```
 
-`F5`를 누릅니다. **AC** 탭의 **f -3 dB** 열에 약 159 kHz가 표시됩니다. **Transient** 탭에서는
+`F5`를 누릅니다. **AC** 탭의 **f -3 dB** 열에 약 159 kHz가 표시됩니다. **과도 (Transient)** 탭에서는
 지수적으로 충전되는 모습을 볼 수 있습니다. 이제 회로도(`Ctrl+2`)로 가서 인스펙터에서 `R1`을 `2k`로
 바꾸고 다시 `F5`를 누릅니다. 보기 전에 먼저 예측해 보세요. 코너 주파수는 얼마가 될까요?<sup>1</sup>
 

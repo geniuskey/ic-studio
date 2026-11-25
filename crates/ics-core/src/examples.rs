@@ -2653,7 +2653,7 @@ pub fn design_notes(cell: &str) -> &'static str {
     match cell {
         "cmos_inverter" => {
             "What it is: the basic CMOS logic gate. The PMOS pulls out up to vdd when in is low, the NMOS pulls it down when in is high; C1 (20 fF) stands for the gates the output drives.\n\
-             Why these sizes: L is the process minimum (180n) for speed. The PMOS is twice as wide (2u vs 1u) because holes are slower than electrons, so rise and fall times come out similar.\n\
+             Why these sizes: L is the process minimum (180n) for speed. The PMOS is twice as wide (2u vs 1u) because holes are slower than electrons. 2:1 is a compromise: the rise (47 ps) is still slower than the fall (33 ps); 4:1 would balance them, at the cost of more input capacitance.\n\
              Specs: tphl (output falling) <= 50 ps and tplh (output rising) <= 70 ps, measured on the transient.\n\
              To derive a new design: for a faster or stronger gate (bigger load), scale both W by the same factor and keep the 2:1 ratio. If the rise is slower than the fall, widen the PMOS. Change C1 to the load your design drives and re-check tphl / tplh."
         }

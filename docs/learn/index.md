@@ -193,3 +193,6 @@ should see the same numbers on your screen, give or take the last digit.
 
 Ready? Start with [Circuits in ten minutes](circuits.md), or jump straight to
 [the MOSFET](mosfet.md) if you know your Ohm's law.
+
+Teachers and teams can add chapters of their own to a project: see
+[Your own course chapters](../course-authoring.md).

@@ -106,6 +106,9 @@ C<sub>L</sub>을 충전하거나 방전한다는 뜻이고, 켜진 트랜지스�
 t_p ≈ 0.69 · R_on · C_L
 ```
 
+(0.69는 ln 2입니다. RC 회로가 최종 전압의 절반, 즉 지연을 재는 50 % 지점에 이르는 데 0.69·RC가
+걸립니다.)
+
 **전파 지연**(propagation delay) t<sub>p</sub>는 입력이 스윙의 50 %를 지나는 시점부터 출력이
 50 %를 지나는 시점까지로 잽니다. 두 가지가 있습니다. **t<sub>pHL</sub>**(출력 하강, NMOS를 통해)과
 **t<sub>pLH</sub>**(출력 상승, PMOS를 통해)입니다.
@@ -163,8 +166,6 @@ V_M = (V_th,n + r · (V_DD − |V_th,p|)) / (1 + r),   r = √(k'_p·W_p/L_p / (
 ```
 
 W<sub>p</sub> = 4·W<sub>n</sub>이면 r = 1이 되고 V<sub>M</sub>은 정확히 V<sub>DD</sub>/2입니다.
-
-IC Studio의 Learn 창에서는 이 자리의 슬라이더로 두 폭을 바꾸며 V<sub>M</sub>이 전달 곡선을 따라 움직이는 것을 볼 수 있습니다.
 
 <!-- explore: inverter -->
 

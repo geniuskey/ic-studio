@@ -23,6 +23,7 @@
 - [Demo gallery and scripts](demos.md)
 - [Projects, libraries and cells](projects.md)
 - [Start from an earlier design](derive.md)
+- [Your own course chapters](course-authoring.md)
 
 # Design
 

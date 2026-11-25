@@ -147,8 +147,6 @@ I_D  = ½ · 280µ · (2/1) · 0.25² = 17.5 µA      (simulator: 18.1 µA, with
 
 You will meet this exact transistor again in the [amplifier tutorial](tutorial-amplifier.md).
 
-In IC Studio's Learn window, sliders here let you move W, L and the voltages and watch the current and the region change.
-
 <!-- explore: mosfet -->
 
 <!-- quiz
@@ -228,7 +226,7 @@ body. Rename the sources `VG` and `VD` in the inspector's **Name** field and giv
 **DC value** of `1.2`. In the Simulation workspace, enable **DC Sweep** of
 `VD` from `0` to `1.8` and plot `i(VD)`. You get the 1.2 V curve from the figure above
 (the current comes out negative: SPICE counts current flowing *into* the source's `+`
-terminal). Then open **Tools > Corner / Sweep Manager**, add the variable `VG.dc` with the
+terminal). Then open **Simulation > Corner / Sweep Manager…**, add the variable `VG.dc` with the
 values `0.8 1.0 1.2 1.4 1.6 1.8` and press **Run Sweep**: **Overlay** draws the whole
 family.
 

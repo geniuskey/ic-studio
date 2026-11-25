@@ -107,14 +107,14 @@ impl LearnView {
     /// Open the window at a chapter, or where the user left off.
     pub fn show(&mut self, chapter: Option<usize>, progress: &Progress) {
         self.open = true;
-        self.chapter = chapter.unwrap_or_else(|| progress.resume()).min(CHAPTERS.len() - 1);
+        self.chapter = chapter.unwrap_or_else(|| progress.resume()).min(learn::count() - 1);
         self.goto = Some(String::new());
         self.toc = true;
     }
 
     /// Mark the chapter done and move to the next one.
     fn next(&mut self, progress: &mut Progress) {
-        progress.done.insert(CHAPTERS[self.chapter].id.to_string());
+        progress.done.insert(learn::id(self.chapter).to_string());
         self.go(self.chapter + 1, String::new(), progress);
     }
 
@@ -126,9 +126,9 @@ impl LearnView {
     }
 
     fn go(&mut self, chapter: usize, anchor: String, progress: &mut Progress) {
-        self.chapter = chapter.min(CHAPTERS.len() - 1);
+        self.chapter = chapter.min(learn::count() - 1);
         self.goto = Some(anchor);
-        progress.last = Some(CHAPTERS[self.chapter].id.to_string());
+        progress.last = Some(learn::id(self.chapter).to_string());
     }
 
     /// The Learn window; returns the commands its buttons ran.
@@ -156,7 +156,7 @@ impl LearnView {
             });
         self.open &= open;
         if self.open {
-            progress.last = Some(CHAPTERS[self.chapter].id.to_string());
+            progress.last = Some(learn::id(self.chapter).to_string());
         }
         q
     }
@@ -177,7 +177,7 @@ impl LearnView {
         let body = (ui.available_height() - 50.0).max(160.0);
         self.contents(ui, progress, env, &mut q, body);
         if self.open {
-            progress.last = Some(CHAPTERS[self.chapter].id.to_string());
+            progress.last = Some(learn::id(self.chapter).to_string());
         }
         q
     }
@@ -185,7 +185,7 @@ impl LearnView {
     fn contents(&mut self, ui: &mut egui::Ui, progress: &mut Progress, env: &Env, q: &mut Vec<Command>, height: f32) {
         let pal = theme::palette(ui.ctx());
         let lang = i18n::current();
-        let n = CHAPTERS.len();
+        let n = learn::count();
         ui.horizontal_wrapped(|ui| {
             let (dock, tip) = if progress.docked {
                 (t("Float"), t("Show the course in its own window"))
@@ -208,7 +208,7 @@ impl LearnView {
             if ui.add_enabled(self.chapter + 1 < n, egui::Button::new(t("Next ›")).small()).clicked() {
                 self.next(progress);
             }
-            let id = CHAPTERS[self.chapter].id;
+            let id = learn::id(self.chapter);
             let mut done = progress.done.contains(id);
             if ui.checkbox(&mut done, t("Chapter done")).changed() {
                 if done {
@@ -233,6 +233,22 @@ impl LearnView {
             );
         });
         ui.separator();
+        // Hands-on chapters work on the inspector at the right, which the floating window covers.
+        if !progress.docked && learn::id(self.chapter).starts_with("tutorial-") {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    RichText::new(t(
+                        "This chapter has you work in the inspector on the right: dock the course so it does not cover it.",
+                    ))
+                    .small()
+                    .color(pal.warning),
+                );
+                if ui.small_button(t("Dock now")).clicked() {
+                    progress.docked = true;
+                    self.toc = false;
+                }
+            });
+        }
         ui.horizontal_top(|ui| {
             if self.toc {
                 ui.vertical(|ui| {
@@ -240,8 +256,21 @@ impl LearnView {
                     egui::ScrollArea::vertical().id_salt("learn_toc").auto_shrink([false, false]).max_height(height).show(
                         ui,
                         |ui| {
-                            for (i, chapter) in CHAPTERS.iter().enumerate() {
-                                let done = progress.done.contains(chapter.id);
+                            for i in 0..learn::count() {
+                                if i == CHAPTERS.len() {
+                                    ui.add_space(6.0);
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new(t("This project")).small().strong().color(pal.text_weak));
+                                        if ui
+                                            .small_button(t("Reload"))
+                                            .on_hover_text(t("Read the project's learn folder again"))
+                                            .clicked()
+                                        {
+                                            q.push(Command::ReloadProjectChapters);
+                                        }
+                                    });
+                                }
+                                let done = progress.done.contains(learn::id(i));
                                 ui.horizontal(|ui| {
                                     let (r, p) = ui.allocate_painter(Vec2::splat(12.0), Sense::hover());
                                     let c = r.rect.center();
@@ -306,7 +335,7 @@ impl LearnView {
         let lang = i18n::current();
         let mut link = None;
         let mut quiz_n = 0;
-        let gloss = CHAPTERS[self.chapter].id != "glossary";
+        let gloss = learn::id(self.chapter) != "glossary";
         for block in learn::blocks(lang, self.chapter) {
             match block {
                 Block::Heading { level, text, slug } => {
@@ -1003,8 +1032,11 @@ pub fn evaluate(
                 .schematic
                 .as_ref()
                 .map_or(0, |s| s.instances.iter().filter(|i| !matches!(i.kind, DeviceKind::Ground | DeviceKind::Supply)).count());
-            let text = tf("{} of {} devices placed", &[&n.to_string(), &devices.to_string()]);
-            if n >= *devices { CheckState::Pass(text) } else { CheckState::Waiting(text) }
+            if n >= *devices {
+                CheckState::Pass(tf("{} devices placed (at least {} needed)", &[&n.to_string(), &devices.to_string()]))
+            } else {
+                CheckState::Waiting(tf("{} of {} devices placed", &[&n.to_string(), &devices.to_string()]))
+            }
         }
         K::Layout => match &cell.layout {
             Some(l) if !l.shapes.is_empty() || !l.instances.is_empty() => CheckState::Pass(t("The cell has a layout.").into()),

@@ -343,6 +343,8 @@ pub enum Command {
     Learn(Option<usize>),
     /// Save a Markdown report of the Learn course progress: chapters, quizzes and checks.
     ExportLearnReport,
+    /// Read the open project's own course chapters (`<project>/learn/*.md`) again.
+    ReloadProjectChapters,
     About,
     /// Look for a newer release on GitHub and show the update dialog.
     CheckForUpdates,
@@ -831,6 +833,8 @@ pub struct IcStudio {
     selected_lib: Option<String>,
     /// Explorer filter: a part of a cell name; empty shows the library tree.
     explorer_filter: String,
+    /// While the Learn course is open, the Explorer lists only the cells of its chapter.
+    explorer_course: bool,
     sch_eds: HashMap<CellRef, SchematicEditor>,
     lay_eds: HashMap<CellRef, LayoutEditor>,
     /// Cells descended into (Shift+X) or edited in place (x), for Shift+B (return).
@@ -964,6 +968,7 @@ impl IcStudio {
             tabs: vec![],
             selected_lib: None,
             explorer_filter: String::new(),
+            explorer_course: true,
             active: None,
             sch_eds: HashMap::new(),
             lay_eds: HashMap::new(),
@@ -1166,6 +1171,7 @@ impl IcStudio {
     fn set_project(&mut self, mut p: Project) {
         localize_demo_notes(&mut p);
         self.project = Some(p);
+        self.reload_project_chapters(false);
         self.ciw.reset();
         self.dirty = false;
         self.tabs.clear();
@@ -1180,6 +1186,22 @@ impl IcStudio {
         if let Some((r, _)) = self.project.as_ref().and_then(|p| p.all_cells().next()) {
             self.tabs.push(r.clone());
             self.active = Some(r);
+        }
+    }
+
+    /// Load the project's course chapters (`<project>/learn/*.md`) after the built-in ones.
+    fn reload_project_chapters(&mut self, report: bool) {
+        let root = self.project.as_ref().and_then(|p| p.root.clone());
+        let n = crate::learn::load_project_chapters(root.as_deref());
+        self.learn.chapter = self.learn.chapter.min(crate::learn::count() - 1);
+        if report {
+            match root {
+                Some(r) => {
+                    let dir = crate::learn::project_dir(&r).display().to_string();
+                    self.ok(tf("{} course chapter(s) in {}", &[&n.to_string(), &dir]))
+                }
+                None => self.warn(t("Save the project first: its chapters are read from its learn folder").into()),
+            }
         }
     }
 
@@ -1436,6 +1458,7 @@ impl IcStudio {
                     return;
                 }
                 self.project = None;
+                self.reload_project_chapters(false);
                 self.ciw.reset();
                 self.dirty = false;
                 self.tabs.clear();
@@ -2012,6 +2035,7 @@ impl IcStudio {
             }
             Command::Tutorial => self.tutorial.start(),
             Command::Learn(chapter) => self.learn.show(chapter, &self.settings.learn),
+            Command::ReloadProjectChapters => self.reload_project_chapters(true),
             Command::ExportLearnReport => {
                 let report = self.learn_report();
                 let Some(path) = rfd::FileDialog::new()
@@ -4284,11 +4308,28 @@ impl IcStudio {
                 self.explorer_filter.clear();
             }
         });
+        // With the course open, only the cells its chapter uses (and the open one).
+        let course: Option<std::collections::BTreeSet<String>> = self.learn.open.then(|| {
+            let mut cells = crate::learn::chapter_cells(crate::learn::blocks(crate::i18n::current(), self.learn.chapter));
+            cells.extend(cells.iter().filter_map(|c| self.learn.aliases.get(c).cloned()).collect::<Vec<_>>());
+            cells.extend(self.active.as_ref().map(|r| r.cell.clone()));
+            cells
+        });
+        if course.is_some() {
+            ui.checkbox(&mut self.explorer_course, t("Only the cells of this chapter"))
+                .on_hover_text(t("While the Learn course is open, list only the cells the chapter uses"));
+        }
+        let course = course.filter(|_| self.explorer_course);
         let filter = self.explorer_filter.trim().to_lowercase();
-        if !filter.is_empty() {
+        if !filter.is_empty() || course.is_some() {
             let mut any = false;
             for lib in &p.libraries {
-                let hits: Vec<&Cell> = lib.cells.iter().filter(|c| c.name.to_lowercase().contains(&filter)).collect();
+                let hits: Vec<&Cell> = lib
+                    .cells
+                    .iter()
+                    .filter(|c| c.name.to_lowercase().contains(&filter))
+                    .filter(|c| course.as_ref().is_none_or(|s| s.contains(&c.name)))
+                    .collect();
                 if hits.is_empty() {
                     continue;
                 }
@@ -4312,7 +4353,12 @@ impl IcStudio {
                 }
             }
             if !any {
-                ui.label(RichText::new(t("No cell matches")).color(pal.text_weak));
+                let none = if course.is_some() && filter.is_empty() {
+                    t("This chapter uses no cell of the project yet")
+                } else {
+                    t("No cell matches")
+                };
+                ui.label(RichText::new(none).color(pal.text_weak));
             }
             return;
         }
@@ -5424,6 +5470,7 @@ impl IcStudio {
             (t("Start the interactive tutorial").into(), "", Command::Tutorial),
             (t("Learn IC Design…").into(), "", Command::Learn(None)),
             (t("Learn progress report…").into(), "", Command::ExportLearnReport),
+            (t("Reload the project's course chapters").into(), "", Command::ReloadProjectChapters),
             (t("Open user guide (web)").into(), "", Command::UserGuide),
             (t("About IC Studio").into(), "", Command::About),
             (t("Check for updates").into(), "", Command::CheckForUpdates),
@@ -6605,8 +6652,9 @@ impl IcStudio {
     }
 
     /// The Learn chapter open, its checks and the quizzes answered wrong.
-    fn learn_state(&self) -> serde_json::Value {
-        use crate::learn::{Block, CHAPTERS, CheckState};
+    #[doc(hidden)]
+    pub fn learn_state(&self) -> serde_json::Value {
+        use crate::learn::{Block, CheckState};
         let lang = crate::i18n::current();
         let i = self.learn.chapter;
         let mut checks = vec![];
@@ -6624,12 +6672,16 @@ impl IcStudio {
                 checks.push(serde_json::json!({"check": c.label, "cell": c.cell, "state": state, "detail": detail}));
             }
         }
-        let prefix = format!("{}#", CHAPTERS[i].id);
+        let prefix = format!("{}#", crate::learn::id(i));
         let wrong: Vec<&String> =
             self.settings.learn.quiz.iter().filter(|(k, ok)| k.starts_with(&prefix) && !**ok).map(|(k, _)| k).collect();
         serde_json::json!({
             "chapter": crate::learn::strip_inline(crate::learn::title(lang, i)),
-            "page": format!("{}learn/{}", if lang == crate::i18n::Lang::Ko { "ko/" } else { "" }, CHAPTERS[i].id),
+            "page": if crate::learn::is_project(i) {
+                crate::learn::id(i).to_string()
+            } else {
+                format!("{}learn/{}", if lang == crate::i18n::Lang::Ko { "ko/" } else { "" }, crate::learn::id(i))
+            },
             "checks": checks,
             "quizzes_wrong": wrong,
             "chapters_done": self.settings.learn.chapters_done(),
@@ -6639,7 +6691,7 @@ impl IcStudio {
     /// The Learn progress as Markdown, in the UI language: per chapter whether it is done,
     /// the quizzes answered right, and the state of its checks on the user's design now.
     pub fn learn_report(&self) -> String {
-        use crate::learn::{Block, CHAPTERS, CheckState};
+        use crate::learn::{Block, CheckState};
         use std::fmt::Write;
         let lang = crate::i18n::current();
         let p = &self.settings.learn;
@@ -6647,16 +6699,20 @@ impl IcStudio {
         let _ = writeln!(out, "# {}\n", t("Learn IC Design: progress report"));
         let project = self.project.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| t("no project open").to_string());
         let _ = writeln!(out, "- {}: {}", t("Project"), project);
-        let _ =
-            writeln!(out, "- {}\n", tf("{} of {} chapters done", &[&p.chapters_done().to_string(), &CHAPTERS.len().to_string()]));
+        let _ = writeln!(
+            out,
+            "- {}\n",
+            tf("{} of {} chapters done", &[&p.chapters_done().to_string(), &crate::learn::count().to_string()])
+        );
         let _ = writeln!(out, "| {} | {} | {} | {} |", t("Chapter"), t("Done"), t("Quizzes right"), t("Checks passed"));
         out.push_str("|---|---|---|---|\n");
         let mut details = String::new();
-        for (i, c) in CHAPTERS.iter().enumerate() {
+        for i in 0..crate::learn::count() {
+            let id = crate::learn::id(i);
             let title = crate::learn::strip_inline(crate::learn::title(lang, i));
             let blocks = crate::learn::blocks(lang, i);
             let quizzes = blocks.iter().filter(|b| matches!(b, Block::Quiz(_))).count();
-            let prefix = format!("{}#", c.id);
+            let prefix = format!("{id}#");
             let right = p.quiz.iter().filter(|(k, ok)| k.starts_with(&prefix) && **ok).count();
             let (mut checks, mut passed) = (0, 0);
             let mut lines = String::new();
@@ -6677,7 +6733,7 @@ impl IcStudio {
                 };
                 let _ = writeln!(lines, "- {mark} {} (`{}`): {detail}", crate::learn::strip_inline(&check.label), check.cell);
             }
-            let done = if p.done.contains(c.id) { "✓" } else { "" };
+            let done = if p.done.contains(id) { "✓" } else { "" };
             let quiz = if quizzes > 0 { format!("{right} / {quizzes}") } else { "–".into() };
             let check = if checks > 0 { format!("{passed} / {checks}") } else { "–".into() };
             let _ = writeln!(out, "| {title} | {done} | {quiz} | {check} |");

@@ -111,6 +111,9 @@ that takes time:
 t_p ≈ 0.69 · R_on · C_L
 ```
 
+(0.69 is ln 2: an RC circuit takes 0.69·RC to reach half its final voltage, the 50 % point
+the delay is measured at.)
+
 The **propagation delay** t<sub>p</sub> is measured from the input crossing 50 % of the
 swing to the output crossing 50 %. There are two of them: **t<sub>pHL</sub>** (output
 falling, through the NMOS) and **t<sub>pLH</sub>** (output rising, through the PMOS).
@@ -170,8 +173,6 @@ V_M = (V_th,n + r · (V_DD − |V_th,p|)) / (1 + r),   r = √(k'_p·W_p/L_p / (
 ```
 
 With W<sub>p</sub> = 4·W<sub>n</sub>, r = 1 and V<sub>M</sub> = V<sub>DD</sub>/2 exactly.
-
-In IC Studio's Learn window, sliders here let you change the two widths and watch V<sub>M</sub> move along the transfer curve.
 
 <!-- explore: inverter -->
 
