@@ -195,9 +195,8 @@ Carlo**가 이 변동을 시뮬레이션합니다.
 
 **해 보기:** 데모를 엽니다.
 
-```sh
-ic-studio --demo --cell current_mirror --workspace simulation
-```
+(상자 아래의 버튼으로 엽니다. 터미널에서는
+`ic-studio --demo --cell current_mirror --workspace simulation`.)
 
 `F5`를 누르고 **DC Sweep** 탭에서 출력 전압에 따른 출력 전류를 봅니다. 그다음 `ota5t`를 열어 `F5`를
 누르고 AC 측정값에서 **GAIN @ fstart**와 **UNITY GAIN f**를 읽습니다. 회로도(`Ctrl+2`)로 가면 각

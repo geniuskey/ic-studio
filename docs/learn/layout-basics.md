@@ -187,9 +187,8 @@ That is the flow of the next tutorial.
 
 **Try it:** open the hand-drawn inverter of the demo:
 
-```sh
-ic-studio --demo --cell cmos_inverter --workspace layout
-```
+(The buttons below the box open it. From a terminal:
+`ic-studio --demo --cell cmos_inverter --workspace layout`.)
 
 Find the active, poly, contacts and metal1 in the **Layers** panel; hide and show layers
 with the eye icons. Press **Extract** in the right panel and click a net in **Nets** to

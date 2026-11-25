@@ -153,9 +153,8 @@ C1 out 0 1n                                       ; 1 nF from out to ground
 
 **직접 해 보기:** 데모의 `rc_lowpass`를 엽니다.
 
-```sh
-ic-studio --demo --cell rc_lowpass --workspace simulation
-```
+(상자 아래의 버튼으로 엽니다. 터미널에서는
+`ic-studio --demo --cell rc_lowpass --workspace simulation`.)
 
 `F5`를 누릅니다. **AC** 탭의 **f -3 dB** 열에 약 159 kHz가 표시됩니다. **과도 (Transient)** 탭에서는
 지수적으로 충전되는 모습을 볼 수 있습니다. 이제 회로도(`Ctrl+2`)로 가서 인스펙터에서 `R1`을 `2k`로

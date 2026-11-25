@@ -182,9 +182,8 @@ DRC와 LVS, 두 개의 **클린** 결과는 모든 레이아웃의 최소 조건
 
 **해 보기:** 데모의 손으로 그린 인버터를 엽니다.
 
-```sh
-ic-studio --demo --cell cmos_inverter --workspace layout
-```
+(상자 아래의 버튼으로 엽니다. 터미널에서는
+`ic-studio --demo --cell cmos_inverter --workspace layout`.)
 
 **Layers** 패널에서 active, poly, contact, metal1을 찾아보고, 눈 아이콘으로 레이어를 숨기거나
 보이게 해 보세요. 오른쪽 패널에서 **Extract**를 누르고 **Nets**에서 넷을 클릭하면 어떤 도형이 그

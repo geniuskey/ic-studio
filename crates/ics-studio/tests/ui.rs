@@ -3115,6 +3115,10 @@ fn learn_explore_and_report() {
     assert!(h.query_by_label("Explore: move the sliders").is_some(), "the MOSFET chapter has an explorable figure");
     assert!(h.query_all_by_label("V_GS").count() >= 2, "with labelled sliders");
     shot(&mut h, "73_learn_explore_mosfet");
+    h.state_mut().learn_go_to(mos, "w-l-and-the-parameters-in-ic-studio");
+    h.run_steps(6);
+    assert!(h.query_by_label("Open the NMOS test bench").is_some(), "the Try it opens the demo bench");
+    shot(&mut h, "73b_learn_mosfet_try");
     let cmos = ics_studio::learn::chapter_index("cmos-logic").unwrap();
     h.state_mut().learn_go_to(cmos, "sizing-the-transistors");
     h.run_steps(6);
@@ -3968,6 +3972,89 @@ fn derive_new_design() {
     assert!(c.layout.is_some(), "laid out like the original");
     assert!(c.notes.contains("Derived from work/ota5t"));
     shot(&mut h, "52_derive_result");
+}
+
+/// The MOSFET chapter's test bench: the sweep manager comes set to step VG, and the drain
+/// current at V_DS = 1.8 V grows with V_GS (612 µA at 1.2 V, the chapter's curve).
+#[test]
+fn nmos_curves_family() {
+    let mut h = app(demo_args("nmos_curves", "simulation", false));
+    h.state_mut().command(Command::SweepManager);
+    h.run_steps(2);
+    {
+        let sw = h.state_mut().sweep_manager();
+        assert_eq!(sw.setup.vars.len(), 1, "VG.dc is preset");
+        assert_eq!(sw.setup.vars[0].name, "VG.dc");
+        sw.setup.specs.push(ics_core::sweep::Spec {
+            name: "id".into(),
+            analysis: "op".into(),
+            expr: "-i(vd)".into(),
+            min: String::new(),
+            max: String::new(),
+        });
+    }
+    h.state_mut().command(Command::RunSweep);
+    h.run_steps(2);
+    settle(&mut h, "nmos sweep");
+    let sw = h.state_mut().sweep_manager();
+    assert_eq!(sw.results.len(), 6, "one point per gate voltage");
+    let ids: Vec<f64> = sw.results.iter().map(|r| *r.as_ref().unwrap().specs[0].as_ref().unwrap()).collect();
+    assert!(ids.windows(2).all(|w| w[1] > w[0]), "the current grows with V_GS: {ids:?}");
+    assert!((ids[2] - 612e-6).abs() < 30e-6, "1.2 V: {ids:?}");
+    h.run_steps(4);
+    shot(&mut h, "77_nmos_curves_sweep");
+}
+
+/// The derive chapter, through the wizard: with the chapter's targets (t_pHL <= 25 ps,
+/// t_pLH <= 35 ps) the copy is sized and laid out, and the chapter's checks on it pass.
+#[test]
+fn derive_chapter_checks_pass() {
+    use egui_kittest::kittest::Queryable;
+    use ics_studio::learn::{Block, CheckState};
+    let mut h = app(demo_args("cmos_inverter", "schematic", false));
+    let inv = CellRef::new("work", "cmos_inverter");
+    {
+        let c = h.state_mut().project_mut().unwrap().cell_mut(&inv).unwrap();
+        for spec in &mut c.sim.sweep.specs {
+            spec.max = match spec.name.as_str() {
+                "tphl" => "25p".into(),
+                "tplh" => "35p".into(),
+                _ => spec.max.clone(),
+            };
+        }
+    }
+    h.state_mut().command(Command::DeriveDialog(inv));
+    h.run_steps(4);
+    h.get_by_label("Create and size").click();
+    let target = CellRef::new("work", "cmos_inverter_v2");
+    let mut done = false;
+    for _ in 0..600 {
+        h.run_steps(2);
+        std::thread::sleep(Duration::from_millis(20));
+        if h.state().project().and_then(|p| p.cell(&target)).is_some_and(|c| c.notes.starts_with("Sized by the optimizer")) {
+            done = true;
+            break;
+        }
+    }
+    assert!(done, "the derived inverter was sized: {:?}", h.state().console_lines().collect::<Vec<_>>());
+    h.run_steps(4);
+    h.state_mut().command(Command::OpenCell(target.clone(), Some(Workspace::Simulation)));
+    h.run_steps(2);
+    h.state_mut().command(Command::RunSimulation);
+    h.run_steps(2);
+    settle(&mut h, "derived inverter");
+    h.state_mut().command(Command::OpenCell(target, Some(Workspace::Layout)));
+    h.run_steps(2);
+    h.state_mut().command(Command::RunDrc);
+    h.run_steps(2);
+    settle(&mut h, "derived drc");
+    let chapter = ics_studio::learn::chapter_index("tutorial-derive").unwrap();
+    for b in ics_studio::learn::blocks(ics_studio::i18n::Lang::En, chapter) {
+        if let Block::Check(c) = b {
+            let state = h.state().learn_check(c);
+            assert!(matches!(state, CheckState::Pass(_)), "{}: {state:?}", c.label);
+        }
+    }
 }
 
 /// The Korean UI (welcome, schematic design panel, derive wizard, tutorial). The language is

@@ -161,9 +161,8 @@ C1 out 0 1n                                       ; 1 nF from out to ground
 
 **Try it:** open the demo's `rc_lowpass`:
 
-```sh
-ic-studio --demo --cell rc_lowpass --workspace simulation
-```
+(The buttons below the box open it. From a terminal:
+`ic-studio --demo --cell rc_lowpass --workspace simulation`.)
 
 Press `F5`. On the **AC** tab, the **f -3 dB** column shows about 159 kHz. On the
 **Transient** tab you see the exponential charging. Then go to the schematic (`Ctrl+2`),

@@ -102,7 +102,8 @@ PMOS to be fast. NAND puts the NMOS in series, which costs less.
 ## Delay: why gates take time
 
 A gate's output drives a **load capacitance** C<sub>L</sub>: the gates of the next stages,
-the wires and its own drain junctions. Switching the output means charging or
+the wires and its own drains (each drain is a pn junction to the body, and a junction is a
+small capacitor: the **drain capacitance**, which grows with W). Switching the output means charging or
 discharging C<sub>L</sub> through the transistor that is on, which acts like a resistor
 R<sub>on</sub>. As in the [RC circuit](circuits.md#capacitors-and-the-rc-time-constant),
 that takes time:
@@ -189,9 +190,8 @@ With W<sub>p</sub> = 4·W<sub>n</sub>, r = 1 and V<sub>M</sub> = V<sub>DD</sub>/
 
 **Try it:** the demo has a ready-made inverter, NAND and NOR, and a ring oscillator:
 
-```sh
-ic-studio --demo --cell cmos_inverter --workspace simulation
-```
+(The buttons below the box open it. From a terminal:
+`ic-studio --demo --cell cmos_inverter --workspace simulation`.)
 
 Press `F5` and look at the **DC Sweep** and **Transient** tabs. Then open `nand2` and
 `nor2` (Explorer, or `Ctrl+K`), and `ring_osc5`: five inverters in a loop, which

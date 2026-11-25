@@ -200,9 +200,8 @@ ones, and laid out with matching techniques (see
 
 **Try it:** open the demos:
 
-```sh
-ic-studio --demo --cell current_mirror --workspace simulation
-```
+(The buttons below the box open it. From a terminal:
+`ic-studio --demo --cell current_mirror --workspace simulation`.)
 
 Press `F5` and look at the output current against the output voltage in the **DC Sweep**
 tab. Then open `ota5t`, press `F5` and read **GAIN @ fstart** and **UNITY GAIN f** in the

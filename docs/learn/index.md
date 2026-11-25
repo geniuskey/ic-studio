@@ -144,34 +144,20 @@ further reading.
 
 ## How to use the course
 
-- **Read in order** if you are new to the field. Each chapter takes 15 to 30 minutes.
-  The hands-on chapters take about as long in the app.
-- **Keep IC Studio open** next to the text ([Installation](../install.md)). Every theory
-  chapter ends with a "Try it" box that opens a demo cell so you can see the idea in a
-  simulation straight away.
-- **Or read it inside IC Studio**: **Help › Learn IC Design…** (or **Start the course** on
-  the welcome page) opens this course in a window next to the canvas, in the language of
-  the UI (English or Korean); **Dock** puts it at the right side so it does not cover the
-  canvas. There the "Try it" buttons run the step in the app, each section ends with a
-  short quiz, and the hands-on chapters check your own cell live (devices placed,
-  operating region, measured delay or gain, DRC and LVS). Your progress is kept between
-  sessions.
-- **When a check fails**, it says what to try. **Show me where** points at the place in the
-  window where the step is done, and **Ask the tutor** opens the copilot in Tutor mode
-  (it needs an AI model, set in **Tools › AI Models…**): it gives you one step at a time,
-  points at what to click, checks your work as you go and edits nothing itself. If your
-  cell has another name than the course's (`my_inv`), pick it under the check.
-- **In the app, play with the equations**: the MOSFET and CMOS chapters have sliders for
-  W, L and the voltages that redraw the curves as you move them. Hover an underlined term
-  for its meaning from the [glossary](glossary.md). **Report…** saves your progress
-  (chapters, quizzes, checks) as a Markdown file, for a teacher or for yourself.
-- **New to the app itself?** The 5-minute tour walks you round the windows with the demo
-  inverter, pointing at each button.
-- **Do the exercises.** Changing one number and predicting what will happen before you
-  press `F5` is the fastest way to build intuition.
-- Everything uses the **generic 180 nm technology** that new projects start with. It is
-  illustrative, not a real foundry process, but its numbers are realistic: a 1.8 V supply,
-  a 180 nm minimum gate length and a threshold voltage of 0.45 V.
+- **Read in order** if you are new to the field: 15 to 30 minutes a chapter.
+- **Read it inside IC Studio** ([Installation](../install.md)): **Start the course** on the welcome page (or **Help ›
+  Learn IC Design…**). There the "Try it" buttons do the step for you, each section ends
+  with a quiz, the hands-on chapters check your own design as you work, and the MOSFET and
+  CMOS chapters have sliders to play with the equations. Press **Dock** to keep the course
+  beside the canvas.
+- **When you are stuck**, a failed check says what to try, **Show me where** points at the
+  button, and **Ask the tutor** opens the copilot to guide you one step at a time (it needs
+  an AI model, **Tools › AI Models…**). Hover an underlined word for its meaning.
+- **Predict before you press `F5`.** Guessing the result first is the fastest way to build
+  intuition.
+- Everything uses the **generic 180 nm technology** of new projects: illustrative, not a
+  real foundry process, but with realistic numbers (1.8 V supply, 180 nm gates, 0.45 V
+  threshold).
 
 <div class="callout">
 

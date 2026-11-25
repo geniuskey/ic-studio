@@ -98,7 +98,8 @@ NAND는 NMOS를 직렬로 두므로 비용이 덜 듭니다.
 ## 지연: 게이트에 시간이 걸리는 이유
 
 게이트의 출력은 **부하 커패시턴스**(load capacitance) C<sub>L</sub>을 구동합니다. 다음 단의 게이트,
-배선, 그리고 자신의 드레인 접합입니다. 출력을 바꾼다는 것은 켜진 트랜지스터를 통해
+배선, 그리고 자신의 드레인입니다(드레인은 바디와 pn 접합을 이루고, 접합은 작은 커패시터입니다. 이것이
+W에 비례해 커지는 **드레인 커패시턴스**입니다). 출력을 바꾼다는 것은 켜진 트랜지스터를 통해
 C<sub>L</sub>을 충전하거나 방전한다는 뜻이고, 켜진 트랜지스터는 저항 R<sub>on</sub>처럼 동작합니다.
 [RC 회로](circuits.md#커패시터와-rc-시상수)에서처럼 여기에는 시간이 걸립니다.
 
@@ -182,9 +183,8 @@ W<sub>p</sub> = 4·W<sub>n</sub>이면 r = 1이 되고 V<sub>M</sub>은 정확�
 
 **직접 해 보기:** 데모에는 완성된 인버터, NAND, NOR와 링 발진기가 들어 있습니다.
 
-```sh
-ic-studio --demo --cell cmos_inverter --workspace simulation
-```
+(상자 아래의 버튼으로 엽니다. 터미널에서는
+`ic-studio --demo --cell cmos_inverter --workspace simulation`.)
 
 `F5`를 누르고 **DC Sweep**과 **Transient** 탭을 살펴보세요. 그다음 `nand2`와 `nor2`(Explorer에서,
 또는 `Ctrl+K`), 그리고 `ring_osc5`를 엽니다. `ring_osc5`는 인버터 다섯 개를 고리로 연결한 것으로,
