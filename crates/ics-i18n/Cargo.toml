@@ -1,6 +1,6 @@
 [package]
 name = "ics-i18n"
-version = "0.2.15"
+version = "0.2.16"
 edition = "2024"
 license.workspace = true
 description = "IC Studio's English/Korean message tables and lookup, shared by the app and the CLI"
