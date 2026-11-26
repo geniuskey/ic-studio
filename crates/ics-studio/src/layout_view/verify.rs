@@ -291,7 +291,10 @@ impl LayoutEditor {
         let msg = match v {
             Verified::Drc(r) => {
                 self.verify.deck_errors.clear();
-                let msg = format!("DRC: {} violation(s) in {:.0} ms", r.violations.len(), r.millis);
+                let mut msg = format!("DRC: {} violation(s) in {:.0} ms", r.violations.len(), r.millis);
+                if !r.missing_cells.is_empty() {
+                    msg += &format!("; {} placed cell(s) not found, not checked", r.missing_cells.len());
+                }
                 self.verify.drc = Some(r);
                 msg
             }
@@ -439,6 +442,10 @@ impl LayoutEditor {
                 }
             );
             ui.label(egui::RichText::new(summary).small().color(pal.text_weak));
+            if !r.missing_cells.is_empty() {
+                let names: Vec<String> = r.missing_cells.iter().map(|c| c.to_string()).collect();
+                ui.colored_label(pal.warning, tf("Placed cells not found, not checked: {}", &[&names.join(", ")]));
+            }
             if r.violations.is_empty() {
                 ui.colored_label(pal.ok, t("✔ No violations"));
             } else {

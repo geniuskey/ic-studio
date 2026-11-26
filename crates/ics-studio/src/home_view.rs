@@ -227,7 +227,20 @@ pub fn project_overview(ui: &mut egui::Ui, project: &Project, hier: &mut Hier, q
                             let r = CellRef::new(&lib.name, &cell.name);
                             let (resp, p) = ui.allocate_painter(Vec2::new(250.0, 200.0), Sense::click());
                             let rect = resp.rect;
-                            p.rect_filled(rect, 10.0, if resp.hovered() { pal.bg_hover } else { pal.bg_widget });
+                            if resp.clicked() {
+                                let ws = if cell.schematic.is_some() { Workspace::Schematic } else { Workspace::Layout };
+                                q.push(Command::OpenCell(r.clone(), Some(ws)));
+                            }
+                            let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+                            if !cell.description.is_empty() {
+                                resp.on_hover_text(&cell.description);
+                            }
+                            // Thumbnails extract connectivity and draw the whole cell: only for
+                            // the cards on screen (a library can hold hundreds of cells).
+                            if !ui.is_rect_visible(rect) {
+                                continue;
+                            }
+                            p.rect_filled(rect, 10.0, if ui.rect_contains_pointer(rect) { pal.bg_hover } else { pal.bg_widget });
                             let thumb =
                                 egui::Rect::from_min_size(rect.min + Vec2::new(8.0, 8.0), Vec2::new(rect.width() - 16.0, 120.0));
                             p.rect_filled(thumb, 6.0, pal.bg_canvas);
@@ -286,7 +299,7 @@ pub fn project_overview(ui: &mut egui::Ui, project: &Project, hier: &mut Hier, q
                                 FontId::proportional(15.0),
                                 pal.text,
                             );
-                            let desc: String = cell.description.chars().take(36).collect();
+                            let desc = elide(ui, &cell.description, FontId::proportional(11.5), rect.width() - 24.0);
                             p.text(
                                 thumb.left_bottom() + Vec2::new(4.0, 32.0),
                                 Align2::LEFT_TOP,
@@ -320,11 +333,6 @@ pub fn project_overview(ui: &mut egui::Ui, project: &Project, hier: &mut Hier, q
                                     x += 92.0;
                                 }
                             }
-                            if resp.clicked() {
-                                let ws = if cell.schematic.is_some() { Workspace::Schematic } else { Workspace::Layout };
-                                q.push(Command::OpenCell(r.clone(), Some(ws)));
-                            }
-                            resp.on_hover_cursor(egui::CursorIcon::PointingHand);
                         }
                     });
                     ui.add_space(16.0);
@@ -332,4 +340,20 @@ pub fn project_overview(ui: &mut egui::Ui, project: &Project, hier: &mut Hier, q
             });
         });
     });
+}
+
+/// `text` cut to fit `width` in `font`, ending in "…" when it was cut.
+fn elide(ui: &egui::Ui, text: &str, font: FontId, width: f32) -> String {
+    let fits = |s: &str| ui.fonts_mut(|f| f.layout_no_wrap(s.to_owned(), font.clone(), egui::Color32::WHITE).size().x) <= width;
+    if fits(text) {
+        return text.to_owned();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let (mut lo, mut hi) = (0, chars.len());
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        let s: String = chars[..mid].iter().collect::<String>() + "…";
+        if fits(&s) { lo = mid } else { hi = mid - 1 }
+    }
+    chars[..lo].iter().collect::<String>().trim_end().to_owned() + "…"
 }

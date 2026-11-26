@@ -152,11 +152,8 @@ fn logical_any(text: &str, file: Option<&Path>, warnings: &mut Vec<String>) -> V
 fn logical(text: &str, file: Option<&Path>) -> Vec<Line> {
     let mut out: Vec<Line> = vec![];
     for (n, raw) in text.lines().enumerate() {
-        let mut line = raw.split(';').next().unwrap_or("");
         // `$` starts an inline comment (HSPICE) when preceded by whitespace.
-        if let Some(i) = line.find(" $") {
-            line = &line[..i];
-        }
+        let line = crate::circuit::strip_comment(raw);
         let t = line.trim();
         if t.is_empty() || t.starts_with('*') || t.starts_with('$') {
             continue;
@@ -920,12 +917,15 @@ pub fn needs_expansion(deck: &str) -> bool {
 /// Flatten `deck`. Relative `.include` and `.lib` paths are taken from `dir` (the deck's
 /// folder), or the current folder without one.
 pub fn expand(deck: &str, dir: Option<&Path>) -> Result<Expanded, SimError> {
-    // The title is repeated as a comment; a first line that is not a comment is also read as a
-    // statement, as the built-in engine always did.
+    // The title is repeated as a comment.
     let title = deck.lines().next().unwrap_or("");
     let mut loaded = vec![];
     let mut warnings = vec![];
-    let lines = logical_any(deck, None, &mut warnings);
+    let mut lines = logical_any(deck, None, &mut warnings);
+    // The first line of a SPICE deck is its title, whatever it says (an included file has none).
+    if !ics_core::spectre::is_spectre(deck, None) {
+        lines.retain(|l| l.origin.line != 1);
+    }
     load(lines, dir, 0, &mut loaded, &mut warnings)?;
     let mut ctx = Ctx { warnings, scale: 1.0, ..Ctx::default() };
     let top = collect(loaded, &mut ctx)?;

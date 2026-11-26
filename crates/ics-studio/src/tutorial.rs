@@ -197,7 +197,7 @@ impl Tutorial {
             return q;
         }
         let mut open = true;
-        egui::Window::new(t("Tutorial"))
+        egui::Window::new(crate::theme::window_title(t("Tutorial")))
             .id(egui::Id::unique("tutorial"))
             .open(&mut open)
             .collapsible(true)

@@ -44,6 +44,35 @@ pub enum SimError {
     NoConvergence,
     #[error("{0}")]
     Backend(String),
+    #[error("simulation stopped")]
+    Cancelled,
+}
+
+/// Stops a running simulation when set from another thread (the app's Stop button). The
+/// default never stops.
+#[derive(Debug, Clone, Default)]
+pub struct Cancel(Option<std::sync::Arc<std::sync::atomic::AtomicBool>>);
+
+impl Cancel {
+    /// A flag that `cancel` can set.
+    pub fn new() -> Self {
+        Self(Some(Default::default()))
+    }
+
+    pub fn cancel(&self) {
+        if let Some(f) = &self.0 {
+            f.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.as_ref().is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    /// `Err(Cancelled)` once cancelled.
+    pub fn check(&self) -> Result<(), SimError> {
+        if self.is_cancelled() { Err(SimError::Cancelled) } else { Ok(()) }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -53,11 +82,13 @@ pub struct SimOptions {
     /// Folder that relative `.include` / `.lib` paths of the deck are taken from (the current
     /// folder without one).
     pub deck_dir: Option<PathBuf>,
+    /// Stops the run when set.
+    pub cancel: Cancel,
 }
 
 impl Default for SimOptions {
     fn default() -> Self {
-        Self { backend: Backend::Builtin, ngspice_exe: ngspice::default_exe(), deck_dir: None }
+        Self { backend: Backend::Builtin, ngspice_exe: ngspice::default_exe(), deck_dir: None, cancel: Cancel::default() }
     }
 }
 
@@ -189,7 +220,9 @@ pub fn simulate(deck: &str, analyses: &[Analysis], opts: &SimOptions) -> Result<
             let mut log: Vec<String> = res.warnings.iter().map(|w| format!("warning: {w}")).collect();
             log.push(format!("ics-sim: {} nodes, {} elements", circuit.node_count(), circuit.elements.len())); // i18n: ignore
             let mut eng = engine::Engine::new(circuit)?;
+            eng.cancel = opts.cancel.clone();
             for a in &analyses {
+                opts.cancel.check()?;
                 let t0 = Instant::now();
                 let ds = eng.run(a)?;
                 log.append(&mut eng.log);
@@ -203,7 +236,7 @@ pub fn simulate(deck: &str, analyses: &[Analysis], opts: &SimOptions) -> Result<
             // ngspice runs in a work folder: relative library paths are taken from the deck's.
             let base = ngspice_deck_dir(opts.deck_dir.as_deref())?;
             let deck = absolute_includes(deck, &base);
-            let (ds, log) = ngspice::run(&opts.ngspice_exe, &deck, &analyses)?;
+            let (ds, log) = ngspice::run(&opts.ngspice_exe, &deck, &analyses, &opts.cancel)?;
             res.datasets = ds;
             res.log = res.warnings.iter().map(|w| format!("{w}\n")).collect::<String>() + &log;
         }
@@ -295,6 +328,56 @@ mod tests {
     }
 
     #[test]
+    fn a_dc_sweep_leaves_the_swept_source_as_it_was() {
+        // The .op after the sweep sees V1 = 1 V, not the sweep's last 5 V.
+        let deck = "* divider\nV1 in 0 1\nR1 in out 1k\nR2 out 0 1k\n.dc V1 0 5 1\n.op\n.end\n";
+        let r = simulate(deck, &[], &SimOptions::default()).unwrap();
+        let out = r.dataset("op").unwrap().get("v(out)").unwrap().re[0];
+        assert!((out - 0.5).abs() < 1e-9, "{out}");
+    }
+
+    #[test]
+    fn the_first_line_is_the_title_and_dollar_starts_a_comment() {
+        // "Inverter test bench" is a title, not a current source between `test` and `bench`.
+        let deck = "Inverter test bench\nV1 a 0 1 $ supply\nR1 a b 1k\t$ the load\nR2 b 0 1k\n.op\n.end\n";
+        let r = simulate(deck, &[], &SimOptions::default()).unwrap();
+        let op = r.dataset("op").unwrap();
+        assert!(op.get("v(test)").is_none() && op.get("v(bench)").is_none());
+        assert!((op.get("v(b)").unwrap().re[0] - 0.5).abs() < 1e-9);
+        // The same through the front-end (a `.param` deck).
+        let r = simulate(&deck.replace("V1 a 0 1", ".param v=1\nV1 a 0 {v}"), &[], &SimOptions::default()).unwrap();
+        assert!(r.dataset("op").unwrap().get("v(test)").is_none());
+    }
+
+    #[test]
+    fn left_out_waveform_values_take_the_spice_defaults() {
+        // PULSE rise / fall default to tstep (1 ns): halfway up 0.5 ns after the delay.
+        let deck = "* pulse\nV1 a 0 pulse(0 1 10n)\nR1 a 0 1k\n.tran 1n 20n\n.end\n";
+        let r = simulate(deck, &[], &SimOptions::default()).unwrap();
+        let d = r.dataset("tran").unwrap();
+        let (t, v) = (&d.vectors[0].re, &d.get("v(a)").unwrap().re);
+        let at = |x: f64| {
+            let k = t.iter().position(|&tt| tt >= x).unwrap();
+            v[k - 1] + (v[k] - v[k - 1]) * (x - t[k - 1]) / (t[k] - t[k - 1])
+        };
+        assert!((at(10.5e-9) - 0.5).abs() < 0.02, "{}", at(10.5e-9));
+        // SIN without a frequency runs at 1 / tstop: a quarter period in is the peak.
+        let deck = "* sin\nV1 a 0 sin(0 1)\nR1 a 0 1k\n.tran 1u 1m\n.end\n";
+        let r = simulate(deck, &[], &SimOptions::default()).unwrap();
+        let v = &r.dataset("tran").unwrap().get("v(a)").unwrap().re;
+        assert!(v.iter().cloned().fold(0.0, f64::max) > 0.99);
+    }
+
+    #[test]
+    fn a_cancelled_run_stops() {
+        let cancel = Cancel::new();
+        cancel.cancel();
+        let opts = SimOptions { cancel, ..SimOptions::default() };
+        let e = simulate("* rc\nV1 a 0 1\nR1 a b 1k\nC1 b 0 1n\n.tran 1n 10u\n.end\n", &[], &opts).unwrap_err();
+        assert!(matches!(e, SimError::Cancelled), "{e}");
+    }
+
+    #[test]
     fn bsim4_decks_run_on_the_builtin_engine() {
         let deck = "* b4\n.model n1 nmos level=54 toxe=4e-9 vth0=0.4 u0=0.04 vsat=1e5 ndep=2e17\n\
                     .model p1 pmos level=54 toxe=4e-9 vth0=-0.4 u0=0.015 vsat=8e4 ndep=2e17\n\
@@ -334,7 +417,12 @@ mod tests {
 
     #[test]
     fn auto_stays_builtin_for_supported_decks() {
-        let opts = SimOptions { backend: Backend::Auto, ngspice_exe: "/nonexistent/ngspice".into(), deck_dir: None };
+        let opts = SimOptions {
+            backend: Backend::Auto,
+            ngspice_exe: "/nonexistent/ngspice".into(),
+            deck_dir: None,
+            cancel: Cancel::default(),
+        };
         let r = simulate("* t\nV1 a 0 1\nR1 a 0 1k\n.op\n.end\n", &[], &opts).unwrap();
         assert_eq!(r.backend, "built-in");
         assert!(r.warnings.is_empty());
@@ -354,7 +442,12 @@ mod tests {
             circuit::deck_analyses(deck),
             vec![Analysis::Op, Analysis::Dc { source: "V2".into(), start: "0".into(), stop: "1.8".into(), step: "0.1".into() }]
         );
-        let opts = SimOptions { backend: Backend::Ngspice, ngspice_exe: "/nonexistent/ngspice".into(), deck_dir: None };
+        let opts = SimOptions {
+            backend: Backend::Ngspice,
+            ngspice_exe: "/nonexistent/ngspice".into(),
+            deck_dir: None,
+            cancel: Cancel::default(),
+        };
         let e = simulate(deck, &[], &opts).unwrap_err();
         assert!(!matches!(e, SimError::Parse { .. }), "{e}");
     }

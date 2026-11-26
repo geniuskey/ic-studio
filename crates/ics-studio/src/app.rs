@@ -124,6 +124,8 @@ pub enum Command {
     CreateView(CellRef, ViewKind),
     SetWorkspace(Workspace),
     RunSimulation,
+    /// Stop the active cell's running simulation.
+    StopSimulation,
     /// Open the Waveform Calculator on the active cell's results.
     Calculator,
     /// Image sensor pixel optics: QE, crosstalk and photocurrent of a pixel stack.
@@ -331,6 +333,8 @@ pub enum Command {
     SaveDumpSkill(Option<PathBuf>),
     ToggleTheme,
     ToggleConsole,
+    /// Show or hide the Explorer panel.
+    ToggleExplorer,
     Settings,
     /// Open the Settings window at a page.
     SettingsPage(SettingsPage),
@@ -379,6 +383,8 @@ struct Settings {
     examples_version: String,
     /// The console panel was open when the app last quit. Closed on first start; errors open it.
     console: bool,
+    /// The Explorer panel is shown (⌘B). A narrow window hides it until it is shown there.
+    explorer: bool,
     /// New MOS devices get a body pin (4-terminal); `false` places them without one, the arrow
     /// on the source (3-terminal).
     mos_body_pin: bool,
@@ -413,6 +419,7 @@ impl Default for Settings {
             llm: Default::default(),
             examples_version: String::new(),
             console: false,
+            explorer: true,
             mos_body_pin: true,
             beginner: true,
             lang: crate::i18n::Lang::En,
@@ -658,6 +665,7 @@ const SHORTCUTS: &[ShortcutGroup] = &[
             ("Mod+1 … Mod+4", "Home, Schematic, Simulation, Layout"),
             ("F5 / Mod+Enter", "Run simulation"),
             ("Mod+J", "Toggle console (layout: flip)"),
+            ("Mod+B", "Show or hide the Explorer"),
             ("Mod+,", "Settings"),
             ("F1", "Keyboard shortcuts"),
             ("F2", "Save"),
@@ -850,6 +858,8 @@ pub struct IcStudio {
     /// The last warning, flashed on the status bar while the console does not show it.
     flash: Option<(String, Instant)>,
     show_console: bool,
+    /// The Explorer was shown (⌘B) while the window is narrow, where it is hidden by default.
+    explorer_narrow: bool,
     bottom_tab: BottomTab,
     queue: Vec<Command>,
     dialog: Option<Dialog>,
@@ -981,6 +991,7 @@ impl IcStudio {
             started: Instant::now(),
             flash: None,
             show_console: settings.console,
+            explorer_narrow: false,
             bottom_tab: BottomTab::Console,
             queue: vec![],
             dialog: None,
@@ -1168,6 +1179,30 @@ impl IcStudio {
     }
 
     // ----- project management -----
+    /// Drops every editor, undo history, simulation result and descent of the project that
+    /// is being replaced or closed.
+    fn forget_editors(&mut self) {
+        self.sch_eds.clear();
+        self.lay_eds.clear();
+        self.hier.clear();
+        self.sims.clear();
+        self.lay_return.clear();
+        self.sch_return.clear();
+        self.probe = None;
+    }
+
+    /// Drops the editors, results and descents of a deleted cell.
+    fn forget_cell(&mut self, r: &CellRef) {
+        self.sch_eds.remove(r);
+        self.lay_eds.remove(r);
+        self.sims.remove(r);
+        self.lay_return.retain(|d| d.parent != *r && d.child != *r);
+        self.sch_return.retain(|c| c != r);
+        if self.probe.as_ref().is_some_and(|(c, _)| c == r) {
+            self.probe = None;
+        }
+    }
+
     fn set_project(&mut self, mut p: Project) {
         localize_demo_notes(&mut p);
         self.project = Some(p);
@@ -1177,10 +1212,7 @@ impl IcStudio {
         self.tabs.clear();
         self.active = None;
         self.selected_lib = None;
-        self.sch_eds.clear();
-        self.lay_eds.clear();
-        self.hier.clear();
-        self.sims.clear();
+        self.forget_editors();
         self.workspace = Workspace::Home;
         // open the first cell as a convenience
         if let Some((r, _)) = self.project.as_ref().and_then(|p| p.all_cells().next()) {
@@ -1368,7 +1400,7 @@ impl IcStudio {
     fn sim_options(&self, backend: ics_core::Backend) -> SimOptions {
         // Relative `.include` / `.lib` paths in a cell's setup are relative to the project.
         let deck_dir = self.project.as_ref().and_then(|p| p.root.clone());
-        SimOptions { backend, ngspice_exe: self.settings.ngspice_path.clone(), deck_dir }
+        SimOptions { backend, ngspice_exe: self.settings.ngspice_path.clone(), deck_dir, cancel: Default::default() }
     }
 
     fn netlist_active(&self) -> Option<(String, Vec<String>)> {
@@ -1463,6 +1495,7 @@ impl IcStudio {
                 self.dirty = false;
                 self.tabs.clear();
                 self.active = None;
+                self.forget_editors();
                 self.workspace = Workspace::Home;
             }
             Command::NewCellDialog => {
@@ -1591,6 +1624,11 @@ impl IcStudio {
             }
             Command::SetWorkspace(w) => self.workspace = w,
             Command::RunSimulation => self.run_simulation(ctx),
+            Command::StopSimulation => {
+                if let Some(s) = self.active.as_ref().and_then(|r| self.sims.get(r)) {
+                    s.stop();
+                }
+            }
             Command::Calculator => self.calc.show(),
             Command::PixelOptics => self.pixel.show(),
             Command::RunPixelOptics => {
@@ -2002,6 +2040,13 @@ impl IcStudio {
                 });
             }
             Command::ToggleConsole => self.show_console = !self.show_console,
+            Command::ToggleExplorer => {
+                if narrow_window(ctx) {
+                    self.explorer_narrow = !self.explorer_narrow;
+                } else {
+                    self.settings.explorer = !self.settings.explorer;
+                }
+            }
             Command::Settings => self.dialog = Some(Dialog::Settings(SettingsState::default())),
             Command::SettingsPage(page) => self.dialog = Some(Dialog::Settings(SettingsState { page, ..Default::default() })),
             Command::Shortcuts => self.dialog = Some(Dialog::Shortcuts),
@@ -2502,6 +2547,10 @@ impl IcStudio {
             self.warn("Open a cell to simulate".into());
             return;
         };
+        if self.sims.get(&r).is_some_and(|s| s.is_running()) {
+            self.warn(format!("{r} is already simulating: stop it first"));
+            return;
+        }
         let Some(cell) = self.active_cell() else { return };
         if cell.schematic.is_none() {
             self.warn(format!("{r} has no schematic to simulate"));
@@ -2514,7 +2563,7 @@ impl IcStudio {
         }
         let backend = cell.sim.backend;
         let parasitics = cell.sim.parasitics && cell.layout.is_some();
-        let (mut deck, warnings) = self.netlist_active().unwrap();
+        let (deck, warnings) = self.netlist_active().unwrap();
         if deck.is_empty() {
             // The hierarchy could not be flattened (a missing cell, a cell placing itself).
             self.error(format!("Cannot simulate {r}: {}", warnings.join("; ")));
@@ -2523,22 +2572,15 @@ impl IcStudio {
         for w in warnings {
             self.warn(format!("netlist: {w}"));
         }
-        if parasitics && let Some(p) = &self.project {
-            match ics_core::pex::post_layout(p, &r) {
-                Ok(pl) => {
-                    deck = pl.apply(&deck);
-                    self.info(pl.summary);
-                }
-                Err(e) => self.warn(format!("Parasitics not included: {e}")),
-            }
-        }
+        // Extraction can take seconds on a large layout: it runs with the simulation, on a copy.
+        let pex = if parasitics { self.project.clone().map(|p| (p, r.clone())) } else { None };
         let opts = self.sim_options(backend);
         self.info(format!(
             "Simulating {r} with {} ({})",
             backend.label(),
             analyses.iter().map(|a| a.kind_name()).collect::<Vec<_>>().join(", ")
         ));
-        self.sims.entry(r).or_default().start(ctx, deck, analyses, opts);
+        self.sims.entry(r).or_default().start_with_parasitics(ctx, deck, analyses, opts, pex);
         self.workspace = Workspace::Simulation;
     }
 
@@ -2557,7 +2599,7 @@ impl IcStudio {
         }
         let mut notes = vec![];
         match self.sweep_decks(&r, &mut notes) {
-            Ok((decks, analyses, backend)) => {
+            Ok((decks, analyses, backend, pex)) => {
                 for n in notes {
                     self.warn(n);
                 }
@@ -2570,7 +2612,7 @@ impl IcStudio {
                     }
                     _ => None,
                 };
-                self.sweep.start(ctx, decks, analyses, opts);
+                self.sweep.start(ctx, decks, analyses, opts, pex);
                 self.info(format!("Sweep {r}: {n} point(s) with {}", backend.label()));
             }
             Err(e) => {
@@ -2596,7 +2638,7 @@ impl IcStudio {
         let mut notes = vec![];
         self.monte_carlo.process = self.project.as_ref().and_then(|p| p.tech.variation.clone());
         self.monte_carlo.mismatch = self.project.as_ref().and_then(|p| p.tech.mismatch.clone());
-        let res = self.mc_deck(&r, &mut notes).and_then(|(deck, analyses)| self.monte_carlo.start(ctx, deck, analyses));
+        let res = self.mc_deck(&r, &mut notes).and_then(|(deck, analyses, pex)| self.monte_carlo.start(ctx, deck, analyses, pex));
         for n in notes {
             self.warn(n);
         }
@@ -2610,7 +2652,12 @@ impl IcStudio {
     }
 
     /// The netlist of cell `r` (with layout parasitics when its setup asks) and its enabled analyses.
-    fn mc_deck(&self, r: &CellRef, notes: &mut Vec<String>) -> Result<(String, Vec<ics_core::Analysis>), String> {
+    #[allow(clippy::type_complexity)]
+    fn mc_deck(
+        &self,
+        r: &CellRef,
+        notes: &mut Vec<String>,
+    ) -> Result<(String, Vec<ics_core::Analysis>, Option<(Project, CellRef)>), String> {
         let p = self.project.as_ref().ok_or("no project")?;
         let cell = p.cell(r).ok_or_else(|| format!("no cell {r}"))?;
         let circuit = p.circuit(r)?;
@@ -2621,14 +2668,10 @@ impl IcStudio {
         }
         let nl = ics_core::netlist::netlist_for(sch, &p.tech, &cell.sim.corner);
         notes.extend(nl.warnings.iter().map(|w| format!("netlist: {w}")));
-        let mut deck = nl.deck(&r.to_string(), &cell.sim);
-        if cell.sim.parasitics && cell.layout.is_some() {
-            match ics_core::pex::post_layout(p, r) {
-                Ok(pl) => deck = pl.apply(&deck),
-                Err(e) => notes.push(format!("Parasitics not included: {e}")),
-            }
-        }
-        Ok((deck, analyses))
+        let deck = nl.deck(&r.to_string(), &cell.sim);
+        // The parasitics are extracted by the run in the background, on a copy.
+        let pex = (cell.sim.parasitics && cell.layout.is_some()).then(|| (p.clone(), r.clone()));
+        Ok((deck, analyses, pex))
     }
 
     fn run_verification(&mut self, ctx: &egui::Context) {
@@ -2869,11 +2912,7 @@ impl IcStudio {
 
     /// The decks of every point of the sweep draft on cell `r`.
     #[allow(clippy::type_complexity)]
-    fn sweep_decks(
-        &self,
-        r: &CellRef,
-        notes: &mut Vec<String>,
-    ) -> Result<(Vec<(ics_core::sweep::SweepPoint, String)>, Vec<ics_core::Analysis>, ics_core::Backend), String> {
+    fn sweep_decks(&self, r: &CellRef, notes: &mut Vec<String>) -> Result<SweepDecks, String> {
         let p = self.project.as_ref().ok_or("no project")?;
         let cell = p.cell(r).ok_or_else(|| format!("no cell {r}"))?;
         let circuit = p.circuit(r)?;
@@ -2885,30 +2924,17 @@ impl IcStudio {
             return Err("no analyses enabled".into());
         }
         let points = setup.sweep.expand(&setup, sch, p.tech.variation.as_ref())?;
-        let pex = if setup.parasitics && cell.layout.is_some() {
-            match ics_core::pex::post_layout(p, r) {
-                Ok(pl) => Some(pl),
-                Err(e) => {
-                    notes.push(format!("Parasitics not included: {e}"));
-                    None
-                }
-            }
-        } else {
-            None
-        };
+        // The parasitics are extracted by the sweep in the background, on a copy.
+        let pex = (setup.parasitics && cell.layout.is_some()).then(|| (p.clone(), r.clone()));
         let mut decks = Vec::with_capacity(points.len());
         for (k, pt) in points.into_iter().enumerate() {
             let (deck, w) = ics_core::sweep::point_deck(sch, &p.tech, &r.to_string(), &setup, &pt)?;
             if k == 0 {
                 notes.extend(w.into_iter().map(|w| format!("netlist: {w}")));
             }
-            let deck = match &pex {
-                Some(pl) => pl.apply(&deck),
-                None => deck,
-            };
             decks.push((pt, deck));
         }
-        Ok((decks, analyses, setup.backend))
+        Ok((decks, analyses, setup.backend, pex))
     }
 
     fn sweep_window(&mut self, ctx: &egui::Context) {
@@ -3209,6 +3235,14 @@ impl IcStudio {
         }
     }
 
+    /// After `Project::set_tech`: shapes moved to new layer indices (and maybe a new dbu), so
+    /// the layout editors' undo snapshots, layer visibility and pending edits are stale.
+    fn tech_replaced(&mut self) {
+        self.hier.clear();
+        self.lay_eds.clear();
+        self.lay_return.clear();
+    }
+
     fn load_pdk(&mut self, path: &Path) {
         let Some(p) = self.project.as_mut() else { return };
         let loaded = ics_core::pdk::load(path).and_then(|pdk| {
@@ -3225,7 +3259,7 @@ impl IcStudio {
         });
         match loaded {
             Ok((msg, pdk_warnings, warnings)) => {
-                self.hier.clear();
+                self.tech_replaced();
                 self.mark_dirty();
                 self.ok(msg);
                 for w in pdk_warnings.into_iter().chain(warnings) {
@@ -3570,7 +3604,7 @@ impl IcStudio {
             .and_then(|t| p.set_tech(t).map(|w| (w, p.tech.layers.len())));
         match tech {
             Ok((warnings, layers)) => {
-                self.hier.clear();
+                self.tech_replaced();
                 self.mark_dirty();
                 self.ok(format!("Technology '{name}' imported from {} ({layers} layers)", path.display()));
                 for w in warnings {
@@ -3763,21 +3797,26 @@ impl IcStudio {
         if self.workspace != Workspace::Layout {
             fire(cmd, Key::J, Command::ToggleConsole, q);
         }
-        fire(cmd, Key::Enter, Command::RunSimulation, q);
+        fire(cmd, Key::B, Command::ToggleExplorer, q);
         fire(Modifiers::NONE, Key::F5, Command::RunSimulation, q);
-        fire(cmd, Key::Num1, Command::SetWorkspace(Workspace::Home), q);
-        fire(cmd, Key::Num2, Command::SetWorkspace(Workspace::Schematic), q);
-        fire(cmd, Key::Num3, Command::SetWorkspace(Workspace::Simulation), q);
-        fire(cmd, Key::Num4, Command::SetWorkspace(Workspace::Layout), q);
         fire(cmd, Key::Comma, Command::Settings, q);
         fire(Modifiers::NONE, Key::F1, Command::Shortcuts, q);
         fire(Modifiers::NONE, Key::F2, Command::Save, q);
-        if !ctx.text_edit_focused() {
+        // While typing (notes, copilot, a dialog field) these keys belong to the text field:
+        // ⌘↩ would start a simulation and ⌘W close the tab under it.
+        let typing = ctx.text_edit_focused();
+        if !typing {
+            fire(cmd, Key::Enter, Command::RunSimulation, q);
+            fire(cmd, Key::Num1, Command::SetWorkspace(Workspace::Home), q);
+            fire(cmd, Key::Num2, Command::SetWorkspace(Workspace::Schematic), q);
+            fire(cmd, Key::Num3, Command::SetWorkspace(Workspace::Simulation), q);
+            fire(cmd, Key::Num4, Command::SetWorkspace(Workspace::Layout), q);
             fire(cs, Key::Z, Command::Redo, q);
             fire(cmd, Key::Z, Command::Undo, q);
             fire(cmd, Key::Y, Command::Redo, q);
         }
-        if let Some(r) = self.active.clone()
+        if !typing
+            && let Some(r) = self.active.clone()
             && ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(cmd, Key::W)))
         {
             self.queue.push(Command::CloseTab(r));
@@ -3959,6 +3998,9 @@ impl IcStudio {
                 }
                 if ui.add(egui::Button::new(t("Toggle Console")).shortcut_text(theme::kbd("⌘J"))).clicked() {
                     q.push(Command::ToggleConsole);
+                }
+                if ui.add(egui::Button::new(t("Toggle Explorer")).shortcut_text(theme::kbd("⌘B"))).clicked() {
+                    q.push(Command::ToggleExplorer);
                 }
                 if ui.button(if self.settings.dark { "Light Theme" } else { "Dark Theme" }).clicked() {
                     q.push(Command::ToggleTheme);
@@ -4304,7 +4346,7 @@ impl IcStudio {
             let l = ui.label(RichText::new(t("Filter")).small().color(pal.text_weak));
             let te = egui::TextEdit::singleline(&mut self.explorer_filter).hint_text(t("cell name")).desired_width(f32::INFINITY);
             let resp = ui.add(te).labelled_by(l.id);
-            if resp.has_focus() && ui.input(|i| i.key_pressed(Key::Escape)) {
+            if (resp.has_focus() || resp.lost_focus()) && ui.input(|i| i.key_pressed(Key::Escape)) {
                 self.explorer_filter.clear();
             }
         });
@@ -4491,10 +4533,15 @@ impl IcStudio {
 
     fn tab_strip(&mut self, ui: &mut egui::Ui) {
         let pal = theme::palette(ui.ctx());
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
-            for t in self.tabs.clone() {
+        // Wrapped: many open cells (descending a GDS hierarchy) take a second row instead of
+        // running off the edge.
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(2.0, 2.0);
+            let tabs = self.tabs.clone();
+            for t in tabs.clone() {
                 let active = self.active.as_ref() == Some(&t);
+                // Cells of the same name in two libraries are told apart by the library.
+                let name = if tabs.iter().any(|o| o.cell == t.cell && o.lib != t.lib) { t.to_string() } else { t.cell.clone() };
                 egui::Frame::new()
                     .fill(if active { pal.bg_canvas } else { pal.bg_panel })
                     .corner_radius(egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 })
@@ -4505,7 +4552,7 @@ impl IcStudio {
                             let (r, p) = ui.allocate_painter(Vec2::splat(8.0), Sense::hover());
                             p.circle_filled(r.rect.center(), 3.5, c);
                             let resp = ui.add(
-                                egui::Label::new(RichText::new(&t.cell).color(if active { pal.text } else { pal.text_weak }))
+                                egui::Label::new(RichText::new(name).color(if active { pal.text } else { pal.text_weak }))
                                     .sense(Sense::click()),
                             );
                             if resp.clicked() {
@@ -5089,7 +5136,18 @@ impl IcStudio {
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         let pal = theme::palette(ui.ctx());
-        ui.horizontal(|ui| {
+        // The right side (ngspice, PDK, console, version) keeps its room: the left readouts are
+        // clipped to what is left of it, using the width the right side took last frame.
+        let avail = ui.available_rect_before_wrap();
+        let key = egui::Id::unique("status_right_width");
+        let reserve = ui.ctx().data(|d| d.get_temp::<f32>(key)).unwrap_or(360.0);
+        let left_rect =
+            egui::Rect::from_min_max(avail.min, egui::pos2((avail.max.x - reserve - 16.0).max(avail.min.x), avail.max.y));
+        let mut left =
+            ui.new_child(egui::UiBuilder::new().max_rect(left_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
+        left.shrink_clip_rect(left_rect);
+        {
+            let ui = &mut left;
             let c = self.workspace.color(&pal);
             let (r, p) = ui.allocate_painter(Vec2::splat(14.0), Sense::hover());
             icons::paint(&p, r.rect, self.workspace.icon(), c);
@@ -5179,7 +5237,14 @@ impl IcStudio {
                     _ => {}
                 }
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        }
+        let left_end = left.min_rect().max.x.min(left_rect.max.x);
+        let right_rect = egui::Rect::from_min_max(egui::pos2(left_end + 8.0, avail.min.y), avail.max);
+        let mut right =
+            ui.new_child(egui::UiBuilder::new().max_rect(right_rect).layout(egui::Layout::right_to_left(egui::Align::Center)));
+        {
+            let ui = &mut right;
+            {
                 ui.label(RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).small().color(pal.text_weak));
                 if let Some(r) = self.updater.available() {
                     let txt = match self.updater.state {
@@ -5235,6 +5300,8 @@ impl IcStudio {
                 {
                     self.show_console = !self.show_console;
                 }
+                let fixed = avail.max.x - ui.min_rect().min.x;
+                ui.ctx().data_mut(|d| d.insert_temp(key, fixed));
                 // A warning the hidden console would swallow: show it here for a few seconds.
                 let console_shown = self.show_console && self.bottom_tab == BottomTab::Console;
                 if let Some((text, at)) = &self.flash
@@ -5256,8 +5323,9 @@ impl IcStudio {
                         ui.ctx().request_repaint_after(FLASH_TIME - age);
                     }
                 }
-            });
-        });
+            }
+        }
+        ui.advance_cursor_after_rect(avail);
     }
 
     fn console(&mut self, ui: &mut egui::Ui) {
@@ -5374,6 +5442,13 @@ impl IcStudio {
             examples::TOPICS.iter().map(|t| (tf("Open example: {}", &[t.title]), "", Command::OpenExample(t.name.into())));
         let mut v: Vec<(String, &'static str, Command)> = vec![
             (t("Run simulation").into(), "F5", Command::RunSimulation),
+            (t("Stop simulation").into(), "", Command::StopSimulation),
+            (t("Undo").into(), "⌘Z", Command::Undo),
+            (t("Redo").into(), "⇧⌘Z", Command::Redo),
+            (t("Delete selection").into(), "Del", Command::Delete),
+            (t("Close all tabs").into(), "", Command::CloseAllTabs),
+            (t("Close project").into(), "", Command::CloseProject),
+            (t("Quit").into(), "⌘Q", Command::Quit),
             (t("Save project").into(), "⌘S", Command::Save),
             (t("Save project as…").into(), "⇧⌘S", Command::SaveAs),
             (t("Open project…").into(), "⌘O", Command::OpenProjectDialog),
@@ -5464,6 +5539,7 @@ impl IcStudio {
             (t("Export Virtuoso schematic (SKILL)…").into(), "", Command::ExportSkill),
             (t("Toggle light / dark theme").into(), "", Command::ToggleTheme),
             (t("Toggle console").into(), "⌘J", Command::ToggleConsole),
+            (t("Toggle explorer").into(), "⌘B", Command::ToggleExplorer),
             (t("Fit view").into(), "F", Command::FitView),
             (t("Settings").into(), "⌘,", Command::Settings),
             (t("Keyboard shortcuts").into(), "F1", Command::Shortcuts),
@@ -5479,6 +5555,20 @@ impl IcStudio {
         ];
         v.extend(examples);
         if let Some(r) = &self.active {
+            let name = r.to_string();
+            v.push((tf("Close tab {}", &[&name]), "⌘W", Command::CloseTab(r.clone())));
+            v.push((t("Close the other tabs").into(), "", Command::CloseOtherTabs(r.clone())));
+            v.push((tf("Rename {}…", &[&name]), "", Command::RenameCellDialog(r.clone())));
+            v.push((tf("Delete {}…", &[&name]), "", Command::DeleteCellConfirm(r.clone())));
+            if let Some(c) = self.active_cell() {
+                for (vk, label) in
+                    [(ViewKind::Schematic, "Create the schematic view of {}"), (ViewKind::Layout, "Create the layout view of {}")]
+                {
+                    if !c.has_view(vk) {
+                        v.push((tf(label, &[&name]), "", Command::CreateView(r.clone(), vk)));
+                    }
+                }
+            }
             v.push((
                 tf("Copy {} as a new cell (start a new design from it)…", &[&r.to_string()]),
                 "",
@@ -5616,8 +5706,11 @@ impl IcStudio {
             if !r.has_focus() {
                 r.request_focus();
             }
+            // Scroll to the highlighted row only when it moved: every frame would undo the wheel.
+            let mut moved = up || down;
             if r.changed() {
                 st.sel = 0;
+                moved = true;
             }
             ui.add_space(6.0);
             egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
@@ -5642,7 +5735,7 @@ impl IcStudio {
                         FontId::monospace(11.5),
                         pal.text_weak,
                     );
-                    if selected {
+                    if selected && moved {
                         resp.scroll_to_me(None);
                     }
                     if resp.clicked() {
@@ -5819,15 +5912,20 @@ impl IcStudio {
                 }
                 Dialog::RenameCell { cell, name, error } => {
                     ui.heading(t("Rename cell"));
-                    ui.text_edit_singleline(name);
+                    let l = ui.label(t("New name"));
+                    let r = ui.text_edit_singleline(name).labelled_by(l.id);
+                    if !r.has_focus() && error.is_empty() && *name == cell.cell {
+                        r.request_focus();
+                    }
                     if !error.is_empty() {
                         ui.colored_label(pal.danger, error.as_str());
                     }
+                    let enter = ui.input(|i| i.key_pressed(Key::Enter));
                     ui.horizontal(|ui| {
                         if ui.button(t("Cancel")).clicked() {
                             close = true;
                         }
-                        if ui.button(t("Rename")).clicked()
+                        if (ui.button(t("Rename")).clicked() || enter)
                             && let Some(p) = self.project.as_mut()
                         {
                             match p.rename_cell(cell, name.trim()) {
@@ -5918,6 +6016,15 @@ impl IcStudio {
                 Dialog::ConfirmDelete(r) => {
                     ui.heading(t("Delete cell?"));
                     ui.label(tf("'{}' and all of its views will be deleted; its files go when the project is saved.", &[&r.to_string()]));
+                    let users = self.project.as_ref().map(|p| p.cell_users(r)).unwrap_or_default();
+                    if !users.is_empty() {
+                        let names: Vec<String> = users.iter().take(8).map(|c| c.to_string()).collect();
+                        let more = if users.len() > 8 { format!(" (+{})", users.len() - 8) } else { String::new() };
+                        ui.colored_label(
+                            pal.warning,
+                            tf("It is placed by {}{}: they would lose it.", &[&names.join(", "), &more]),
+                        );
+                    }
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if ui.button(t("Cancel")).clicked() {
@@ -5928,12 +6035,17 @@ impl IcStudio {
                             if let Some(p) = self.project.as_mut() {
                                 self.hier.clear();
                                 match p.delete_cell(&r) {
-                                    Ok(()) => self.warn(format!("Deleted {r}")),
+                                    Ok(()) => {
+                                        self.warn(format!("Deleted {r}"));
+                                        // A new cell of the same name must not inherit the
+                                        // deleted one's undo history, view or results.
+                                        self.forget_cell(&r);
+                                        self.queue.push(Command::CloseTab(r));
+                                        self.dirty = true;
+                                    }
                                     Err(e) => self.error(format!("Delete failed: {e}")),
                                 }
                             }
-                            self.queue.push(Command::CloseTab(r));
-                            self.dirty = true;
                             close = true;
                         }
                     });
@@ -6077,6 +6189,9 @@ impl IcStudio {
                     ui.heading(tf("Symbol pins of {}", &[&cell.to_string()]));
                     ui.label(RichText::new(t("The side and order of each pin on the box other schematics place")).small().color(pal.text_weak));
                     let mut swap: Option<(usize, usize)> = None;
+                    // A cell with many pins scrolls, so the preview and Apply stay on screen.
+                    let max_h = (ui.ctx().content_rect().height() * 0.45).max(120.0);
+                    egui::ScrollArea::vertical().max_height(max_h).show(ui, |ui| {
                     egui::Grid::new("symbol_pins").num_columns(4).spacing([10.0, 6.0]).show(ui, |ui| {
                         let n = pins.len();
                         for (k, (name, side)) in pins.iter_mut().enumerate() {
@@ -6098,6 +6213,7 @@ impl IcStudio {
                             }
                             ui.end_row();
                         }
+                    });
                     });
                     if let Some((a, b)) = swap {
                         pins.swap(a, b);
@@ -7334,7 +7450,7 @@ impl IcStudio {
         let mut ok = false;
         let mut cancel = false;
         let mut open = true;
-        egui::Window::new(form.title.clone())
+        egui::Window::new(theme::window_title(&form.title))
             .id(egui::Id::unique(format!("skill_form_{}", form.symbol)))
             .pivot(egui::Align2::CENTER_CENTER)
             .default_pos(ctx.content_rect().center())
@@ -7433,7 +7549,7 @@ impl IcStudio {
         let Some((path, libs, found)) = &self.virtuoso_pick else { return };
         let mut pick = None;
         let mut open = true;
-        egui::Window::new(t("Import Virtuoso Library"))
+        egui::Window::new(theme::window_title(t("Import Virtuoso Library")))
             .id(egui::Id::unique("virtuoso_pick"))
             .collapsible(false)
             .pivot(egui::Align2::CENTER_CENTER)
@@ -7946,7 +8062,11 @@ impl eframe::App for IcStudio {
                 events.push((r.clone(), ev));
             }
         }
-        for (r, SimEvent::Finished { ok, message, log }) in events {
+        for (r, ev) in events {
+            let SimEvent::Finished { ok, message, log } = ev else {
+                self.warn(format!("{r}: {}", t("Simulation stopped")));
+                continue;
+            };
             for l in log.lines().filter(|l| !l.trim().is_empty()).take(60) {
                 self.info(format!("  {l}"));
             }
@@ -8073,18 +8193,23 @@ impl eframe::App for IcStudio {
             .resizable(false)
             .frame(egui::Frame::new().fill(pal.bg_sidebar).stroke(Stroke::new(1.0, pal.border)))
             .show(ui, |ui| self.activity_bar(ui));
-        theme::aside(
-            egui::Panel::left("explorer")
-                .resizable(true)
-                .default_size(230.0)
-                .size_range(160.0..=420.0)
-                .frame(egui::Frame::new().fill(pal.bg_sidebar).inner_margin(10)),
-            ui,
-            |ui| {
-                crate::spot::mark(ui.ctx(), "explorer", ui.max_rect());
-                egui::ScrollArea::vertical().show(ui, |ui| self.explorer(ui));
-            },
-        );
+        // A narrow window (a laptop at 125 %) leaves the editor too little room for three side
+        // panels: the Explorer folds away there until ⌘B shows it.
+        let show_explorer = if narrow_window(&ctx) { self.explorer_narrow } else { self.settings.explorer };
+        if show_explorer {
+            theme::aside(
+                egui::Panel::left("explorer")
+                    .resizable(true)
+                    .default_size(230.0)
+                    .size_range(160.0..=420.0)
+                    .frame(egui::Frame::new().fill(pal.bg_sidebar).inner_margin(10)),
+                ui,
+                |ui| {
+                    crate::spot::mark(ui.ctx(), "explorer", ui.max_rect());
+                    egui::ScrollArea::vertical().show(ui, |ui| self.explorer(ui));
+                },
+            );
+        }
         if self.show_console {
             egui::Panel::bottom("console")
                 .resizable(true)
@@ -8215,6 +8340,18 @@ impl eframe::App for IcStudio {
             storage.set_string(SETTINGS_KEY, s);
         }
     }
+}
+
+/// A sweep's point decks, analyses and backend, and the project copy and cell whose layout
+/// parasitics the sweep adds.
+type SweepDecks =
+    (Vec<(ics_core::sweep::SweepPoint, String)>, Vec<ics_core::Analysis>, ics_core::Backend, Option<(Project, CellRef)>);
+
+/// Below this width (points) the Explorer is hidden unless shown with ⌘B.
+const NARROW_WIDTH: f32 = 1100.0;
+
+fn narrow_window(ctx: &egui::Context) -> bool {
+    ctx.content_rect().width() < NARROW_WIDTH
 }
 
 /// Layout by example, then optionally routing: the generator behind "By Example".

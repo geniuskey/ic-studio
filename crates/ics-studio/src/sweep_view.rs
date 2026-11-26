@@ -31,6 +31,8 @@ struct Job {
     done: usize,
     cancel: Arc<AtomicBool>,
     started: Instant,
+    /// Why the layout parasitics could not be added (set by the background extraction).
+    pex_note: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 pub enum SweepAction {
@@ -81,14 +83,57 @@ impl SweepManager {
     }
 
     /// Run every point's deck on a pool of worker threads.
-    pub fn start(&mut self, ctx: &egui::Context, decks: Vec<(SweepPoint, String)>, analyses: Vec<Analysis>, opts: SimOptions) {
+    /// Run `decks` on all cores. With `pex` (a copy of the project and the cell) the layout
+    /// parasitics are extracted first, in the background, and added to every deck.
+    pub fn start(
+        &mut self,
+        ctx: &egui::Context,
+        decks: Vec<(SweepPoint, String)>,
+        analyses: Vec<Analysis>,
+        opts: SimOptions,
+        pex: Option<(ics_core::Project, ics_core::CellRef)>,
+    ) {
         let total = decks.len();
         let (tx, rx) = channel();
         let cancel = Arc::new(AtomicBool::new(false));
-        let next = Arc::new(AtomicUsize::new(0));
-        let decks = Arc::new(decks);
+        let pex_note = Arc::new(std::sync::Mutex::new(None));
         let specs = Arc::new(self.setup.specs.clone());
         let workers = std::thread::available_parallelism().map_or(2, |n| n.get()).min(total).max(1);
+        let (job_cancel, job_note, job_ctx) = (cancel.clone(), pex_note.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let mut decks = decks;
+            if let Some((p, r)) = pex {
+                match ics_core::pex::post_layout(&p, &r) {
+                    Ok(pl) => decks.iter_mut().for_each(|(_, d)| *d = pl.apply(d)),
+                    Err(e) => *job_note.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!("parasitics not included: {e}")),
+                }
+            }
+            run_points(&job_ctx, decks, analyses, opts, specs, job_cancel, tx, workers);
+        });
+        self.results = (0..total).map(|_| None).collect();
+        self.prediction.clear();
+        self.run_specs = self.setup.specs.clone();
+        self.selected = None;
+        self.status = Some((true, format!("Running {total} point(s) on {workers} thread(s)…")));
+        self.job = Some(Job { rx, total, done: 0, cancel, started: Instant::now(), pex_note });
+    }
+}
+
+/// Simulate `decks` on `workers` threads, sending each point's result.
+#[allow(clippy::too_many_arguments)]
+fn run_points(
+    ctx: &egui::Context,
+    decks: Vec<(SweepPoint, String)>,
+    analyses: Vec<Analysis>,
+    opts: SimOptions,
+    specs: Arc<Vec<Spec>>,
+    cancel: Arc<AtomicBool>,
+    tx: std::sync::mpsc::Sender<(usize, PointResult)>,
+    workers: usize,
+) {
+    let next = Arc::new(AtomicUsize::new(0));
+    let decks = Arc::new(decks);
+    {
         for _ in 0..workers {
             let (tx, cancel, next, decks, specs, analyses, opts, ctx) = (
                 tx.clone(),
@@ -116,14 +161,10 @@ impl SweepManager {
                 }
             });
         }
-        self.results = (0..total).map(|_| None).collect();
-        self.prediction.clear();
-        self.run_specs = self.setup.specs.clone();
-        self.selected = None;
-        self.status = Some((true, format!("Running {total} point(s) on {workers} thread(s)…")));
-        self.job = Some(Job { rx, total, done: 0, cancel, started: Instant::now() });
     }
+}
 
+impl SweepManager {
     /// Collect finished points; returns a summary when the run completes.
     pub fn poll(&mut self) -> Option<String> {
         let job = self.job.as_mut()?;
@@ -139,6 +180,7 @@ impl SweepManager {
         }
         let secs = job.started.elapsed().as_secs_f64();
         let done = job.done;
+        let pex_note = job.pex_note.lock().unwrap_or_else(|e| e.into_inner()).take();
         self.job = None;
         let failed = self.results.iter().flatten().filter(|r| r.results.is_err()).count();
         let (pass, checked) = self.pass_count();
@@ -151,6 +193,9 @@ impl SweepManager {
         }
         if cancelled {
             msg += " (stopped)";
+        }
+        if let Some(n) = pex_note {
+            msg += &format!("; {n}");
         }
         self.predict();
         if let Some(y) = self.prediction.iter().filter_map(|c| c.prediction.joint).reduce(f64::min) {

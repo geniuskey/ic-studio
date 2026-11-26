@@ -114,7 +114,7 @@ fn check_includes(deck: &str, base: &Path) -> Result<(), SimError> {
     Ok(())
 }
 
-pub fn run(exe: &str, deck: &str, analyses: &[Analysis]) -> Result<(Vec<Dataset>, String), SimError> {
+pub fn run(exe: &str, deck: &str, analyses: &[Analysis], cancel: &crate::Cancel) -> Result<(Vec<Dataset>, String), SimError> {
     check_includes(deck, &std::env::current_dir().unwrap_or_default())?;
     let dir = work_dir().map_err(|e| SimError::Backend(format!("cannot create temp dir: {e}")))?;
     let (mut text, pre) = strip_analyses(deck);
@@ -142,10 +142,21 @@ pub fn run(exe: &str, deck: &str, analyses: &[Analysis]) -> Result<(Vec<Dataset>
     text += "quit\n.endc\n.end\n";
     let cir = dir.join("deck.cir");
     std::fs::write(&cir, &text).map_err(|e| SimError::Backend(e.to_string()))?;
-    let out =
-        command(exe).arg("-b").arg("deck.cir").current_dir(&dir).output().map_err(|e| {
-            SimError::Backend(format!("failed to launch '{exe}': {e}. Install ngspice or set its path in Settings."))
-        })?;
+    let mut cmd = command(exe);
+    cmd.arg("-b").arg("deck.cir").current_dir(&dir);
+    let out = match run_until_cancelled(cmd, cancel) {
+        Ok(Some(out)) => out,
+        Ok(None) => {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(SimError::Cancelled);
+        }
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(SimError::Backend(format!(
+                "failed to launch '{exe}': {e}. Install ngspice or set its path in Settings."
+            )));
+        }
+    };
     let mut log = String::from_utf8_lossy(&out.stdout).to_string();
     log += &String::from_utf8_lossy(&out.stderr);
     let mut datasets = vec![];
@@ -279,6 +290,38 @@ fn console_exe(exe: &str) -> PathBuf {
         return con;
     }
     p
+}
+
+/// Runs `cmd` to completion like `Command::output`, but kills it and returns `None` once
+/// `cancel` is set.
+fn run_until_cancelled(mut cmd: Command, cancel: &crate::Cancel) -> std::io::Result<Option<std::process::Output>> {
+    use std::io::Read;
+    use std::process::Stdio;
+    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    // Drain both pipes on their own threads: a full pipe would block ngspice.
+    let drain = |r: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut buf = vec![];
+            if let Some(mut r) = r {
+                let _ = r.read_to_end(&mut buf);
+            }
+            buf
+        })
+    };
+    let out = drain(child.stdout.take().map(|r| Box::new(r) as Box<dyn Read + Send>));
+    let err = drain(child.stderr.take().map(|r| Box::new(r) as Box<dyn Read + Send>));
+    let status = loop {
+        if let Some(st) = child.try_wait()? {
+            break st;
+        }
+        if cancel.is_cancelled() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(None);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    Ok(Some(std::process::Output { status, stdout: out.join().unwrap_or_default(), stderr: err.join().unwrap_or_default() }))
 }
 
 fn command(exe: &str) -> Command {

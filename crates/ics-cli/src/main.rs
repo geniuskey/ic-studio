@@ -1036,6 +1036,9 @@ fn print_drc(rep: &ics_core::drc::DrcReport, deck: &ics_core::drc::Deck, dbu_per
         }
     }
     println!("{total} violation(s); {} rules on {} shapes in {:.0} ms", rep.rules_run, rep.shapes, rep.millis);
+    for c in &rep.missing_cells {
+        eprintln!("warning: placed cell {c} not found: its geometry was not checked");
+    }
 }
 
 fn print_correlation(deck: &str, analyses: &[ics_core::Analysis], opts: &SimOptions, tol: f64) -> Result<(), String> {
@@ -1161,7 +1164,7 @@ fn run(cli: Cli) -> Result<(), String> {
         Cmd::Schematic { project, cell, netlist, overwrite } => {
             let mut p = Project::open(&project).map_err(|e| e.to_string())?;
             let text = std::fs::read_to_string(&netlist).map_err(|e| format!("{}: {e}", netlist.display()))?;
-            let imp = ics_core::spice_import::import(&text, &p.tech)?;
+            let imp = ics_core::spice_import::import_deck(&text, &p.tech)?;
             let r = match resolve(&p, &cell) {
                 Ok(r) => r,
                 Err(_) => {

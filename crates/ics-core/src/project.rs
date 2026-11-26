@@ -349,6 +349,28 @@ pub fn valid_name(name: &str) -> bool {
     !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') && !name.starts_with('-')
 }
 
+/// Windows device names (`con`, `aux`, `nul`, `com1`...): no file or folder can have them, so a
+/// cell or library of that name could not be saved or checked out on Windows.
+pub fn reserved_name(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    matches!(n.as_str(), "con" | "prn" | "aux" | "nul")
+        || ((n.starts_with("com") || n.starts_with("lpt"))
+            && n.len() == 4
+            && n.as_bytes()[3].is_ascii_digit()
+            && n.as_bytes()[3] != b'0')
+}
+
+/// Why `name` cannot name a new cell or library (`what`), if it cannot.
+fn check_new_name(name: &str, what: &str) -> std::result::Result<(), String> {
+    if !valid_name(name) {
+        return Err(format!("'{name}' is not a valid {what} name (use letters, digits, _ and -)"));
+    }
+    if reserved_name(name) {
+        return Err(format!("'{name}' is a reserved device name on Windows; choose another {what} name"));
+    }
+    Ok(())
+}
+
 impl Project {
     /// The project's ngspice executable (`settings.ngspice_path`) when it can be trusted: an
     /// absolute path to a file named `ngspice` / `ngspice_con` outside the project folder. A
@@ -414,23 +436,21 @@ impl Project {
     }
 
     pub fn add_library(&mut self, name: &str) -> std::result::Result<(), String> {
-        if !valid_name(name) {
-            return Err(format!("'{name}' is not a valid library name (use letters, digits, _ and -)"));
-        }
-        if self.libraries.iter().any(|l| l.name == name) {
-            return Err(format!("library '{name}' already exists"));
+        check_new_name(name, "library")?;
+        // Windows and macOS file systems ignore case: `Work` and `work` would share a folder.
+        if let Some(l) = self.libraries.iter().find(|l| l.name.eq_ignore_ascii_case(name)) {
+            return Err(format!("library '{}' already exists", l.name));
         }
         self.libraries.push(Library::new(name));
         Ok(())
     }
 
     pub fn add_cell(&mut self, lib: &str, cell: Cell) -> std::result::Result<CellRef, String> {
-        if !valid_name(&cell.name) {
-            return Err(format!("'{}' is not a valid cell name (use letters, digits, _ and -)", cell.name));
-        }
+        check_new_name(&cell.name, "cell")?;
         let l = self.library_mut(lib).ok_or_else(|| format!("no library '{lib}'"))?;
-        if l.cells.iter().any(|c| c.name == cell.name) {
-            return Err(format!("cell '{}' already exists in '{lib}'", cell.name));
+        // Compared ignoring case: on Windows and macOS `Amp` and `amp` are the same folder.
+        if let Some(c) = l.cells.iter().find(|c| c.name.eq_ignore_ascii_case(&cell.name)) {
+            return Err(format!("cell '{}' already exists in '{lib}'", c.name));
         }
         let r = CellRef::new(lib, &cell.name);
         l.cells.push(cell);
@@ -678,11 +698,24 @@ impl Project {
     }
 
     pub fn rename_cell(&mut self, r: &CellRef, new_name: &str) -> std::result::Result<CellRef, String> {
-        if !valid_name(new_name) {
-            return Err(format!("'{new_name}' is not a valid cell name"));
+        check_new_name(new_name, "cell")?;
+        if new_name == r.cell {
+            return Ok(r.clone());
         }
-        if self.cell(&CellRef::new(&r.lib, new_name)).is_some() {
-            return Err(format!("cell '{new_name}' already exists"));
+        if new_name.eq_ignore_ascii_case(&r.cell) {
+            // The save would write the new folder into the old one and then delete it.
+            return Err(format!(
+                "'{}' and '{new_name}' differ only in case, which Windows and macOS treat as the same folder: rename through another name",
+                r.cell
+            ));
+        }
+        if let Some(c) = self
+            .libraries
+            .iter()
+            .find(|l| l.name == r.lib)
+            .and_then(|l| l.cells.iter().find(|c| c.name.eq_ignore_ascii_case(new_name)))
+        {
+            return Err(format!("cell '{}' already exists", c.name));
         }
         let c = self.cell_mut(r).ok_or("no such cell")?;
         c.name = new_name.to_string();
@@ -691,6 +724,14 @@ impl Project {
             for c in &mut lib.cells {
                 if let Some(l) = c.layout.as_mut() {
                     l.rename_refs(r, &to);
+                }
+                // Hierarchical schematics place cells by reference too.
+                if let Some(s) = c.schematic.as_mut() {
+                    for i in &mut s.instances {
+                        if i.cell.as_ref() == Some(r) {
+                            i.cell = Some(to.clone());
+                        }
+                    }
                 }
             }
         }
@@ -725,11 +766,14 @@ impl Project {
     /// Rename library `old` to `new_name`, updating every layout instance that refers to its
     /// cells. The files on disk follow with the next [`Project::save`].
     pub fn rename_library(&mut self, old: &str, new_name: &str) -> std::result::Result<(), String> {
-        if !valid_name(new_name) {
-            return Err(format!("'{new_name}' is not a valid library name (use letters, digits, _ and -)"));
-        }
+        check_new_name(new_name, "library")?;
         if old == new_name {
             return Ok(());
+        }
+        if old.eq_ignore_ascii_case(new_name) {
+            return Err(format!(
+                "'{old}' and '{new_name}' differ only in case, which Windows and macOS treat as the same folder: rename through another name"
+            ));
         }
         if self.libraries.iter().any(|l| l.name != old && l.name.eq_ignore_ascii_case(new_name)) {
             return Err(format!("library '{new_name}' already exists"));
@@ -744,8 +788,28 @@ impl Project {
                     }
                 }
             }
+            if let Some(s) = c.schematic.as_mut() {
+                for r in s.instances.iter_mut().filter_map(|i| i.cell.as_mut()) {
+                    if r.lib == old {
+                        r.lib = new_name.to_string();
+                    }
+                }
+            }
         }
         Ok(())
+    }
+
+    /// The cells whose layout or schematic places `r`: deleting `r` would leave them with a
+    /// missing cell.
+    pub fn cell_users(&self, r: &CellRef) -> Vec<CellRef> {
+        self.all_cells()
+            .filter(|(c, cell)| {
+                c != r
+                    && (cell.layout.as_ref().is_some_and(|l| l.instances.iter().any(|i| i.cell == *r))
+                        || cell.schematic.as_ref().is_some_and(|s| s.instances.iter().any(|i| i.cell.as_ref() == Some(r))))
+            })
+            .map(|(c, _)| c)
+            .collect()
     }
 
     /// The number of layout instances outside library `lib` that place one of its cells.
@@ -857,8 +921,13 @@ impl Project {
                             });
                         }
                     }
-                    ops.push(SaveOp::Remove(gds_file(&lib_dir, &lib.name)));
-                    ops.push(SaveOp::Remove(lib_dir.join(LIBRARY_FILE)));
+                    // Left over from GDS storage: only files this project wrote or read, not
+                    // e.g. a `<lib>.gds` the user exported into the library folder.
+                    for f in [gds_file(&lib_dir, &lib.name), lib_dir.join(LIBRARY_FILE)] {
+                        if self.disk.get(&f).is_some() {
+                            ops.push(SaveOp::Remove(f));
+                        }
+                    }
                 }
                 LibStorage::Gds => {
                     let (gds, meta) = gds_library_files(lib, &self.tech);
@@ -1586,6 +1655,47 @@ mod tests {
         let (lib2, _) = p.add_gds_library("chip", imp).unwrap();
         assert_eq!(p.tech.layers.len(), layers, "known layers are not added again");
         assert_eq!(layer_gds(&p, &CellRef::new(&lib2, "top")), [(99, 0), (98, 3), (1, 0)]);
+    }
+
+    #[test]
+    fn names_that_differ_only_in_case_are_refused() {
+        // Windows and macOS file systems ignore case: such a cell would share a folder.
+        let mut p = crate::examples::demo_project();
+        let r = CellRef::new("work", "cmos_inverter");
+        assert!(p.rename_cell(&r, "CMOS_Inverter").unwrap_err().contains("differ only in case"));
+        assert!(p.rename_cell(&r, "Nand2").unwrap_err().contains("already exists"));
+        assert!(p.add_cell("work", Cell::new("Cmos_Inverter")).is_err());
+        assert!(p.rename_library("work", "Work").unwrap_err().contains("differ only in case"));
+        assert!(p.add_library("WORK").is_err());
+        for bad in ["aux", "CON", "com1", "lpt9"] {
+            assert!(p.add_cell("work", Cell::new(bad)).unwrap_err().contains("reserved"), "{bad}");
+        }
+        assert!(!reserved_name("com0") && !reserved_name("console") && !reserved_name("aux2"));
+    }
+
+    #[test]
+    fn renaming_keeps_hierarchical_schematics_working() {
+        let mut p = crate::examples::demo_project();
+        let tb = CellRef::new("work", "buffer_tb");
+        assert!(p.circuit(&tb).is_ok());
+        p.rename_cell(&CellRef::new("work", "inv"), "inverter1").unwrap();
+        assert!(p.circuit(&tb).is_ok(), "the test bench follows the renamed cell");
+        assert_eq!(p.cell_users(&CellRef::new("work", "inverter1")), std::slice::from_ref(&tb));
+        p.rename_library("work", "mylib").unwrap();
+        assert!(p.circuit(&CellRef::new("mylib", "buffer_tb")).is_ok(), "and the renamed library");
+    }
+
+    #[test]
+    fn a_gds_file_the_project_did_not_write_survives_a_save() {
+        let dir = temp_dir("user-gds");
+        let mut p = crate::examples::demo_project();
+        p.save_as(&dir).unwrap();
+        let mine = gds_file(&dir.join("work"), "work");
+        fs::write(&mine, b"exported by the user").unwrap();
+        p.copy_cell(&CellRef::new("work", "cmos_inverter"), "work", "inv2").unwrap();
+        p.save().unwrap();
+        assert!(mine.exists(), "a JSON library's save left the user's {} alone", mine.display());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     fn temp_dir(tag: &str) -> PathBuf {

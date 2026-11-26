@@ -79,7 +79,10 @@ values as `name_re` / `name_im` columns).
 - **Noise**: the output noise density `onoise_spectrum` and the input-referred density
   `inoise_spectrum` (V/√Hz) on logarithmic axes. The built-in engine computes them from
   resistor and MOS channel thermal noise, diode shot noise and `kf` / `af` flicker noise,
-  and writes the integrated output noise (V rms over the sweep) to the log.
+  and writes the integrated output noise (V rms over the sweep) to the log. MOS level 1
+  flicker noise follows ngspice's `nlev` (default 2: `kf gm² / (f^af W Leff Cox)`; `nlev=0`
+  is the SPICE 2/3 `kf Id^af / (f Cox Leff²)`, `nlev=1` `kf Id^af / (f W Leff Cox)`). The
+  sweep can be `dec`, `oct` or `lin`, as for AC.
 - **Measurements** (bottom), one row per plotted signal:
   - DC and transient: MIN, MAX, PEAK-PEAK, FINAL.
   - AC: GAIN @ fstart, PEAK, f -3 dB, UNITY GAIN f.
@@ -272,7 +275,7 @@ A modified nodal analysis engine written in Rust. It supports:
   - errors and warnings name the file and line they come from,
 - diode model: `is n cjo vj m fc tt rs bv ibv kf af eg xti tnom`,
 - MOS level 1: `vto kp u0 lambda gamma phi tox ld cgso cgdo cgbo cj cjsw mj mjsw pb fc is
-  js rd rs rsh kf af tnom capmod`, with instance parameters `w l m ad as pd ps nrd nrs`,
+  js rd rs rsh kf af nlev tnom capmod`, with instance parameters `w l m ad as pd ps nrd nrs`,
 - MOS BSIM4 (`level=14` or `level=54`), the model of most foundry PDKs: the drain current
   follows BSIM4 4.8 as in ngspice and matches it to the solver tolerance (threshold voltage
   with short-channel, DIBL, narrow-width, body, pocket-implant and DITS terms, poly

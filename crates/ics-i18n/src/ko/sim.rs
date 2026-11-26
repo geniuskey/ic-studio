@@ -348,6 +348,10 @@ pub const KO: &[(&str, &str)] = &[
         "Empty schematic — pick a device from the library (or press R, C, V, N, P…) and click to place.\nW draws wires, T places net labels, right-click for a menu, scroll to zoom, right-drag to pan.",
         "빈 회로도입니다. 라이브러리에서 소자를 고르고(또는 R, C, V, N, P… 키) 클릭해 배치하세요.\nW는 와이어, T는 넷 레이블 배치, 오른쪽 클릭은 메뉴, 스크롤은 확대/축소, 오른쪽 드래그는 화면 이동입니다.",
     ),
+    (
+        "Empty schematic — pick a device from the library (or press R, C, V, N, P…) and click to place.\nW draws wires, T places net labels, right-click for a menu, Ctrl+wheel zooms, the wheel and right-drag pan.",
+        "빈 회로도입니다. 라이브러리에서 소자를 고르고(또는 R, C, V, N, P… 키) 클릭해 배치하세요.\nW는 와이어, T는 넷 레이블 배치, 오른쪽 클릭은 메뉴, Ctrl+휠은 확대/축소, 휠과 오른쪽 드래그는 화면 이동입니다.",
+    ),
     ("Click to select the net, right-click for more", "클릭하면 넷을 선택하고, 오른쪽 클릭하면 메뉴가 열립니다."),
     ("Select Net", "넷 선택"),
     ("Copy Net Name", "넷 이름 복사"),

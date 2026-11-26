@@ -257,6 +257,21 @@ fn names(cx: &mut Ctx) {
         }
         groups.entry(spice_name(inst).to_ascii_lowercase()).or_default().push(inst);
     }
+    // Net names go into the netlist as they are: `out put` would be two nodes.
+    let sch = cx.sch;
+    for l in &sch.labels {
+        if l.name.trim().chars().any(bad_name_char) {
+            let msg = format!("Net name '{}' contains characters SPICE cannot take (spaces, brackets, =, quotes)", l.name.trim());
+            cx.push(Finding::new(Severity::Error, "bad-net-name", msg).at(l.pos));
+        }
+    }
+    for inst in sch.instances.iter().filter(|i| i.kind == crate::DeviceKind::Supply) {
+        let net = inst.param("net").trim();
+        if net.chars().any(bad_name_char) {
+            let msg = format!("Net name '{net}' contains characters SPICE cannot take (spaces, brackets, =, quotes)");
+            cx.push(Finding::new(Severity::Error, "bad-net-name", msg).at(inst.pos).inst([inst.id]));
+        }
+    }
     for group in groups.values().filter(|g| g.len() > 1) {
         let names: Vec<&str> = group.iter().map(|i| i.name.as_str()).collect();
         let msg = format!("Duplicate instance name: {}", names.join(", "));

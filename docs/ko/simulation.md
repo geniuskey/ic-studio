@@ -76,7 +76,9 @@ ngspice 경로는 **Settings**에서 지정합니다([설치](install.md#ngspice
 - **Noise**: 출력 잡음 밀도 `onoise_spectrum`과 입력 환산 잡음 밀도 `inoise_spectrum`
   (V/√Hz)을 로그 축에 표시합니다. 내장 엔진은 저항과 MOS 채널의 열잡음, 다이오드 산탄 잡음,
   `kf` / `af` 플리커 잡음으로 이를 계산하고, 적분한 출력 잡음(스윕 구간의 V rms)을 로그에
-  기록합니다.
+  기록합니다. MOS level 1 플리커 잡음은 ngspice의 `nlev`를 따릅니다(기본값 2:
+  `kf gm² / (f^af W Leff Cox)`; `nlev=0`은 SPICE 2/3의 `kf Id^af / (f Cox Leff²)`, `nlev=1`은
+  `kf Id^af / (f W Leff Cox)`). 스윕은 AC처럼 `dec`, `oct`, `lin` 중에서 고릅니다.
 - **Measurements**(아래쪽): 플롯한 신호마다 한 행씩 표시합니다.
   - DC와 과도 해석: MIN, MAX, PEAK-PEAK, FINAL.
   - AC: GAIN @ fstart, PEAK, f -3 dB, UNITY GAIN f.
@@ -255,7 +257,7 @@ Rust로 작성한 수정 절점 해석(MNA) 엔진입니다. 다음을 지원합
   - 오류와 경고에는 원본 파일과 줄 번호가 표시됩니다.
 - 다이오드 모델: `is n cjo vj m fc tt rs bv ibv kf af eg xti tnom`,
 - MOS level 1: `vto kp u0 lambda gamma phi tox ld cgso cgdo cgbo cj cjsw mj mjsw pb fc is
-  js rd rs rsh kf af tnom capmod`, 인스턴스 파라미터 `w l m ad as pd ps nrd nrs`.
+  js rd rs rsh kf af nlev tnom capmod`, 인스턴스 파라미터 `w l m ad as pd ps nrd nrs`.
 - MOS BSIM4(`level=14` 또는 `level=54`, 대부분의 파운드리 PDK가 쓰는 모델): 드레인 전류는 ngspice의
   BSIM4 4.8을 따르며 솔버 허용오차 이내로 일치합니다(단채널, DIBL, 협폭, 바디, 포켓 임플란트, DITS
   항을 포함한 문턱전압, poly depletion, 이동도 모델 0~2, 속도 포화와 오버슈트, source-end 속도 제한,

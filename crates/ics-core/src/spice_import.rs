@@ -144,7 +144,30 @@ fn is_ground(net: &str) -> bool {
     net == "0" || net.eq_ignore_ascii_case("gnd")
 }
 
-/// Parse `text` into a schematic. `tech` decides MOS polarity for PDK device names.
+/// [`import`] of a SPICE deck file, whose first line is its title (as in every SPICE). A
+/// first line that reads like a circuit line is still skipped, with a warning.
+pub fn import_deck(text: &str, tech: &Tech) -> Result<Imported, String> {
+    let mut lines = text.lines();
+    let first = lines.next().unwrap_or("").trim();
+    if first.is_empty() || first.starts_with('*') {
+        return import(text, tech);
+    }
+    let rest: Vec<&str> = lines.collect();
+    let mut imp = import(&format!("* {first}\n{}\n", rest.join("\n")), tech)?;
+    // A circuit line ends in a value or a parameter ("R1 a 0 1k", "M1 d g s b nch w=1u"); a
+    // title ("Inverter test bench") seldom does.
+    let last = first.split_whitespace().last().unwrap_or("");
+    let element = first.split_whitespace().count() >= 3
+        && first.starts_with(|c: char| c.is_ascii_alphabetic())
+        && (crate::units::parse_spice(last).is_some() || last.contains('=') || last.ends_with(')'));
+    if element || first.starts_with('.') {
+        imp.warnings.insert(0, format!("line 1 is the deck's title (as in SPICE), not imported: '{first}'"));
+    }
+    Ok(imp)
+}
+
+/// Parse `text` into a schematic. `tech` decides MOS polarity for PDK device names. Every
+/// line is read, including the first (a netlist fragment); see [`import_deck`] for a file.
 pub fn import(text: &str, tech: &Tech) -> Result<Imported, String> {
     let mut out = Imported::default();
     let mut model_types: BTreeMap<String, MosType> = BTreeMap::new();
@@ -245,14 +268,13 @@ fn dot_line(cmd: &str, t: &[String], line: &str, out: &mut Imported) -> Result<(
             let out_node = arg(1)?;
             let output = out_node.strip_prefix(['v', 'V']).and_then(|s| s.strip_prefix('(')).and_then(|s| s.strip_suffix(')'));
             let output = output.filter(|o| !o.contains(',')).ok_or(".noise: the output must be a node voltage v(node)")?;
-            if !arg(3)?.eq_ignore_ascii_case("dec") {
-                return Err(
-                    ".noise: only 'dec' sweeps are supported (.noise v(out) <source> dec <points> <fstart> <fstop>)".into()
-                );
-            }
+            let kw = arg(3)?;
+            let sweep = crate::sim_setup::AcSweep::parse(&kw).ok_or_else(|| {
+                format!(".noise: unknown sweep '{kw}' (dec, oct or lin: .noise v(out) <source> dec <points> <fstart> <fstop>)")
+            })?;
             let n = arg(4)?;
             let points_per_decade = n.parse().map_err(|_| format!(".noise: points per decade '{n}' is not an integer"))?;
-            Analysis::Noise { output: output.into(), source: arg(2)?, points_per_decade, fstart: arg(5)?, fstop: arg(6)? }
+            Analysis::Noise { output: output.into(), source: arg(2)?, points_per_decade, fstart: arg(5)?, fstop: arg(6)?, sweep }
         }
         "temp" => {
             let v = arg(1)?;
@@ -476,6 +498,19 @@ fn place(devs: &[Dev]) -> Schematic {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_deck_file_starts_with_its_title() {
+        let t = Tech::generic();
+        // "Inverter test bench" is the title, not a current source.
+        let imp = import_deck("Inverter test bench\nV1 a 0 1\nR1 a 0 1k\n.op\n.end\n", &t).unwrap();
+        assert_eq!(imp.schematic.instances.iter().filter(|i| i.kind == crate::DeviceKind::ISource).count(), 0);
+        assert!(imp.warnings.is_empty(), "{:?}", imp.warnings);
+        // A deck written without a title loses its first line, and says so.
+        let imp = import_deck("R1 a 0 1k\nV1 a 0 1\n.end\n", &t).unwrap();
+        assert!(imp.warnings[0].contains("title"), "{:?}", imp.warnings);
+        assert!(!imp.schematic.instances.iter().any(|i| i.name == "R1"));
+    }
     use crate::netlist::netlist;
 
     const INV: &str = "\

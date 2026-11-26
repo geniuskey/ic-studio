@@ -71,6 +71,50 @@ fn shot(h: &mut Harness<'_, IcStudio>, name: &str) {
     }
 }
 
+/// A narrow window: the status bar's right side (ngspice, PDK, console) stays readable and the
+/// layout readouts are clipped instead of running into it.
+#[test]
+fn narrow_window_status_bar() {
+    let args = LaunchArgs {
+        project: None,
+        demo: true,
+        workspace: Some("layout".into()),
+        cell: Some("cmos_inverter".into()),
+        run: false,
+    };
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(900.0, 620.0))
+        .with_pixels_per_point(1.0)
+        .wgpu()
+        .build_eframe(|cc| IcStudio::new(cc, args));
+    h.run_steps(8);
+    settle(&mut h, "narrow");
+    use egui_kittest::kittest::Queryable;
+    let console = h.get_by_label_contains("Console");
+    assert!(console.rect().max.x <= 900.0 && console.rect().min.x > 450.0, "console toggle at {:?}", console.rect());
+    // The Explorer folds away in a narrow window and ⌘B brings it back.
+    assert!(h.query_by_label("EXPLORER").is_none(), "explorer hidden");
+    shot(&mut h, "narrow_layout");
+    h.state_mut().command(Command::ToggleExplorer);
+    h.run_steps(3);
+    assert!(h.query_by_label("EXPLORER").is_some(), "explorer shown");
+}
+
+/// Simulating with layout parasitics: the extraction runs with the simulation in the
+/// background, and its summary still reaches the console and the netlist shown.
+#[test]
+fn simulation_with_parasitics_in_the_background() {
+    let mut h = app(demo_args("cmos_inverter", "simulation", false));
+    let r = CellRef::new("work", "cmos_inverter");
+    h.state_mut().project_mut().unwrap().cell_mut(&r).unwrap().sim.parasitics = true;
+    h.state_mut().command(Command::RunSimulation);
+    h.run_steps(2);
+    settle(&mut h, "parasitics");
+    assert!(h.state().console_lines().any(|l| l.contains("post-layout:")), "the extraction summary is logged");
+    let deck = &h.state().sim_state(&r).unwrap().last_deck;
+    assert!(deck.contains("* --- layout parasitics ---"), "the deck simulated has the parasitics");
+}
+
 #[test]
 fn welcome_screen() {
     scenario("01_welcome", false, None, "home", false);

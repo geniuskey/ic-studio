@@ -203,6 +203,12 @@ pub fn on_fill(fill: Color32) -> Color32 {
     if (l + 0.05) / 0.06 > 1.05 / (l + 0.05) { DARK.bg_canvas } else { Color32::WHITE }
 }
 
+/// The title of an in-app window: egui uses the 20 pt heading style, which crowds the title
+/// bar of a tool window.
+pub fn window_title(text: &str) -> egui::RichText {
+    egui::RichText::new(text).size(14.0).strong()
+}
+
 /// Small uppercase section header used in side panels.
 pub fn section(ui: &mut egui::Ui, text: &str) {
     let p = palette(ui.ctx());

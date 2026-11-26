@@ -67,6 +67,20 @@ fn collect<'a>(
             globals.insert(n.to_string());
         }
     }
+    // A pin label on a ground or supply net inside the cell names a global net, which wins: the
+    // parent's connection to that pin goes nowhere. Say so unless the parent uses that net too.
+    if !path.is_empty() {
+        let mut pins: Vec<(&String, &String)> = port_nets.iter().collect();
+        pins.sort();
+        for (pin, parent) in pins {
+            let on_global = conn.renamed_labels.iter().any(|(l, net)| l == pin && globals.contains(net));
+            if on_global && !globals.contains(parent) && !parent.eq_ignore_ascii_case("gnd") {
+                warnings.push(format!(
+                    "{path}: pin '{pin}' is on a ground or supply net inside the cell, so its connection to '{parent}' is ignored"
+                ));
+            }
+        }
+    }
     let map = |net: &str| -> String {
         if path.is_empty() || globals.contains(net) || net.eq_ignore_ascii_case("gnd") {
             return net.to_string();

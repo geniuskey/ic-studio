@@ -51,7 +51,7 @@ pub fn tool_window<R>(
         let area = work_area(ctx).unwrap_or_else(|| ctx.content_rect());
         let gap = 8.0;
         let room = (area.size() - egui::vec2(2.0 * gap, 2.0 * gap)).max(egui::vec2(360.0, 300.0));
-        let resp = egui::Window::new(t(title))
+        let resp = egui::Window::new(crate::theme::window_title(t(title)))
             .id(egui::Id::unique(("tool_window", id)))
             .open(&mut shown)
             .default_size(egui::vec2(size[0], size[1]).min(room))

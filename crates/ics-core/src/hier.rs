@@ -20,6 +20,27 @@ pub trait LayoutSource {
     }
 }
 
+/// The cells `top` places, at any depth, that `src` does not have (deleted or never
+/// imported): flattening skips them, so their geometry is missing from DRC and export.
+pub fn missing_cells(top: &Layout, src: &dyn LayoutSource) -> Vec<CellRef> {
+    let mut seen: HashSet<CellRef> = HashSet::new();
+    let mut missing: Vec<CellRef> = vec![];
+    let mut stack: Vec<&Layout> = vec![top];
+    while let Some(l) = stack.pop() {
+        for i in &l.instances {
+            if !seen.insert(i.cell.clone()) {
+                continue;
+            }
+            match src.layout(&i.cell) {
+                Some(child) => stack.push(child),
+                None => missing.push(i.cell.clone()),
+            }
+        }
+    }
+    missing.sort_by_key(|r| r.to_string());
+    missing
+}
+
 /// A source with no cells: instances stay unresolved.
 pub struct NoCells;
 

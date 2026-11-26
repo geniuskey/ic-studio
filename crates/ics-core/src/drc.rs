@@ -519,6 +519,8 @@ pub struct DrcReport {
     pub millis: f64,
     /// Rules with more than [`MAX_VIOLATIONS_PER_RULE`] violations and their full count.
     pub capped: Vec<(String, usize)>,
+    /// Placed cells that could not be found: their geometry was not checked.
+    pub missing_cells: Vec<crate::project::CellRef>,
 }
 
 fn layer_name(names: &[String], l: usize) -> String {
@@ -909,7 +911,9 @@ pub fn run_tech_deck(top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> Resul
 }
 
 pub fn run(deck: &Deck, top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> DrcReport {
-    run_shapes(deck, flatten(top, src, MAX_DEPTH), tech, None)
+    let mut rep = run_shapes(deck, flatten(top, src, MAX_DEPTH), tech, None);
+    rep.missing_cells = crate::hier::missing_cells(top, src);
+    rep
 }
 
 /// Live DRC of the area `window`: only the geometry within [`Deck::reach`] of it is read, the
@@ -926,7 +930,9 @@ pub fn run_window(deck: &Deck, top: &Layout, src: &dyn LayoutSource, tech: &Tech
 
 /// [`run`] computed hierarchically ([`HierDrc`]); the report is the same.
 pub fn run_hier(deck: &Deck, top: &Layout, src: &dyn LayoutSource, tech: &Tech) -> DrcReport {
-    HierDrc::new(deck, tech).run(top, src, tech)
+    let mut rep = HierDrc::new(deck, tech).run(top, src, tech);
+    rep.missing_cells = crate::hier::missing_cells(top, src);
+    rep
 }
 
 /// How far a rule's verdict at a point depends on the geometry around it.

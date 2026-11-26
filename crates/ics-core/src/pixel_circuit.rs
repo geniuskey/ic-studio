@@ -852,7 +852,8 @@ pub fn schematic(x: &Extraction, pc: &PixelCircuit, bench: Option<&Testbench>) -
         if let Some(col) = noise_out {
             sim.set_enabled("tran", false);
             sim.set_enabled("noise", true);
-            if let Some(Analysis::Noise { output, source, points_per_decade, fstart, fstop }) = sim.get_mut("noise") {
+            if let Some(Analysis::Noise { output, source, points_per_decade, fstart, fstop, sweep }) = sim.get_mut("noise") {
+                *sweep = crate::sim_setup::AcSweep::Dec;
                 *output = col;
                 *source = "VFDB".into();
                 *points_per_decade = 20;

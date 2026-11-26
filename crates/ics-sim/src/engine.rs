@@ -211,6 +211,8 @@ pub struct Engine {
     lines: Vec<TransmissionLine>,
     vt: f64,
     pub log: Vec<String>,
+    /// Checked on every Newton iteration: a long DC sweep or transient stops when it is set.
+    pub cancel: crate::Cancel,
     /// Set for the first Newton iteration of a cold operating point: junctions are linearised
     /// at their critical voltage instead of at zero (SPICE's MODEINITJCT), so that circuits with
     /// a zero-current solution (a bandgap) start towards the working one.
@@ -846,6 +848,7 @@ impl Engine {
             lines,
             vt,
             log: vec![],
+            cancel: crate::Cancel::default(),
             init_jct: std::cell::Cell::new(false),
             jct: Default::default(),
             limited: std::cell::Cell::new(false),
@@ -1344,6 +1347,7 @@ impl Engine {
 
     fn newton(&self, x: &mut [f64], mode: Mode, gmin: f64, max_iter: usize) -> Result<usize, SimError> {
         for it in 0..max_iter {
+            self.cancel.check()?;
             self.limited.set(false);
             let (mut m, mut rhs) = self.assemble(x, mode, gmin);
             self.init_jct.set(false);
@@ -1600,18 +1604,28 @@ impl Engine {
         let step = if stop >= start { step.abs() } else { -step.abs() };
         let mut ds =
             self.new_dataset("dc", &format!("DC sweep of {source}"), Some((&source.to_ascii_lowercase(), VecKind::Sweep)));
-        let mut x: Option<Vec<f64>> = None;
-        for k in 0..n {
-            let val = start + step * k as f64;
-            match &mut self.c.elements[si] {
-                Element::V { src, .. } | Element::I { src, .. } => src.dc = val,
+        let set = |c: &mut Circuit, val: f64| -> f64 {
+            match &mut c.elements[si] {
+                Element::V { src, .. } | Element::I { src, .. } => std::mem::replace(&mut src.dc, val),
                 _ => unreachable!(),
             }
-            let sol = self.op(x.as_deref())?;
-            self.push_point(&mut ds, Some(val), &sol);
-            x = Some(sol);
-        }
-        Ok(ds)
+        };
+        let orig = set(&mut self.c, start);
+        let mut sweep = || -> Result<(), SimError> {
+            let mut x: Option<Vec<f64>> = None;
+            for k in 0..n {
+                let val = start + step * k as f64;
+                set(&mut self.c, val);
+                let sol = self.op(x.as_deref())?;
+                self.push_point(&mut ds, Some(val), &sol);
+                x = Some(sol);
+            }
+            Ok(())
+        };
+        let r = sweep();
+        // The analyses after the sweep (OP, AC, transient) see the source's own value again.
+        set(&mut self.c, orig);
+        r.map(|()| ds)
     }
 
     /// Small-signal system at angular frequency `w` around the operating point `x0`. The right
@@ -1893,7 +1907,16 @@ impl Engine {
                     let thermal = 8.0 / 3.0 * kt * ev.gm.abs();
                     let cox = if model.cox() > 0.0 { model.cox() } else { 3.453e-4 };
                     let leff = model.leff(*l);
-                    let flicker = model.kf * m * (ev.id.abs() / m).powf(model.af) / (f * cox * leff * leff);
+                    // As ngspice's `nlev` (its default is 2).
+                    let flicker = if model.kf == 0.0 {
+                        0.0
+                    } else {
+                        match model.nlev {
+                            0 => model.kf * m * (ev.id.abs() / m).powf(model.af) / (f * cox * leff * leff),
+                            1 => model.kf * m * (ev.id.abs() / m).powf(model.af) / (f * *w * leff * cox),
+                            _ => model.kf * ev.gm * ev.gm / m / (f.powf(model.af) * *w * leff * cox),
+                        }
+                    };
                     out.push((*d, *s, thermal + flicker));
                 }
                 _ => {}
@@ -1905,6 +1928,19 @@ impl Engine {
     /// Output noise at node `output` and the equivalent input noise of source `input`, as
     /// spectral densities in V/sqrt(Hz) (`onoise_spectrum`, `inoise_spectrum` as in ngspice).
     pub fn run_noise(&mut self, output: &str, input: &str, ppd: u32, fstart: f64, fstop: f64) -> Result<Dataset, SimError> {
+        self.run_noise_sweep(output, input, ics_core::sim_setup::AcSweep::Dec, ppd, fstart, fstop)
+    }
+
+    /// Noise over a `dec` / `oct` sweep of `n` points per decade / octave, or `n` points `lin`.
+    pub fn run_noise_sweep(
+        &mut self,
+        output: &str,
+        input: &str,
+        sweep: ics_core::sim_setup::AcSweep,
+        n: u32,
+        fstart: f64,
+        fstop: f64,
+    ) -> Result<Dataset, SimError> {
         let out_node = self
             .c
             .nodes
@@ -1933,7 +1969,13 @@ impl Engine {
         };
         let mut total = 0.0;
         let mut prev: Option<(f64, f64)> = None;
-        for f in Self::log_frequencies(ppd, fstart, fstop) {
+        // f = 0 has no spectral density (flicker noise is infinite there): a lin sweep from 0 skips it.
+        let freqs = if sweep == ics_core::sim_setup::AcSweep::Dec {
+            Self::log_frequencies(n, fstart, fstop)
+        } else {
+            sweep.frequencies(n, fstart, fstop)
+        };
+        for f in freqs.into_iter().filter(|f| *f > 0.0) {
             let w = 2.0 * std::f64::consts::PI * f;
             let (m, mut gain) = self.ac_system(&x0, &caps_at_op, w, Some(src));
             // Adjoint: z = Y^-T e_out gives the output voltage per unit current into each node.
@@ -1965,6 +2007,14 @@ impl Engine {
 
     /// Transient analysis whose time step stays below `tmax` when given.
     pub fn run_tran_limited(&mut self, tstep: f64, tstop: f64, tmax: Option<f64>) -> Result<Dataset, SimError> {
+        // Waveform values the deck left out default to the analysis, as in SPICE.
+        for e in &mut self.c.elements {
+            if let Element::V { src, .. } | Element::I { src, .. } = e
+                && let Some(w) = &mut src.tran
+            {
+                w.resolve_defaults(tstep, tstop);
+            }
+        }
         let line_limit = self.lines.iter().map(|line| 0.5 * line.delay).fold(f64::INFINITY, f64::min);
         let hmax = tstep.min(tstop / 100.0).min(tmax.filter(|t| *t > 0.0).unwrap_or(f64::INFINITY)).min(line_limit);
         if tstop / hmax > 2.0e6 {
@@ -2338,8 +2388,8 @@ impl Engine {
                 }
                 Ok(ds)
             }
-            Analysis::Noise { output, source, points_per_decade, fstart, fstop } => {
-                self.run_noise(output, source, *points_per_decade, num(fstart)?, num(fstop)?)
+            Analysis::Noise { output, source, points_per_decade, fstart, fstop, sweep } => {
+                self.run_noise_sweep(output, source, *sweep, *points_per_decade, num(fstart)?, num(fstop)?)
             }
         }
     }
@@ -2746,6 +2796,23 @@ Rl out 0 50
         let s = &ds.get("onoise_spectrum").unwrap().re;
         let ratio = (s[0] / s[1]).powi(2);
         assert!((ratio - 10.0).abs() < 0.2, "PSD ratio over a decade {ratio}");
+    }
+
+    #[test]
+    fn mos_flicker_noise_follows_nlev() {
+        // As ngspice: the default nlev=2 is kf gm² / (f^af W L cox), so af is the frequency
+        // exponent; nlev=0 (SPICE 2/3) puts af on the drain current and keeps 1/f.
+        let psd_ratio = |nlev: &str| {
+            let deck = format!(
+                "* t\nVDD vdd 0 1.8\nVIN g 0 DC 1 AC 1\nRD vdd d 10k\nM1 d g 0 0 nm w=10u l=1u\n\
+                 .model nm nmos (vto=0.5 kp=100u tox=10n kf=1e-24 af=2 {nlev})\n.end"
+            );
+            let ds = engine(&deck).run_noise("d", "vin", 1, 1.0, 10.0).unwrap();
+            let s = &ds.get("onoise_spectrum").unwrap().re;
+            (s[0] / s[1]).powi(2)
+        };
+        assert!((psd_ratio("") - 100.0).abs() < 2.0, "{}", psd_ratio(""));
+        assert!((psd_ratio("nlev=0") - 10.0).abs() < 0.2, "{}", psd_ratio("nlev=0"));
     }
 
     #[test]

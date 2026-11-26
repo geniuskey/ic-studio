@@ -52,6 +52,8 @@ pub struct Connectivity {
     pub unconnected_pins: Vec<Pt>,
     /// Warnings found while extracting (e.g. shorted labels).
     pub warnings: Vec<String>,
+    /// Labels whose net took another name (ground, a supply or another label): (label, net).
+    pub renamed_labels: Vec<(String, String)>,
 }
 
 impl Connectivity {
@@ -137,9 +139,22 @@ pub fn extract(sch: &Schematic) -> Connectivity {
             assign(root, 2, name.to_string(), &mut warnings);
         }
     }
+    let mut renamed_labels = vec![];
+    for l in &sch.labels {
+        let name = l.name.trim();
+        if let Some((_, net)) = root_name.get(&dsu.find(point_node[&l.pos]))
+            && !name.is_empty()
+            && net != name
+        {
+            renamed_labels.push((name.to_string(), net.clone()));
+        }
+    }
 
     let mut auto = 0;
     let mut auto_names: HashMap<usize, String> = HashMap::new();
+    // An automatic name must not be one a label or supply already uses (SPICE ignores case):
+    // `net1` from a label and an unnamed net called `net1` would be shorted in the netlist.
+    let taken: std::collections::HashSet<String> = root_name.values().map(|(_, n)| n.to_ascii_lowercase()).collect();
     let mut name_of = |root: usize| -> String {
         if let Some((_, n)) = root_name.get(&root) {
             return n.clone();
@@ -147,13 +162,18 @@ pub fn extract(sch: &Schematic) -> Connectivity {
         auto_names
             .entry(root)
             .or_insert_with(|| {
-                auto += 1;
-                format!("net{auto}")
+                loop {
+                    auto += 1;
+                    let n = format!("net{auto}");
+                    if !taken.contains(&n) {
+                        break n;
+                    }
+                }
             })
             .clone()
     };
 
-    let mut conn = Connectivity { warnings, ..Default::default() };
+    let mut conn = Connectivity { warnings, renamed_labels, ..Default::default() };
     for &(id, pin, p, kind) in &pin_points {
         let root = dsu.find(point_node[&p]);
         conn.pin_nets.insert((id, pin), name_of(root));
@@ -216,6 +236,21 @@ mod tests {
         assert_eq!(conn.net_of(r, "n"), Some("out"));
         assert_eq!(conn.net_of(c, "p"), Some("out"));
         assert_eq!(conn.net_of(c, "n"), Some("0"));
+    }
+
+    #[test]
+    fn automatic_net_names_skip_the_names_labels_use() {
+        // R1 sits on a net labelled `net1`, R2 on an unnamed net: they must not share a name.
+        let mut s = Schematic::default();
+        let r1 = s.add_instance(DeviceKind::Resistor, Pt::new(0, 0), Orient::default());
+        let r2 = s.add_instance(DeviceKind::Resistor, Pt::new(10, 0), Orient::default());
+        s.add_label("net1", Pt::new(0, 2));
+        let conn = extract(&s);
+        assert_eq!(conn.net_of(r1, "n"), Some("net1"));
+        let nets = [r1, r2].map(|i| ["p", "n"].map(|p| conn.net_of(i, p).unwrap().to_string()));
+        let all: Vec<&String> = nets.iter().flatten().collect();
+        let unique: std::collections::HashSet<&String> = all.iter().copied().collect();
+        assert_eq!(unique.len(), 4, "{nets:?}");
     }
 
     #[test]

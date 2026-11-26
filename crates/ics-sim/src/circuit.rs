@@ -38,6 +38,22 @@ pub enum Wave {
 }
 
 impl Wave {
+    /// Fills in the values a deck left out (parsed as NaN) the way SPICE does: PULSE rise and
+    /// fall times default to the transient's `tstep`, the SIN frequency to `1 / tstop`.
+    pub fn resolve_defaults(&mut self, tstep: f64, tstop: f64) {
+        match self {
+            Wave::Pulse { tr, tf, .. } => {
+                for x in [tr, tf] {
+                    if x.is_nan() {
+                        *x = tstep;
+                    }
+                }
+            }
+            Wave::Sin { freq, .. } if freq.is_nan() => *freq = if tstop > 0.0 { 1.0 / tstop } else { 0.0 },
+            _ => {}
+        }
+    }
+
     pub fn value(&self, t: f64) -> f64 {
         match self {
             Wave::Pulse { v1, v2, td, tr, tf, pw, per } => {
@@ -211,6 +227,9 @@ pub struct MosModel {
     /// Flicker noise coefficient and exponent.
     pub kf: f64,
     pub af: f64,
+    /// Flicker noise model (`nlev`, as ngspice; default 2): 0 `kf id^af / (f cox Leff²)`
+    /// (SPICE 2/3), 1 `kf id^af / (f W Leff cox)`, 2 and 3 `kf gm² / (f^af W Leff cox)`.
+    pub nlev: u8,
     /// Temperature the parameters were measured at (°C).
     pub tnom: f64,
     /// Intrinsic gate capacitance of level 1: 0 the Meyer capacitances (as SPICE), 1 charge
@@ -734,7 +753,7 @@ impl Circuit {
 /// MOS model parameters the built-in engine evaluates.
 const MOS_PARAMS: &[&str] = &[
     "level", "vto", "kp", "u0", "lambda", "gamma", "phi", "tox", "ld", "cgso", "cgdo", "cgbo", "cj", "cjsw", "mj", "mjsw", "pb",
-    "fc", "is", "js", "rd", "rs", "rsh", "kf", "af", "tnom", "lmin", "lmax", "wmin", "wmax", "capmod",
+    "fc", "is", "js", "rd", "rs", "rsh", "kf", "af", "nlev", "tnom", "lmin", "lmax", "wmin", "wmax", "capmod",
 ];
 /// Diode model parameters the built-in engine evaluates.
 const DIODE_PARAMS: &[&str] =
@@ -968,8 +987,9 @@ fn parse_source(rest: &str) -> Result<Source, String> {
                     v1: g(0, 0.0),
                     v2: g(1, 0.0),
                     td: g(2, 0.0),
-                    tr: g(3, 0.0),
-                    tf: g(4, 0.0),
+                    // Left out: tstep, filled in by `resolve_defaults`.
+                    tr: g(3, f64::NAN),
+                    tf: g(4, f64::NAN),
                     pw: g(5, f64::INFINITY),
                     per: g(6, 0.0),
                 });
@@ -980,7 +1000,8 @@ fn parse_source(rest: &str) -> Result<Source, String> {
                 src.tran = Some(Wave::Sin {
                     vo: g(0, 0.0),
                     va: g(1, 0.0),
-                    freq: g(2, 0.0),
+                    // Left out: 1 / tstop, filled in by `resolve_defaults`.
+                    freq: g(2, f64::NAN),
                     td: g(3, 0.0),
                     theta: g(4, 0.0),
                     phase: g(5, 0.0),
@@ -1009,6 +1030,9 @@ fn parse_source(rest: &str) -> Result<Source, String> {
                     return Err("PWL needs time / value pairs".into());
                 }
                 let pts: Vec<(f64, f64)> = v.as_chunks::<2>().0.iter().map(|c| (c[0] + td, c[1])).collect();
+                if pts.windows(2).any(|w| w[1].0 < w[0].0) {
+                    return Err("PWL: the times must not decrease".into());
+                }
                 src.tran = Some(match r {
                     Some(r) => {
                         if !pts.iter().any(|p| (p.0 - td - r).abs() <= 1e-15 * r.abs().max(1e-12)) && r != 0.0 {
@@ -1032,12 +1056,27 @@ fn parse_source(rest: &str) -> Result<Source, String> {
 }
 
 /// Join continuation lines and drop comments. Returns (line number, text).
+/// `line` without its inline comment: from `;`, or from a `$` after whitespace (HSPICE).
+pub(crate) fn strip_comment(line: &str) -> &str {
+    let mut line = line.split(';').next().unwrap_or("");
+    if let Some(i) =
+        line.char_indices().find(|&(i, c)| c == '$' && i > 0 && line[..i].ends_with(char::is_whitespace)).map(|(i, _)| i)
+    {
+        line = &line[..i];
+    }
+    line
+}
+
 fn logical_lines(deck: &str) -> Vec<(usize, String)> {
     let mut out: Vec<(usize, String)> = vec![];
     for (n, raw) in deck.lines().enumerate() {
-        let line = raw.split(';').next().unwrap_or("").trim_end();
+        // Line 1 is the title (SPICE): "Inverter test bench" is not a current source.
+        if n == 0 {
+            continue;
+        }
+        let line = strip_comment(raw).trim_end();
         let t = line.trim_start();
-        if t.is_empty() || t.starts_with('*') {
+        if t.is_empty() || t.starts_with('*') || t.starts_with('$') {
             continue;
         }
         if let Some(cont) = t.strip_prefix('+') {
@@ -1082,6 +1121,7 @@ fn dot_analysis(l: &str) -> Option<Analysis> {
             points_per_decade: t.get(4).and_then(|s| s.parse().ok()).unwrap_or(10),
             fstart: num(5),
             fstop: num(6),
+            sweep: t.get(3).and_then(|s| ics_core::sim_setup::AcSweep::parse(s)).unwrap_or_default(),
         },
         _ => return None,
     })
@@ -1206,6 +1246,7 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
                 rsh: 0.0,
                 kf: g("kf", 0.0),
                 af: g("af", 1.0),
+                nlev: 0,
                 tnom: g("tnom", 27.0),
                 capmod: 0,
                 bsim4: Some(Bsim4Dev { card: Arc::new(card), nf: 1.0, shift: bsim4::Shift::default(), inst: None }),
@@ -1376,6 +1417,7 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
                     rsh: g("rsh", 0.0),
                     kf: g("kf", 0.0),
                     af: g("af", 1.0),
+                    nlev: g("nlev", 2.0).round().clamp(0.0, 3.0) as u8,
                     tnom: g("tnom", 27.0),
                     capmod: (g("capmod", 0.0) >= 0.5) as u8,
                     bsim4: None,
@@ -1588,8 +1630,9 @@ pub fn parse_deck(deck: &str) -> Result<Circuit, SimError> {
                     s,
                     b,
                     model,
-                    w: p.get("w").copied().unwrap_or(1e-6),
-                    l: p.get("l").copied().unwrap_or(1e-6),
+                    // SPICE's DEFW / DEFL.
+                    w: p.get("w").copied().unwrap_or(100e-6),
+                    l: p.get("l").copied().unwrap_or(100e-6),
                     m: p.get("m").copied().unwrap_or(1.0),
                     junctions: Junctions {
                         ad: p.get("ad").copied().unwrap_or(0.0),

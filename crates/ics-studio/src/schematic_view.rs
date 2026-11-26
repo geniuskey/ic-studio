@@ -1098,7 +1098,12 @@ impl SchematicEditor {
             painter.text(
                 rect.center(),
                 Align2::CENTER_CENTER,
-                t("Empty schematic — pick a device from the library (or press R, C, V, N, P…) and click to place.\nW draws wires, T places net labels, right-click for a menu, scroll to zoom, right-drag to pan."),
+                // The wheel zooms or pans depending on the mouse profile (Settings).
+                if crate::canvas::Profile::get(ui.ctx()) == crate::canvas::Profile::Virtuoso {
+                    t("Empty schematic — pick a device from the library (or press R, C, V, N, P…) and click to place.\nW draws wires, T places net labels, right-click for a menu, Ctrl+wheel zooms, the wheel and right-drag pan.")
+                } else {
+                    t("Empty schematic — pick a device from the library (or press R, C, V, N, P…) and click to place.\nW draws wires, T places net labels, right-click for a menu, scroll to zoom, right-drag to pan.")
+                },
                 FontId::proportional(14.0),
                 pal.text_weak,
             );
@@ -1185,6 +1190,13 @@ impl SchematicEditor {
             if next != *sch {
                 *sch = next;
             }
+        }
+        // egui ends a drag when Escape is pressed: put the moved objects back.
+        if resp.drag_stopped()
+            && ui.input(|i| i.key_pressed(egui::Key::Escape))
+            && let Some(Drag::Move { snapshot, .. }) = self.drag.take()
+        {
+            *sch = snapshot;
         }
         if resp.drag_stopped() {
             match self.drag.take() {

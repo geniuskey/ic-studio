@@ -112,6 +112,11 @@ pub const KO: &[(&str, &str)] = &[
         "Empty layout — choose a layer on the left, then press R and drag to draw a rectangle.\nP draws paths, L places labels, I places cells, K measures. Ctrl+wheel zooms, the wheel and middle-drag pan, right-drag zooms into a box.",
         "빈 레이아웃 — 왼쪽에서 레이어를 고른 뒤 R을 누르고 드래그하여 사각형을 그리세요.\nP는 경로, L은 레이블, I는 셀 배치, K는 측정입니다. Ctrl+휠로 확대/축소, 휠과 가운데 드래그로 이동, 오른쪽 드래그로 상자 확대합니다.",
     ),
+    (
+        "Empty layout — choose a layer on the left, then press R and drag to draw a rectangle.\nP draws paths, L places labels, I places cells, K measures. The wheel zooms, right- or middle-drag pans.",
+        "빈 레이아웃 — 왼쪽에서 레이어를 고른 뒤 R을 누르고 드래그하여 사각형을 그리세요.\nP는 경로, L은 레이블, I는 셀 배치, K는 측정입니다. 휠로 확대/축소, 오른쪽 또는 가운데 드래그로 이동합니다.",
+    ),
+    ("Placed cells not found, not checked: {}", "찾을 수 없는 배치 셀(검사 안 함): {}"),
     ("Path", "경로"),
     ("Width (nm)", "폭 (nm)"),
     ("0 = layer minimum width · Enter / double-click to finish", "0 = 레이어 최소 폭 · Enter / 더블 클릭으로 완료"),

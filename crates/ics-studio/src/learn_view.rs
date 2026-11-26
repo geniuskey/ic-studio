@@ -139,7 +139,7 @@ impl LearnView {
         }
         let mut open = true;
         let screen = ctx.content_rect();
-        egui::Window::new(t("Learn IC Design"))
+        egui::Window::new(crate::theme::window_title(t("Learn IC Design")))
             .id(egui::Id::unique("learn_window"))
             .open(&mut open)
             .collapsible(true)

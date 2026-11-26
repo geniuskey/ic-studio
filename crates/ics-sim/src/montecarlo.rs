@@ -9,7 +9,7 @@ use ics_core::Analysis;
 use ics_core::process_data::ProcessVariation;
 
 use crate::calc::{self, CalcValue};
-use crate::circuit::{Element, parse_deck};
+use crate::circuit::Element;
 use crate::engine::Engine;
 use crate::results::SimResults;
 use crate::{SimError, external_models};
@@ -128,7 +128,8 @@ pub fn monte_carlo(
             "Monte Carlo varies the built-in engine's models; the deck loads external models ('{l}'), use the PDK's own statistical corners with ngspice"
         )));
     }
-    let base = parse_deck(deck)?;
+    // Through the front-end, like `simulate`: `.param`, `{expr}` values and subcircuits.
+    let base = crate::parse_for_builtin(deck, None)?;
     let process = match &spec.process {
         Some(v) => {
             v.validate().map_err(SimError::Engine)?;
@@ -166,7 +167,7 @@ pub fn monte_carlo(
                     let (m, p) = v.param(i);
                     d = ics_core::silicon::set_model_param(&d, m, p, *x).map_err(SimError::Engine)?;
                 }
-                (parse_deck(&d)?, [0.0; 2], [0.0; 2])
+                (crate::parse_for_builtin(&d, None)?, [0.0; 2], [0.0; 2])
             }
             None => (
                 base.clone(),

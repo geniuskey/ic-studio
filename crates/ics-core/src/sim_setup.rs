@@ -38,9 +38,12 @@ pub enum Analysis {
     Noise {
         output: String,
         source: String,
+        /// Points per decade or octave, or the number of points of a `lin` sweep.
         points_per_decade: u32,
         fstart: String,
         fstop: String,
+        #[serde(default, skip_serializing_if = "AcSweep::is_dec")]
+        sweep: AcSweep,
     },
 }
 
@@ -144,8 +147,8 @@ impl Analysis {
                 }
                 s
             }
-            Analysis::Noise { output, source, points_per_decade, fstart, fstop } => {
-                format!("noise v({output}) {source} dec {points_per_decade} {fstart} {fstop}")
+            Analysis::Noise { output, source, points_per_decade, fstart, fstop, sweep } => {
+                format!("noise v({output}) {source} {} {points_per_decade} {fstart} {fstop}", sweep.keyword())
             }
         }
     }
@@ -186,7 +189,7 @@ impl Analysis {
                 }
                 Ok(())
             }
-            Analysis::Noise { output, source, points_per_decade, fstart, fstop } => {
+            Analysis::Noise { output, source, points_per_decade, fstart, fstop, .. } => {
                 if output.trim().is_empty() || source.trim().is_empty() {
                     return Err("Noise: give the output node and the input source".into());
                 }
@@ -207,6 +210,9 @@ impl Analysis {
                 }
                 if parse_spice(tstep).unwrap_or(0.0) <= 0.0 || parse_spice(tstop).unwrap_or(0.0) <= 0.0 {
                     return Err("Transient: tstep and tstop must be > 0".into());
+                }
+                if parse_spice(tstart).is_some_and(|t0| t0 >= parse_spice(tstop).unwrap_or(0.0)) {
+                    return Err("Transient: tstart must be less than tstop".into());
                 }
                 Ok(())
             }
@@ -361,6 +367,7 @@ impl Default for SimSetup {
                         points_per_decade: 10,
                         fstart: "1".into(),
                         fstop: "1g".into(),
+                        sweep: AcSweep::Dec,
                     },
                 },
             ],

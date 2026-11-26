@@ -2326,7 +2326,11 @@ impl LayoutEditor {
             let (p, q) = (self.view.to_world(rect, r.left_top()), self.view.to_world(rect, r.right_bottom()));
             self.zoom_box_to(rect, IRect::new(p.0 as i64, p.1 as i64, q.0 as i64, q.1 as i64));
         }
-        let hover = resp.hover_pos();
+        // A drag released outside the canvas still ends where the pointer left it (clamped), so
+        // a box select or a drawn rectangle is not lost.
+        let hover = resp.hover_pos().or_else(|| {
+            resp.drag_stopped().then(|| ui.input(|i| i.pointer.latest_pos())).flatten().map(|p| p.clamp(rect.min, rect.max))
+        });
         let world = hover.map(|p| self.view.to_world(rect, p));
         self.snapped = None;
         self.cursor = world.map(|w| self.pick_point(l, cx, w));
@@ -2619,6 +2623,14 @@ impl LayoutEditor {
                 }
                 _ => {}
             }
+        }
+        // egui ends a drag when Escape is pressed: that cancels it, it does not apply it.
+        if resp.drag_stopped() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.drag = None;
+            self.xfer = None;
+            self.xfer_t = Trans::IDENTITY;
+            self.stretch = None;
+            self.pstretch = None;
         }
         if resp.drag_stopped() {
             match self.drag.take() {
@@ -3045,7 +3057,11 @@ impl LayoutEditor {
             painter.text(
                 rect.center(),
                 Align2::CENTER_CENTER,
-                t("Empty layout — choose a layer on the left, then press R and drag to draw a rectangle.\nP draws paths, L places labels, I places cells, K measures. Ctrl+wheel zooms, the wheel and middle-drag pan, right-drag zooms into a box."),
+                if crate::canvas::Profile::get(ui.ctx()) == crate::canvas::Profile::Virtuoso {
+                    t("Empty layout — choose a layer on the left, then press R and drag to draw a rectangle.\nP draws paths, L places labels, I places cells, K measures. Ctrl+wheel zooms, the wheel and middle-drag pan, right-drag zooms into a box.")
+                } else {
+                    t("Empty layout — choose a layer on the left, then press R and drag to draw a rectangle.\nP draws paths, L places labels, I places cells, K measures. The wheel zooms, right- or middle-drag pans.")
+                },
                 FontId::proportional(14.0),
                 pal.text_weak,
             );

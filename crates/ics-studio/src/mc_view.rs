@@ -15,6 +15,9 @@ use ics_sim::montecarlo::{self, McControl, McResult, McSpec, Measure};
 
 const ANALYSES: [&str; 5] = ["op", "dc", "ac", "tran", "noise"];
 
+/// A finished run, and why the layout parasitics could not be added.
+type McDone = (Result<McResult, String>, Option<String>);
+
 #[derive(Default)]
 pub struct MonteCarlo {
     pub open: bool,
@@ -30,7 +33,8 @@ pub struct MonteCarlo {
     pub process: Option<ics_core::process_data::ProcessVariation>,
     /// The technology's measured mismatch; replaces the generic Avt / Abeta.
     pub mismatch: Option<ics_core::mismatch::MismatchModel>,
-    rx: Option<Receiver<Result<McResult, String>>>,
+    /// The result, and why the layout parasitics could not be added.
+    rx: Option<Receiver<McDone>>,
     ctl: Option<Arc<McControl>>,
 }
 
@@ -66,7 +70,15 @@ impl MonteCarlo {
     }
 
     /// Run the setup's measures on `deck` in a background thread.
-    pub fn start(&mut self, ctx: &egui::Context, deck: String, analyses: Vec<Analysis>) -> Result<(), String> {
+    /// Run the Monte Carlo of `deck`. With `pex` (a copy of the project and the cell) the layout
+    /// parasitics are extracted and added first, in the background.
+    pub fn start(
+        &mut self,
+        ctx: &egui::Context,
+        deck: String,
+        analyses: Vec<Analysis>,
+        pex: Option<(ics_core::Project, ics_core::CellRef)>,
+    ) -> Result<(), String> {
         if self.is_running() {
             return Err("a Monte Carlo run is already in progress".into());
         }
@@ -88,8 +100,16 @@ impl MonteCarlo {
         let ctl = Arc::new(McControl::default());
         self.ctl = Some(ctl.clone());
         std::thread::spawn(move || {
+            let mut deck = deck;
+            let mut note = None;
+            if let Some((p, r)) = pex {
+                match ics_core::pex::post_layout(&p, &r) {
+                    Ok(pl) => deck = pl.apply(&deck),
+                    Err(e) => note = Some(format!("parasitics not included: {e}")),
+                }
+            }
             let r = montecarlo::monte_carlo(&deck, &analyses, &measures, &spec, Some(&ctl)).map_err(|e| e.to_string());
-            let _ = tx.send(r);
+            let _ = tx.send((r, note));
             ctx.request_repaint();
         });
         self.rx = Some(rx);
@@ -114,9 +134,15 @@ impl MonteCarlo {
 
     /// Pick up a finished run; returns (ok, console line).
     pub fn poll(&mut self) -> Option<(bool, String)> {
-        let r = self.rx.as_ref()?.try_recv().ok()?;
+        let (r, note) = match self.rx.as_ref()?.try_recv() {
+            Ok(r) => r,
+            Err(mpsc::TryRecvError::Empty) => return None,
+            // The worker panicked: report it rather than showing a run forever.
+            Err(mpsc::TryRecvError::Disconnected) => (Err("the simulator stopped with an internal error".to_string()), None),
+        };
         self.rx = None;
         self.ctl = None;
+        let note = note.map(|n| format!("; {n}")).unwrap_or_default();
         Some(match r {
             Ok(res) => {
                 let runs =
@@ -129,7 +155,7 @@ impl MonteCarlo {
                     .map(|(m, s)| format!("{} mean {} sigma {}", m.expr, format_eng(s.mean, ""), format_eng(s.sigma, "")))
                     .collect();
                 self.result = Some(res);
-                (failed == 0, format!("Monte Carlo: {runs} run(s), {failed} failed; {}", summary.join("; ")))
+                (failed == 0, format!("Monte Carlo: {runs} run(s), {failed} failed; {}{note}", summary.join("; ")))
             }
             Err(e) => {
                 self.error = Some(e.clone());

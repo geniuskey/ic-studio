@@ -6,6 +6,10 @@ pub const TEMPLATES: &[(&str, &str)] = &[
     ("error: {}", "오류: {}"),
     ("  ... {} more", "  ... 외 {}개"),
     ("{} violation(s); {} rules on {} shapes in {} ms", "위반 {}개; 규칙 {}개, 도형 {}개, {} ms"),
+    (
+        "warning: placed cell {} not found: its geometry was not checked",
+        "경고: 배치된 셀 {}을(를) 찾을 수 없어 그 도형은 검사하지 않았습니다",
+    ),
     ("{} {} differs by {} % (tolerance {} %)", "{} {}이(가) {} % 차이 납니다 (허용 오차 {} %)"),
     ("backend: {}  ({} ms)", "백엔드: {}  ({} ms)"),
     ("== {} ({} points)", "== {} (점 {}개)"),

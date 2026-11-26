@@ -285,7 +285,7 @@ impl LayoutEditor {
         let at = self.live.quick_at.unwrap_or(rect.center()) + Vec2::new(12.0, 12.0);
         let mut open = true;
         let mut picked = None;
-        let shown = egui::Window::new(egui::RichText::new(t("Quick Fix")).size(14.0).strong())
+        let shown = egui::Window::new(crate::theme::window_title(t("Quick Fix")))
             .id(egui::Id::unique("lay_form_quickfix"))
             .collapsible(false)
             .resizable(false)

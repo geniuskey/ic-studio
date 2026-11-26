@@ -48,6 +48,18 @@ pub const TEMPLATES: &[(&str, &str)] = &[
     ("cannot resolve deck directory: {}", "덱 폴더를 찾을 수 없습니다: {}"),
     // simulation
     ("AC: singular matrix at f={}", "AC: f={}에서 행렬이 특이(singular)합니다"),
+    ("Transient: tstart must be less than tstop", "과도 해석: tstart는 tstop보다 작아야 합니다"),
+    ("parasitics not included: {}", "기생 성분 미포함: {}"),
+    ("line 1 is the deck's title (as in SPICE), not imported: '{}'", "1행은 덱의 제목이라(SPICE 규칙) 가져오지 않았습니다: '{}'"),
+    (
+        ".noise: unknown sweep '{}' (dec, oct or lin: .noise v(out) <source> dec <points> <fstart> <fstop>)",
+        ".noise: 알 수 없는 스윕 '{}' (dec, oct, lin: .noise v(out) <소스> dec <점 수> <시작 주파수> <끝 주파수>)",
+    ),
+    (
+        "{}: pin '{}' is on a ground or supply net inside the cell, so its connection to '{}' is ignored",
+        "{}: 핀 '{}'이(가) 셀 안에서 접지 또는 전원 넷에 있어 '{}' 연결이 무시됩니다",
+    ),
+    ("PWL: the times must not decrease", "PWL: 시간은 줄어들면 안 됩니다"),
     ("DC sweep source '{}' not found", "DC 스윕 전원 '{}'을(를) 찾을 수 없습니다"),
     ("Noise at v({}) referred to {}", "v({})의 잡음 ({} 기준 환산)"),
     ("noise: input source '{}' not found", "잡음: 입력 전원 '{}'을(를) 찾을 수 없습니다"),
@@ -116,6 +128,10 @@ pub const TEMPLATES: &[(&str, &str)] = &[
     ("Duplicate instance name '{}'", "인스턴스 이름 '{}'이(가) 중복됩니다"),
     ("Duplicate instance name: {}", "중복된 인스턴스 이름: {}"),
     ("Instance name '{}' contains characters SPICE cannot take", "인스턴스 이름 '{}'에 SPICE가 받지 못하는 문자가 있습니다"),
+    (
+        "Net name '{}' contains characters SPICE cannot take (spaces, brackets, =, quotes)",
+        "넷 이름 '{}'에 SPICE가 받지 못하는 문자(공백, 괄호, =, 따옴표)가 있습니다",
+    ),
     ("Instances {} are placed on top of each other", "인스턴스 {}이(가) 서로 겹쳐 놓였습니다"),
     ("Label '{}' is overridden by net name '{}'", "레이블 '{}'이(가) 넷 이름 '{}'에 의해 덮어써집니다"),
     ("Net '{}' has no DC path to ground", "넷 '{}'에서 접지로 가는 DC 경로가 없습니다"),
@@ -273,6 +289,18 @@ pub const TEMPLATES: &[(&str, &str)] = &[
     ("contact fill: {} × {} µm is too small for one {} cut", "컨택 채우기: {} × {} µm는 {} 컷 하나보다 작습니다"),
     // PCell designer: lint findings
     ("'{}' is not a valid cell name (letters, digits, _ and -)", "'{}'은(는) 올바른 셀 이름이 아닙니다 (문자, 숫자, _, -)"),
+    (
+        "'{}' is not a valid {} name (use letters, digits, _ and -)",
+        "'{}'은(는) 올바른 {} 이름이 아닙니다 (문자, 숫자, _, - 사용)",
+    ),
+    (
+        "'{}' is a reserved device name on Windows; choose another {} name",
+        "'{}'은(는) Windows의 예약 장치 이름입니다. 다른 {} 이름을 고르세요",
+    ),
+    (
+        "'{}' and '{}' differ only in case, which Windows and macOS treat as the same folder: rename through another name",
+        "'{}'와(과) '{}'는 대소문자만 달라 Windows와 macOS에서 같은 폴더가 됩니다. 다른 이름을 거쳐 바꾸세요",
+    ),
     ("{} uses '{}', which is not a parameter", "{}에서 쓰는 '{}'은(는) 파라미터가 아닙니다"),
     (
         "'{}' is not a usable name (letters, digits, _; not a function)",

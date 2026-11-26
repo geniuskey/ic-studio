@@ -195,6 +195,7 @@ mod tests {
         "SelectableLabel::new(",
         "Label::new(",
         "Window::new(",
+        "window_title(",
         "CollapsingHeader::new(",
         "section(",
         "menu_item(",

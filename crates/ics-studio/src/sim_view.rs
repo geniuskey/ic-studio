@@ -43,11 +43,14 @@ const TRACE_COLORS_DARK: [Color32; 10] = [
     Color32::from_rgb(0x9a, 0xa7, 0xb8),
 ];
 
+/// A run in the background: its result, start time and stop flag.
+type Running = (Receiver<(Result<SimResults, String>, String)>, Instant, ics_sim::Cancel);
+
 #[derive(Default)]
 pub struct SimState {
     pub results: Option<SimResults>,
     pub error: Option<String>,
-    running: Option<(Receiver<Result<SimResults, String>>, Instant)>,
+    running: Option<Running>,
     pub tab: String,
     pub selected: BTreeMap<String, BTreeSet<String>>,
     pub last_deck: String,
@@ -73,7 +76,13 @@ pub struct SavedRun {
 pub const MAX_HISTORY: usize = 12;
 
 pub enum SimEvent {
-    Finished { ok: bool, message: String, log: String },
+    Finished {
+        ok: bool,
+        message: String,
+        log: String,
+    },
+    /// Stopped by the user.
+    Stopped,
 }
 
 impl SimState {
@@ -117,24 +126,77 @@ impl SimState {
         Ok(v)
     }
 
+    /// Stops the running simulation: the built-in engine at its next iteration, ngspice is
+    /// killed. `poll` then reports it stopped.
+    pub fn stop(&self) {
+        if let Some((_, _, cancel)) = &self.running {
+            cancel.cancel();
+        }
+    }
+
     pub fn start(&mut self, ctx: &egui::Context, deck: String, analyses: Vec<Analysis>, opts: SimOptions) {
+        self.start_with_parasitics(ctx, deck, analyses, opts, None);
+    }
+
+    /// [`SimState::start`], first adding the layout parasitics of `pex` (a copy of the project
+    /// and the cell) to the deck in the background.
+    pub fn start_with_parasitics(
+        &mut self,
+        ctx: &egui::Context,
+        mut deck: String,
+        analyses: Vec<Analysis>,
+        mut opts: SimOptions,
+        pex: Option<(ics_core::Project, ics_core::CellRef)>,
+    ) {
+        let cancel = ics_sim::Cancel::new();
+        opts.cancel = cancel.clone();
         let (tx, rx) = channel();
         let ctx = ctx.clone();
         self.last_deck = deck.clone();
         std::thread::spawn(move || {
-            let r = ics_sim::simulate(&deck, &analyses, &opts).map_err(|e| e.to_string());
-            let _ = tx.send(r);
+            let mut note = None;
+            if let Some((p, r)) = pex {
+                note = Some(match ics_core::pex::post_layout(&p, &r) {
+                    Ok(pl) => {
+                        deck = pl.apply(&deck);
+                        Ok(pl.summary)
+                    }
+                    Err(e) => Err(format!("Parasitics not included: {e}")),
+                });
+            }
+            let r = ics_sim::simulate(&deck, &analyses, &opts).map_err(|e| e.to_string()).map(|mut res| {
+                match note {
+                    Some(Ok(summary)) => res.log = format!("{summary}\n{}", res.log),
+                    Some(Err(w)) => res.warnings.insert(0, w),
+                    None => {}
+                }
+                res
+            });
+            // The deck as simulated, with the parasitics (Show netlist).
+            let _ = tx.send((r, deck));
             ctx.request_repaint();
         });
-        self.running = Some((rx, Instant::now()));
+        self.running = Some((rx, Instant::now(), cancel));
         self.error = None;
     }
 
     /// Poll the background job; returns an event when it completes.
     pub fn poll(&mut self) -> Option<SimEvent> {
-        let (rx, _) = self.running.as_ref()?;
-        let r = rx.try_recv().ok()?;
+        let (rx, _, cancel) = self.running.as_ref()?;
+        let stopped = cancel.is_cancelled();
+        let r = match rx.try_recv() {
+            Ok((r, deck)) => {
+                self.last_deck = deck;
+                r
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+            // The worker panicked: without this the run would show as running forever.
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("the simulator stopped with an internal error".to_string()),
+        };
         self.running = None;
+        if stopped && r.is_err() {
+            return Some(SimEvent::Stopped);
+        }
         Some(match r {
             Ok(res) => {
                 let mut msg = tf(
@@ -249,20 +311,24 @@ pub fn setup_panel(
 
     ui.add_space(4.0);
     let running = state.is_running();
-    let fill = if running { pal.bg_hover } else { pal.simulation };
+    let fill = if running { pal.danger } else { pal.simulation };
     let btn = egui::Button::new(
-        RichText::new(if running { t("⏳  Running…") } else { t("▶  Run Simulation") }).size(15.0).strong().color(if running {
-            pal.text_weak
-        } else {
-            theme::on_fill(fill)
-        }),
+        RichText::new(if running { t("■  Stop") } else { t("▶  Run Simulation") })
+            .size(15.0)
+            .strong()
+            .color(theme::on_fill(fill)),
     )
     .fill(fill)
     .min_size(egui::vec2(ui.available_width(), 34.0));
-    let b = ui.add_enabled(!running, btn);
+    let b = ui.add(btn);
     crate::spot::mark(ui.ctx(), "sim.run", b.rect);
-    if b.on_hover_text(crate::theme::kbd("F5 / ⌘↩")).clicked() {
-        run = true;
+    let tip = if running { t("Stop the running simulation").to_string() } else { crate::theme::kbd("F5 / ⌘↩") };
+    if b.on_hover_text(tip).clicked() {
+        if running {
+            state.stop();
+        } else {
+            run = true;
+        }
     }
     ui.add_space(8.0);
 
@@ -334,7 +400,8 @@ pub fn setup_panel(
     for entry in &mut setup.analyses {
         let title = entry.analysis.title();
         egui::Frame::new()
-            .fill(if entry.enabled { pal.bg_widget } else { pal.bg_panel })
+            // Tinted, not `bg_widget`: the check box is drawn in `bg_widget` and would vanish.
+            .fill(if entry.enabled { pal.simulation.gamma_multiply(0.06) } else { pal.bg_panel })
             .stroke(egui::Stroke::new(1.0, if entry.enabled { pal.simulation.gamma_multiply(0.5) } else { pal.border }))
             .corner_radius(6)
             .inner_margin(8)
@@ -406,7 +473,7 @@ pub fn setup_panel(
                         ui.checkbox(uic, "").labelled_by(l.id);
                         ui.end_row();
                     }
-                    Analysis::Noise { output, source, points_per_decade, fstart, fstop } => {
+                    Analysis::Noise { output, source, points_per_decade, fstart, fstop, sweep } => {
                         let l = ui.label(t("Output node"));
                         ui.add(egui::TextEdit::singleline(output).desired_width(90.0)).labelled_by(l.id);
                         ui.end_row();
@@ -423,8 +490,23 @@ pub fn setup_panel(
                         ui.end_row();
                         field(ui, "Start freq", fstart);
                         field(ui, "Stop freq", fstop);
-                        let l = ui.label(t("Points/dec"));
-                        ui.add(egui::DragValue::new(points_per_decade).range(1..=1000)).labelled_by(l.id);
+                        let l = ui.label(t("Sweep"));
+                        egui::ComboBox::from_id_salt("noise_sweep")
+                            .selected_text(sweep.keyword())
+                            .show_ui(ui, |ui| {
+                                for s in [AcSweep::Dec, AcSweep::Oct, AcSweep::Lin] {
+                                    ui.selectable_value(sweep, s, s.keyword());
+                                }
+                            })
+                            .response
+                            .labelled_by(l.id);
+                        ui.end_row();
+                        let l = ui.label(match sweep {
+                            AcSweep::Dec => t("Points/dec"),
+                            AcSweep::Oct => t("Points/oct"),
+                            AcSweep::Lin => t("Points"),
+                        });
+                        ui.add(egui::DragValue::new(points_per_decade).range(1..=100_000)).labelled_by(l.id);
                         ui.end_row();
                     }
                 });
@@ -759,13 +841,25 @@ pub fn results_panel(ui: &mut egui::Ui, state: &mut SimState) -> Option<String> 
     let pal = theme::palette(ui.ctx());
     crate::spot::mark(ui.ctx(), "sim.results", ui.max_rect());
     let mut msg = None;
-    if let Some((_, t0)) = &state.running {
-        ui.centered_and_justified(|ui| {
+    if let Some((_, t0, cancel)) = &state.running {
+        let label = if cancel.is_cancelled() {
+            t("Stopping…").to_string()
+        } else {
+            tf("Simulating… {} s", &[&format!("{:.1}", t0.elapsed().as_secs_f32())])
+        };
+        let mut stop = false;
+        ui.vertical_centered(|ui| {
+            ui.add_space((ui.available_height() / 2.0 - 30.0).max(0.0));
             ui.horizontal(|ui| {
+                ui.add_space((ui.available_width() / 2.0 - 110.0).max(0.0));
                 ui.spinner();
-                ui.label(tf("Simulating… {} s", &[&format!("{:.1}", t0.elapsed().as_secs_f32())]));
+                ui.label(label);
+                stop = ui.add_enabled(!cancel.is_cancelled(), egui::Button::new(t("Stop"))).clicked();
             });
         });
+        if stop {
+            state.stop();
+        }
         ui.ctx().request_repaint();
         return None;
     }

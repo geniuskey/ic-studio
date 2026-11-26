@@ -834,7 +834,8 @@ impl LayoutEditor {
         if let Some(p) = press
             && !on_form(p)
         {
-            self.kbd_focus = rect.contains(p);
+            // A tool window floating over the canvas takes the keys when clicked.
+            self.kbd_focus = rect.contains(p) && ui.ctx().layer_id_at(p).is_none_or(|l| l == ui.layer_id());
             if self.kbd_focus {
                 // Enter / Space must not re-trigger a form button clicked earlier.
                 ui.memory_mut(|m| {
@@ -909,7 +910,7 @@ impl LayoutEditor {
         let mut rects = vec![];
         // Command options open at the top left of the canvas, properties at the top right.
         let window = |title: &str, id: &str, at: Pos2| {
-            egui::Window::new(egui::RichText::new(t(title)).size(14.0).strong())
+            egui::Window::new(crate::theme::window_title(t(title)))
                 .id(egui::Id::unique(id))
                 .resizable(true)
                 .collapsible(false)

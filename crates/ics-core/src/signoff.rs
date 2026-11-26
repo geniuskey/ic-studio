@@ -468,6 +468,17 @@ pub fn cdl(sch: &Schematic, tech: &Tech, top: &str) -> String {
 
 fn cdl_body(sch: &Schematic, tech: &Tech, top: &str, skip_letters: &[String], ground: &str) -> String {
     let runset_skip = skip_letters;
+    // Test-bench parts marked `lvsIgnore` (loads, sources) are not part of the circuit LVS
+    // compares, as in the built-in LVS.
+    let kept;
+    let sch = if sch.instances.iter().any(|i| i.lvs_ignore()) {
+        let mut s = sch.clone();
+        s.instances.retain(|i| !i.lvs_ignore());
+        kept = s;
+        &kept
+    } else {
+        sch
+    };
     let nl = netlist_for(sch, &cdl_tech(tech), "");
     let skip = |line: &str| {
         let first = line.chars().next().map(|c| c.to_ascii_uppercase().to_string()).unwrap_or_default();
