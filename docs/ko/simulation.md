@@ -74,7 +74,7 @@ ngspice 경로는 **Settings**에서 지정합니다([설치](install.md#ngspice
   연동됩니다. 트레이스에 마우스를 올리면 값을 읽을 수 있습니다. 스크롤로 줌, 드래그로 이동,
   더블 클릭으로 초기화합니다.
 - **Noise**: 출력 잡음 밀도 `onoise_spectrum`과 입력 환산 잡음 밀도 `inoise_spectrum`
-  (V/√Hz)을 로그 축에 표시합니다. 내장 엔진은 저항과 MOS 채널의 열잡음, 다이오드 산탄 잡음,
+  (V/√Hz, 입력 소스가 전류원이면 A/√Hz)을 로그 축에 표시합니다. 내장 엔진은 저항과 MOS 채널의 열잡음, 다이오드 산탄 잡음,
   `kf` / `af` 플리커 잡음으로 이를 계산하고, 적분한 출력 잡음(스윕 구간의 V rms)을 로그에
   기록합니다. MOS level 1 플리커 잡음은 ngspice의 `nlev`를 따릅니다(기본값 2:
   `kf gm² / (f^af W Leff Cox)`; `nlev=0`은 SPICE 2/3의 `kf Id^af / (f Cox Leff²)`, `nlev=1`은
@@ -185,7 +185,8 @@ Corner / Sweep Manager는 셀 하나를 다룹니다. **Tools > Verification...*
 
 - 기판에 대한 배선 커패시턴스(`Cpar_*`),
 - 넷 사이의 측면 및 오버랩 결합 커패시턴스(`Cc_*`),
-- 그려진 확산 영역에서 구한 MOS 드레인 / 소스 접합 크기(`ad as pd ps`),
+- 그려진 확산 영역에서 구한 MOS 드레인 / 소스 접합 크기(`ad as pd ps`). 회로도에 값이 없을 때
+  모든 시뮬레이션 덱이 PCell 크기로 넣는 추정값을 대신합니다([수식과 모델](formulas.md#레이아웃-기하) 참고).
 - 배선, 비아, 게이트 저항의 RC 네트워크(`Rpar_*`). 각 MOS 단자는 해당 넷의 가장 가까운
   노드로 옮겨집니다.
 - 모델 라이브러리에 `lde = true`가 설정된 PDK 모델의 레이아웃 의존 효과(LDE) 파라미터

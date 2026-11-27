@@ -22,9 +22,9 @@ pub struct McSpec {
     pub vto_sigma: f64,
     /// Global relative transconductance shift per polarity (one sigma).
     pub kp_sigma: f64,
-    /// Threshold mismatch coefficient (V·m): 5 mV·µm is 5e-9.
+    /// Threshold mismatch coefficient per device (V·m): 5 mV·µm is 5e-9 (a pair differs √2 times more).
     pub avt: f64,
-    /// Current factor mismatch coefficient (m): 1 %·µm is 1e-8.
+    /// Current factor mismatch coefficient per device (m): 1 %·µm is 1e-8.
     pub abeta: f64,
     /// Global variation of model parameters measured on silicon; when set it replaces
     /// `vto_sigma` / `kp_sigma` (mismatch still applies).

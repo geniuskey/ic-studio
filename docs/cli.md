@@ -194,11 +194,11 @@ is a test:
 $ ics verify myproj
 verify 2026-11-16T13:37:55Z: 1 test(s)
 ota5t (work/ota5t): 3 point(s), 0.0 s
-  FAIL  gain_db  >= 40          worst 37.96 (margin -2.037) at 125°C  2/3
-  pass  ugf      >= 100meg      worst 5.358G (margin 5.258G) at -40°C  3/3
-  pass  pm       >= 45          worst 93.73 (margin 48.73) at -40°C  3/3
+  FAIL  gain_db  >= 40          worst 38.02 (margin -1.98) at 125°C  2/3
+  pass  ugf      >= 100meg      worst 1.616G (margin 1.516G) at 125°C  3/3
+  pass  pm       >= 45          worst 74.86 (margin 29.86) at 27°C  3/3
 changes since 20261116-133722.json:
-  ota5t gain_db: pass -> FAIL (worst 37.96 -> 37.96)  REGRESSION
+  ota5t gain_db: pass -> FAIL (worst 38.02 -> 38.02)  REGRESSION
 FAIL: 2 pass, 1 fail, 0 error, 0 info
 ```
 

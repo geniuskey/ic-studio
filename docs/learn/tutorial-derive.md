@@ -16,8 +16,8 @@ wider transistor carries more current, so it charges the load faster.
 
 | | Original `cmos_inverter` | New design |
 |---|---|---|
-| t<sub>pHL</sub> (output falling) | ≤ 50 ps (it does 33 ps) | **≤ 25 ps** |
-| t<sub>pLH</sub> (output rising) | ≤ 70 ps (it does 47 ps) | **≤ 35 ps** |
+| t<sub>pHL</sub> (output falling) | ≤ 50 ps (it does 35 ps) | **≤ 25 ps** |
+| t<sub>pLH</sub> (output rising) | ≤ 70 ps (it does 49 ps) | **≤ 35 ps** |
 | Load | 20 fF | 20 fF |
 
 ## Step 1: read the design first
@@ -48,7 +48,7 @@ wider transistor carries more current, so it charges the load faster.
 Before you let the tool work, estimate on paper. The delay is roughly
 t<sub>p</sub> ≈ C·V<sub>DD</sub> / (2·I): the same idea as 0.69·R<sub>on</sub>·C in
 [CMOS logic](cmos-logic.md#delay-why-gates-take-time), with R<sub>on</sub> ≈ V<sub>DD</sub>/I. The current grows with W. Both targets ask for
-about 1.4 times less delay (33 → 25 ps, 47 → 35 ps), so both widths must grow about 1.4
+about 1.4 times less delay (35 → 25 ps, 49 → 35 ps), so both widths must grow about 1.4
 times; a bit more, because a wider transistor also adds its own drain capacitance to the
 load.
 
@@ -77,14 +77,14 @@ passing one closest to the original sizes. A few seconds later the result lists 
 before and after:
 
 ```text
-tphl   <= 25p    33.2p -> 23.8p
-tplh   <= 35p    47.0p -> 33.2p
-M1.w = 4.21µ   (PMOS, was 2µ)
-M2.w = 1.95µ   (NMOS, was 1µ)
+tphl   <= 25p    35.0p -> 23.7p
+tplh   <= 35p    49.0p -> 32.4p
+M1.w = 5.01µ   (PMOS, was 2µ)
+M2.w = 2.23µ   (NMOS, was 1µ)
 Layout: DRC clean; LVS: the transistors match the schematic
 ```
 
-Both widths roughly doubled (more than your 1.4 guess: the self-loading), and the ratio
+Both widths more than doubled (more than your 1.4 guess: the self-loading), and the ratio
 stayed near 2:1, as the notes said.
 
 <!-- check: The new cell cmos_inverter_v2 exists, with a schematic | cmos_inverter_v2 schematic 2 -->
@@ -113,14 +113,14 @@ operating points of the original and the new design: transistors that left satur
 a big change in supply current, matched pairs that got smaller. For this inverter, think
 about what the specs do not see:
 
-- **Input capacitance**: the new inverter's gates are twice as wide, so it is twice as
-  heavy a load for the gate that drives *it*. Speed here costs speed one stage earlier.
+- **Input capacitance**: the new inverter's gates are more than twice as wide, so it is more
+  than twice as heavy a load for the gate that drives *it*. Speed here costs speed one stage earlier.
 - **Power**: the switching energy C·V<sub>DD</sub>² grows with the capacitance, so each
   edge costs more.
 - **Area**: the layout is bigger.
 
 <!-- quiz
-? The faster inverter's input capacitance doubled. What happens to the gate that drives it?
+? The faster inverter's input capacitance more than doubled. What happens to the gate that drives it?
 - Nothing: input capacitance only matters for analog circuits
 - It gets faster, because the new inverter switches sooner
 + It gets slower, because it now has a bigger load to charge

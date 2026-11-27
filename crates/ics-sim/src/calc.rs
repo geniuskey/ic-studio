@@ -431,6 +431,14 @@ pub fn unity_gain_at(freq: &[f64], gain_db: &[f64]) -> Option<f64> {
     crossings(freq, gain_db, 0.0, Edge::Either, true).first().copied()
 }
 
+/// The unwrapped phase referenced to its low-frequency value: shifted by the multiple of 180°
+/// nearest the first point, so a response from the inverting input (about ±180° at DC) reads as
+/// the loop gain (0° at DC) and `phasemargin` / `gainmargin` are the same from either input.
+fn loop_phase(phase: &[f64]) -> Vec<f64> {
+    let base = phase.first().map_or(0.0, |p0| 180.0 * (p0 / 180.0).round());
+    phase.iter().map(|p| p - base).collect()
+}
+
 fn crossings(x: &[f64], y: &[f64], level: f64, edge: Edge, logx: bool) -> Vec<f64> {
     let mut out = vec![];
     for i in 0..y.len().saturating_sub(1) {
@@ -831,11 +839,12 @@ impl Ctx<'_> {
                     "ugf" => ugf().map(Val::Num),
                     "phasemargin" => {
                         let fu = ugf()?;
-                        let ph = interp_at(x, &w.phase(), fu, logx).ok_or("phasemargin(): phase not available at the UGF")?;
+                        let ph = interp_at(x, &loop_phase(&w.phase()), fu, logx)
+                            .ok_or("phasemargin(): phase not available at the UGF")?;
                         scalar(180.0 + ph)
                     }
                     _ => {
-                        let ph = w.phase();
+                        let ph = loop_phase(&w.phase());
                         let f180 = crossings(x, &ph, -180.0, Edge::Either, logx)
                             .first()
                             .copied()
@@ -1046,6 +1055,11 @@ mod tests {
         let pm = s(&format!("phasemargin({h})"), &d);
         close(pm, 180.0 - (a * a - 1.0f64).sqrt().atan().to_degrees(), 0.1);
         assert!(err(&format!("gainmargin({h})"), &d).contains("-180"));
+        // From the inverting input (about ±180° at DC) the margin is the same.
+        for sign in [1.0, -1.0] {
+            let inv = ac(|f| C::new(-a, sign * 1e-9) / C::new(1.0, f / fp));
+            close(s(&format!("phasemargin({h})"), &inv), pm, 0.1);
+        }
     }
 
     #[test]
@@ -1053,6 +1067,8 @@ mod tests {
         let d = ac(|f| C::new(4.0, 0.0) / C::new(1.0, f / 1e3).powi(3));
         close(s("gainmargin(v(out)/v(in))", &d), 20.0 * 2f64.log10(), 0.05);
         assert!(s("phasemargin(v(out)/v(in))", &d) > 0.0);
+        let inv = ac(|f| C::new(-4.0, 0.0) / C::new(1.0, f / 1e3).powi(3));
+        close(s("gainmargin(v(out)/v(in))", &inv), 20.0 * 2f64.log10(), 0.05);
     }
 
     #[test]

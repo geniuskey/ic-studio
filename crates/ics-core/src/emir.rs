@@ -6,8 +6,8 @@
 //!   net by their cut resistance (one resistor per cut).
 //! - Pads: top-cell labels carrying the net name hold their tile at the pad voltage.
 //! - Loads: every MOS device with its source or drain (not both) on the net draws its current
-//!   (given per layout device name) from the tile nearest to its gate, on the first metal if the
-//!   net has one there. The network is linear, so a current returned into a ground net gives the
+//!   (given per layout device name) from the nearest metal1 tile within 1 µm of its gate (where
+//!   its contacts land), else from the tile of any layer nearest to its gate. The network is linear, so a current returned into a ground net gives the
 //!   same voltage rise as a drawn current gives drop.
 //! - The DC network `G · drop = I` is solved by Jacobi-preconditioned conjugate gradients.
 //!   Tiles not connected to a pad are reported as floating.
@@ -356,11 +356,20 @@ pub fn analyze(
         }
         let Some(&amps) = by_name.get(&d.name.to_ascii_uppercase()) else { continue };
         let c = [(d.gate.x0 + d.gate.x1) / 2, (d.gate.y0 + d.gate.y1) / 2];
-        let node = trees
+        // The current enters through the source / drain contacts onto metal1: the nearest metal1
+        // tile within the device's reach (its gate plus 1 µm), else the nearest tile of any layer
+        // (a metal2 rail right over the gate must not take the current past its via).
+        let near: Vec<(i64, bool, usize)> = trees
             .iter()
-            .filter_map(|(l, t)| t.nearest_neighbor(c).map(|n| (n.distance_2(&c), Some(*l) != metal1, n.idx)))
+            .filter_map(|(l, t)| t.nearest_neighbor(c).map(|n| (n.distance_2(&c), Some(*l) == metal1, n.idx)))
+            .collect();
+        let reach = d.gate.width().max(d.gate.height()) + x.dbu_per_um.max(1);
+        let node = near
+            .iter()
+            .filter(|n| n.1 && n.0 <= reach * reach)
             .min()
-            .map(|(_, _, n)| n)
+            .or_else(|| near.iter().min())
+            .map(|n| n.2)
             .expect("the net has tiles");
         loads.push(Load { device: d.name.clone(), node, amps });
     }
@@ -618,6 +627,19 @@ mod tests {
         let wide = setup(vec![(m2, vec![IRect::new(0, 0, 40_000, 2000)])], vec![device("M1", (39_800, 1000))]);
         let rep = analyze(&pins(m2, &[(100, 1000)]), &NoCells, &wide, &tech, "vdd", &amps(&[("M1", 1e-3)])).unwrap();
         assert!(rep.violations.is_empty(), "{:?}", rep.violations);
+    }
+
+    #[test]
+    fn load_enters_on_metal1_under_a_rail() {
+        let tech = Tech::generic();
+        let (m1, m2) = (tech.layer_index("metal1").unwrap(), tech.layer_index("metal2").unwrap());
+        // A metal2 rail right over the gate, the device's metal1 strap 0.6 µm beside it.
+        let x = setup(
+            vec![(m2, vec![IRect::new(0, 4800, 20_000, 5200)]), (m1, vec![IRect::new(10_400, 4000, 10_800, 6000)])],
+            vec![device("M1", (10_000, 5000))],
+        );
+        let rep = analyze(&pins(m2, &[(100, 5000)]), &NoCells, &x, &tech, "vdd", &amps(&[("M1", 1e-3)])).unwrap();
+        assert_eq!(rep.nodes[rep.loads[0].node].layer, m1, "{:?}", rep.loads);
     }
 
     #[test]

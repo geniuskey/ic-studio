@@ -89,7 +89,10 @@ pub const KO: &[(&str, &str)] = &[
         "Create or replace a cell's schematic from a SPICE netlist file; its analysis lines set the cell's simulation setup. Saves the project",
         "SPICE 넷리스트 파일로 셀의 회로도를 만들거나 교체합니다. 해석 라인이 셀의 시뮬레이션 설정이 됩니다. 프로젝트를 저장합니다",
     ),
-    ("Current factor mismatch coefficient in m (10n = 1 %·µm)", "전류 계수 미스매치 계수 (m, 10n = 1 %·µm)"),
+    (
+        "Current factor mismatch coefficient per device in m (10n = 1 %·µm; a pair differs √2 times more)",
+        "소자당 전류 계수 미스매치 계수 (m, 10n = 1 %·µm, 쌍의 차이는 √2배)",
+    ),
     (
         "Cut line `x0,y0,x1,y1` in µm (default: horizontal through the middle of the layout)",
         "절단선 `x0,y0,x1,y1` (µm, 기본값: 레이아웃 중앙을 지나는 수평선)",
@@ -457,7 +460,10 @@ pub const KO: &[(&str, &str)] = &[
     ),
     ("The cell `${cell}` stands for", "`${cell}`이 가리키는 셀"),
     ("The master cell (made with the PCell Designer)", "마스터 셀 (PCell Designer로 만든 것)"),
-    ("Threshold mismatch coefficient in V·m (5n = 5 mV·µm)", "문턱 전압 미스매치 계수 (V·m, 5n = 5 mV·µm)"),
+    (
+        "Threshold mismatch coefficient per device in V·m (5n = 5 mV·µm; a pair differs √2 times more)",
+        "소자당 문턱 전압 미스매치 계수 (V·m, 5n = 5 mV·µm, 쌍의 차이는 √2배)",
+    ),
     (
         "Time (s) between the reset and the signal sample of correlated double sampling",
         "상관 이중 샘플링의 리셋과 신호 샘플 사이 시간 (s)",

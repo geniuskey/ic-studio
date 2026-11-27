@@ -193,8 +193,16 @@ impl MonteCarlo {
                     for (k, (label, text, hint)) in [
                         ("Vto sigma", &mut self.setup.vto_sigma, "Global threshold shift per polarity (V, one sigma)"),
                         ("kp sigma", &mut self.setup.kp_sigma, "Global relative transconductance shift per polarity"),
-                        ("Avt", &mut self.setup.avt, "Threshold mismatch coefficient (V*m): 5n = 5 mV*um"),
-                        ("Abeta", &mut self.setup.abeta, "Current factor mismatch coefficient (m): 10n = 1 %*um"),
+                        (
+                            "Avt",
+                            &mut self.setup.avt,
+                            "Threshold mismatch coefficient per device (V*m): 5n = 5 mV*um; a pair differs √2 times more",
+                        ),
+                        (
+                            "Abeta",
+                            &mut self.setup.abeta,
+                            "Current factor mismatch coefficient per device (m): 10n = 1 %*um; a pair differs √2 times more",
+                        ),
                     ]
                     .into_iter()
                     .enumerate()

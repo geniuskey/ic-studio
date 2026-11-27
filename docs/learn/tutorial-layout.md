@@ -119,11 +119,12 @@ needs the load.)
 
 | | t<sub>pHL</sub> | t<sub>pLH</sub> |
 |---|---|---|
-| Schematic | 33.2 ps | 47.0 ps |
+| Schematic | 35.0 ps | 49.0 ps |
 | Post-layout | 36.5 ps | 50.8 ps |
 
-The layout adds about 3 fF of wire and junction capacitance to the 20 fF load and some
-wire resistance: about 8 to 10 % slower. For a single inverter that is small; for long wires
+The schematic already counts the transistors' drain and source junctions, estimated from
+the PCell sizes. The layout adds the wires (about 2.4 fF to ground and 0.5 fF of coupling)
+and their resistance: about 4 % slower. For a single inverter that is small; for long wires
 across a chip, parasitics can dominate the delay entirely.
 
 Under **Compare runs**, tick the schematic run to overlay the two waveforms.
@@ -131,9 +132,9 @@ Under **Compare runs**, tick the schematic run to overlay the two waveforms.
 <!-- check: Post-layout t_pHL is below 55 ps | my_inv measure tran "delay(v(in), 0.9, v(out), 0.9, rise, fall)" 20p 55p -->
 
 <!-- quiz
-? t<sub>pHL</sub> went from 33.2 ps (schematic) to 36.5 ps (post-layout). How much slower is it, in percent?
-= 9.9 ±1 %
-> (36.5 − 33.2) / 33.2 = 9.9 %: about 3 fF of wiring and junctions added to the 20 fF load, plus some wire resistance.
+? t<sub>pHL</sub> went from 35.0 ps (schematic) to 36.5 ps (post-layout). How much slower is it, in percent?
+= 4.3 ±1 %
+> (36.5 − 35.0) / 35.0 = 4.3 %: the wires' capacitance and resistance. The junctions were already in the schematic's estimate.
 -->
 
 ## Step 6: export GDSII

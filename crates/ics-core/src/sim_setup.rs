@@ -290,9 +290,10 @@ pub struct McSetup {
     pub vto_sigma: String,
     /// Global relative transconductance sigma per polarity.
     pub kp_sigma: String,
-    /// Threshold mismatch coefficient (V*m): 5n is 5 mV*um.
+    /// Threshold mismatch coefficient per device (V*m): 5n is 5 mV*um. A matched pair differs
+    /// by √2 times as much; a measured pair coefficient is divided by √2 before use.
     pub avt: String,
-    /// Current factor mismatch coefficient (m): 10n is 1 %*um.
+    /// Current factor mismatch coefficient per device (m): 10n is 1 %*um.
     pub abeta: String,
     pub measures: Vec<McMeasure>,
 }

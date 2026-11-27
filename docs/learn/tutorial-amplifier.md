@@ -55,15 +55,19 @@ All targets met on paper. Now verify.
    - **AC magnitude** `1` (the small-signal input for AC analysis),
    - **Transient** `SIN(0.7 10m 1meg)` (a 10 mV, 1 MHz sine on top of the bias).
 
-The netlist (bottom panel, **Netlist** tab) should read:
+The netlist (bottom panel, **Netlist** tab) should list these elements, followed by the
+model cards:
 
 ```spice
-M1 out in 0 0 nmos w=2u l=1u
-RD vdd out 50k
 CL out 0 100f
+M1 out in 0 0 nmos__l1000 w=2u l=1u ad=9.6e-13 as=9.6e-13 pd=2.96e-6 ps=2.96e-6
+RD vdd out 50k
 VDD vdd 0 DC 1.8
 VIN in 0 DC 0.7 AC 1 SIN(0.7 10m 1meg)
 ```
+
+`nmos__l1000` is the generic NMOS card for L = 1 µm (λ scaled by 0.5 µm / L), and
+`ad as pd ps` are the drain and source junctions, estimated from the transistor's PCell.
 
 <!-- check: my_cs has a schematic with the amplifier and its testbench (5 devices) | my_cs schematic 5 -->
 
@@ -106,14 +110,14 @@ from 180° (inverted) down by 90° past the corner. The **Measurements** row of 
 | Measurement | Value | Meaning |
 |---|---|---|
 | GAIN @ fstart | 16.9 dB | ×7.0, as calculated |
-| f -3 dB | ≈ 33 MHz | The bandwidth |
-| UNITY GAIN f | ≈ 230 MHz | Where the gain falls to 1 |
+| f -3 dB | ≈ 32 MHz | The bandwidth |
+| UNITY GAIN f | ≈ 225 MHz | Where the gain falls to 1 |
 
 Because the AC source has magnitude 1, `v(out)` *is* the gain. In general, use
 `v(out)/v(in)` in the [Waveform Calculator](../tools.md#waveform-calculator):
 `bandwidth(v(out)/v(in))` and `ugf(v(out)/v(in))`.
 
-Spec check: gain 16.9 dB ≥ 15 dB, bandwidth 33 MHz ≥ 20 MHz. **Both met.**
+Spec check: gain 16.9 dB ≥ 15 dB, bandwidth 32 MHz ≥ 20 MHz. **Both met.**
 
 <!-- check: Gain of at least 15 dB | my_cs measure ac "max(db(v(out)))" 15 "" -->
 
@@ -146,9 +150,9 @@ Predict first, then simulate. Change **Resistance** of `RD` and fill in the tabl
 
 | R<sub>D</sub> | v(out) bias | M1 region | Gain | f -3 dB |
 |---|---|---|---|---|
-| 30 kΩ | 1.25 V | saturation | 12.7 dB (×4.3) | 54 MHz |
-| 50 kΩ | 0.89 V | saturation | 16.9 dB (×7.0) | 33 MHz |
-| 70 kΩ | 0.55 V | saturation | 19.6 dB (×9.5) | 24 MHz |
+| 30 kΩ | 1.25 V | saturation | 12.7 dB (×4.3) | 53 MHz |
+| 50 kΩ | 0.89 V | saturation | 16.9 dB (×7.0) | 32 MHz |
+| 70 kΩ | 0.55 V | saturation | 19.6 dB (×9.5) | 23 MHz |
 | 100 kΩ | 0.18 V | **triode** | 6.0 dB (×2.0) | — |
 
 - Up to 70 kΩ, gain rises and bandwidth falls in proportion: their product, the
@@ -171,9 +175,9 @@ bandwidth, and press **Run Sweep**.
 -->
 
 <!-- quiz
-? At R<sub>D</sub> = 70 kΩ the gain is ×9.5 and f<sub>-3dB</sub> is 24 MHz. What is the gain-bandwidth product, in MHz?
-= 228 ±10 MHz
-> 9.5 × 24 MHz ≈ 228 MHz, close to g<sub>m</sub>/(2π·C<sub>L</sub>) ≈ 230 MHz: R<sub>D</sub> trades gain for bandwidth at a nearly constant product.
+? At R<sub>D</sub> = 70 kΩ the gain is ×9.5 and f<sub>-3dB</sub> is 23 MHz. What is the gain-bandwidth product, in MHz?
+= 220 ±10 MHz
+> 9.5 × 23 MHz ≈ 220 MHz, close to g<sub>m</sub>/(2π·C<sub>L</sub>) ≈ 230 MHz: R<sub>D</sub> trades gain for bandwidth at a nearly constant product.
 -->
 
 ## Step 7: is it robust?

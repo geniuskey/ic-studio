@@ -52,6 +52,16 @@ window:
 In the [Learn course](learn/index.md), **Ask the tutor** under a failed check or a wrong
 quiz answer opens the copilot in Tutor mode with that question.
 
+The copilot starts every conversation with a primer on IC Studio. The primer covers:
+
+- the window and the everyday flow;
+- every menu item, with its exact label, in Korean too when the window is in Korean;
+- the layout bindkeys;
+- a summary of [Formulas and models](formulas.md).
+
+So it can say where a command is and how a number comes about without searching first. It
+reads the manual for anything more detailed.
+
 ## Waveform Calculator
 
 ![Waveform Calculator](screenshots/tool_calculator.webp)

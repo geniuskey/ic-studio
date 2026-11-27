@@ -119,8 +119,8 @@ The **propagation delay** t<sub>p</sub> is measured from the input crossing 50 %
 swing to the output crossing 50 %. There are two of them: **t<sub>pHL</sub>** (output
 falling, through the NMOS) and **t<sub>pLH</sub>** (output rising, through the PMOS).
 
-For the inverter above with a 20 fF load, IC Studio simulates **t<sub>pHL</sub> ≈ 33 ps**
-and **t<sub>pLH</sub> ≈ 47 ps**: rising is slower because the PMOS is weaker.
+For the inverter above with a 20 fF load, IC Studio simulates **t<sub>pHL</sub> ≈ 35 ps**
+and **t<sub>pLH</sub> ≈ 49 ps**: rising is slower because the PMOS is weaker.
 
 To make a gate faster, lower R<sub>on</sub> (wider transistors) or lower C<sub>L</sub>
 (fewer or smaller gates to drive, shorter wires). But wider transistors also have larger
@@ -159,8 +159,8 @@ is four times weaker for the same W/L. Two common choices:
 
 | PMOS width | V<sub>M</sub> | t<sub>pHL</sub> / t<sub>pLH</sub> | Comment |
 |---|---|---|---|
-| W<sub>p</sub> = 2·W<sub>n</sub> (2 µm) | 0.83 V | 33 / 47 ps | A common compromise: smaller, a bit unbalanced |
-| W<sub>p</sub> = 4·W<sub>n</sub> (4 µm) | 0.90 V | 35 / 33 ps | Balanced: symmetric threshold and delays |
+| W<sub>p</sub> = 2·W<sub>n</sub> (2 µm) | 0.83 V | 35 / 49 ps | A common compromise: smaller, a bit unbalanced |
+| W<sub>p</sub> = 4·W<sub>n</sub> (4 µm) | 0.90 V | 38 / 35 ps | Balanced: symmetric threshold and delays |
 
 (Simulated with a 20 fF load. The balanced version has equal rise and fall delays, but
 its bigger PMOS also loads the stage driving it, so a 2:1 ratio is often the better

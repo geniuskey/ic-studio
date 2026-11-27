@@ -49,6 +49,16 @@ Ollama 같은 로컬 서버를 포함한 OpenAI 호환 서버), 모델, API 키�
 [Learn 강좌](learn/index.md)에서 실패한 확인 항목이나 틀린 퀴즈 아래의 **튜터에게 묻기**를 누르면
 그 질문으로 Copilot이 튜터 모드로 열립니다.
 
+Copilot은 모든 대화를 IC Studio 입문 자료를 알고 시작합니다. 입문 자료에는 다음이 들어 있습니다.
+
+- 창 구성과 일상적인 설계 흐름
+- 모든 메뉴 항목의 정확한 이름(창이 한국어이면 한국어 이름도)
+- 레이아웃 단축키
+- [수식과 모델](formulas.md)의 요약
+
+그래서 먼저 검색하지 않고도 명령이 어디 있는지, 어떤 수치가 어떻게 계산되는지 답할 수 있습니다.
+더 자세한 내용은 매뉴얼을 읽어서 답합니다.
+
 ## Waveform Calculator
 
 ![Waveform Calculator](../screenshots/tool_calculator.webp)

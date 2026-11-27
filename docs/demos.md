@@ -158,9 +158,9 @@ rendering keeps pan and zoom smooth.
 | `ring_osc5` | 5-stage ring oscillator, fully routed; slows down visibly with layout parasitics |
 | `current_mirror` | NMOS current mirror with a 20 µA reference: DC sweep of the output |
 | `ota5t` | 5-transistor OTA: about 42 dB open-loop gain in AC |
-| `ota_miller` | Two-stage Miller-compensated OTA (Cc with nulling resistor Rz, 1 pF load): 82 dB, 36 MHz, 84° phase margin; schematic only |
+| `ota_miller` | Two-stage Miller-compensated OTA (Cc with nulling resistor Rz, 1 pF load): 82 dB, 36 MHz, 83° phase margin; schematic only |
 | `ota_cascode` | Telescopic cascode OTA, auto P&R: 87 dB in one stage, every device in saturation |
-| `comparator` | Open-loop comparator (OTA, gain stage, inverter), auto P&R: 4.1 ns / 2.2 ns delay at 50 mV overdrive |
+| `comparator` | Open-loop comparator (OTA, gain stage, inverter), auto P&R: 4.7 ns / 2.5 ns delay at 50 mV overdrive |
 | `ldo` | Low-dropout regulator, 1.8 V to 1.2 V at 1 mA: error amplifier, 400 µm PMOS pass device, R1 / R2 divider; 44 dB supply rejection at 1 MHz; schematic only |
 | `sram6t` | 6T SRAM bit cell, DRC and LVS clean: transient write and hold |
 | `sram_array` | 8 × 8 array of `sram6t` |

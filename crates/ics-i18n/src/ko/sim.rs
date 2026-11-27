@@ -69,8 +69,14 @@ pub const KO: &[(&str, &str)] = &[
     ("Seed", "시드"),
     ("Global threshold shift per polarity (V, one sigma)", "극성별 전역 문턱 전압 이동 (V, 1 sigma)"),
     ("Global relative transconductance shift per polarity", "극성별 전역 상대 트랜스컨덕턴스 이동"),
-    ("Threshold mismatch coefficient (V*m): 5n = 5 mV*um", "문턱 전압 미스매치 계수 (V*m): 5n = 5 mV*um"),
-    ("Current factor mismatch coefficient (m): 10n = 1 %*um", "전류 계수 미스매치 계수 (m): 10n = 1 %*um"),
+    (
+        "Threshold mismatch coefficient per device (V*m): 5n = 5 mV*um; a pair differs √2 times more",
+        "소자당 문턱 전압 미스매치 계수 (V*m): 5n = 5 mV*um, 쌍의 차이는 √2배",
+    ),
+    (
+        "Current factor mismatch coefficient per device (m): 10n = 1 %*um; a pair differs √2 times more",
+        "소자당 전류 계수 미스매치 계수 (m): 10n = 1 %*um, 쌍의 차이는 √2배",
+    ),
     ("Replaced by the technology's measured process variation", "공정 기술의 측정된 공정 편차로 대체됩니다"),
     ("Replaced by the technology's measured mismatch", "공정 기술의 측정된 미스매치로 대체됩니다"),
     ("matched pairs", "매칭 쌍"),

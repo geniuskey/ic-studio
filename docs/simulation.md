@@ -77,7 +77,8 @@ values as `name_re` / `name_im` columns).
   and cursor. Hover a trace to read values. Scroll to zoom, drag to pan, double-click to
   reset.
 - **Noise**: the output noise density `onoise_spectrum` and the input-referred density
-  `inoise_spectrum` (V/√Hz) on logarithmic axes. The built-in engine computes them from
+  `inoise_spectrum` (V/√Hz, or A/√Hz when the input source is a current source) on
+  logarithmic axes. The built-in engine computes them from
   resistor and MOS channel thermal noise, diode shot noise and `kf` / `af` flicker noise,
   and writes the integrated output noise (V rms over the sweep) to the log. MOS level 1
   flicker noise follows ngspice's `nlev` (default 2: `kf gm² / (f^af W Leff Cox)`; `nlev=0`
@@ -195,7 +196,9 @@ extracts the layout, matches its nets to the schematic through LVS and adds to t
 
 - wire capacitance to substrate (`Cpar_*`),
 - lateral and overlap coupling capacitance between nets (`Cc_*`),
-- MOS drain / source junction sizes (`ad as pd ps`) from the drawn diffusion,
+- MOS drain / source junction sizes (`ad as pd ps`) from the drawn diffusion, in place of
+  the estimate every simulation deck makes from the PCell sizes when the schematic gives
+  none (see [Formulas and models](formulas.md#layout-geometry)),
 - an RC network of wire, via and gate resistance (`Rpar_*`), with each MOS terminal moved
   to the nearest node of its net,
 - layout-dependent effect parameters for PDK models whose model library sets `lde = true`

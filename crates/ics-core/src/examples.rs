@@ -179,7 +179,7 @@ pub fn rc_lowpass() -> Cell {
             max: "200k".into(),
         },
         crate::sweep::Spec {
-            name: "rise".into(),
+            name: "delay".into(),
             analysis: "tran".into(),
             expr: "delay(v(in), 0.5, v(out), 0.5)".into(),
             min: "".into(),
@@ -2704,7 +2704,7 @@ pub fn design_notes(cell: &str) -> &'static str {
     match cell {
         "cmos_inverter" => {
             "What it is: the basic CMOS logic gate. The PMOS pulls out up to vdd when in is low, the NMOS pulls it down when in is high; C1 (20 fF) stands for the gates the output drives.\n\
-             Why these sizes: L is the process minimum (180n) for speed. The PMOS is twice as wide (2u vs 1u) because holes are slower than electrons. 2:1 is a compromise: the rise (47 ps) is still slower than the fall (33 ps); 4:1 would balance them, at the cost of more input capacitance.\n\
+             Why these sizes: L is the process minimum (180n) for speed. The PMOS is twice as wide (2u vs 1u) because holes are slower than electrons. 2:1 is a compromise: the rise (49 ps) is still slower than the fall (35 ps); 4:1 would balance them, at the cost of more input capacitance.\n\
              Specs: tphl (output falling) <= 50 ps and tplh (output rising) <= 70 ps, measured on the transient.\n\
              To derive a new design: for a faster or stronger gate (bigger load), scale both W by the same factor and keep the 2:1 ratio. If the rise is slower than the fall, widen the PMOS. Change C1 to the load your design drives and re-check tphl / tplh."
         }
@@ -2718,8 +2718,8 @@ pub fn design_notes(cell: &str) -> &'static str {
         }
         "rc_lowpass" => {
             "What it is: a first-order low-pass filter. Frequencies above fc = 1 / (2 pi R C), about 159 kHz with 1k and 1n, are attenuated by 20 dB per decade.\n\
-             Specs: bandwidth 120 to 200 kHz and rise time <= 1.5 us, swept over +-10 % of R and C to show the effect of process spread.\n\
-             To derive a new design: pick C first (on chip, capacitors are large: keep C small), then R = 1 / (2 pi fc C). Halving R or C doubles fc and halves the rise time."
+             Specs: bandwidth 120 to 200 kHz and delay (50 % in to 50 % out, about 0.69 R C) <= 1.5 us, swept over +-10 % of R and C to show the effect of process spread.\n\
+             To derive a new design: pick C first (on chip, capacitors are large: keep C small), then R = 1 / (2 pi fc C). Halving R or C doubles fc and halves the delay and the rise time."
         }
         "diode_clipper" => {
             "What it is: a series resistor and a diode to ground limit the positive half of the output to about one diode drop (0.7 V); the negative half passes, since the diode is reversed.\n\
@@ -2756,7 +2756,7 @@ pub fn design_notes(cell: &str) -> &'static str {
              sets ugf = gm1 / (2 pi Cc).\n\
              Specs: gain >= 70 dB, ugf >= 25 MHz, phase margin >= 60 deg, with a 1 pF load (CL, test bench only).\n\
              To derive a new design: for more bandwidth raise the input pair's gm (current, width) or lower Cc, then \
-             check the phase margin: the output pole (gm6 / CL) must stay about 2 to 3 times above ugf, so a larger \
+             check the phase margin: the output pole (gm6 / (2 pi CL)) must stay about 2 to 3 times above ugf, so a larger \
              load needs a stronger M6 / M7. Rz near 1 / gm6, or a little larger, gives the best margin."
         }
         "ota_cascode" => {

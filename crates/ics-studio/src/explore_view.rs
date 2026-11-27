@@ -14,8 +14,10 @@ const KN: f64 = 280e-6;
 const KP: f64 = 70e-6;
 const VTH: f64 = 0.45;
 const VDD: f64 = 1.8;
-/// Channel-length modulation at L = 1 µm (it scales as 1/L).
-const LAMBDA_1U: f64 = 0.05;
+/// Channel-length modulation at L = 1 µm, as the generic model cards give it (`lambda` 0.08 for
+/// NMOS and 0.1 for PMOS at 0.5 µm, scaled as 1/L): 0.04 and 0.05.
+const LAMBDA_N_1U: f64 = 0.04;
+const LAMBDA_P_1U: f64 = 0.05;
 
 /// The explorable figures, by the name a chapter gives.
 pub const NAMES: &[&str] = &["mosfet", "inverter"];
@@ -53,10 +55,9 @@ pub fn square_law(k: f64, w_l: f64, lambda: f64, vgs: f64, vds: f64) -> (&'stati
 /// The inverter's output for an input: where the NMOS and PMOS currents are equal
 /// (bisection; the NMOS current rises and the PMOS current falls with the output).
 pub fn inverter_out(wn: f64, wp: f64, l: f64, vin: f64) -> f64 {
-    let lambda = LAMBDA_1U / l;
     let diff = |vout: f64| {
-        let n = square_law(KN, wn / l, lambda, vin, vout).1;
-        let p = square_law(KP, wp / l, lambda, VDD - vin, VDD - vout).1;
+        let n = square_law(KN, wn / l, LAMBDA_N_1U / l, vin, vout).1;
+        let p = square_law(KP, wp / l, LAMBDA_P_1U / l, VDD - vin, VDD - vout).1;
         n - p
     };
     let (mut lo, mut hi) = (0.0, VDD);
@@ -126,7 +127,7 @@ fn mosfet(ui: &mut egui::Ui, st: &mut State) {
     slider(ui, "L", &mut st.l, 0.18..=5.0, "µm", true);
     slider(ui, "V_GS", &mut st.vgs, 0.0..=1.8, "V", false);
     slider(ui, "V_DS", &mut st.vds, 0.0..=1.8, "V", false);
-    let lambda = LAMBDA_1U / st.l;
+    let lambda = LAMBDA_N_1U / st.l;
     let w_l = st.w / st.l;
     let (region, id) = square_law(KN, w_l, lambda, st.vgs, st.vds);
     let vov = st.vgs - VTH;
@@ -256,6 +257,13 @@ mod tests {
         assert!((switching_threshold(1.0, 4.0) - 0.9).abs() < 1e-9);
         let out = |vin| inverter_out(1.0, 4.0, 0.18, vin);
         assert!(out(0.0) > 1.79 && out(1.8) < 0.01);
-        assert!((out(0.9) - 0.9).abs() < 0.05);
+        // The output crosses V_DD/2 at an input near 0.9 V (the NMOS and PMOS λ differ, and the
+        // transfer curve is steep there, so the output at exactly 0.9 V is not 0.9 V).
+        let (mut lo, mut hi) = (0.0, 1.8);
+        for _ in 0..60 {
+            let mid = (lo + hi) / 2.0;
+            if out(mid) > 0.9 { lo = mid } else { hi = mid }
+        }
+        assert!((lo - 0.9).abs() < 0.02, "V_M {lo}");
     }
 }

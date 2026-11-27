@@ -1926,7 +1926,8 @@ impl Engine {
     }
 
     /// Output noise at node `output` and the equivalent input noise of source `input`, as
-    /// spectral densities in V/sqrt(Hz) (`onoise_spectrum`, `inoise_spectrum` as in ngspice).
+    /// spectral densities (`onoise_spectrum` in V/sqrt(Hz), `inoise_spectrum` in V/sqrt(Hz) for a
+    /// voltage source and A/sqrt(Hz) for a current source, as in ngspice).
     pub fn run_noise(&mut self, output: &str, input: &str, ppd: u32, fstart: f64, fstop: f64) -> Result<Dataset, SimError> {
         self.run_noise_sweep(output, input, ics_core::sim_setup::AcSweep::Dec, ppd, fstart, fstop)
     }
@@ -1954,6 +1955,7 @@ impl Engine {
             .iter()
             .position(|e| e.name().eq_ignore_ascii_case(input) && matches!(e, Element::V { .. } | Element::I { .. }))
             .ok_or_else(|| SimError::Engine(format!("noise: input source '{input}' not found")))?;
+        let in_kind = if matches!(self.c.elements[src], Element::I { .. }) { VecKind::Current } else { VecKind::Voltage };
         let x0 = self.op(None)?;
         let caps_at_op: Vec<f64> = (0..self.caps.len()).map(|k| self.cap_qc(k, &x0, None).1).collect();
         let mut ds = Dataset {
@@ -1963,7 +1965,7 @@ impl Engine {
             vectors: vec![
                 Vector::real("frequency", VecKind::Frequency, vec![]),
                 Vector::real("onoise_spectrum", VecKind::Voltage, vec![]),
-                Vector::real("inoise_spectrum", VecKind::Voltage, vec![]),
+                Vector::real("inoise_spectrum", in_kind, vec![]),
             ],
             devices: vec![],
         };
@@ -2776,6 +2778,13 @@ Rl out 0 50
         assert!((on / expect - 1.0).abs() < 1e-6, "{on} vs {expect}");
         let inn = ds.get("inoise_spectrum").unwrap().re[0];
         assert!((inn / (2.0 * expect) - 1.0).abs() < 1e-6, "{inn}");
+        assert_eq!(ds.get("inoise_spectrum").unwrap().kind, VecKind::Voltage);
+        // Referred to a current source the input noise is a current density.
+        let mut e = engine("* t\nI1 0 out DC 0 AC 1\nR1 out 0 1k\n.end");
+        let ds = e.run_noise("out", "i1", 1, 1e3, 1e4).unwrap();
+        let v = ds.get("inoise_spectrum").unwrap();
+        assert_eq!(v.kind, VecKind::Current);
+        assert!((v.re[0] / (4.0 * KT / 1e3).sqrt() - 1.0).abs() < 1e-6, "{}", v.re[0]);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! BSIM4 MOSFET model (`level=14` / `level=54`): drain current.
+//! BSIM4 MOSFET model (`level=14` / `level=54`): drain current, leakage, charges and noise.
 //!
 //! The equations follow BSIM4 4.8 as implemented in ngspice (`b4temp.c`, `b4ld.c`),
 //! Copyright (c) University of California, BSIM Research Group (BSIM4 is licensed under the
@@ -10,10 +10,13 @@
 //! charge; mobility models 0, 1 and 2; velocity saturation and overshoot; source-end velocity
 //! limit; the internal source/drain resistance (`rdsmod=0`); CLM, DIBL, DITS and SCBE output
 //! conductance; temperature (`tempmod` 0 to 3); size dependence (`l*`, `w*`, `p*` binning);
-//! multiple fingers. Not covered (reported as warnings): gate tunnelling, GIDL / GISL,
-//! substrate current, external / bias-dependent `rdsmod=1` resistances, gate and body resistance
-//! networks, layout-dependent stress and well-proximity effects, high-k `mtrlmod`, and the BSIM4
-//! charge model (gate capacitances use the engine's Meyer model).
+//! multiple fingers; substrate current, GIDL / GISL and gate tunnelling (`igcmod`, `igbmod`)
+//! ([`Inst::leakage`]); the junction diodes (`diomod=1`); the charge-thickness charge model
+//! (`capmod=2`) with bias-dependent overlap and junction depletion charges
+//! ([`Inst::charges`]); thermal (`tnoimod=0`) and flicker (`fnoimod` 0 / 1) noise. Not
+//! covered (reported as warnings): external / bias-dependent `rdsmod=1` resistances, gate and
+//! body resistance networks, non-quasi-static models, layout-dependent stress and
+//! well-proximity effects (`sa`, `sb`, ...), high-k `mtrlmod` and trap-assisted tunnelling.
 
 use std::collections::HashMap;
 use std::ops::{Add, Div, Mul, Neg, Sub};

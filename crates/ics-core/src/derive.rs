@@ -188,8 +188,8 @@ pub fn suggest(sch: &Schematic, tech: &Tech, specs: &[Spec]) -> Vec<Suggestion> 
             let (lo, hi) = if param == "w" { (cur / 4.0, cur * 4.0) } else { (cur, cur * 4.0) };
             let var = OptVar {
                 target: names.iter().map(|n| format!("{n}.{param}")).collect::<Vec<_>>().join(","),
-                min: crate::units::format_eng(lo.max(lo_min), ""),
-                max: crate::units::format_eng(hi, ""),
+                min: crate::optimize::spice_number(lo.max(lo_min)),
+                max: crate::optimize::spice_number(hi),
                 log: true,
                 step: "10n".into(),
             };
@@ -212,8 +212,8 @@ pub fn suggest(sch: &Schematic, tech: &Tech, specs: &[Spec]) -> Vec<Suggestion> 
         let Some(cur) = num(i.param(param)) else { continue };
         let var = OptVar {
             target: format!("{}.{param}", i.name),
-            min: crate::units::format_eng(cur / 4.0, ""),
-            max: crate::units::format_eng(cur * 4.0, ""),
+            min: crate::optimize::spice_number(cur / 4.0),
+            max: crate::optimize::spice_number(cur * 4.0),
             log: true,
             step: String::new(),
         };
@@ -245,10 +245,11 @@ pub fn spec_presets(sch: &Schematic, sim: &SimSetup, specs: &[Spec]) -> Vec<Spec
     let mut v = vec![];
     // Supply current: the DC source driving the supply net, so power can be capped.
     let conn = connectivity::extract(sch);
+    let supply = sch.instances.iter().find(|i| {
+        i.kind == DeviceKind::VSource && conn.net_of(i.id, "p").is_some_and(|n| n.to_ascii_lowercase().starts_with("vdd"))
+    });
     if enabled("op")
-        && let Some(src) = sch.instances.iter().find(|i| {
-            i.kind == DeviceKind::VSource && conn.net_of(i.id, "p").is_some_and(|n| n.to_ascii_lowercase().starts_with("vdd"))
-        })
+        && let Some(src) = supply
     {
         v.push(mk("op", "idd", &format!("-i({})", src.name.to_ascii_lowercase())));
     }
@@ -259,8 +260,11 @@ pub fn spec_presets(sch: &Schematic, sim: &SimSetup, specs: &[Spec]) -> Vec<Spec
         v.push(mk("ac", "bw", "bandwidth(v(out))"));
     }
     if enabled("tran") && has_net("in") && has_net("out") {
-        v.push(mk("tran", "tphl", "delay(v(in), 0.9, v(out), 0.9, rise, fall)"));
-        v.push(mk("tran", "tplh", "delay(v(in), 0.9, v(out), 0.9, fall, rise)"));
+        // Delays from 50 % to 50 % of the supply (generic180's 1.8 V when no supply source is found).
+        let vdd = supply.and_then(|s| crate::units::parse_spice(s.param("dc"))).filter(|v| *v > 0.0).unwrap_or(1.8);
+        let half = (vdd / 2.0 * 1e6).round() / 1e6;
+        v.push(mk("tran", "tphl", &format!("delay(v(in), {half}, v(out), {half}, rise, fall)"))); // i18n: ignore
+        v.push(mk("tran", "tplh", &format!("delay(v(in), {half}, v(out), {half}, fall, rise)"))); // i18n: ignore
     }
     v.retain(|p| !specs.iter().any(|s| s.name == p.name || s.expr.replace(' ', "") == p.expr.replace(' ', "")));
     v
@@ -360,5 +364,33 @@ mod tests {
         );
         let n = derived_note("work/ota5t", &[Spec { name: "gain_db".into(), min: "40".into(), ..Default::default() }]);
         assert_eq!(n, "Derived from work/ota5t for: gain_db >= 40.");
+    }
+
+    #[test]
+    fn delay_presets_measure_at_half_the_supply() {
+        let (mut sch, mut sim, _) = cell("cmos_inverter");
+        sim.set_enabled("tran", true);
+        let expr = |sch: &Schematic| spec_presets(sch, &sim, &[]).into_iter().find(|p| p.name == "tphl").map(|p| p.expr);
+        assert_eq!(expr(&sch).as_deref(), Some("delay(v(in), 0.9, v(out), 0.9, rise, fall)"));
+        let conn = connectivity::extract(&sch);
+        let vdd = sch
+            .instances
+            .iter_mut()
+            .find(|i| i.kind == DeviceKind::VSource && conn.net_of(i.id, "p").is_some_and(|n| n.starts_with("vdd")))
+            .unwrap();
+        vdd.params.insert("dc".into(), "3.3".into());
+        assert_eq!(expr(&sch).as_deref(), Some("delay(v(in), 1.65, v(out), 1.65, rise, fall)"));
+    }
+
+    #[test]
+    fn ranges_read_back_as_spice_numbers() {
+        // `M` is milli in SPICE: a 1 MΩ resistor's range must be written with `meg`.
+        let (mut sch, _, specs) = cell("ldo");
+        let r1 = sch.instances.iter_mut().find(|i| i.name == "R1").unwrap();
+        r1.params.insert("r".into(), "1meg".into());
+        let s = suggest(&sch, &Tech::generic(), &specs);
+        let v = &s.iter().find(|s| s.var.target == "R1.r").unwrap().var;
+        assert_eq!((v.min.as_str(), v.max.as_str()), ("250k", "4meg"));
+        assert_eq!(crate::units::parse_spice(&v.max), Some(4e6));
     }
 }

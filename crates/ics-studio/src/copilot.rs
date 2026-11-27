@@ -427,18 +427,206 @@ everyday comparisons. Use the user's own numbers from the tools and the course; 
 (or ko/learn/) give its text and numbers. Point the user to the right chapter.\n\
 9. End with a short recap of what the user learned and one thing to try next.";
 
+/// What the copilot knows about IC Studio before it calls a tool: the window, the flows, the units
+/// and the models and formulas the tools compute with. The menus are added from [`MENUS`].
+const PRIMER: &str = include_str!("copilot_primer.md");
+
+/// The main menu bar with its exact English labels (`a > b` for a submenu item), so the copilot
+/// names menu paths that exist. A test checks every label against the menu code and the Korean table.
+pub const MENUS: &[(&str, &[&str])] = &[
+    (
+        "File",
+        &[
+            "New Project…",
+            "New Demo Project",
+            "Open Example",
+            "Open Project…",
+            "Open Recent",
+            "Save",
+            "Save As…",
+            "Check and Save",
+            "New Cell…",
+            "Copy Cell as New…",
+            "Import > GDSII / OASIS…",
+            "Import > PDK…",
+            "Import > GDSII / OASIS with Layer Map…",
+            "Import > LEF abstracts…",
+            "Import > DEF placement…",
+            "Import > KLayout layer properties…",
+            "Import > CDL netlist (Virtuoso)…",
+            "Import > Virtuoso library (dump or cds.lib)…",
+            "Export > SPICE netlist…",
+            "Export > Cell GDSII…",
+            "Export > Library GDSII…",
+            "Export > Virtuoso schematic (SKILL)…",
+            "Export > Virtuoso dump script (icsDump.il)…",
+            "Export > Cell OASIS…",
+            "Export > Library OASIS…",
+            "Export > Cell LEF abstract…",
+            "Export > Cell DEF…",
+            "Close Project",
+            "Settings…",
+            "Quit",
+        ],
+    ),
+    ("Edit", &["Undo", "Redo", "Delete"]),
+    ("View", &["Fit to Window", "Toggle Console", "Toggle Explorer"]),
+    (
+        "Simulation",
+        &[
+            "Run",
+            "Export Netlist…",
+            "Corner / Sweep Manager…",
+            "Monte Carlo…",
+            "Optimizer…",
+            "Derive New Design…",
+            "Verification…",
+            "Waveform Calculator…",
+            "Results Browser…",
+            "Pixel Optics…",
+            "Silicon Correlation…",
+            "Process Emulation…",
+            "Process Data…",
+        ],
+    ),
+    (
+        "Verify",
+        &[
+            "Run DRC",
+            "Extract Nets",
+            "Schematic from Layout",
+            "Pixel Circuit…",
+            "Run LVS",
+            "Mark Net",
+            "Run Sign-off Runset",
+            "Import Sign-off Results…",
+            "Generate Layout from Schematic",
+            "Route Flylines",
+            "Check Against Source",
+            "Update Components and Nets",
+            "Update and Delete Extra Devices",
+        ],
+    ),
+    (
+        "Tools",
+        &[
+            "Design Copilot…",
+            "AI Models…",
+            "Check Schematic",
+            "Place Cell Instance…",
+            "Update Cell Instance Pins",
+            "Edit Symbol Pins…",
+            "Hierarchy Browser…",
+            "Net Browser…",
+            "Layout Generators > Guard Ring…",
+            "Layout Generators > Via Array…",
+            "Layout Generators > Matched Placement…",
+            "DRC Rule Designer…",
+            "PCell Designer…",
+            "DRC Deck > Import Deck…",
+            "DRC Deck > Export Deck…",
+            "DRC Deck > Link Shared Deck…",
+            "DRC Deck > Reload Shared Deck",
+            "DRC Deck > Unlink Shared Deck",
+            "Stream Layer Map…",
+            "Layer Display…",
+            "Dummy Fill…",
+            "OPC…",
+            "SKILL CIW",
+            "Load SKILL (.il)…",
+        ],
+    ),
+    (
+        "Help",
+        &[
+            "Learn IC Design…",
+            "Interactive Tutorial",
+            "Beginner Mode",
+            "User Guide",
+            "Keyboard Shortcuts",
+            "Command Palette",
+            "Check for Updates…",
+            "About IC Studio",
+        ],
+    ),
+];
+
+/// The Korean label of an English one.
+fn ko_label(en: &str) -> Option<&'static str> {
+    crate::i18n_ko::all().find(|(k, _)| *k == en).map(|(_, v)| *v)
+}
+
+/// [`MENUS`] as one line per menu, each label through `label`; consecutive items of a submenu
+/// are grouped (`Import > {a; b}`).
+fn menu_lines(label: impl Fn(&str) -> String) -> String {
+    let mut out = String::new();
+    for (menu, items) in MENUS {
+        let mut parts: Vec<String> = vec![];
+        let mut sub: Option<(&str, Vec<String>)> = None;
+        let flush = |sub: &mut Option<(&str, Vec<String>)>, parts: &mut Vec<String>| {
+            if let Some((s, v)) = sub.take() {
+                parts.push(format!("{} > {{{}}}", label(s), v.join("; ")));
+            }
+        };
+        for item in *items {
+            match item.split_once(" > ") {
+                Some((s, rest)) => {
+                    if sub.as_ref().is_some_and(|(cur, _)| *cur != s) {
+                        flush(&mut sub, &mut parts);
+                    }
+                    sub.get_or_insert((s, vec![])).1.push(label(rest));
+                }
+                None => {
+                    flush(&mut sub, &mut parts);
+                    parts.push(label(item));
+                }
+            }
+        }
+        flush(&mut sub, &mut parts);
+        out += &format!("- {}: {}\n", label(menu), parts.join("; "));
+    }
+    out
+}
+
+/// The primer with the menus, in Korean too when the UI is.
+fn primer(lang: crate::i18n::Lang) -> String {
+    let mut s = format!(
+        "{PRIMER}\nMain menus (exact labels; name a path as **Menu > Item**, a submenu as **Menu > Sub > Item**; \
+         View also lists the four workspaces):\n{}",
+        menu_lines(str::to_string)
+    );
+    if lang == crate::i18n::Lang::Ko {
+        s += "The user's window is in Korean, where the same menus read as below; give menu paths with these labels:\n";
+        s += &menu_lines(|l| ko_label(l).unwrap_or(l).to_string());
+    }
+    s += "In the Layout workspace the Edit and View menus gain the layout commands and the Create and Options menus \
+          appear (their labels are English in every language; bindkeys in brackets):\n";
+    for (menu, items) in crate::layout_view::LayAction::MENUS.iter().filter(|m| m.0 != "Assist") {
+        let names: Vec<String> = items
+            .iter()
+            .flatten()
+            .map(|a| if a.key().is_empty() { a.name().to_string() } else { format!("{} ({})", a.name(), a.key()) })
+            .collect();
+        s += &format!("- {menu}: {}\n", names.join("; "));
+    }
+    s
+}
+
 fn system_prompt(context: &str, plan_mode: bool, tutor: bool) -> String {
     if tutor {
         return format!(
             "You are the tutor of IC Studio, a full-custom IC design environment (schematic, SPICE simulation, layout, \
              DRC/LVS), working next to the user's window: through the tools you see their project and results, and \
              through guide_step you point at the window and wait for them.\n\n{TUTOR}\n\n\
-             Questions about using IC Studio (menus, buttons, shortcuts): answer from the user manual with docs_search \
-             and docs_read, with its exact menu paths; never invent a menu or button.\n\n\
+             Questions about using IC Studio (menus, buttons, shortcuts): the primer below has the window, the menus \
+             and the flows; for details answer from the user manual with docs_search and docs_read, with its exact menu \
+             paths; never invent a menu or button. Questions about how a number comes about: the FORMULAS part of the \
+             primer, and docs_read page formulas (ko/formulas) for the full reference.\n\n\
              Keep formatting light: plain sentences, short lists, **bold** for key numbers, `inline code` for cell, net \
              and device names. No tables or headings.\n\n\
              Language: write everything (steps, questions, explanations) in the language of the user's latest message; \
-             if it is Korean, write Korean throughout.\n\n{context}"
+             if it is Korean, write Korean throughout.\n\n{}\n\n{context}",
+            primer(crate::i18n::current())
         );
     }
     let mode = if plan_mode {
@@ -467,12 +655,17 @@ fn system_prompt(context: &str, plan_mode: bool, tutor: bool) -> String {
          call more than twice. If you are stuck, say so and ask the user.\n\
          5. Finish with a short report: what changed, the verified numbers, and anything left open.\n\n\
          Questions about using IC Studio (where a menu item or button is, shortcuts, how to do a task in the \
-         window, settings, file formats, the PDK / technology files, the CLI, MCP or Python API): answer from the user \
-         manual. Call docs_search (in the user's language; try other words or lang en when little comes back), then \
+         window, settings, file formats, the PDK / technology files, the CLI, MCP or Python API): the primer below \
+         gives the window, the exact menus and the everyday flow, enough for a short answer; for anything more, \
+         answer from the user manual. Call docs_search (in the user's language; try other words or lang en when little comes back), then \
          docs_read the best one or two sections, and answer with the manual's exact menu paths (**File > Import > \
          ...**), buttons and shortcuts, naming the page and section you used. Never invent a menu, button or \
          shortcut the manual does not describe: say it is not documented. A pure question needs no task list and no \
          edits; offer to do the task with the tools when that helps.\n\n\
+         Questions about how a number comes about (device models, noise, the measurements, extraction, EM/IR, \
+         mismatch, Monte Carlo and yield, the optimizer, process emulation, pixels): answer from the FORMULAS part \
+         of the primer, docs_read page formulas (ko/formulas) for the rest, and work the user's own numbers through \
+         the formula. Say when a result rests on a simplification the primer names.\n\n\
          Starting a new design from an existing one (the way most users, many of them new to IC design, work): \
          derive_design does the whole job in one call once the targets are known (dry_run first shows which \
          parameters it would change); use the steps below when the user wants control over them. \
@@ -499,7 +692,8 @@ fn system_prompt(context: &str, plan_mode: bool, tutor: bool) -> String {
          anything else the user may want to copy. No tables or headings.\n\n\
          Language: write every sentence (the notes before tool calls, questions, plans, the task list and the report) \
          in the language of the user's latest message; if it is Korean, write Korean throughout.\n\n\
-         {mode}\n\n{context}"
+         {mode}\n\n{}\n\n{context}",
+        primer(crate::i18n::current())
     )
 }
 
@@ -1229,6 +1423,58 @@ mod tests {
         let t = parse_todos(a.as_object().unwrap()).unwrap();
         assert_eq!(t[1], Todo { content: "Route".into(), status: TodoStatus::InProgress });
         assert!(parse_todos(json!({"todos": [{"content": "x", "status": "done"}]}).as_object().unwrap()).is_err());
+    }
+
+    #[test]
+    fn primer_menus_are_the_real_menus() {
+        // Every label must be a menu item of the menu bar (`t("…")` in app.rs) with a Korean
+        // translation, so the copilot never names a menu path that does not exist.
+        let app = include_str!("app.rs");
+        for (menu, items) in MENUS {
+            for label in std::iter::once(*menu).chain(items.iter().flat_map(|i| i.split(" > "))) {
+                assert!(app.contains(&format!("t(\"{label}\")")), "{label} is not a menu label in app.rs");
+                assert!(ko_label(label).is_some(), "{label} has no Korean label");
+            }
+        }
+        let en = primer(crate::i18n::Lang::En);
+        assert!(en.contains("- Verify: Run DRC; Extract Nets;"), "{en}");
+        assert!(en.contains("Import > {GDSII / OASIS…; PDK…;"), "{en}");
+        assert!(en.contains("- Create: Rectangle (r);"), "layout menus: {en}");
+        assert!(en.contains("FORMULAS"));
+        assert!(!en.contains("파일"), "Korean menus only for a Korean window");
+        let ko = primer(crate::i18n::Lang::Ko);
+        assert!(ko.contains(&format!("- {}: ", ko_label("Verify").unwrap())), "{ko}");
+        assert!(ko.contains(ko_label("Derive New Design…").unwrap()));
+    }
+
+    #[test]
+    fn primer_names_real_tools_and_pages() {
+        let names: Vec<String> = declarations().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect();
+        for t in [
+            "run_drc",
+            "run_lvs",
+            "extract",
+            "check_against_source",
+            "update_from_source",
+            "simulate",
+            "generate_layout",
+            "route",
+            "optimize",
+            "derive_design",
+            "post_layout_parasitics",
+            "emir",
+            "docs_read",
+        ] {
+            assert!(PRIMER.contains(t), "{t} not in the primer");
+            assert!(names.iter().any(|n| n == t), "{t} is not a tool");
+        }
+        for page in ["formulas", "ko/formulas", "demos", "verification"] {
+            assert!(ics_mcp::docs::read(page, None).is_ok(), "manual page {page}");
+        }
+        for (plan, tutor) in [(false, false), (true, false), (false, true)] {
+            let s = system_prompt("No project is open.", plan, tutor);
+            assert!(s.contains("IC STUDIO PRIMER") && s.contains("Main menus") && s.ends_with("No project is open."));
+        }
     }
 
     #[test]

@@ -141,6 +141,18 @@ pub fn coupling_caps(x: &Extraction, tech: &Tech) -> Vec<Coupling> {
         }
     }
 
+    // Plate overlaps extracted as capacitor devices (a poly-poly capacitor) are in the netlist
+    // with their PDK value already: they are not parasitics too.
+    let devices: Vec<([usize; 2], [usize; 2], IRect)> = x
+        .passives
+        .iter()
+        .filter(|p| p.kind == crate::extract::PassiveKind::Capacitor)
+        .filter_map(|p| {
+            let cd = tech.capacitors.iter().find(|c| c.name == p.model)?;
+            let (b, t) = (tech.layer_index(&cd.bottom)?, tech.layer_index(&cd.top)?);
+            Some(([b.min(t), b.max(t)], [p.a.min(p.b), p.a.max(p.b)], p.body))
+        })
+        .collect();
     for (i, &(lo, c_lo, _)) in layers.iter().enumerate() {
         for (j, &(hi, c_hi, _)) in layers.iter().enumerate().skip(i + 1) {
             let (Some(t_lo), Some(t_hi)) = (trees.get(&lo), trees.get(&hi)) else { continue };
@@ -152,8 +164,19 @@ pub fn coupling_caps(x: &Extraction, tech: &Tech) -> Vec<Coupling> {
             for p in t_hi.iter() {
                 for q in within(t_lo, p.rect).filter(|q| q.net != p.net && q.rect.intersects(&p.rect)) {
                     let ov = overlap(&p.rect, &q.rect);
-                    let shields: Vec<IRect> =
-                        between.iter().flat_map(|t| within(t, ov)).filter(|m| m.rect.intersects(&ov)).map(|m| m.rect).collect();
+                    let pair = [p.net.min(q.net), p.net.max(q.net)];
+                    let shields: Vec<IRect> = between
+                        .iter()
+                        .flat_map(|t| within(t, ov))
+                        .filter(|m| m.rect.intersects(&ov))
+                        .map(|m| m.rect)
+                        .chain(
+                            devices
+                                .iter()
+                                .filter(|d| d.0 == [lo.min(hi), lo.max(hi)] && d.1 == pair && d.2.intersects(&ov))
+                                .map(|d| d.2),
+                        )
+                        .collect();
                     let area = if shields.is_empty() {
                         (ov.width() as i128 * ov.height() as i128) as f64
                     } else {
@@ -515,21 +538,24 @@ impl PostLayout {
             // PDK subcircuit models put an `X` in front of the schematic's `M` name.
             let first = element.strip_prefix('X').filter(|k| k.starts_with('M')).unwrap_or(&element).to_string();
             let mos = first.starts_with('M');
-            match self.terminals.get(&first).filter(|_| mos) {
-                Some(nodes) => {
-                    let mut toks: Vec<&str> = line.split_whitespace().collect();
-                    for (k, n) in nodes.iter().enumerate() {
-                        if let (Some(n), Some(t)) = (n, toks.get_mut(k + 1)) {
-                            *t = n;
-                        }
+            let junction = self.junctions.get(&first).filter(|_| mos);
+            let nodes = self.terminals.get(&first).filter(|_| mos);
+            if nodes.is_none() && junction.is_none() {
+                out += line;
+            } else {
+                let mut toks: Vec<&str> = line.split_whitespace().collect();
+                for (k, n) in nodes.into_iter().flatten().enumerate() {
+                    if let (Some(n), Some(t)) = (n, toks.get_mut(k + 1)) {
+                        *t = n;
                     }
-                    out += &toks.join(" ");
                 }
-                None => out += line,
-            }
-            if let Some(j) = self.junctions.get(&first).filter(|_| mos) {
-                out.push(' ');
-                out += j;
+                if let Some(j) = junction {
+                    // The extracted values replace the schematic's (estimated) ones.
+                    let keys: Vec<&str> = j.split_whitespace().filter_map(|kv| kv.split_once('=')).map(|(k, _)| k).collect();
+                    toks.retain(|t| !t.split_once('=').is_some_and(|(k, _)| keys.iter().any(|x| x.eq_ignore_ascii_case(k))));
+                    toks.extend(j.split_whitespace());
+                }
+                out += &toks.join(" ");
             }
             out.push('\n');
         }
@@ -941,6 +967,33 @@ mod tests {
     }
 
     #[test]
+    fn capacitor_devices_are_not_parasitics_too() {
+        // generic180 extracts every poly / poly2 overlap of two nets as a cpip device.
+        let tech = Tech::generic();
+        let (poly, poly2) = (tech.layer_index("poly").unwrap(), tech.layer_index("poly2").unwrap());
+        let mut x = nets(vec![net("a", poly, &[IRect::new(0, 0, 4000, 2000)]), net("b", poly2, &[IRect::new(0, 0, 6000, 2000)])]);
+        let plate = 1.0 / (1.0 / tech.layer_cap("poly2").unwrap().area - 1.0 / tech.layer_cap("poly").unwrap().area);
+        assert!(approx(coupling_caps(&x, &tech)[0].farads, plate * 8.0 * 1e-18));
+        // The device covers half the overlap: only the other half couples.
+        x.passives.push(crate::extract::Passive {
+            kind: crate::extract::PassiveKind::Capacitor,
+            model: "cpip".into(),
+            name: "C1".into(),
+            value: 2.65 * 4.0 * 1e-15,
+            a: 0,
+            b: 1,
+            w: 0,
+            l: 0,
+            area: 2000 * 2000,
+            perimeter: 8000,
+            body: IRect::new(0, 0, 2000, 2000),
+        });
+        assert!(approx(coupling_caps(&x, &tech)[0].farads, plate * 4.0 * 1e-18));
+        x.passives[0].body = IRect::new(0, 0, 4000, 2000);
+        assert!(coupling_caps(&x, &tech).is_empty(), "the whole overlap is the device");
+    }
+
+    #[test]
     fn annotate_format_ground_and_threshold() {
         let caps = [
             NetCap { net: "n_out".into(), farads: 1.234e-16 },
@@ -1093,6 +1146,9 @@ mod tests {
         assert!(
             pl.apply("* t\nR1 a 0 1\n").ends_with("* --- layout parasitics ---\nRpar_out_0 out out_n1 2\nCpar_out out 0 1e-15\n")
         );
+        // Extracted junctions replace the schematic's estimate.
+        let est = pl.apply("* t\nM1 out in 0 0 nmos w=1u l=1u ad=4.8e-13 as=4.8e-13 pd=1.96e-6 ps=1.96e-6\n");
+        assert!(est.contains("M1 out_n1 in 0 0 nmos w=1u l=1u ad=1e-12 as=2e-12 pd=4e-6 ps=6e-6\n"), "{est}");
     }
 
     #[test]

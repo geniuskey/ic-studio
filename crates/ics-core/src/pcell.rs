@@ -479,6 +479,29 @@ pub fn mos_columns(tech: &Tech, l: i64, fingers: u32) -> Result<Vec<i64>, String
     Ok((0..=fingers as i64).map(|k| sd_end - gcs - c / 2 + k * pitch).collect())
 }
 
+/// Area (dbu²) and perimeter (dbu) of a source or drain diffusion.
+pub type Diffusion = (i64, i64);
+
+/// Junction area (dbu²) and perimeter (dbu) of the drain and of the source of a MOS PCell of
+/// `fingers` fingers of width `w` and length `l`, as extraction measures them: each source /
+/// drain diffusion piece without its edges against a gate. Pieces alternate source, drain,
+/// source, ...; the two end pieces reach past the outer contacts. `((ad, pd), (as, ps))`.
+pub fn mos_junctions(tech: &Tech, w: i64, l: i64, fingers: u32) -> Result<(Diffusion, Diffusion), String> {
+    let con = diff_contact(tech)?;
+    let g = tech.grid;
+    let (w, l) = (snap(w, g), snap(l, g));
+    let (c, gcs) = (con.cut_size, gate_contact_space(tech, con, l));
+    let (sd_end, sd_in) = (con.enc_bottom + c + gcs, c + 2 * gcs);
+    let (mut d, mut s) = ((0, 0), (0, 0));
+    for k in 0..=fingers {
+        let piece = if k == 0 || k == fingers { (sd_end * w, 2 * sd_end + w) } else { (sd_in * w, 2 * sd_in) };
+        let t = if k % 2 == 0 { &mut s } else { &mut d };
+        t.0 += piece.0;
+        t.1 += piece.1;
+    }
+    Ok((d, s))
+}
+
 /// Contact to gate spacing for gate length `l`: the rule, or more so that neighbouring source /
 /// drain contact plates keep the first metal's spacing.
 fn gate_contact_space(tech: &Tech, con: &ViaDef, l: i64) -> i64 {
@@ -734,6 +757,24 @@ mod tests {
 
     use super::*;
     use crate::drc::run_tech_deck;
+
+    #[test]
+    fn junction_estimate_matches_extraction() {
+        let tech = Tech::generic();
+        // One finger of the generic MOS: 480 nm of diffusion each side, the gate edge excluded.
+        assert_eq!(mos_junctions(&tech, 1000, 180, 1), Ok(((480_000, 1960), (480_000, 1960))));
+        // Two fingers: the source pieces at both ends, the drain piece between the gates.
+        assert_eq!(mos_junctions(&tech, 1000, 180, 2), Ok(((540_000, 1080), (960_000, 3920))));
+        for (pmos, w, l, nf) in [(false, 1000, 180, 1), (true, 2000, 180, 3), (false, 4000, 500, 4)] {
+            let lay = PCell::mos(pmos, w, l, nf).generate(&tech).unwrap();
+            let x = crate::extract::extract(&lay, &NoCells, &tech);
+            assert_eq!(x.devices.len(), nf as usize);
+            let (a, p) =
+                x.devices.iter().fold((0.0, 0.0), |(a, p), d| (a + d.jd.area + d.js.area, p + d.jd.perimeter + d.js.perimeter));
+            let ((ad, pd), (as_, ps)) = mos_junctions(&tech, w, l, nf).unwrap();
+            assert!((a - (ad + as_) as f64).abs() < 1.0 && (p - (pd + ps) as f64).abs() < 1.0, "{nf} fingers: {a} {p}");
+        }
+    }
     use crate::hier::NoCells;
     use crate::project::valid_name;
 

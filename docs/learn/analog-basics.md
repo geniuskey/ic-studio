@@ -104,7 +104,7 @@ r<sub>o</sub> in parallel with the load capacitance C<sub>L</sub>, which forms t
 f_-3dB = 1 / (2π · (R_D || r_o) · C_L)
 ```
 
-With 100 fF of load, f<sub>-3dB</sub> ≈ 33 MHz (simulated: 33 MHz). Above it the gain
+With 100 fF of load, f<sub>-3dB</sub> ≈ 33 MHz (simulated: 32 MHz, with the transistor's own drain capacitance). Above it the gain
 drops by 20 dB per decade, until it reaches 1 (0 dB) at the **unity-gain frequency**:
 
 ```text

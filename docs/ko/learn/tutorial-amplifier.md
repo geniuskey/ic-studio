@@ -54,15 +54,18 @@
    - **AC 크기** `1`(AC 해석용 소신호 입력),
    - **과도 (Transient)** `SIN(0.7 10m 1meg)`(바이어스 위에 얹은 10 mV, 1 MHz 사인파).
 
-넷리스트(아래 패널의 **넷리스트** 탭)는 다음과 같아야 합니다.
+넷리스트(아래 패널의 **넷리스트** 탭)에는 다음 소자들이 나오고, 그 뒤에 모델 카드가 이어져야 합니다.
 
 ```spice
-M1 out in 0 0 nmos w=2u l=1u
-RD vdd out 50k
 CL out 0 100f
+M1 out in 0 0 nmos__l1000 w=2u l=1u ad=9.6e-13 as=9.6e-13 pd=2.96e-6 ps=2.96e-6
+RD vdd out 50k
 VDD vdd 0 DC 1.8
 VIN in 0 DC 0.7 AC 1 SIN(0.7 10m 1meg)
 ```
+
+`nmos__l1000`은 L = 1 µm용 범용 NMOS 카드(λ를 0.5 µm / L로 스케일)이고, `ad as pd ps`는
+트랜지스터의 PCell에서 추정한 드레인·소스 접합입니다.
 
 <!-- check: my_cs에 증폭기와 테스트벤치 회로도가 있음(소자 5개) | my_cs schematic 5 -->
 
@@ -103,14 +106,14 @@ m1  saturation  id=18.13µ  vgs=700m  vds=893.7m  vth=450m  gm=145µ  gds=700n
 | 측정값 | 값 | 의미 |
 |---|---|---|
 | GAIN @ fstart | 16.9 dB | 계산대로 ×7.0 |
-| f -3 dB | ≈ 33 MHz | 대역폭 |
-| UNITY GAIN f | ≈ 230 MHz | 이득이 1로 떨어지는 곳 |
+| f -3 dB | ≈ 32 MHz | 대역폭 |
+| UNITY GAIN f | ≈ 225 MHz | 이득이 1로 떨어지는 곳 |
 
 AC 소스의 크기가 1이므로 `v(out)`이 *곧* 이득입니다. 일반적으로는
 [파형 계산기](../tools.md#waveform-calculator)에서 `v(out)/v(in)`을 씁니다.
 `bandwidth(v(out)/v(in))`와 `ugf(v(out)/v(in))`처럼요.
 
-사양 확인: 이득 16.9 dB ≥ 15 dB, 대역폭 33 MHz ≥ 20 MHz. **둘 다 만족합니다.**
+사양 확인: 이득 16.9 dB ≥ 15 dB, 대역폭 32 MHz ≥ 20 MHz. **둘 다 만족합니다.**
 
 <!-- check: 이득 15 dB 이상 | my_cs measure ac "max(db(v(out)))" 15 "" -->
 
@@ -142,9 +145,9 @@ AC 소스의 크기가 1이므로 `v(out)`이 *곧* 이득입니다. 일반적�
 
 | R<sub>D</sub> | v(out) 바이어스 | M1 영역 | 이득 | f -3 dB |
 |---|---|---|---|---|
-| 30 kΩ | 1.25 V | saturation | 12.7 dB (×4.3) | 54 MHz |
-| 50 kΩ | 0.89 V | saturation | 16.9 dB (×7.0) | 33 MHz |
-| 70 kΩ | 0.55 V | saturation | 19.6 dB (×9.5) | 24 MHz |
+| 30 kΩ | 1.25 V | saturation | 12.7 dB (×4.3) | 53 MHz |
+| 50 kΩ | 0.89 V | saturation | 16.9 dB (×7.0) | 32 MHz |
+| 70 kΩ | 0.55 V | saturation | 19.6 dB (×9.5) | 23 MHz |
 | 100 kΩ | 0.18 V | **triode** | 6.0 dB (×2.0) | — |
 
 - 70 kΩ까지는 이득이 커지는 만큼 대역폭이 줄어듭니다. 둘의 곱인 **이득-대역폭**은
@@ -166,9 +169,9 @@ AC 소스의 크기가 1이므로 `v(out)`이 *곧* 이득입니다. 일반적�
 -->
 
 <!-- quiz
-? R<sub>D</sub> = 70 kΩ에서 이득은 ×9.5, f<sub>-3dB</sub>는 24 MHz입니다. 이득-대역폭 곱은 몇 MHz일까요?
-= 228 ±10 MHz
-> 9.5 × 24 MHz ≈ 228 MHz로 g<sub>m</sub>/(2π·C<sub>L</sub>) ≈ 230 MHz에 가깝습니다. R<sub>D</sub>는 곱을 거의 일정하게 둔 채 이득과 대역폭을 맞바꿉니다.
+? R<sub>D</sub> = 70 kΩ에서 이득은 ×9.5, f<sub>-3dB</sub>는 23 MHz입니다. 이득-대역폭 곱은 몇 MHz일까요?
+= 220 ±10 MHz
+> 9.5 × 23 MHz ≈ 220 MHz로 g<sub>m</sub>/(2π·C<sub>L</sub>) ≈ 230 MHz에 가깝습니다. R<sub>D</sub>는 곱을 거의 일정하게 둔 채 이득과 대역폭을 맞바꿉니다.
 -->
 
 ## 7단계: 견고한가?

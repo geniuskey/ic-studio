@@ -289,10 +289,10 @@ enum Cmd {
         /// Measurement `analysis:expression`, e.g. `ac:bw(v(out))` or `op:v(out)` (repeatable).
         #[arg(long = "measure", required = true)]
         measures: Vec<String>,
-        /// Threshold mismatch coefficient in V·m (5n = 5 mV·µm).
+        /// Threshold mismatch coefficient per device in V·m (5n = 5 mV·µm; a pair differs √2 times more).
         #[arg(long, default_value = "5n")]
         avt: String,
-        /// Current factor mismatch coefficient in m (10n = 1 %·µm).
+        /// Current factor mismatch coefficient per device in m (10n = 1 %·µm; a pair differs √2 times more).
         #[arg(long, default_value = "10n")]
         abeta: String,
         /// Global threshold sigma per polarity (V).

@@ -60,6 +60,11 @@ pub struct Netlist {
     /// netlists that name devices by type (CDL, LVS).
     pub generic: Vec<(String, String)>,
     pub generic_cards: Vec<String>,
+    /// Estimated `ad as pd ps` of MOS devices that do not give them: (element name, parameters).
+    /// From the PCell each device would be drawn as, as a PDK's CDF callbacks do, so simulation
+    /// decks have the drain and source junction capacitance before there is a layout;
+    /// [`Netlist::deck`] adds them and post-layout netlists replace them with extracted values.
+    pub junctions: Vec<(String, String)>,
     pub warnings: Vec<String>,
     pub conn: Connectivity,
 }
@@ -86,20 +91,31 @@ impl Netlist {
 impl Netlist {
     /// `body` with the generic per-L model cards applied (what a simulation runs).
     pub fn sim_body(&self) -> String {
-        if self.generic.is_empty() {
+        if self.generic.is_empty() && self.junctions.is_empty() {
             return self.body.clone();
         }
-        let mut out = String::with_capacity(self.body.len() + 256);
+        let mut out = String::with_capacity(self.body.len() + 64 * self.junctions.len() + 256);
         for line in self.body.lines() {
             let mut t: Vec<&str> = line.split_whitespace().collect();
-            match self.generic.iter().find(|(e, _)| t.first() == Some(&e.as_str())) {
-                Some((_, card)) if t.len() > 5 => {
+            let first = t.first().copied().unwrap_or_default();
+            let card = self.generic.iter().find(|(e, _)| e == first).map(|(_, c)| c.as_str());
+            let junction = self.junctions.iter().find(|(e, _)| e == first).map(|(_, j)| j.as_str());
+            if card.is_none() && junction.is_none() {
+                out += line;
+            } else {
+                if let Some(card) = card.filter(|_| t.len() > 5) {
                     t[5] = card;
-                    out += &t.join(" ");
                 }
-                _ => out += line,
+                out += &t.join(" ");
+                if let Some(j) = junction {
+                    out.push(' ');
+                    out += j;
+                }
             }
             out.push('\n');
+        }
+        if self.generic.is_empty() {
+            return out;
         }
         out += "* generic models: lambda scaled by 0.5u / L (level 1 has no channel-length modulation of its own)\n";
         for c in &self.generic_cards {
@@ -162,6 +178,28 @@ pub(crate) fn spice_name(inst: &Instance) -> String {
 }
 
 /// `v` with up to 6 decimals and no trailing zeros.
+/// `ad as pd ps` of a schematic MOS in the deck's length unit, from the PCell it is drawn as
+/// ([`crate::sdl::mos_pcell`], per device of its `m`).
+fn estimated_junctions(inst: &Instance, tech: &Tech) -> Option<[f64; 4]> {
+    let crate::pcell::PCell::Mos { w, l, fingers, .. } = crate::sdl::mos_pcell(inst, tech).ok()? else { return None };
+    let m = parse_spice(inst.param("m")).filter(|m| *m >= 1.0).unwrap_or(1.0) as u32;
+    let ((ad, pd), (as_, ps)) = crate::pcell::mos_junctions(tech, w, l, (fingers / m.max(1)).max(1)).ok()?;
+    let um = tech.dbu_per_um.max(1) as f64;
+    let f = tech.length_unit().per_metre();
+    let area = |a: i64| a as f64 / (um * um) * 1e-12 * f * f;
+    let len = |p: i64| p as f64 / um * 1e-6 * f;
+    Some([area(ad), area(as_), len(pd), len(ps)])
+}
+
+/// A number with 6 significant digits in exponent form (`4.8e-13`).
+fn sci(v: f64) -> String {
+    let s = format!("{v:.5e}");
+    match s.split_once('e') {
+        Some((m, e)) if m.contains('.') => format!("{}e{e}", m.trim_end_matches('0').trim_end_matches('.')),
+        _ => s,
+    }
+}
+
 fn fmt_num(v: f64) -> String {
     let s = format!("{v:.6}");
     s.trim_end_matches('0').trim_end_matches('.').to_string()
@@ -210,6 +248,7 @@ pub fn netlist_for(sch: &Schematic, tech: &Tech, corner: &str) -> Netlist {
     // Generic per-L cards: (card name, base, L), and (element, card) for each device.
     let mut generic_cards: Vec<(String, String, f64)> = vec![];
     let mut generic: Vec<(String, String)> = vec![];
+    let mut junctions: Vec<(String, String)> = vec![];
 
     let mut instances: Vec<&Instance> = sch.instances.iter().collect();
     instances.sort_by(|a, b| a.name.cmp(&b.name));
@@ -294,9 +333,17 @@ pub fn netlist_for(sch: &Schematic, tech: &Tech, corner: &str) -> Netlist {
                 if !m.is_empty() && m != "1" {
                     l += &format!(" m={m}");
                 }
-                for (k, dim) in [("ad", 2), ("as", 2), ("pd", 1), ("ps", 1)] {
-                    if !inst.param(k).trim().is_empty() {
-                        l += &format!(" {k}={}", scaled(k, dim));
+                let keys = ["ad", "as", "pd", "ps"];
+                if keys.iter().all(|k| inst.param(k).trim().is_empty()) {
+                    if let Some(v) = estimated_junctions(inst, tech) {
+                        let p: Vec<String> = keys.iter().zip(v).map(|(k, x)| format!("{k}={}", sci(x))).collect();
+                        junctions.push((name.clone(), p.join(" ")));
+                    }
+                } else {
+                    for (k, dim) in [("ad", 2), ("as", 2), ("pd", 1), ("ps", 1)] {
+                        if !inst.param(k).trim().is_empty() {
+                            l += &format!(" {k}={}", scaled(k, dim));
+                        }
                     }
                 }
                 // Threshold shift and mobility multiplier (BSIM instance parameters), set by
@@ -353,7 +400,7 @@ pub fn netlist_for(sch: &Schematic, tech: &Tech, corner: &str) -> Netlist {
         generic.clear();
         vec![]
     };
-    Netlist { body, warnings, conn, generic, generic_cards }
+    Netlist { body, warnings, conn, generic, generic_cards, junctions }
 }
 
 #[cfg(test)]
@@ -382,6 +429,25 @@ mod tests {
         assert!((crate::silicon::model_param(&d, "nmos__l180", "vto").unwrap() - 0.5).abs() < 1e-9);
     }
     use crate::geom::{Orient, Pt};
+
+    #[test]
+    fn junctions_are_estimated_for_simulation_only() {
+        let imp = crate::spice_import::import(
+            "M1 d g 0 0 nmos w=1u l=180n\nM2 d g vdd vdd pmos w=12u l=180n m=2\nM3 d g 0 0 nmos w=1u l=180n ad=1p\nV1 g 0 1\n.op\n",
+            &Tech::generic(),
+        )
+        .unwrap();
+        let nl = netlist_for(&imp.schematic, &Tech::generic(), "");
+        let m1 = nl.body.lines().find(|l| l.starts_with("M1 ")).unwrap();
+        assert!(!m1.contains("ad="), "the CDL / LVS body stays as drawn: {m1}");
+        let deck = nl.deck("t", &SimSetup::default());
+        // One 1 µm finger: 480 nm of diffusion on each side.
+        assert!(deck.contains("M1 d g 0 0 nmos__l180 w=1u l=180n ad=4.8e-13 as=4.8e-13 pd=1.96e-6 ps=1.96e-6"), "{deck}");
+        // 12 µm as three 4 µm fingers per device of m = 2: drain and source each one end and one
+        // inner piece, 480 + 540 nm wide.
+        assert!(deck.contains("m=2 ad=4.08e-12 as=4.08e-12 pd=6.04e-6 ps=6.04e-6"), "{deck}");
+        assert!(deck.contains("M3 d g 0 0 nmos__l180 w=1u l=180n ad=1p\n"), "given values are kept: {deck}");
+    }
 
     #[test]
     fn three_terminal_mos_body_goes_to_its_bulk_net() {

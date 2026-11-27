@@ -49,3 +49,4 @@
 # Reference
 
 - [Keyboard shortcuts](shortcuts.md)
+- [Formulas and models](formulas.md)

@@ -206,8 +206,8 @@ t<sub>pLH</sub> and t<sub>pHL</sub>?
 
 | PMOS W | V<sub>M</sub> | t<sub>pHL</sub> | t<sub>pLH</sub> |
 |---|---|---|---|
-| 2 µm | 0.83 V | 33 ps | 47 ps |
-| 4 µm | 0.90 V | 35 ps | 33 ps |
+| 2 µm | 0.83 V | 35 ps | 49 ps |
+| 4 µm | 0.90 V | 38 ps | 35 ps |
 
 The threshold moved to the middle and the delays are now balanced. t<sub>pHL</sub> got
 slightly *worse*: the bigger PMOS adds drain capacitance to the output that the NMOS
@@ -244,7 +244,7 @@ analyses.
 4. **Variation.** Choose **Simulation > Monte Carlo...**, add the measurements
    `dc: cross(v(out) - v(in), 0)` and `tran: delay(v(in), 0.9, v(out), 0.9, rise, fall)`,
    and run 200 samples. Manufacturing variation spreads V<sub>M</sub> by about ±16 mV
-   (1σ) and t<sub>pHL</sub> by about ±1.4 ps. Real chips are designed to work across this
+   (1σ) and t<sub>pHL</sub> by about ±1.5 ps. Real chips are designed to work across this
    spread.
 
 <!-- quiz

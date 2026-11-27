@@ -339,7 +339,7 @@ mod tests {
     #[test]
     fn manual_is_embedded_in_both_languages() {
         let keys: Vec<&str> = PAGES.iter().map(|p| p.0).collect();
-        for k in ["pcells", "ko/pcells", "layout", "learn/glossary", "shortcuts"] {
+        for k in ["pcells", "ko/pcells", "layout", "learn/glossary", "shortcuts", "formulas", "ko/formulas"] {
             assert!(keys.contains(&k), "{k} in {keys:?}");
         }
         assert!(sections().iter().any(|s| s.page == "pcells" && s.heading == "PCell Designer" && s.anchor == "pcell-designer"));

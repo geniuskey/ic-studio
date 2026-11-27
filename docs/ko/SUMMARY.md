@@ -49,3 +49,4 @@
 # 참고
 
 - [키보드 단축키](shortcuts.md)
+- [수식과 모델](formulas.md)

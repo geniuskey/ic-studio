@@ -102,7 +102,7 @@ A_v = v_out / v_in = −g_m · (R_D || r_o)
 f_-3dB = 1 / (2π · (R_D || r_o) · C_L)
 ```
 
-부하가 100 fF이면 f<sub>-3dB</sub> ≈ 33 MHz입니다(시뮬레이션: 33 MHz). 그 위에서는 이득이 디케이드당
+부하가 100 fF이면 f<sub>-3dB</sub> ≈ 33 MHz입니다(시뮬레이션: 트랜지스터 자체의 드레인 커패시턴스까지 더해 32 MHz). 그 위에서는 이득이 디케이드당
 20 dB씩 떨어지다가 <strong>단위 이득 주파수(unity-gain frequency)</strong>에서 1(0 dB)이 됩니다.
 
 ```text
