@@ -824,8 +824,13 @@ impl Schematic {
     }
 
     pub fn add_instance(&mut self, kind: DeviceKind, pos: Pt, orient: Orient) -> u64 {
-        let id = self.alloc_id();
         let name = self.next_name(kind);
+        self.add_named_instance(kind, pos, orient, name)
+    }
+
+    /// [`Schematic::add_instance`] with a given name (importers, which name every device).
+    pub fn add_named_instance(&mut self, kind: DeviceKind, pos: Pt, orient: Orient, name: String) -> u64 {
+        let id = self.alloc_id();
         let params = kind.default_params().into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
         self.instances.push(Instance { id, kind, name, pos, orient, params, cell: None, ports: vec![], symbol: None });
         id

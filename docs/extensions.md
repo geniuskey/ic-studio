@@ -243,11 +243,16 @@ A minimal exchange (`>` to the program, `<` from it):
   "repository": "https://github.com/jane/ics-design-report",
   "path": "optional/sub-folder",
   "rev": "v0.1.0",
+  "commit": "full 40-character commit hash of v0.1.0",
   "license": "MIT",
   "authors": ["Jane Doe"],
   "tags": ["report", "drc"]
 }
 ```
+
+`commit` pins the entry to that commit, checked after the download, and the manifest's id must
+match the entry's; entries outside IC Studio's own repository must be pinned. Installs take
+`https://` and ssh repositories only, and installing from the index in the app asks first.
 
 A pull request that changes only `index.json` needs no CLA. The rules for index entries are in
 [`extensions/README.md`](https://github.com/geniuskey/ic-studio/blob/main/extensions/README.md).

@@ -89,6 +89,9 @@ jobs:
           if (-not (Test-Path 'C:\Spice64\bin\ngspice_con.exe')) { exit 1 }
         env:
           NGSPICE: "47"
+      - name: Install ngspice (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ngspice
       - name: Check the Windows installer parses
         if: runner.os == 'Windows'
         shell: pwsh
@@ -100,12 +103,21 @@ jobs:
         run: cargo build --workspace --all-targets
       - name: Core, simulator and CLI tests
         run: cargo test -p ics-core -p ics-sim -p ics-optics -p ics-cli -p ics-mcp
+        env:
+          # The built-in engine is checked against ngspice on every platform, never skipped.
+          ICS_REQUIRE_NGSPICE: "1"
       - name: Desktop app unit tests
         run: cargo test -p ics-studio --lib --bins
       # Linux: lavapipe (software Vulkan). Windows: WARP (software DX12). Both are CPU
       # adapters, which egui_kittest prefers.
       - name: Headless UI tests
         if: runner.os != 'macOS'
+        run: cargo test -p ics-studio --test ui -- --test-threads=1
+      # macOS runners render through a virtual Metal device; reported, not yet required, until
+      # it has proven stable there.
+      - name: Headless UI tests (macOS, informational)
+        if: runner.os == 'macOS'
+        continue-on-error: true
         run: cargo test -p ics-studio --test ui -- --test-threads=1
       - name: Release build of the desktop app
         run: cargo build --release -p ics-studio -p ics-cli

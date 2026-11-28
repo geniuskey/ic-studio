@@ -703,7 +703,15 @@ pub struct Options {
     /// Newton iteration limits: DC and per transient step.
     pub itl1: usize,
     pub itl4: usize,
+    /// Node voltages in the transient truncation error too (`.option voltrunc=1|0`); unset:
+    /// for circuits up to [`VOLTRUNC_MAX_NODES`] nodes.
+    pub voltrunc: Option<bool>,
 }
+
+/// Up to this many nodes the transient step also follows node voltages, not only charges: on a
+/// small analog block it costs few points and keeps gate currents accurate; on a large circuit
+/// some node is always switching and it multiplies the points (ngspice follows charges only).
+pub const VOLTRUNC_MAX_NODES: usize = 500;
 
 impl Default for Options {
     fn default() -> Self {
@@ -717,6 +725,7 @@ impl Default for Options {
             gmin: 1e-12,
             itl1: 150,
             itl4: 60,
+            voltrunc: None,
         }
     }
 }
@@ -738,6 +747,7 @@ impl Options {
             "gmin" => self.gmin = v,
             "itl1" => self.itl1 = v.max(1.0) as usize,
             "itl4" => self.itl4 = v.max(1.0) as usize,
+            "voltrunc" => self.voltrunc = Some(v != 0.0),
             _ => return false,
         }
         true

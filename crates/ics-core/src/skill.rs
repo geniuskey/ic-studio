@@ -574,10 +574,20 @@ fn sandbox_path(sandbox: &Sandbox, path: &Path) -> Result<PathBuf, String> {
             _ => return Err(denied()),
         },
     };
-    if sandbox.roots.iter().filter_map(|r| r.canonicalize().ok()).any(|r| resolved.starts_with(r)) {
-        Ok(resolved)
-    } else {
-        Err(denied())
+    // Hidden files and folders under a root are off limits: `.git/hooks`, `.vscode/tasks.json`,
+    // `.env` and other tool settings run code or hold secrets.
+    let inside = sandbox
+        .roots
+        .iter()
+        .filter_map(|r| r.canonicalize().ok())
+        .find_map(|r| resolved.strip_prefix(&r).ok().map(Path::to_path_buf));
+    match inside {
+        Some(rel) if rel.components().any(|c| c.as_os_str().to_string_lossy().starts_with('.')) => Err(format!(
+            "access to {} is not allowed here (hidden files and folders such as .git hold tool settings)",
+            path.display()
+        )),
+        Some(_) => Ok(resolved),
+        None => Err(denied()),
     }
 }
 
@@ -4508,7 +4518,16 @@ impl<'p> Interp<'p> {
             let v = self.run_source(&format!("'{text}"), None)?;
             frame.insert(n.as_str().into(), v);
         }
-        self.with_frame(frame, |s| s.run_source(&body, None)).map(|_| ())
+        // The body comes with the project, which may be someone else's: it builds geometry and
+        // gets no file or environment access, even from the user's own (unsandboxed) CIW.
+        let outer = self.sandbox.take();
+        let deadline = self.deadline;
+        self.sandbox =
+            Some(outer.clone().map_or(Sandbox { roots: vec![], time_limit: None }, |sb| Sandbox { roots: vec![], ..sb }));
+        let r = self.with_frame(frame, |s| s.run_source(&body, None)).map(|_| ());
+        self.sandbox = outer;
+        self.deadline = deadline;
+        r
     }
 
     fn write_port(&mut self, k: u32, text: &str) -> R<()> {
@@ -5476,6 +5495,30 @@ length(i~>master~>shapes)
         );
     }
 
+    /// A PCell body stored in the project gets no file access, even in an unsandboxed session.
+    #[test]
+    fn skill_pcell_bodies_have_no_file_access() {
+        let base = std::env::temp_dir().join(format!("ics-skill-pcell-io-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let target = base.join("written.txt").display().to_string().replace('\\', "/");
+        let mut p = Project::new("t");
+        let def = format!(
+            r#"pcDefinePCell(list(ddGetObj("mylib") "sneaky" "layout") ((w 1.0))
+                q = outfile("{target}") fprintf(q "x") close(q)
+                dbCreateRect(pcCellView "metal1" list(0:0 w:w)))"#
+        );
+        let defined = run(&mut p, &def, None);
+        let place = r#"cv = dbOpenCellViewByType("mylib" "top" "layout" "maskLayout" "w")
+            dbCreateParamInstByMasterName(cv "mylib" "sneaky" "layout" "I1" 0:0 "R0" 1 list(list("w" "float" 2.0)))"#;
+        let placed = run(&mut p, place, None);
+        let err = defined.err().or(placed.err()).expect("the body's outfile is refused");
+        assert!(err.message.contains("not allowed"), "{}", err.message);
+        assert!(!base.join("written.txt").exists());
+        // Outside a PCell body the same session still writes files.
+        assert!(run(&mut p, &format!("q = outfile(\"{target}\") close(q)"), None).is_ok());
+        std::fs::remove_dir_all(&base).ok();
+    }
+
     /// pcDefinePCell does not overwrite a drawn layout, and its edits are tracked.
     #[test]
     fn pcell_definition_keeps_drawn_layouts() {
@@ -5631,6 +5674,11 @@ rodCreatePath(?cvId cv ?layer "metal1" ?width 0.5 ?pts list(0:0 1e300:0)
         assert_eq!(std::fs::read_to_string(&outside).unwrap(), "keep", "not truncated");
         s.eval(&mut p, "q = outfile(\"inside.txt\") fprintf(q \"ok\") close(q)", None, None).unwrap();
         assert_eq!(std::fs::read_to_string(root.join("inside.txt")).unwrap(), "ok");
+        // Hidden folders inside the project (git hooks run code) are refused too.
+        std::fs::create_dir_all(root.join(".git/hooks")).unwrap();
+        let e = s.eval(&mut p, "outfile(\".git/hooks/pre-commit\")", None, None).unwrap_err();
+        assert!(e.message.contains("hidden"), "{}", e.message);
+        assert!(!root.join(".git/hooks/pre-commit").exists());
         assert_eq!(s.eval(&mut p, "load(\"lib.il\") libValue", None, None).unwrap().value, "42");
         assert!(s.eval(&mut p, "getShellEnvVar(\"PATH\")", None, None).is_err());
         assert!(s.load(&mut p, &outside, None).is_err());

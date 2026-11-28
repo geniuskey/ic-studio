@@ -43,8 +43,8 @@ fn live_file() -> io::Result<PathBuf> {
 }
 
 /// Write `data` to `path` readable only by its owner: the token in `live.json` lets whoever
-/// reads it drive the app. Its folder is made owner-only too.
-fn write_private(path: &std::path::Path, data: &[u8]) -> io::Result<()> {
+/// reads it drive the app (the app's API keys use it too). Its folder is made owner-only too.
+pub fn write_private(path: &std::path::Path, data: &[u8]) -> io::Result<()> {
     #[cfg(unix)]
     {
         use std::io::Write;

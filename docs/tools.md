@@ -49,6 +49,13 @@ window:
   anything you type goes to the tutor as your answer. Before a simulation it may ask you to
   predict the result.
 
+In every mode, a tool whose effect undo cannot take back waits for you: saving the project,
+exporting files (GDS, LEF/DEF, SKILL), running a SKILL script, a sign-off runset or a Virtuoso
+import, and extension tools that are not declared read-only. **Allow** runs it once, **Always
+allow in this conversation** stops asking for that tool, and anything you type declines it.
+Design notes reach the copilot marked as the project's data, not as instructions, and SPICE
+decks it writes may only include files inside the project folder (or `ICS_MCP_ROOTS`).
+
 In the [Learn course](learn/index.md), **Ask the tutor** under a failed check or a wrong
 quiz answer opens the copilot in Tutor mode with that question.
 

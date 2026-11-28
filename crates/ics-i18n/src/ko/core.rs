@@ -423,6 +423,10 @@ pub const TEMPLATES: &[(&str, &str)] = &[
         "access to {} is not allowed here (only files under the project directory)",
         "{}에는 여기서 접근할 수 없습니다 (프로젝트 디렉터리 아래 파일만 허용)",
     ),
+    (
+        "access to {} is not allowed here (hidden files and folders such as .git hold tool settings)",
+        "{}에는 여기서 접근할 수 없습니다 (.git 같은 숨김 파일과 폴더에는 도구 설정이 들어 있음)",
+    ),
     ("bad number 0x{}", "잘못된 숫자 0x{}"),
     ("bad number {}", "잘못된 숫자 {}"),
     ("unbalanced {}", "짝이 맞지 않는 {}"),

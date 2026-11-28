@@ -2719,6 +2719,56 @@ impl ics_studio::copilot::Llm for Recorded {
     }
 }
 
+/// Tools undo cannot take back (files, scripts, programs) wait for the user's go-ahead; a
+/// declined call does not run, an allowed one runs, and "always" skips the question next time.
+#[test]
+fn copilot_confirms_irreversible_tools() {
+    use ics_studio::copilot::{Entry, WaitKind};
+    use serde_json::json;
+    let calls = |c: serde_json::Value| json!({"candidates": [{"content": {"role": "model", "parts": c}}]});
+    let skill = |code: &str| json!([{"functionCall": {"name": "run_skill", "args": {"code": code}}}]);
+    let script = vec![
+        calls(skill("plus(1 2)")),
+        calls(json!([{"text": "Not running it."}])),
+        calls(skill("plus(2 3)")),
+        calls(skill("plus(4 5)")),
+        calls(json!([{"text": "Done."}])),
+    ];
+    let script = std::sync::Arc::new(std::sync::Mutex::new(script));
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
+    let mut h = app(demo_args("cmos_inverter", "schematic", false));
+    let (s2, r2) = (script.clone(), seen.clone());
+    h.state_mut().copilot_mut().set_llm(Box::new(move |_, _| Ok(Box::new(Recorded { script: s2.clone(), seen: r2.clone() }))));
+    let ran = |h: &mut Harness<'_, IcStudio>| {
+        h.state_mut().copilot_mut().log.iter().filter(|e| matches!(e, Entry::Tool { name, .. } if name == "run_skill")).count()
+    };
+    h.state_mut().command(Command::CopilotAsk("Run a script".into()));
+    h.run_steps(2);
+    settle(&mut h, "ask");
+    assert_eq!(h.state_mut().copilot_mut().waiting(), Some(WaitKind::Confirm));
+    assert!(matches!(h.state_mut().copilot_mut().log.last(), Some(Entry::Confirm { tool, .. }) if tool == "run_skill"));
+    assert_eq!(ran(&mut h), 0, "ran before the user allowed it");
+
+    h.state_mut().command(Command::CopilotAsk("no thanks".into()));
+    h.run_steps(2);
+    settle(&mut h, "decline");
+    assert_eq!(ran(&mut h), 0, "a declined call ran");
+    let last = seen.lock().unwrap()[1]["contents"].as_array().unwrap().last().unwrap()["parts"].clone();
+    assert_eq!(last[0]["functionResponse"]["response"]["declined"], true, "{last}");
+
+    h.state_mut().command(Command::CopilotAsk("try again".into()));
+    h.run_steps(2);
+    settle(&mut h, "again");
+    assert_eq!(h.state_mut().copilot_mut().waiting(), Some(WaitKind::Confirm));
+    h.state_mut().command(Command::CopilotAllowAlways);
+    h.run_steps(2);
+    settle(&mut h, "always");
+    let cp = h.state_mut().copilot_mut();
+    assert_eq!(cp.waiting(), None, "{:?}", cp.log);
+    assert_eq!(cp.log.last(), Some(&Entry::Assistant("Done.".into())));
+    assert_eq!(ran(&mut h), 2, "allowed always: the second call ran without asking");
+}
+
 /// Plan mode: read-only tools run, edits are refused, the plan waits for approval; once approved
 /// the agent keeps a task list and pauses on a question until the user answers.
 #[test]

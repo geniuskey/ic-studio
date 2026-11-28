@@ -60,6 +60,7 @@ Options are environment variables:
 | `ICS_INSTALL_DIR` | Install into this folder |
 | `ICS_EXAMPLES_DIR` | Write the example projects into this folder |
 | `ICS_EXAMPLES=0` | Do not write the example projects |
+| `ICS_ALLOW_UNVERIFIED=1` | Install a release that lists no SHA-256 checksums (releases before the checksum list); otherwise the installer stops when it cannot verify the download |
 | `ICS_UNINSTALL=1` | Remove the folder, the `PATH` entry or links, the launcher and the MCP registration (projects and example projects stay) |
 
 The app reads `ICS_EXAMPLES_DIR` as well, for the examples it adds after an update, and

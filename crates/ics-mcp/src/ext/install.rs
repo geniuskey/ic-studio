@@ -7,7 +7,9 @@
 //!
 //! The index (`extensions/index.json` in the IC Studio repository, or `ICS_EXTENSION_INDEX`) is
 //! the community list of published extensions:
-//! `{"extensions": [{"id", "name", "description", "repository", "path"?, "rev"?, ...}]}`.
+//! `{"extensions": [{"id", "name", "description", "repository", "path"?, "rev"?, "commit"?, ...}]}`.
+//! `commit` pins an entry to one full commit hash, checked after the download; entries kept in
+//! other repositories than the index's own must have one (the index test checks it).
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -33,7 +35,28 @@ pub fn read_manifest(dir: &Path) -> Result<Manifest, String> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Source {
     Folder(PathBuf),
-    Git { url: String, rev: Option<String>, path: Option<String> },
+    Git {
+        url: String,
+        rev: Option<String>,
+        path: Option<String>,
+        /// The full commit hash the checkout must be (index entries pin one).
+        commit: Option<String>,
+        /// The id the manifest must have (an index entry's).
+        id: Option<String>,
+    },
+}
+
+/// A sub-folder given for a repository: relative, inside it, and not taken for an option.
+fn plain_sub_path(p: &str) -> bool {
+    let path = Path::new(p);
+    !p.is_empty()
+        && !p.starts_with('-')
+        && path.components().all(|c| matches!(c, std::path::Component::Normal(_) | std::path::Component::CurDir))
+}
+
+/// A full commit hash (SHA-1 or SHA-256 repositories).
+fn full_hash(s: &str) -> bool {
+    matches!(s.len(), 40 | 64) && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 impl Source {
@@ -46,22 +69,28 @@ impl Source {
             }
             return Ok(Source::Folder(path.map_or_else(|| p.to_path_buf(), |sub| p.join(sub))));
         }
-        let git = s.starts_with("https://")
-            || s.starts_with("http://")
-            || s.starts_with("git@")
-            || s.starts_with("ssh://")
-            || s.starts_with("file://")
-            || s.ends_with(".git");
-        if !git {
-            return Err(format!("'{s}' is neither a folder nor a git URL"));
+        if s.starts_with("http://") || s.starts_with("git://") {
+            return Err(format!("'{s}': use https:// or ssh (plain http and git:// are not authenticated)"));
         }
-        Ok(Source::Git { url: s.to_string(), rev, path })
+        let git = s.starts_with("https://") || s.starts_with("git@") || s.starts_with("ssh://") || s.starts_with("file://");
+        if !git {
+            return Err(format!("'{s}' is neither a folder nor a git URL (https://, ssh:// or git@)"));
+        }
+        if let Some(p) = path.as_deref().filter(|p| !plain_sub_path(p)) {
+            return Err(format!("sub-folder '{p}': give a relative path inside the repository"));
+        }
+        if rev.as_deref().is_some_and(|r| r.starts_with('-')) {
+            return Err("a revision cannot start with '-'".into());
+        }
+        Ok(Source::Git { url: s.to_string(), rev, path, commit: None, id: None })
     }
 
     fn to_json(&self) -> Value {
         match self {
             Source::Folder(p) => json!({"folder": p}),
-            Source::Git { url, rev, path } => json!({"git": url, "rev": rev, "path": path}),
+            Source::Git { url, rev, path, commit, id } => {
+                json!({"git": url, "rev": rev, "path": path, "commit": commit, "id": id})
+            }
         }
     }
 
@@ -69,7 +98,7 @@ impl Source {
         let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
         match (s("folder"), s("git")) {
             (Some(f), _) => Some(Source::Folder(f.into())),
-            (None, Some(url)) => Some(Source::Git { url, rev: s("rev"), path: s("path") }),
+            (None, Some(url)) => Some(Source::Git { url, rev: s("rev"), path: s("path"), commit: s("commit"), id: s("id") }),
             _ => None,
         }
     }
@@ -77,13 +106,16 @@ impl Source {
     pub fn describe(&self) -> String {
         match self {
             Source::Folder(p) => p.display().to_string(),
-            Source::Git { url, rev, path } => {
+            Source::Git { url, rev, path, commit, .. } => {
                 let mut s = url.clone();
                 if let Some(p) = path {
                     s += &format!(" ({p})");
                 }
                 if let Some(r) = rev {
                     s += &format!(" @ {r}");
+                }
+                if let Some(c) = commit {
+                    s += &format!(" #{}", &c[..c.len().min(12)]);
                 }
                 s
             }
@@ -120,6 +152,10 @@ pub fn set_enabled(root: &Path, id: &str, enabled: bool) -> Result<(), String> {
 }
 
 fn git(args: &[&str], dir: Option<&Path>) -> Result<(), String> {
+    git_out(args, dir).map(drop)
+}
+
+fn git_out(args: &[&str], dir: Option<&Path>) -> Result<String, String> {
     let mut cmd = Command::new("git");
     cmd.args(args);
     if let Some(d) = dir {
@@ -132,7 +168,7 @@ fn git(args: &[&str], dir: Option<&Path>) -> Result<(), String> {
     }
     let out = cmd.output().map_err(|e| format!("cannot run git ({e}); install git to add extensions from a repository"))?;
     if out.status.success() {
-        Ok(())
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     } else {
         Err(format!("git {} failed: {}", args.first().unwrap_or(&""), String::from_utf8_lossy(&out.stderr).trim()))
     }
@@ -167,17 +203,36 @@ pub fn install(root: &Path, src: &Source, replace: bool) -> Result<(Manifest, Pa
     let res = (|| {
         let folder = match src {
             Source::Folder(p) => p.clone(),
-            Source::Git { url, rev, path } => {
+            Source::Git { url, rev, path, commit, .. } => {
+                if let Some(p) = path.as_deref().filter(|p| !plain_sub_path(p)) {
+                    return Err(format!("sub-folder '{p}': give a relative path inside the repository"));
+                }
+                if let Some(c) = commit.as_deref().filter(|c| !full_hash(c)) {
+                    return Err(format!("commit '{c}': give the full commit hash"));
+                }
                 let t = tmp.to_string_lossy().to_string();
-                let mut args = vec!["clone", "--depth", "1", "--quiet"];
+                let mut args = vec!["clone", "--quiet"];
+                if commit.is_none() {
+                    args.extend(["--depth", "1"]);
+                } else {
+                    args.push("--no-checkout");
+                }
                 if path.is_some() {
                     args.extend(["--filter=blob:none", "--sparse"]);
                 }
                 if let Some(r) = rev {
                     args.extend(["--branch", r]);
                 }
-                args.extend([url.as_str(), t.as_str()]);
+                // `--`: a URL is never read as an option.
+                args.extend(["--", url.as_str(), t.as_str()]);
                 git(&args, None)?;
+                if let Some(c) = commit {
+                    git(&["checkout", "--quiet", "--detach", c.as_str()], Some(&tmp))?;
+                    let head = git_out(&["rev-parse", "HEAD"], Some(&tmp))?;
+                    if !head.eq_ignore_ascii_case(c) {
+                        return Err(format!("the repository is at {head}, not the pinned commit {c}"));
+                    }
+                }
                 match path {
                     Some(p) => {
                         git(&["sparse-checkout", "set", p], Some(&tmp))?;
@@ -188,6 +243,11 @@ pub fn install(root: &Path, src: &Source, replace: bool) -> Result<(Manifest, Pa
             }
         };
         let m = read_manifest(&folder)?;
+        if let Source::Git { id: Some(want), .. } = src
+            && m.id() != want
+        {
+            return Err(format!("the repository holds extension '{}', not '{want}' as the index says", m.id()));
+        }
         let dest = root.join(m.id());
         if dest.exists() {
             if !replace {
@@ -321,6 +381,8 @@ pub struct IndexEntry {
     pub repository: String,
     pub path: Option<String>,
     pub rev: Option<String>,
+    /// The full commit hash the download must be.
+    pub commit: Option<String>,
     pub license: Option<String>,
     pub authors: Vec<String>,
     pub tags: Vec<String>,
@@ -328,7 +390,13 @@ pub struct IndexEntry {
 
 impl IndexEntry {
     pub fn source(&self) -> Source {
-        Source::Git { url: self.repository.clone(), rev: self.rev.clone(), path: self.path.clone() }
+        Source::Git {
+            url: self.repository.clone(),
+            rev: self.rev.clone(),
+            path: self.path.clone(),
+            commit: self.commit.clone(),
+            id: Some(self.id.clone()),
+        }
     }
 
     pub fn matches(&self, query: &str) -> bool {
@@ -358,6 +426,7 @@ pub fn parse_index(text: &str) -> Result<Vec<IndexEntry>, String> {
                 repository: s(e, "repository").ok_or_else(|| format!("extension index: {id} has no repository"))?,
                 path: s(e, "path"),
                 rev: s(e, "rev"),
+                commit: s(e, "commit"),
                 license: s(e, "license"),
                 authors: strings(e, "authors"),
                 tags: strings(e, "tags"),

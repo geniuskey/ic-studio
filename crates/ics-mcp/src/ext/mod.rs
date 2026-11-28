@@ -12,7 +12,8 @@ pub mod manifest;
 pub mod process;
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, TryLockError};
 
 use serde_json::{Map, Value, json};
 
@@ -65,7 +66,11 @@ pub struct Extension {
     pub enabled: bool,
     /// Why it cannot be used (e.g. it needs another IC Studio version).
     pub problem: Option<String>,
+    /// Held for the whole of a call, which can take minutes: other threads (the UI) must never
+    /// wait for it, so they use `try_lock` and [`Extension::cancel`].
     process: Mutex<Option<Process>>,
+    /// Asks a call in progress to stop its program.
+    cancel: Arc<AtomicBool>,
 }
 
 impl Extension {
@@ -77,16 +82,27 @@ impl Extension {
         self.enabled && self.problem.is_none()
     }
 
-    /// Whether its program is running.
+    /// Whether its program is running (a call in progress counts). Never blocks.
     pub fn running(&self) -> bool {
-        self.process.lock().map(|mut p| p.as_mut().is_some_and(Process::alive)).unwrap_or(false)
+        match self.process.try_lock() {
+            Ok(mut p) => p.as_mut().is_some_and(Process::alive),
+            Err(TryLockError::WouldBlock) => true,
+            Err(TryLockError::Poisoned(e)) => e.into_inner().as_mut().is_some_and(Process::alive),
+        }
     }
 
-    /// Stop its program (it starts again on the next call).
+    /// Stop its program (it starts again on the next call). Never blocks: a call in progress
+    /// is cancelled and kills the program itself.
     pub fn stop(&self) {
-        if let Ok(mut p) = self.process.lock() {
-            p.take();
+        match self.process.try_lock() {
+            Ok(mut p) => drop(p.take()),
+            Err(TryLockError::WouldBlock) => self.cancel.store(true, Ordering::Relaxed),
+            Err(TryLockError::Poisoned(e)) => drop(e.into_inner().take()),
         }
+    }
+
+    pub(crate) fn new(manifest: Manifest, dir: PathBuf, enabled: bool, problem: Option<String>) -> Self {
+        Extension { manifest, dir, enabled, problem, process: Mutex::new(None), cancel: Arc::new(AtomicBool::new(false)) }
     }
 
     /// Install source recorded by [`install::install`], if any.
@@ -102,13 +118,20 @@ impl Extension {
             Ok(g) => g,
             Err(e) => e.into_inner(),
         };
-        if slot.as_mut().is_some_and(|p| !p.alive()) {
+        // A stop asked for just after the last call finished: honour it now.
+        if self.cancel.swap(false, Ordering::Relaxed) || slot.as_mut().is_some_and(|p| !p.alive()) {
             *slot = None;
         }
         if slot.is_none() {
             let env: Vec<(String, String)> = run.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-            let launch =
-                Launch { id: self.id(), dir: &self.dir, argv: run.argv(), env: &env, sdk: self.dir.parent().and_then(sdk_dir) };
+            let launch = Launch {
+                id: self.id(),
+                dir: &self.dir,
+                argv: run.argv(),
+                env: &env,
+                sdk: self.dir.parent().and_then(sdk_dir),
+                cancel: self.cancel.clone(),
+            };
             match Process::start(&launch, host) {
                 Ok(p) => *slot = Some(p),
                 Err(e) => return ToolResult::error(e),
@@ -191,13 +214,7 @@ impl Registry {
                         .filter(|req| !manifest::satisfies(req, env!("CARGO_PKG_VERSION")))
                         .map(|req| format!("needs IC Studio {req} (this is {})", env!("CARGO_PKG_VERSION")));
                     let enabled = !disabled.contains(m.id());
-                    reg.extensions.push(Arc::new(Extension {
-                        manifest: m,
-                        dir: path,
-                        enabled,
-                        problem,
-                        process: Mutex::new(None),
-                    }));
+                    reg.extensions.push(Arc::new(Extension::new(m, path, enabled, problem)));
                 }
                 Err(e) => reg.errors.push((path, e)),
             }
@@ -250,7 +267,8 @@ impl Registry {
         let Some((e, tool)) = self.resolve(name) else {
             return ToolResult::error(format!("unknown tool: {name}"));
         };
-        let mut guarded = Guard { reg: self, host };
+        let read_only = e.manifest.tools.iter().any(|d| d.name == tool && d.read_only);
+        let mut guarded = Guard { reg: self, host, read_only };
         e.call(tool, args, &mut guarded)
     }
 
@@ -324,12 +342,18 @@ impl Registry {
 struct Guard<'a> {
     reg: &'a Registry,
     host: &'a mut dyn Host,
+    /// The running tool is declared read-only (plan mode trusts that): it may only call
+    /// read-only tools back.
+    read_only: bool,
 }
 
 impl Host for Guard<'_> {
     fn call(&mut self, tool: &str, args: &Map<String, Value>) -> ToolResult {
         if self.reg.has_tool(tool) || tool.contains(SEP) {
             return ToolResult::error(format!("{tool}: an extension cannot call extension tools"));
+        }
+        if self.read_only && !crate::tools::READ_ONLY.contains(&tool) {
+            return ToolResult::error(format!("{tool}: a tool declared read_only can only call read-only tools"));
         }
         self.host.call(tool, args)
     }

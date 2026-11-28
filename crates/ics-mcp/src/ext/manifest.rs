@@ -200,9 +200,23 @@ impl Manifest {
             if c.tool.is_some() == c.skill.is_some() {
                 return Err(format!("command '{}': give exactly one of tool or skill", c.id));
             }
+            if let Some(f) = c.skill.as_deref().filter(|f| !inside(f)) {
+                return Err(format!("command '{}': skill '{f}' must be a relative path inside the extension", c.id));
+            }
+        }
+        for p in &self.pdks {
+            if !inside(&p.file) {
+                return Err(format!("pdk '{}': file '{}' must be a relative path inside the extension", p.name, p.file));
+            }
         }
         Ok(())
     }
+}
+
+/// A file the manifest names: relative, without `..`, so it stays in the extension's folder.
+fn inside(f: &str) -> bool {
+    let p = std::path::Path::new(f);
+    !f.is_empty() && p.components().all(|c| matches!(c, std::path::Component::Normal(_) | std::path::Component::CurDir))
 }
 
 /// `x.y.z` (a missing part is 0; a pre-release suffix is ignored).
@@ -281,6 +295,12 @@ mod tests {
         assert!(Manifest::parse(&run.replace("name = \"t\"", "name = \"a__b\"")).is_err());
         let cmd = format!("{MINIMAL}[[commands]]\nid = \"c\"\ntitle = \"C\"\n");
         assert!(Manifest::parse(&cmd).unwrap_err().contains("exactly one"));
+        // Files the manifest names stay inside the extension's folder.
+        for f in ["../x.il", "/etc/x.il", "a/../../x.il"] {
+            assert!(Manifest::parse(&format!("{cmd}skill = \"{f}\"\n")).is_err(), "{f}");
+            assert!(Manifest::parse(&format!("{MINIMAL}[[pdks]]\nname = \"P\"\nfile = \"{f}\"\n")).is_err(), "{f}");
+        }
+        assert!(Manifest::parse(&format!("{cmd}skill = \"scripts/x.il\"\n")).is_ok());
     }
 
     #[test]

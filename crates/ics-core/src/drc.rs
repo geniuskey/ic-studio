@@ -1544,6 +1544,9 @@ fn run_shapes(deck: &Deck, flat: Vec<FlatShape>, tech: &Tech, window: Option<IRe
     let n = tech.layers.len();
     let used = used_layers(deck, n, 0..deck.rules.len());
     let layers = layers_of(deck, n, &flat, &used, true);
+    // The layers hold the geometry now: free the flat shapes before the checks (10 % of the
+    // peak on a 10M-shape layout).
+    drop(flat);
     let results = par_map(&deck.rules, |nr| layers.check(deck, &nr.rule, layers.extent));
     let mut report = report_of(deck, tech, &results, window);
     (report.shapes, report.any_angle) = (layers.shapes, layers.any_angle);

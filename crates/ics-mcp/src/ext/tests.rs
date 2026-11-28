@@ -246,6 +246,14 @@ fn install_update_remove_from_a_folder() {
     assert!(install::remove(&root, "hello").is_err());
     assert!(Source::parse("not-a-folder-or-url", None, None).is_err());
     assert!(matches!(Source::parse("https://example.com/x.git", None, Some("ext".into())), Ok(Source::Git { .. })));
+    // Unauthenticated transports, sub-folders leaving the repository, option-like arguments.
+    assert!(Source::parse("http://example.com/x.git", None, None).is_err());
+    assert!(Source::parse("git://example.com/x.git", None, None).is_err());
+    assert!(Source::parse("-uevil.git", None, None).is_err());
+    for p in ["../x", "/abs", "-x", "a/../../b"] {
+        assert!(Source::parse("https://example.com/x.git", None, Some(p.into())).is_err(), "{p}");
+    }
+    assert!(Source::parse("https://example.com/x.git", Some("--upload-pack=x".into()), None).is_err());
     let _ = std::fs::remove_dir_all(&src_root);
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -281,6 +289,9 @@ fn the_repository_index_and_bundled_extensions_are_valid() {
     assert!(!index.is_empty());
     for e in &index {
         assert!(e.repository.starts_with("https://"), "{}", e.id);
+        // Entries in other repositories are pinned: the index then fixes what gets installed.
+        let own = e.repository.trim_end_matches(".git").ends_with("geniuskey/ic-studio");
+        assert!(own || e.commit.as_deref().is_some_and(|c| c.len() >= 40), "{}: pin a full commit hash", e.id);
         if let Some(p) = e.path.as_deref().filter(|_| e.repository.ends_with("geniuskey/ic-studio")) {
             let m = install::read_manifest(&repo.join("..").join(p)).unwrap_or_else(|err| panic!("{}: {err}", e.id));
             assert_eq!(m.id(), e.id);
@@ -297,4 +308,100 @@ fn mcp_results_and_bare_values() {
     assert!(r.is_error);
     assert_eq!(process::tool_result(&json!({"b": 2})).value().unwrap(), json!({"b": 2}));
     assert_eq!(process::tool_result(&json!("plain")).text, "plain");
+}
+
+/// While a tool runs, `running` and `stop` never wait for it (the UI calls them every frame),
+/// and `stop` ends the call.
+#[test]
+fn stop_and_running_do_not_wait_for_a_call() {
+    if python().is_none() {
+        return;
+    }
+    let root = temp("slow");
+    let slow = r#"
+import time
+from ics_extension import Extension
+ext = Extension()
+
+@ext.tool("sleep")
+def sleep():
+    time.sleep(60)
+    return "woke"
+
+if __name__ == "__main__":
+    ext.run()
+"#;
+    write_ext(&root, "slow", "[[tools]]\nname = \"sleep\"\ndescription = \"Sleep.\"\n", slow);
+    let reg = Registry::load_from(&root);
+    let worker = {
+        let reg = reg.clone();
+        std::thread::spawn(move || {
+            let mut host = Recorder { calls: vec![], logs: vec![] };
+            reg.call("slow__sleep", &Map::new(), &mut host)
+        })
+    };
+    let e = reg.get("slow").unwrap();
+    let t = std::time::Instant::now();
+    while !e.running() && t.elapsed().as_secs() < 20 {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let t = std::time::Instant::now();
+    assert!(e.running());
+    e.stop();
+    assert!(t.elapsed().as_millis() < 100, "running/stop waited {:?}", t.elapsed());
+    let r = worker.join().unwrap();
+    assert!(r.is_error && r.text.contains("cancelled"), "{}", r.text);
+    assert!(t.elapsed().as_secs() < 5, "the call took {:?} to stop", t.elapsed());
+    assert!(!e.running());
+}
+
+/// A tool declared read-only (which plan mode trusts) cannot call editing tools back.
+#[test]
+fn read_only_tools_call_back_read_only_tools_only() {
+    let reg = Registry::default();
+    let mut rec = Recorder { calls: vec![], logs: vec![] };
+    let mut g = Guard { reg: &reg, host: &mut rec, read_only: true };
+    assert!(g.call("save_project", &Map::new()).is_error);
+    assert!(g.call("delete_items", &Map::new()).is_error);
+    assert!(!g.call("project_info", &Map::new()).is_error);
+    let mut g = Guard { reg: &reg, host: &mut rec, read_only: false };
+    assert!(!g.call("save_project", &Map::new()).is_error);
+    assert_eq!(rec.calls, ["project_info", "save_project"]);
+}
+
+/// A git source pinned to a commit installs that commit, whatever the branch has since, and
+/// an index entry's id must match the manifest's.
+#[test]
+fn pinned_git_install() {
+    let git = |dir: &Path, args: &[&str]| {
+        let o = std::process::Command::new("git").args(args).current_dir(dir).output();
+        o.ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
+    let root = temp("pinned");
+    let repo = root.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    if git(&repo, &["init", "-q"]).is_none() {
+        return; // no git
+    }
+    let manifest = |v: &str| format!("[extension]\nid = \"pin\"\nname = \"Pin\"\nversion = \"{v}\"\n");
+    let commit = |v: &str| {
+        std::fs::write(repo.join("extension.toml"), manifest(v)).unwrap();
+        git(&repo, &["add", "."]).unwrap();
+        git(&repo, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", v]).unwrap();
+        git(&repo, &["rev-parse", "HEAD"]).unwrap()
+    };
+    let first = commit("1.0.0");
+    commit("2.0.0");
+    // A plain local path: git clones it on every platform (a file:// URL of a Windows path is not portable).
+    let url = repo.display().to_string();
+    let dest = root.join("installed");
+    let src = Source::Git { url: url.clone(), rev: None, path: None, commit: Some(first.clone()), id: Some("pin".into()) };
+    let (m, _) = install::install(&dest, &src, false).unwrap();
+    assert_eq!(m.extension.version, "1.0.0");
+    let wrong = Source::Git { url: url.clone(), rev: None, path: None, commit: None, id: Some("other".into()) };
+    assert!(install::install(&dest, &wrong, true).unwrap_err().contains("not 'other'"));
+    let short = Source::Git { url, rev: None, path: None, commit: Some(first[..8].into()), id: None };
+    assert!(install::install(&dest, &short, true).is_err());
+    let _ = std::fs::remove_dir_all(&root);
 }

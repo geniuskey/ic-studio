@@ -14,6 +14,7 @@ use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -37,7 +38,12 @@ pub struct Process {
     lines: Receiver<String>,
     stderr: Arc<Mutex<VecDeque<String>>>,
     next_id: u64,
+    /// Set from another thread to stop the program while a request waits for it.
+    cancel: Arc<AtomicBool>,
 }
+
+/// How often a waiting request looks at the cancel flag.
+const CANCEL_POLL: Duration = Duration::from_millis(100);
 
 /// What an extension's program is started with.
 pub struct Launch<'a> {
@@ -47,6 +53,8 @@ pub struct Launch<'a> {
     pub env: &'a [(String, String)],
     /// Folder holding the bundled `ics_extension.py`, put on `PYTHONPATH`.
     pub sdk: Option<PathBuf>,
+    /// Stops the program while one of its requests is waiting (see [`Process::request`]).
+    pub cancel: Arc<AtomicBool>,
 }
 
 /// `program` as given when it is a bare name looked up on the PATH, else relative to `dir`.
@@ -121,7 +129,7 @@ impl Process {
                 }
             })
             .map_err(|e| e.to_string())?;
-        let mut p = Process { child, stdin, lines, stderr, next_id: 1 };
+        let mut p = Process { child, stdin, lines, stderr, next_id: 1, cancel: l.cancel.clone() };
         // MCP's initialize, so a plain MCP server works as an extension too.
         let info = json!({"name": "ic-studio", "version": env!("CARGO_PKG_VERSION")});
         let params = json!({
@@ -151,15 +159,22 @@ impl Process {
         matches!(self.child.try_wait(), Ok(None))
     }
 
-    /// Send a request and serve the extension's calls to the host until its answer arrives.
+    /// Send a request and serve the extension's calls to the host until its answer arrives, the
+    /// timeout passes or the cancel flag is set (the program is killed in both cases).
     pub fn request(&mut self, method: &str, params: Value, timeout: Duration, host: &mut dyn Host) -> Result<Value, String> {
         let id = self.next_id;
         self.next_id += 1;
         self.send(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))?;
         let deadline = Instant::now() + timeout;
         loop {
-            let line = match self.lines.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            if self.cancel.swap(false, Ordering::Relaxed) {
+                let _ = self.child.kill();
+                return Err(format!("{method} was cancelled; the extension was stopped"));
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            let line = match self.lines.recv_timeout(left.min(CANCEL_POLL)) {
                 Ok(l) => l,
+                Err(RecvTimeoutError::Timeout) if !left.is_zero() => continue,
                 Err(RecvTimeoutError::Timeout) => {
                     let _ = self.child.kill();
                     return Err(format!("no answer to {method} within {} s; the extension was stopped", timeout.as_secs()));

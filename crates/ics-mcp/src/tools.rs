@@ -18,6 +18,27 @@ mod pcell_design;
 
 const MAX_LISTED: usize = 500;
 
+/// Tools that neither change the project nor write files: the ones the copilot's plan mode
+/// runs, and the only ones an extension tool declared `read_only` may call back.
+pub const READ_ONLY: [&str; 16] = [
+    "project_info",
+    "docs_search",
+    "docs_read",
+    "pcell_design_check",
+    "get_netlist",
+    "simulate",
+    "run_spice",
+    "layout_summary",
+    "flylines",
+    "run_drc",
+    "extract",
+    "run_lvs",
+    "run_signoff",
+    "post_layout_parasitics",
+    "emir",
+    "diff_layout",
+];
+
 /// Read-only tools that can take long on large designs. Live mode runs them on a worker
 /// thread against a [`snapshot`] so the window stays responsive.
 pub const BACKGROUND: [&str; 15] = [

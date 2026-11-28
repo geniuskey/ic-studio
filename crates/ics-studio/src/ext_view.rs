@@ -29,6 +29,8 @@ pub struct ExtensionManager {
     /// An install / update running in the background, with what it does.
     job: Option<(String, Job<String>)>,
     status: Option<(bool, String)>,
+    /// An index entry whose Install was clicked, waiting for the user to confirm.
+    confirm: Option<IndexEntry>,
 }
 
 /// What the app should do after the window changed something.
@@ -335,10 +337,34 @@ impl ExtensionManager {
                 let installed = reg.get(&e.id).is_some();
                 let button = t(if installed { "Installed" } else { "Install" });
                 if ui.add_enabled(!installed && self.job.is_none(), egui::Button::new(button)).clicked() {
-                    self.install(ui.ctx(), reg, e.source());
+                    self.confirm = Some(e.clone());
                 }
                 ui.label(RichText::new(&e.name).strong());
                 ui.label(RichText::new(&e.description).color(pal.text_weak));
+            });
+        }
+        // One click on an index entry asks first: what gets installed, and that it runs code.
+        if let Some(e) = self.confirm.clone() {
+            egui::Frame::new().fill(pal.warning.gamma_multiply(0.10)).corner_radius(6).inner_margin(8).show(ui, |ui| {
+                ui.label(RichText::new(tf("Install {}?", &[&e.name])).strong());
+                ui.label(RichText::new(tf("From {}", &[&e.source().describe()])).small().color(pal.text_weak));
+                if e.commit.is_none() {
+                    ui.label(
+                        RichText::new(t("Not pinned to a commit: you get whatever the repository holds now."))
+                            .small()
+                            .color(pal.warning),
+                    );
+                }
+                ui.label(t("An extension with a program runs it with your rights. Install only ones you trust."));
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(self.job.is_none(), egui::Button::new(t("Install"))).clicked() {
+                        self.confirm = None;
+                        self.install(ui.ctx(), reg, e.source());
+                    }
+                    if ui.button(t("Cancel")).clicked() {
+                        self.confirm = None;
+                    }
+                });
             });
         }
     }

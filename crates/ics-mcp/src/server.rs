@@ -138,8 +138,15 @@ impl Rpc {
                 c.call(name, args).unwrap_or_else(|e| ToolResult::error(format!("lost the connection to IC Studio: {e}")))
             }
             None if self.ext.has_tool(name) => {
-                let state = &mut self.state;
-                self.ext.call(name, args, &mut |tool: &str, a: &Map<String, Value>| call_tool(state, tool, a))
+                // The extension's calls back are confined like the agent's own.
+                let (state, roots) = (&mut self.state, &self.roots);
+                self.ext.call(name, args, &mut |tool: &str, a: &Map<String, Value>| {
+                    let project = state.current().and_then(|p| p.root.clone());
+                    match roots.check(a, project.as_deref()) {
+                        Ok(a) => call_tool(state, tool, &a),
+                        Err(e) => ToolResult::error(e),
+                    }
+                })
             }
             None => call_tool(&mut self.state, name, args),
         }

@@ -296,6 +296,9 @@ mod tests {
             (1e-6, 1e-6, 1e-15, 1e-13, 80)
         );
         assert_eq!(c.temp, 50.0);
+        assert_eq!(c.options.voltrunc, None);
+        let v = circuit::parse_deck("* t\n.option voltrunc=0\nR1 a 0 1\n.end\n").unwrap();
+        assert_eq!(v.options.voltrunc, Some(false));
         assert_eq!(c.ic, vec![(1, 1.0)]);
         let w = c.warnings.join("\n");
         assert!(w.contains("option 'method'") && w.contains("unknown node 'zz'"), "{w}");

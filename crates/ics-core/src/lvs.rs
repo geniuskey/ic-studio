@@ -139,6 +139,7 @@ impl Kind {
     }
 }
 
+#[derive(Clone)]
 struct Dev {
     kind: Kind,
     /// Model name: for MOS compared only when the technology defines devices, for resistors and
@@ -233,7 +234,9 @@ impl Side {
         self.devs.len() < before
     }
 
-    /// Merge one pair of resistors in series through an unnamed net; whether any merged.
+    /// Merge resistors in series through unnamed nets; whether any merged. Each pass merges
+    /// every pair whose resistors no other merge of the pass touched, so a chain of k
+    /// resistors takes about log k passes instead of k.
     fn merge_series(&mut self) -> bool {
         let mut uses: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
         for (i, d) in self.devs.iter().enumerate() {
@@ -243,26 +246,40 @@ impl Side {
         }
         let same_model =
             |a: &Dev, b: &Dev| a.model.as_deref().map(str::to_ascii_lowercase) == b.model.as_deref().map(str::to_ascii_lowercase);
-        let found = uses.iter().find_map(|(&n, ds)| match ds[..] {
-            [i, j] if i != j && !self.nets[n].named => {
-                let (a, b) = (&self.devs[i], &self.devs[j]);
-                (a.kind == Kind::Res && b.kind == Kind::Res && same_model(a, b)).then_some((n, i, j))
+        let mut touched = vec![false; self.devs.len()];
+        let mut gone = vec![false; self.devs.len()];
+        let mut merged = false;
+        for (&n, ds) in &uses {
+            let [i, j] = ds[..] else { continue };
+            if i == j || self.nets[n].named || touched[i] || touched[j] {
+                continue;
             }
-            _ => None,
-        });
-        let Some((n, i, j)) = found else { return false };
-        let d = self.devs.remove(j);
-        let i = if j < i { i - 1 } else { i };
-        let far = if d.s == n { d.d } else { d.s };
-        let m = &mut self.devs[i];
-        if m.s == n {
-            m.s = far;
-        } else {
-            m.d = far;
+            let (a, b) = (&self.devs[i], &self.devs[j]);
+            if !(a.kind == Kind::Res && b.kind == Kind::Res && same_model(a, b)) {
+                continue;
+            }
+            (touched[i], touched[j], gone[j]) = (true, true, true);
+            let keep = self.devs[i].clone();
+            let d = std::mem::replace(&mut self.devs[j], keep);
+            let far = if d.s == n { d.d } else { d.s };
+            let m = &mut self.devs[i];
+            if m.s == n {
+                m.s = far;
+            } else {
+                m.d = far;
+            }
+            m.value += d.value;
+            m.absorb(&d);
+            merged = true;
         }
-        m.value += d.value;
-        m.absorb(&d);
-        true
+        if merged {
+            let mut k = 0;
+            self.devs.retain(|_| {
+                k += 1;
+                !gone[k - 1]
+            });
+        }
+        merged
     }
 }
 
@@ -316,6 +333,7 @@ fn hash<T: Hash>(t: T) -> u64 {
     h.finish()
 }
 
+#[derive(Clone)]
 struct State {
     dev: Vec<u64>,
     net: Vec<u64>,
@@ -637,6 +655,41 @@ fn prune_seeds(a: &mut Side, b: &mut Side) {
     }
 }
 
+/// Refine both sides until the number of classes stops growing.
+fn settle(sa: &Side, sb: &Side, a: &mut State, b: &mut State, limit: usize) {
+    let mut classes = (a.classes(), b.classes());
+    for _ in 0..limit {
+        a.refine(sa);
+        b.refine(sb);
+        let now = (a.classes(), b.classes());
+        if now == classes {
+            break;
+        }
+        classes = now;
+    }
+}
+
+/// Unmatched devices and nets by (is a net, class): their indices on side a and side b.
+type Classes = BTreeMap<(bool, u64), (Vec<usize>, Vec<usize>)>;
+
+fn unmatched_classes(a: &State, b: &State) -> Classes {
+    let mut groups = Classes::new();
+    for (st, first) in [(a, true), (b, false)] {
+        let items = st.dev.iter().enumerate().filter(|(i, _)| st.dev_match[*i].is_none()).map(|(i, &c)| (false, c, i));
+        let nets = st.net.iter().enumerate().filter(|(i, _)| st.net_match[*i].is_none()).map(|(i, &c)| (true, c, i));
+        for (is_net, c, i) in items.chain(nets) {
+            let g = groups.entry((is_net, c)).or_default();
+            if first { g.0.push(i) } else { g.1.push(i) }
+        }
+    }
+    groups
+}
+
+/// How many unmatched items have no counterpart in their class.
+fn imbalance(groups: &Classes) -> usize {
+    groups.values().map(|(xs, ys)| xs.len().abs_diff(ys.len())).sum()
+}
+
 fn match_graphs(sa: &Side, sb: &Side, a: &mut State, b: &mut State) {
     let mut tag = 0u64;
     let mut fresh = || {
@@ -651,25 +704,8 @@ fn match_graphs(sa: &Side, sb: &Side, a: &mut State, b: &mut State) {
     }
     let limit = sa.devs.len() + sa.nets.len() + sb.devs.len() + sb.nets.len() + 2;
     loop {
-        let mut classes = (a.classes(), b.classes());
-        for _ in 0..limit {
-            a.refine(sa);
-            b.refine(sb);
-            let now = (a.classes(), b.classes());
-            if now == classes {
-                break;
-            }
-            classes = now;
-        }
-        let mut groups: BTreeMap<(bool, u64), (Vec<usize>, Vec<usize>)> = BTreeMap::new();
-        for (st, first) in [(&*a, true), (&*b, false)] {
-            let items = st.dev.iter().enumerate().filter(|(i, _)| st.dev_match[*i].is_none()).map(|(i, &c)| (false, c, i));
-            let nets = st.net.iter().enumerate().filter(|(i, _)| st.net_match[*i].is_none()).map(|(i, &c)| (true, c, i));
-            for (is_net, c, i) in items.chain(nets) {
-                let g = groups.entry((is_net, c)).or_default();
-                if first { g.0.push(i) } else { g.1.push(i) }
-            }
-        }
+        settle(sa, sb, a, b, limit);
+        let groups = unmatched_classes(a, b);
         let mut progress = false;
         for (&(is_net, _), (xs, ys)) in &groups {
             if xs.len() == 1 && ys.len() == 1 {
@@ -685,31 +721,65 @@ fn match_graphs(sa: &Side, sb: &Side, a: &mut State, b: &mut State) {
         if progress {
             continue;
         }
-        let pick = groups
+        // Symmetric classes (copies of a cell, mirrored halves) need a guess. One guess per
+        // full refinement is quadratic on arrays, so guess in every such class at once (nets
+        // first, as they settle devices fastest): all members of each, paired in order. Keep
+        // the guesses if no class ends up less balanced than before; else try the first half
+        // of them, down to the single guess of the smallest class, which is always kept.
+        let mut ambiguous: Vec<_> = groups.iter().filter(|(_, (xs, ys))| !xs.is_empty() && !ys.is_empty()).collect();
+        let nets_left = ambiguous.iter().any(|((is_net, _), _)| *is_net);
+        ambiguous.retain(|((is_net, _), _)| *is_net == nets_left);
+        ambiguous.sort_by_key(|(key, (xs, ys))| (xs.len().max(ys.len()), **key));
+        let guesses: Vec<(bool, usize, usize)> = ambiguous
             .iter()
-            .filter(|(_, (xs, ys))| !xs.is_empty() && !ys.is_empty())
-            .min_by_key(|((is_net, _), (xs, ys))| (!is_net, xs.len().max(ys.len())));
-        match pick {
-            Some((&(is_net, _), (xs, ys))) => {
+            .flat_map(|((is_net, _), (xs, ys))| {
+                let is_net = *is_net;
+                xs.iter().zip(ys.iter()).map(move |(&x, &y)| (is_net, x, y))
+            })
+            .collect();
+        if guesses.is_empty() {
+            break;
+        }
+        let before = imbalance(&groups);
+        let mut n = guesses.len();
+        loop {
+            let saved = (n > 1).then(|| (a.clone(), b.clone()));
+            for &(is_net, x, y) in &guesses[..n] {
                 let t = fresh();
-                if is_net { pair_net(a, b, xs[0], ys[0], t) } else { pair_dev(a, b, xs[0], ys[0], t) }
+                if is_net { pair_net(a, b, x, y, t) } else { pair_dev(a, b, x, y, t) }
             }
-            None => break,
+            let Some((sa0, sb0)) = saved else { break };
+            settle(sa, sb, a, b, limit);
+            if imbalance(&unmatched_classes(a, b)) <= before {
+                break;
+            }
+            (*a, *b) = (sa0, sb0);
+            n /= 2;
         }
     }
 
+    // What refinement left: pair by the most matched neighbours. Only items next to a matched
+    // neighbour can score above zero, so the candidates come from the matched nets' and
+    // devices' connections instead of a scan of the whole other side.
     for _ in 0..2 {
         for (i, d) in sa.devs.iter().enumerate() {
             if a.dev_match[i].is_some() {
                 continue;
             }
             let m = |n: usize| a.net_match[n];
-            let best = sb
-                .devs
-                .iter()
-                .enumerate()
-                .filter(|(j, e)| b.dev_match[*j].is_none() && e.kind == d.kind)
-                .map(|(j, e)| {
+            let mut cands: Vec<usize> = [d.g, Some(d.s), Some(d.d), d.b]
+                .into_iter()
+                .flatten()
+                .filter_map(m)
+                .flat_map(|n| sb.nets[n].conns.iter().map(|&(j, _)| j))
+                .filter(|&j| b.dev_match[j].is_none() && sb.devs[j].kind == d.kind)
+                .collect();
+            cands.sort_unstable();
+            cands.dedup();
+            let best = cands
+                .into_iter()
+                .map(|j| {
+                    let e = &sb.devs[j];
                     let sd = [m(d.s), m(d.d)];
                     let score = usize::from(d.g.is_some() && d.g.and_then(m) == e.g)
                         + usize::from(sd.contains(&Some(e.s)))
@@ -730,12 +800,19 @@ fn match_graphs(sa: &Side, sb: &Side, a: &mut State, b: &mut State) {
                 continue;
             }
             let want: Vec<(usize, Role)> = n.conns.iter().filter_map(|&(d, r)| Some((a.dev_match[d]?, r))).collect();
-            let best = sb
-                .nets
+            let mut cands: Vec<usize> = want
                 .iter()
-                .enumerate()
-                .filter(|(j, _)| b.net_match[*j].is_none())
-                .map(|(j, e)| (want.iter().filter(|c| e.conns.contains(c)).count(), std::cmp::Reverse(j)))
+                .flat_map(|&(j, _)| {
+                    let e = &sb.devs[j];
+                    [e.g, Some(e.s), Some(e.d), e.b].into_iter().flatten()
+                })
+                .filter(|&k| b.net_match[k].is_none())
+                .collect();
+            cands.sort_unstable();
+            cands.dedup();
+            let best = cands
+                .into_iter()
+                .map(|j| (want.iter().filter(|c| sb.nets[j].conns.contains(c)).count(), std::cmp::Reverse(j)))
                 .max();
             if let Some((score, std::cmp::Reverse(j))) = best
                 && score > 0

@@ -56,6 +56,7 @@ curl -fsSL https://github.com/geniuskey/ic-studio/releases/latest/download/insta
 | `ICS_INSTALL_DIR` | 이 폴더에 설치 |
 | `ICS_EXAMPLES_DIR` | 예제 프로젝트를 이 폴더에 씀 |
 | `ICS_EXAMPLES=0` | 예제 프로젝트를 쓰지 않음 |
+| `ICS_ALLOW_UNVERIFIED=1` | SHA-256 체크섬 목록이 없는 (예전) 릴리스를 설치. 없으면 다운로드를 검증할 수 없을 때 설치를 멈춤 |
 | `ICS_UNINSTALL=1` | 폴더, `PATH` 항목 또는 링크, 실행 아이콘, MCP 등록을 제거 (프로젝트와 예제 프로젝트는 유지) |
 
 앱도 업데이트 뒤 예제를 추가할 때 `ICS_EXAMPLES_DIR`를 따르고, `ICS_SETTINGS_PATH`는 앱이 설정과

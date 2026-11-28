@@ -260,6 +260,50 @@ fn load(lines: Vec<Line>, dir: Option<&Path>, depth: usize, out: &mut Vec<Line>,
     Ok(())
 }
 
+/// What a deck reads from disk, for checking a deck from an untrusted source (an agent) before
+/// running it: every file it includes, their includes too (`.include`, `.lib file section` and
+/// the Spectre forms), and the lines loading compiled models (`pre_osdi`, `.osdi`, `.hdl`), which
+/// make ngspice run native code. Files that cannot be read are listed but not followed.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct DeckFiles {
+    pub files: Vec<PathBuf>,
+    pub compiled: Vec<String>,
+}
+
+/// The files `deck` reads, relative ones taken from `dir` (see [`DeckFiles`]).
+pub fn deck_files(deck: &str, dir: Option<&Path>) -> DeckFiles {
+    fn walk(text: &str, file: Option<&Path>, dir: Option<&Path>, depth: usize, out: &mut DeckFiles) {
+        let mut warnings = vec![];
+        for l in logical_any(text, file, &mut warnings) {
+            let c = cmd(&l.text);
+            let args: Vec<&str> = l.text.split_whitespace().collect();
+            let target = match c.as_str() {
+                ".include" | ".inc" => l.text.split_once(char::is_whitespace).map(|x| x.1.trim()).filter(|a| !a.is_empty()),
+                ".lib" if args.len() >= 3 => Some(args[1]),
+                "pre_osdi" | ".osdi" | ".hdl" => {
+                    out.compiled.push(l.text.trim().to_string());
+                    None
+                }
+                _ => None,
+            };
+            let Some(target) = target else { continue };
+            let path = resolve_path(target, dir);
+            if out.files.contains(&path) {
+                continue;
+            }
+            out.files.push(path.clone());
+            if depth < MAX_INCLUDE_DEPTH
+                && let Ok(text) = std::fs::read_to_string(&path)
+            {
+                walk(&text, Some(&path), path.parent(), depth + 1, out);
+            }
+        }
+    }
+    let mut out = DeckFiles::default();
+    walk(deck, None, dir, 0, &mut out);
+    out
+}
+
 /// Split statements into the top level and subcircuit definitions (registered in `ctx`).
 fn collect(lines: Vec<Line>, ctx: &mut Ctx) -> Result<Vec<Line>, SimError> {
     let mut top = vec![];

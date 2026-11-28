@@ -229,6 +229,9 @@ fn suite() -> Vec<(&'static str, String, f64)> {
 #[test]
 fn builtin_matches_ngspice() {
     let Some(exe) = ngspice_exe() else {
+        // CI installs ngspice on every platform and sets ICS_REQUIRE_NGSPICE, so the suite
+        // cannot pass there by skipping.
+        assert!(std::env::var_os("ICS_REQUIRE_NGSPICE").is_none(), "ngspice not found, and ICS_REQUIRE_NGSPICE is set");
         eprintln!("ngspice not found: skipping the correlation suite (set ICS_NGSPICE)");
         return;
     };

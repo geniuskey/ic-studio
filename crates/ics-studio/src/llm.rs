@@ -158,6 +158,71 @@ impl LlmSettings {
     }
 }
 
+/// API keys and headers (which may hold tokens) of every provider. They are kept out of the
+/// app's settings file, which the system writes readable by others, in an owner-only file of
+/// their own ([`secrets_path`]).
+#[derive(Serialize, Deserialize, Clone, Default, PartialEq, Debug)]
+#[serde(default)]
+pub struct Secrets {
+    pub keys: std::collections::BTreeMap<String, (String, Vec<Header>)>,
+}
+
+impl LlmSettings {
+    const PROVIDERS: [Provider; 4] = [Provider::Gemini, Provider::OpenAi, Provider::Compatible, Provider::Claude];
+
+    /// The settings without keys and headers, and those apart.
+    pub fn split_secrets(&self) -> (LlmSettings, Secrets) {
+        let mut public = self.clone();
+        let mut secrets = Secrets::default();
+        for p in Self::PROVIDERS {
+            let c = public.config_mut(p);
+            let (key, headers) = (std::mem::take(&mut c.api_key), std::mem::take(&mut c.headers));
+            if !key.is_empty() || !headers.is_empty() {
+                secrets.keys.insert(format!("{p:?}"), (key, headers));
+            }
+        }
+        (public, secrets)
+    }
+
+    /// Fill in keys and headers from `secrets` where these settings have none (settings saved
+    /// by an older version still hold their own, moved out on the next save).
+    pub fn merge_secrets(&mut self, secrets: &Secrets) {
+        for p in Self::PROVIDERS {
+            if let Some((key, headers)) = secrets.keys.get(&format!("{p:?}")) {
+                let c = self.config_mut(p);
+                if c.api_key.is_empty() {
+                    c.api_key = key.clone();
+                }
+                if c.headers.is_empty() {
+                    c.headers = headers.clone();
+                }
+            }
+        }
+    }
+}
+
+/// The owner-only file with the API keys: `secrets.json` next to `ICS_SETTINGS_PATH` when set,
+/// else in the per-user config folder (`ic-studio/secrets.json`).
+pub fn secrets_path() -> Option<PathBuf> {
+    match std::env::var_os("ICS_SETTINGS_PATH").filter(|p| !p.is_empty()) {
+        Some(p) => Some(PathBuf::from(p).parent()?.join("secrets.json")),
+        None => dirs::config_dir().map(|d| d.join("ic-studio").join("secrets.json")),
+    }
+}
+
+pub fn load_secrets() -> Secrets {
+    secrets_path().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+}
+
+pub fn save_secrets(s: &Secrets) -> Result<(), String> {
+    let path = secrets_path().ok_or("no per-user config folder for the API keys")?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let text = serde_json::to_string_pretty(s).map_err(|e| e.to_string())?;
+    ics_mcp::bridge::write_private(&path, text.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 /// `KEY=value` lines of a `.env` file (quotes and `export ` stripped).
 pub fn dotenv(path: &std::path::Path) -> Vec<(String, String)> {
     let Ok(text) = std::fs::read_to_string(path) else { return vec![] };
@@ -174,16 +239,19 @@ pub fn dotenv(path: &std::path::Path) -> Vec<(String, String)> {
         .collect()
 }
 
-/// A key from a `.env` file in one of `dirs` (e.g. the project folder) or the working directory,
-/// or their parents; else from the environment. A `.env` next to the work wins over a global key.
+/// A key from the environment, else from a `.env` file in one of `dirs` (e.g. the project
+/// folder) or the working directory, or their parents. The user's own environment wins: a
+/// project from someone else could otherwise bring a `.env` that sends the conversation, and the
+/// design in it, to their account.
 pub fn env_key(vars: &[&str], dirs: &[PathBuf]) -> Option<String> {
-    let cwd = std::env::current_dir().ok();
-    let from_file = dirs.iter().chain(&cwd).flat_map(|d| d.ancestors().take(4)).find_map(|d| {
-        let found = dotenv(&d.join(".env"));
-        vars.iter().find_map(|k| found.iter().find(|(n, v)| n == k && !v.is_empty()).map(|(_, v)| v.clone()))
-    });
-    from_file
-        .or_else(|| vars.iter().find_map(|k| std::env::var(k).ok().filter(|v| !v.trim().is_empty())).map(|k| k.trim().into()))
+    let from_env = vars.iter().find_map(|k| std::env::var(k).ok().filter(|v| !v.trim().is_empty())).map(|k| k.trim().to_string());
+    from_env.or_else(|| {
+        let cwd = std::env::current_dir().ok();
+        dirs.iter().chain(&cwd).flat_map(|d| d.ancestors().take(4)).find_map(|d| {
+            let found = dotenv(&d.join(".env"));
+            vars.iter().find_map(|k| found.iter().find(|(n, v)| n == k && !v.is_empty()).map(|(_, v)| v.clone()))
+        })
+    })
 }
 
 /// The client for the selected provider; the key falls back to the environment / `.env` in `dirs`.
@@ -985,6 +1053,21 @@ impl AiSettingsWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keys_are_kept_apart_from_the_settings() {
+        let mut s = LlmSettings::default();
+        s.claude.api_key = "sk-secret".into();
+        s.openai.headers = vec![Header { name: "X-Token".into(), value: "t".into() }];
+        s.claude.model = "m".into();
+        let (public, secrets) = s.split_secrets();
+        let text = serde_json::to_string(&public).unwrap();
+        assert!(!text.contains("sk-secret") && !text.contains("X-Token"), "{text}");
+        assert_eq!(public.claude.model, "m");
+        let mut back = public.clone();
+        back.merge_secrets(&serde_json::from_str(&serde_json::to_string(&secrets).unwrap()).unwrap());
+        assert_eq!(back, s);
+    }
 
     #[test]
     fn reads_dotenv_lines() {

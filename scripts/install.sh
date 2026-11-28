@@ -14,6 +14,7 @@
 #                    or ~/IC Studio/Examples without ~/Documents; examples already there are
 #                    kept); ICS_EXAMPLES=0 skips them
 #   ICS_UNINSTALL=1  remove what this script installed
+#   ICS_ALLOW_UNVERIFIED=1  install an old release that lists no SHA-256 checksums
 
 set -eu
 
@@ -94,7 +95,8 @@ main() {
     say "Downloading $url"
     download "$url" "$tmp/$asset" || err "download failed: $url"
 
-    # The release lists the SHA-256 of every file it holds; releases before v0.3 have no list.
+    # The release lists the SHA-256 of every file it holds. Without the list nothing is
+    # installed, unless ICS_ALLOW_UNVERIFIED=1 (old releases had none).
     if download "${url%/*}/SHA256SUMS" "$tmp/SHA256SUMS" 2>/dev/null; then
         want="$(awk -v f="$asset" '$2 == f || $2 == "*" f { print $1 }' "$tmp/SHA256SUMS")"
         [ -n "$want" ] || err "SHA256SUMS does not list $asset"
@@ -107,8 +109,10 @@ main() {
         fi
         [ "$got" = "$want" ] || err "the download does not match its SHA-256 (got $got, expected $want)"
         say "SHA-256 verified"
+    elif [ "${ICS_ALLOW_UNVERIFIED:-0}" = "1" ]; then
+        say "warning: no SHA-256 checksums for this release; installing unverified (ICS_ALLOW_UNVERIFIED=1)"
     else
-        say "warning: this release lists no SHA-256 checksums; the download is not verified"
+        err "cannot download SHA256SUMS to verify $asset; try again, or set ICS_ALLOW_UNVERIFIED=1 for an old release"
     fi
 
     say "Extracting"

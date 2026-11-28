@@ -4,6 +4,7 @@ It calls built-in IC Studio tools on the open project (get_netlist, run_drc, run
 project_info) and writes the results as Markdown."""
 
 import os
+import re
 from collections import Counter
 from datetime import date
 
@@ -59,7 +60,10 @@ def report(cell, write=True):
     text = "\n".join(lines)
     root = ext.call("project_info").get("root")
     if write and root:
-        path = os.path.join(root, "reports", cell.replace("/", "_") + ".md")
+        # Only letters, digits, '-', '_' and '.' in the file name: a cell name such as
+        # "..\\x" or "C:x" must not leave the reports folder (on Windows too).
+        name = re.sub(r"[^A-Za-z0-9_.-]", "_", cell).lstrip(".") or "cell"
+        path = os.path.join(root, "reports", name + ".md")
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             f.write(text)

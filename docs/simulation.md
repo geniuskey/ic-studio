@@ -247,12 +247,14 @@ A modified nodal analysis engine written in Rust. It supports:
   for circuits above 120 unknowns, so post-layout RC networks of tens of thousands of nodes
   simulate in about the time ngspice takes, and SPICE's junction limiting (`pnjlim`) with
   junctions started at their critical voltage, which lands circuits with several operating
-  points (a bandgap) where SPICE does,
+  points (a bandgap) where SPICE does; when Newton fails from the start, SPICE's dynamic
+  gmin stepping follows (a node conductance lowered from 10 mS in steps that adapt to how the
+  last one went), then source stepping, so chains of thousands of gain stages converge,
 - directives `.model`, `.op`, `.dc`, `.ac`, `.tran`, `.noise`, `.temp`, `.title`, `.end`;
   `.ic v(node)=value` (held for the transient's initial operating point, as in ngspice;
   with `.tran ... uic` the transient starts from it without one), `.nodeset` (a starting
   guess for the operating point) and `.option` with `reltol abstol vntol gmin trtol
-  chgtol itl1 itl4 temp` (other options are reported); other dot lines are ignored, and decks that load compiled
+  chgtol itl1 itl4 temp voltrunc` (other options are reported); other dot lines are ignored, and decks that load compiled
   Verilog-A models (`pre_osdi`) need ngspice,
 - hierarchical decks as PDKs write them, flattened before simulation:
   - `.include` / `.inc` files and `.lib <file> <section>` library sections, with paths
@@ -316,9 +318,12 @@ The level-1 models follow SPICE level 1 and the SPICE diode:
 - **Transient step control**: steps are accepted and sized by a local truncation error
   estimate, so fast edges are resolved even with a coarse **Step**. As in ngspice, the
   estimate works on the charge of every capacitor and charge-based device terminal and on
-  inductor flux (tolerances `reltol`, `abstol`, `chgtol`, `trtol`), with a check of node
-  voltages to 1 mV; switches limit the step as their control nears the threshold. Step
-  counts stay close to ngspice's.
+  inductor flux (tolerances `reltol`, `abstol`, `chgtol`, `trtol`). On circuits of up to 500
+  nodes node voltages are checked to 1 mV as well, which keeps gate currents accurate for
+  few extra points; larger circuits follow charges only, as ngspice does, since some node of
+  a large circuit is always switching (`.option voltrunc=1` or `=0` sets it either way).
+  Switches limit the step as their control nears the threshold. Step counts stay close to
+  ngspice's.
 
 The generic `nmos` / `pmos` models the netlister writes use `vto = ±0.45` and
 `kp = 280u` / `70u` with `tox = 4n`. A MOS parameter left out takes its SPICE default

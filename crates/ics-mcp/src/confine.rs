@@ -10,6 +10,10 @@ use serde_json::{Map, Value};
 /// Tool arguments that name a file or directory.
 pub const PATH_ARGS: [&str; 8] = ["path", "file", "flow_path", "svg_path", "spec_path", "lib_path", "lef_path", "layermap"];
 
+/// Arguments holding SPICE text, whose `.include` / `.lib` files must lie inside the roots too
+/// (relative ones are taken from the project, as the simulation tools do).
+pub const DECK_ARGS: [&str; 2] = ["deck", "extra"];
+
 /// Arguments resolved against the open project's directory when relative.
 const PROJECT_RELATIVE: [&str; 1] = ["data"];
 
@@ -58,6 +62,10 @@ impl Roots {
         let mut out = args.clone();
         for (k, v) in out.iter_mut() {
             let Value::String(s) = v else { continue };
+            if DECK_ARGS.contains(&k.as_str()) {
+                self.check_deck(k, s, project)?;
+                continue;
+            }
             if !PATH_ARGS.contains(&k.as_str()) && !PROJECT_RELATIVE.contains(&k.as_str()) {
                 continue;
             }
@@ -91,6 +99,31 @@ impl Roots {
             *v = Value::String(abs.to_string_lossy().into_owned());
         }
         Ok(out)
+    }
+
+    /// SPICE text in argument `k`: the files it reads must be allowed, and it may not load
+    /// compiled models (native code in ngspice).
+    fn check_deck(&self, k: &str, deck: &str, project: Option<&Path>) -> Result<(), String> {
+        let dir = project.unwrap_or(&self.base);
+        let found = ics_sim::frontend::deck_files(deck, Some(dir));
+        if let Some(l) = found.compiled.first() {
+            return Err(format!(
+                "argument '{k}': '{l}' loads compiled models, which agents may not do; put the model in the \
+                 technology's model files instead"
+            ));
+        }
+        let project = project.map(|d| canonical(&absolute(&self.base, d)));
+        for f in found.files {
+            let abs = canonical(&absolute(dir, &f));
+            if !self.allows(&abs) && !project.as_ref().is_some_and(|d| abs.starts_with(d)) {
+                return Err(format!(
+                    "argument '{k}': the deck reads '{}', outside the folders this MCP server may use; list its \
+                     folder in ICS_MCP_ROOTS",
+                    f.display()
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -180,6 +213,16 @@ mod tests {
                 assert!(r.check(&args(json!({"path": bad})), None).is_err(), "{bad}");
             }
         }
+        // Decks: included files must be inside too, including through another include.
+        std::fs::write(root.join("ok.spi"), "R1 a 0 1k\n").unwrap();
+        std::fs::write(root.join("hop.spi"), format!(".include '{}'\n", dir.join("secret.txt").display())).unwrap();
+        assert!(r.check(&args(json!({"deck": "* t\n.include ok.spi\n.op\n.end\n"})), None).is_ok());
+        for bad in ["* t\n.include /etc/passwd\n.end\n", "* t\n.inc hop.spi\n.end\n", "* t\n.lib ../x.lib tt\n.end\n"] {
+            assert!(r.check(&args(json!({"deck": bad})), None).is_err(), "{bad}");
+        }
+        assert!(r.check(&args(json!({"extra": ".include /etc/passwd"})), None).is_err());
+        let osdi = "* t\n.control\npre_osdi ok.osdi\n.endc\n.end\n";
+        assert!(r.check(&args(json!({"deck": osdi})), None).unwrap_err().contains("compiled"));
         #[cfg(unix)]
         {
             // A link inside a root that points out of it is outside.

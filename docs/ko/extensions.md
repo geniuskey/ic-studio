@@ -222,11 +222,16 @@ IC Studio → 프로그램:
   "repository": "https://github.com/jane/ics-design-report",
   "path": "optional/sub-folder",
   "rev": "v0.1.0",
+  "commit": "v0.1.0의 40자리 전체 커밋 해시",
   "license": "MIT",
   "authors": ["Jane Doe"],
   "tags": ["report", "drc"]
 }
 ```
+
+`commit`은 항목을 그 커밋에 고정합니다(다운로드 후 확인). 매니페스트의 id는 항목의 id와 같아야
+하며, IC Studio 자체 저장소 밖의 항목은 반드시 고정해야 합니다. 설치는 `https://`와 ssh 저장소만
+받으며, 앱에서 인덱스로 설치할 때는 먼저 확인을 묻습니다.
 
 `index.json`만 바꾸는 pull request에는 CLA 서명이 필요 없습니다. 인덱스 항목 규칙은
 [`extensions/README.md`](https://github.com/geniuskey/ic-studio/blob/main/extensions/README.md)에

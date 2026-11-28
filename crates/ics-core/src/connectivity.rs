@@ -1,6 +1,6 @@
 //! Schematic connectivity extraction: turns pins, wires and labels into named nets.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::geom::{Pt, on_segment};
 use crate::schematic::{DeviceKind, Schematic};
@@ -54,11 +54,18 @@ pub struct Connectivity {
     pub warnings: Vec<String>,
     /// Labels whose net took another name (ground, a supply or another label): (label, net).
     pub renamed_labels: Vec<(String, String)>,
+    /// The pin names of each instance in `pin_nets`, for [`Connectivity::net_of`].
+    pins: HashMap<u64, Vec<&'static str>>,
 }
 
 impl Connectivity {
     pub fn net_of(&self, inst: u64, pin: &str) -> Option<&str> {
-        self.pin_nets.iter().find(|((i, p), _)| *i == inst && *p == pin).map(|(_, n)| n.as_str())
+        // The map's keys hold `&'static str`: find that string among the instance's pins, then
+        // look up the key (a scan of every pin made netlisting quadratic).
+        match self.pins.get(&inst).and_then(|ps| ps.iter().find(|p| **p == pin)) {
+            Some(&p) => self.pin_nets.get(&(inst, p)).map(String::as_str),
+            None => self.pin_nets.iter().find(|((i, p), _)| *i == inst && *p == pin).map(|(_, n)| n.as_str()),
+        }
     }
 
     pub fn nets(&self) -> Vec<String> {
@@ -95,12 +102,25 @@ pub fn extract(sch: &Schematic) -> Connectivity {
         node(l.pos, &mut dsu);
     }
 
-    // T-junctions: any connection point lying on a wire's interior joins that wire.
+    // T-junctions: any connection point lying on a wire's interior joins that wire. The points
+    // are sorted by row and by column, so a horizontal or vertical wire finds its points by a
+    // range lookup instead of testing every point (quadratic on large schematics).
     let points: Vec<Pt> = point_node.keys().copied().collect();
+    let rows: BTreeSet<(i32, i32)> = points.iter().map(|p| (p.y, p.x)).collect();
+    let cols: BTreeSet<(i32, i32)> = points.iter().map(|p| (p.x, p.y)).collect();
     for w in &sch.wires {
         let wn = point_node[&w.a];
-        for &p in &points {
-            if p != w.a && p != w.b && on_segment(p, w.a, w.b) {
+        let on: Vec<Pt> = if w.a.y == w.b.y {
+            let (x0, x1) = (w.a.x.min(w.b.x), w.a.x.max(w.b.x));
+            rows.range((w.a.y, x0)..=(w.a.y, x1)).map(|&(y, x)| Pt { x, y }).collect()
+        } else if w.a.x == w.b.x {
+            let (y0, y1) = (w.a.y.min(w.b.y), w.a.y.max(w.b.y));
+            cols.range((w.a.x, y0)..=(w.a.x, y1)).map(|&(x, y)| Pt { x, y }).collect()
+        } else {
+            points.iter().copied().filter(|&p| on_segment(p, w.a, w.b)).collect()
+        };
+        for p in on {
+            if p != w.a && p != w.b {
                 dsu.union(wn, point_node[&p]);
                 *degree.entry(p).or_default() += 2;
             }
@@ -120,12 +140,13 @@ pub fn extract(sch: &Schematic) -> Connectivity {
             root_name.insert(root, (prio, name));
         }
     };
+    let by_id: HashMap<u64, &crate::schematic::Instance> = sch.instances.iter().map(|i| (i.id, i)).collect();
     for &(id, _, p, kind) in &pin_points {
         let root = dsu.find(point_node[&p]);
         match kind {
             DeviceKind::Ground => assign(root, 0, "0".into(), &mut warnings),
             DeviceKind::Supply => {
-                let net = sch.instance(id).map(|i| i.param("net").trim().to_string()).unwrap_or_default();
+                let net = by_id.get(&id).map(|i| i.param("net").trim().to_string()).unwrap_or_default();
                 let net = if net.is_empty() { "vdd".to_string() } else { net };
                 assign(root, 1, net, &mut warnings)
             }
@@ -174,13 +195,14 @@ pub fn extract(sch: &Schematic) -> Connectivity {
     };
 
     let mut conn = Connectivity { warnings, renamed_labels, ..Default::default() };
+    let label_at: HashSet<Pt> = sch.labels.iter().map(|l| l.pos).collect();
     for &(id, pin, p, kind) in &pin_points {
         let root = dsu.find(point_node[&p]);
         conn.pin_nets.insert((id, pin), name_of(root));
+        conn.pins.entry(id).or_default().push(pin);
         if degree.get(&p).copied().unwrap_or(0) <= 1 && !matches!(kind, DeviceKind::Ground | DeviceKind::Supply) {
             // Only flag pins without any wire / other pin / label.
-            let labelled = sch.labels.iter().any(|l| l.pos == p);
-            if !labelled {
+            if !label_at.contains(&p) {
                 conn.unconnected_pins.push(p);
             }
         }
@@ -194,6 +216,7 @@ pub fn extract(sch: &Schematic) -> Connectivity {
         let bulk = inst.param("bulk").trim();
         let bulk = if bulk.is_empty() { inst.kind.default_bulk() } else { bulk };
         conn.pin_nets.insert((inst.id, "b"), resolve_bulk(bulk, &named));
+        conn.pins.entry(inst.id).or_default().push("b");
     }
     for w in &sch.wires {
         let root = dsu.find(point_node[&w.a]);

@@ -43,14 +43,18 @@ How to use and write extensions: [Extensions](https://pages.euiyun.com/ic-studio
   "repository": "https://github.com/you/ics-my-extension",
   "path": "sub-folder (only if extension.toml is not at the root)",
   "rev": "v0.1.0",
+  "commit": "the full 40-character hash the tag points at",
   "license": "MIT",
   "authors": ["Your Name"],
   "tags": ["layout", "python"]
 }
 ```
 
-`id` must equal the `id` in `extension.toml`. To publish a new version, open a pull request
-that changes `rev`.
+`id` must equal the `id` in `extension.toml` (IC Studio refuses the install otherwise).
+`commit` pins the entry: IC Studio checks out exactly that commit, so moving the tag or
+pushing to the branch later changes nothing for users until the index changes. Entries in
+other repositories than IC Studio's own must have one, and the repository must be `https://`.
+To publish a new version, open a pull request that changes `rev` and `commit`.
 
 A pull request that changes only `index.json` needs no CLA ([CLA.md](../CLA.md) covers code and
 documentation contributed to IC Studio itself; your extension stays yours, under your license).
@@ -61,7 +65,8 @@ Maintainers check, and authors should check before opening the pull request:
 
 - [ ] The id is free, descriptive and does not imitate another extension or a vendor's
       product name.
-- [ ] The repository is public, has a license and a README, and `rev` names an existing tag.
+- [ ] The repository is public, has a license and a README, `rev` names an existing tag and
+      `commit` is the commit that tag points at.
 - [ ] `ics ext install <repository> --path <path> --rev <rev>` works and the tools run.
 - [ ] Tool descriptions say what each tool needs and returns (AI agents choose tools by them).
 - [ ] The program only does what the README says: no network access, telemetry or file access

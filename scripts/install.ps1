@@ -12,6 +12,7 @@
 #   ICS_EXAMPLES_DIR where the example projects go (default: Documents\IC Studio\Examples;
 #                    examples already there are kept); ICS_EXAMPLES=0 skips them
 #   ICS_UNINSTALL=1  remove what this script installed
+#   ICS_ALLOW_UNVERIFIED=1  install an old release that lists no SHA-256 checksums
 
 & {
     $ErrorActionPreference = 'Stop'
@@ -150,7 +151,8 @@ public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wP
             return
         }
 
-        # The release lists the SHA-256 of every file it holds; releases before v0.3 have no list.
+        # The release lists the SHA-256 of every file it holds. Without the list nothing is
+        # installed, unless ICS_ALLOW_UNVERIFIED=1 (old releases had none).
         $sums = Join-Path $tmp 'SHA256SUMS'
         $sumsUrl = $url.Substring(0, $url.LastIndexOf('/')) + '/SHA256SUMS'
         $haveSums = $true
@@ -168,8 +170,11 @@ public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wP
                 return
             }
             Write-Step 'SHA-256 verified'
+        } elseif ($env:ICS_ALLOW_UNVERIFIED -eq '1') {
+            Write-Host 'Warning: no SHA-256 checksums for this release; installing unverified (ICS_ALLOW_UNVERIFIED=1).' -ForegroundColor Yellow
         } else {
-            Write-Host 'Warning: this release lists no SHA-256 checksums; the download is not verified.' -ForegroundColor Yellow
+            Write-Host "Cannot download SHA256SUMS to verify $asset; try again, or set ICS_ALLOW_UNVERIFIED=1 for an old release." -ForegroundColor Red
+            return
         }
 
         Write-Step 'Extracting'

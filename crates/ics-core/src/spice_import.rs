@@ -472,21 +472,23 @@ fn pin_order(kind: DeviceKind) -> &'static [&'static str] {
 fn place(devs: &[Dev]) -> Schematic {
     let mut s = Schematic::default();
     let mut next_col = [0i32; 4];
+    // Ground symbols are numbered past any deck device of that name; counting here instead of
+    // asking `next_name` per symbol keeps large decks linear.
+    let gnd = DeviceKind::Ground.name_prefix();
+    let mut grounds = devs.iter().filter_map(|d| d.name.strip_prefix(gnd).and_then(|r| r.parse::<u32>().ok())).max().unwrap_or(0);
     for d in devs {
         let row = row_of(d.kind);
         let pos = Pt::new(next_col[row as usize] * COL, row * ROW);
         next_col[row as usize] += 1;
-        let id = s.add_instance(d.kind, pos, Orient::default());
-        let inst = s.instance_mut(id).expect("just added");
-        inst.name = d.name.clone();
+        s.add_named_instance(d.kind, pos, Orient::default(), d.name.clone());
+        let inst = s.instances.last_mut().expect("just added");
         inst.params = d.params.clone();
         let pins = inst.pin_positions();
         for (pin, net) in pin_order(d.kind).iter().zip(&d.nets) {
             let at = pins.iter().find(|(n, _)| n == pin).map(|(_, p)| *p).expect("symbol pin");
             if is_ground(net) {
-                let g = s.add_instance(DeviceKind::Ground, at, Orient::default());
-                let gname = s.next_name(DeviceKind::Ground);
-                s.instance_mut(g).expect("just added").name = gname;
+                grounds += 1;
+                s.add_named_instance(DeviceKind::Ground, at, Orient::default(), format!("{gnd}{grounds}"));
             } else {
                 s.add_label(net.clone(), at);
             }

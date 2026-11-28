@@ -30,27 +30,24 @@ pub const APP_TOOLS: [&str; 2] = ["ui_state", "guide_step"];
 /// Model turns per request before the copilot pauses.
 const MAX_TURNS: usize = 40;
 const TOOL_TIMEOUT: Duration = Duration::from_secs(600);
+/// Tools whose effects undo cannot take back (files written, scripts and external programs
+/// run): the copilot asks the user before each call, unless they allowed the tool for the
+/// conversation. Extension tools not declared read-only are asked about too.
+pub const CONFIRM: [&str; 9] = [
+    "save_project",
+    "export_gds",
+    "export_lef",
+    "export_def",
+    "export_skill_schematic",
+    "pcell_design_export_skill",
+    "run_skill",
+    "run_signoff",
+    "import_virtuoso",
+];
 /// Tools the copilot does not get: it works on the project already open in the window.
 const HIDDEN: [&str; 3] = ["new_project", "open_project", "gui_status"];
 /// Design tools that only read the project: the ones plan mode runs.
-const READ_ONLY: [&str; 16] = [
-    "project_info",
-    "docs_search",
-    "docs_read",
-    "pcell_design_check",
-    "get_netlist",
-    "simulate",
-    "run_spice",
-    "layout_summary",
-    "flylines",
-    "run_drc",
-    "extract",
-    "run_lvs",
-    "run_signoff",
-    "post_layout_parasitics",
-    "emir",
-    "diff_layout",
-];
+use ics_mcp::tools::READ_ONLY;
 
 use crate::i18n::{t, tf};
 pub use crate::llm::Llm;
@@ -76,6 +73,11 @@ pub enum Entry {
     },
     /// A plan presented for approval.
     Plan(String),
+    /// A tool call waiting for the user's go-ahead (see [`CONFIRM`]): its arguments as JSON.
+    Confirm {
+        tool: String,
+        args: String,
+    },
     /// A tutor's step for the user to do.
     Step(String),
     Notice(String),
@@ -100,6 +102,8 @@ pub struct Todo {
 pub enum WaitKind {
     Answer,
     Approval,
+    /// A tool in [`CONFIRM`] waits for the user's go-ahead.
+    Confirm,
 }
 
 /// A run paused on `ask_user` / `exit_plan_mode`: the call to answer, and the responses to the
@@ -107,6 +111,8 @@ pub enum WaitKind {
 struct Wait {
     kind: WaitKind,
     call: String,
+    /// The arguments of a call waiting for confirmation.
+    args: Map<String, Value>,
     index: usize,
     replies: Vec<Value>,
 }
@@ -116,6 +122,8 @@ struct Wait {
 pub enum Reply {
     Text(String),
     Approve,
+    /// Run the waiting tool, and its later calls in this conversation without asking.
+    ApproveAlways,
 }
 
 enum Event {
@@ -156,6 +164,8 @@ pub struct Copilot {
     pub tutor: bool,
     /// The tutor's step the user is working on; the app answers it.
     pub guide: Option<Guide>,
+    /// Tools in [`CONFIRM`] the user allowed for this conversation.
+    allowed: Vec<String>,
 }
 
 /// What finishes a tutor's step, besides the user saying so.
@@ -312,6 +322,7 @@ impl Default for Copilot {
             active_cell: None,
             tutor: false,
             guide: None,
+            allowed: vec![],
             history: vec![],
             wait: None,
             events: None,
@@ -735,9 +746,23 @@ struct Run {
     wake: egui::Context,
     cancel: Arc<AtomicBool>,
     ext: ics_mcp::ext::Registry,
+    /// Tools the user allowed for the conversation (see [`CONFIRM`]).
+    allowed: Vec<String>,
+    /// A confirmed call to run before the next model turn.
+    confirmed: Option<Confirmed>,
 }
 
+/// A tool call the user allowed: (tool, arguments, the other replies of its model turn, its
+/// index among them).
+type Confirmed = (String, Map<String, Value>, Vec<Value>, usize);
+
 impl Run {
+    /// Whether `name` waits for the user's go-ahead.
+    fn needs_confirm(&self, name: &str) -> bool {
+        let risky = CONFIRM.contains(&name) || (self.ext.has_tool(name) && !self.ext.read_only(name));
+        risky && !self.allowed.iter().any(|a| a == name)
+    }
+
     fn send(&self, e: Event) {
         let _ = self.events.send(e);
         self.wake.request_repaint();
@@ -785,6 +810,11 @@ impl Run {
     /// results back, until it answers in text, asks the user, presents a plan or is stopped.
     fn converse(mut self) {
         let decl = declarations_with(self.ext.definitions());
+        if let Some((name, args, mut parts, at)) = self.confirmed.take() {
+            let out = self.design_tool(&name, args);
+            parts.insert(at.min(parts.len()), json!({"functionResponse": {"name": name, "response": out}}));
+            push_user(&mut self.history, parts);
+        }
         let mut wait: Option<Wait> = None;
         for turn in 0..=MAX_TURNS {
             if self.cancelled() {
@@ -859,13 +889,14 @@ impl Run {
                                 .map(|o| o.iter().filter_map(Value::as_str).map(str::to_string).collect())
                                 .unwrap_or_default();
                             self.send(Event::Entry(Entry::Question { text, options }));
-                            wait = Some(Wait { kind: WaitKind::Answer, call: name, index: replies.len(), replies: vec![] });
+                            wait = Some(Wait { kind: WaitKind::Answer, call: name, args, index: replies.len(), replies: vec![] });
                             continue;
                         }
                         "exit_plan_mode" if self.plan_mode => {
                             let plan = args.get("plan").and_then(Value::as_str).unwrap_or_default().trim().to_string();
                             self.send(Event::Entry(Entry::Plan(plan)));
-                            wait = Some(Wait { kind: WaitKind::Approval, call: name, index: replies.len(), replies: vec![] });
+                            wait =
+                                Some(Wait { kind: WaitKind::Approval, call: name, args, index: replies.len(), replies: vec![] });
                             continue;
                         }
                         "exit_plan_mode" => json!({"result": "plan mode is off; go ahead with the work"}),
@@ -877,6 +908,13 @@ impl Run {
                             "plan mode is on, so '{name}' did not run: only read-only tools work. Put this step in the \
                              plan and present it with exit_plan_mode."
                         )}),
+                        _ if self.needs_confirm(&name) => {
+                            let shown = serde_json::to_string_pretty(&args).unwrap_or_default();
+                            self.send(Event::Entry(Entry::Confirm { tool: name.clone(), args: shown }));
+                            wait =
+                                Some(Wait { kind: WaitKind::Confirm, call: name, args, index: replies.len(), replies: vec![] });
+                            continue;
+                        }
                         _ => self.design_tool(&name, args),
                     }
                 };
@@ -927,10 +965,11 @@ impl Copilot {
         }
         let text = match &reply {
             Reply::Text(t) => Some(t.trim().to_string()).filter(|t| !t.is_empty()),
-            Reply::Approve => None,
+            Reply::Approve | Reply::ApproveAlways => None,
         };
         let valid = match (self.waiting(), &reply) {
             (Some(WaitKind::Approval), Reply::Approve) => true,
+            (Some(WaitKind::Confirm), Reply::Approve | Reply::ApproveAlways) => true,
             _ => text.is_some(),
         };
         if !valid {
@@ -946,7 +985,16 @@ impl Copilot {
                 return;
             }
         };
+        let mut confirmed = None;
         let parts = match self.wait.take() {
+            Some(w) if w.kind == WaitKind::Confirm && text.is_none() => {
+                if reply == Reply::ApproveAlways {
+                    self.allowed.push(w.call.clone());
+                }
+                self.log.push(Entry::User(tf("Allowed {}.", &[&w.call])));
+                confirmed = Some((w.call, w.args, w.replies, w.index));
+                vec![]
+            }
             None => {
                 let t = text.unwrap_or_default();
                 self.log.push(Entry::User(t.clone()));
@@ -965,6 +1013,12 @@ impl Copilot {
                         json!({"approved": false, "feedback": t, "next": "Revise the plan with this feedback (investigate \
                             again if needed) and present it with exit_plan_mode."})
                     }
+                    (WaitKind::Confirm, t) => {
+                        let t = t.unwrap_or_default();
+                        self.log.push(Entry::User(t.clone()));
+                        json!({"declined": true, "feedback": t, "next": "The user did not allow this call. Do not retry it; \
+                            follow their feedback."})
+                    }
                     (WaitKind::Answer, t) => {
                         let t = t.unwrap_or_default();
                         self.log.push(Entry::User(t.clone()));
@@ -978,7 +1032,9 @@ impl Copilot {
             }
         };
         let mut history = std::mem::take(&mut self.history);
-        push_user(&mut history, parts);
+        if !parts.is_empty() {
+            push_user(&mut history, parts);
+        }
         let (tool_tx, tool_rx) = mpsc::channel();
         let (ev_tx, ev_rx) = mpsc::channel();
         self.cancel = Arc::default();
@@ -993,6 +1049,8 @@ impl Copilot {
             wake: ctx.clone(),
             cancel: self.cancel.clone(),
             ext: self.ext.clone(),
+            allowed: self.allowed.clone(),
+            confirmed,
         };
         std::thread::spawn(move || run.converse());
         self.calls = Some(tool_rx);
@@ -1027,6 +1085,7 @@ impl Copilot {
             self.todos.clear();
             self.history.clear();
             self.wait = None;
+            self.allowed.clear();
         }
     }
 
@@ -1066,6 +1125,7 @@ impl Copilot {
                     format!("Question: {text}{o}")
                 }
                 Entry::Plan(t) => format!("Plan:\n{t}"),
+                Entry::Confirm { tool, args } => format!("Allow {tool}? {args}"),
                 Entry::Step(t) => format!("Step: {t}"),
                 Entry::Notice(t) => t.clone(),
                 Entry::Error(t) => format!("Error: {t}"),
@@ -1138,6 +1198,13 @@ impl Copilot {
                     crate::chat::markdown(ui, id, t, pal);
                 });
             }
+            Entry::Confirm { tool, args } => {
+                let head = tf("Allow {}?", &[tool]);
+                Self::card(ui, id, &head, pal.warning.gamma_multiply(0.10), pal.warning, args, |ui| {
+                    ui.label(t("This writes files or runs a program, which undo cannot take back."));
+                    crate::chat::code_block(ui, id.with("args"), "arguments", args, pal);
+                });
+            }
             Entry::Step(text) => {
                 Self::card(ui, id, t("Tutor step"), pal.ok.gamma_multiply(0.10), pal.ok, text, |ui| {
                     crate::chat::markdown(ui, id, text, pal);
@@ -1180,12 +1247,24 @@ impl Copilot {
                     ui.label(egui::RichText::new(t("or type changes below")).weak());
                 });
             }
+            Some(WaitKind::Confirm) => {
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button(t("Allow")).clicked() {
+                        send = Some(Reply::Approve);
+                    }
+                    if ui.button(t("Always allow in this conversation")).clicked() {
+                        send = Some(Reply::ApproveAlways);
+                    }
+                    ui.label(egui::RichText::new(t("or type why not below")).weak());
+                });
+            }
             None => {}
         }
         ui.horizontal(|ui| {
             let l = ui.label(match waiting {
                 Some(WaitKind::Answer) => "Answer",
                 Some(WaitKind::Approval) => "Revise",
+                Some(WaitKind::Confirm) => "Decline",
                 None => "Ask",
             });
             let w = (ui.available_width() - 64.0).max(80.0);
@@ -1427,9 +1506,10 @@ mod tests {
 
     #[test]
     fn primer_menus_are_the_real_menus() {
-        // Every label must be a menu item of the menu bar (`t("…")` in app.rs) with a Korean
-        // translation, so the copilot never names a menu path that does not exist.
-        let app = include_str!("app.rs");
+        // Every label must be a menu item of the menu bar (`t("…")` in app.rs or the module that
+        // draws the menu bar) with a Korean translation, so the copilot never names a menu path
+        // that does not exist.
+        let app = [include_str!("app.rs"), include_str!("app/chrome.rs")].concat();
         for (menu, items) in MENUS {
             for label in std::iter::once(*menu).chain(items.iter().flat_map(|i| i.split(" > "))) {
                 assert!(app.contains(&format!("t(\"{label}\")")), "{label} is not a menu label in app.rs");

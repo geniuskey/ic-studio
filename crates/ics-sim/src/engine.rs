@@ -1227,7 +1227,7 @@ impl Engine {
                         cur(&mut rhs, an, ca, id - gd * vd);
                     }
                     let nodes = [*d, *g, *s, *b];
-                    let vs: Vec<f64> = nodes.iter().map(|&n| self.v(x, n)).collect();
+                    let vs = nodes.map(|n| self.v(x, n));
                     let ev = mos_eval(model, *w, *l, *mult, vs[0], vs[1], vs[2], vs[3]);
                     let i_eq = ev.id - (0..4).map(|k| ev.j[k] * vs[k]).sum::<f64>();
                     for (k, &n) in nodes.iter().enumerate() {
@@ -1424,16 +1424,7 @@ impl Engine {
         // several, such as a bandgap's zero-current state), then from zero.
         let starts = if start.iter().any(|v| *v != 0.0) { vec![start, vec![0.0; self.size]] } else { vec![start] };
         for s0 in starts {
-            let mut x = s0;
-            let mut ok = true;
-            for k in (0..=10).rev() {
-                let g = gmin0 * 10f64.powi(k);
-                if self.newton(&mut x, mode(1.0), g, itl).is_err() {
-                    ok = false;
-                    break;
-                }
-            }
-            if ok {
+            if let Some(x) = self.dynamic_gmin(s0, &mode(1.0), itl)? {
                 return Ok(x);
             }
         }
@@ -1444,6 +1435,45 @@ impl Engine {
             self.newton(&mut x, mode(s), gmin0, itl.max(200))?;
         }
         Ok(x)
+    }
+
+    /// SPICE's dynamic gmin stepping: solve with a conductance `g` from every node to ground,
+    /// starting at 10 mS, and lower it towards the circuit's gmin by a factor that grows while
+    /// the steps converge easily and shrinks (back from the last solution) when one fails.
+    /// A long chain of gain stages, whose linearisation overflows without the extra
+    /// conductance, gets there in small enough steps. None: the factor fell below 1.00005.
+    fn dynamic_gmin(&self, mut x: Vec<f64>, mode: &Mode, itl: usize) -> Result<Option<Vec<f64>>, SimError> {
+        let target = self.c.options.gmin;
+        let (mut factor, mut old_g) = (10.0f64, 1e-2f64);
+        let mut g = old_g;
+        for _ in 0..1000 {
+            let mut xt = x.clone();
+            match self.newton(&mut xt, *mode, g, itl) {
+                Ok(iters) => {
+                    x = xt;
+                    if g <= target {
+                        return Ok(Some(x));
+                    }
+                    if iters <= itl / 4 {
+                        factor = (factor * factor.sqrt()).min(10.0);
+                    }
+                    if iters > 3 * itl / 4 {
+                        factor = factor.sqrt();
+                    }
+                    old_g = g;
+                    g = if g < factor * target { target } else { g / factor };
+                }
+                Err(SimError::Cancelled) => return Err(SimError::Cancelled),
+                Err(_) => {
+                    if factor < 1.00005 {
+                        return Ok(None);
+                    }
+                    factor = factor.sqrt().sqrt();
+                    g = old_g / factor;
+                }
+            }
+        }
+        Ok(None)
     }
 
     fn vector_names(&self) -> Vec<(String, VecKind)> {
@@ -2343,7 +2373,8 @@ impl Engine {
         // nodes near 0 V reads as error): the difference to the quadratic extrapolation of the
         // last three points, a third of which is the step's error. It catches what the charges
         // miss, such as trapezoidal ringing in a MOS gate current.
-        if order == 2 {
+        let voltrunc = o.voltrunc.unwrap_or(self.nn <= crate::circuit::VOLTRUNC_MAX_NODES);
+        if order == 2 && voltrunc {
             let floor = 1e-3;
             let [(t0, x0, _), (t1, x1, _), (t2, x2, _)] = pts else { unreachable!() };
             let l0 = (tn - t1) * (tn - t2) / ((t0 - t1) * (t0 - t2));
@@ -2854,6 +2885,23 @@ Rl out 0 50
         let ds = e.run_op().unwrap();
         let vk = ds.get("v(k)").unwrap().re[0];
         assert!(vk > 0.6 && vk < 0.75, "{vk}");
+    }
+
+    /// A chain of thousands of inverters: its linearisation from 0 V overflows (a gain of ~10
+    /// per stage), so direct Newton fails and dynamic gmin stepping reaches the rails.
+    #[test]
+    fn long_inverter_chain_operating_point() {
+        let n = 2500;
+        let mut deck = String::from("* chain\nVDD vdd 0 1.8\nVIN n0 0 0\n");
+        for i in 0..n {
+            deck +=
+                &format!("MP{i} n{} n{i} vdd vdd pmos w=0.84u l=0.18u\nMN{i} n{} n{i} 0 0 nmos w=0.42u l=0.18u\n", i + 1, i + 1);
+        }
+        deck += ".model nmos nmos (level=1 vto=0.45 kp=280u lambda=0.1)\n.model pmos pmos (level=1 vto=-0.45 kp=70u lambda=0.1)\n.op\n.end\n";
+        let res = crate::simulate(&deck, &[], &crate::SimOptions::default()).expect("operating point");
+        let v = |name: &str| res.datasets[0].vectors.iter().find(|v| v.name == name).unwrap().re[0];
+        assert!((v("v(n1)") - 1.8).abs() < 1e-3 && v("v(n2)").abs() < 1e-3, "{} {}", v("v(n1)"), v("v(n2)"));
+        assert!((v(&format!("v(n{n})")) - if n % 2 == 1 { 1.8 } else { 0.0 }).abs() < 1e-3);
     }
 
     #[test]
